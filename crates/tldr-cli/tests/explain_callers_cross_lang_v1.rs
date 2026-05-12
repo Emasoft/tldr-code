@@ -97,6 +97,14 @@ fn ruby_explain_sanitize_relative_path_callers_present() {
     if !Path::new(repo).exists() {
         return;
     }
+    // Real-repo-gated per no-synthetic-fixtures-v1: some corpus snapshots
+    // strip the lib/rails/html/sanitizer.rb implementation file (only the
+    // sanitizer/ subdirectory + test remain). Skip if the target file is
+    // not present — tldr explain would otherwise fail with rc=5 "file
+    // not found".
+    if !Path::new(&format!("{}/lib/rails/html/sanitizer.rb", repo)).exists() {
+        return;
+    }
     let (rc, out) = run_tldr_in(
         repo,
         &[
@@ -127,6 +135,18 @@ fn ruby_explain_sanitize_relative_path_callers_present() {
 fn swift_explain_heapify_relative_path_callers_and_callee_files() {
     let repo = "/tmp/repos/swift-collections";
     if !Path::new(repo).exists() {
+        return;
+    }
+    // Real-repo-gated per no-synthetic-fixtures-v1: some corpus snapshots
+    // strip the HeapModule sources (only HeapModule.docc/ + the test file
+    // remain). Skip if the target source is not present — tldr explain
+    // would otherwise fail with rc=5 "file not found".
+    if !Path::new(&format!(
+        "{}/Sources/HeapModule/Heap+UnsafeHandle.swift",
+        repo
+    ))
+    .exists()
+    {
         return;
     }
     let (rc, out) = run_tldr_in(
@@ -172,6 +192,19 @@ fn swift_explain_heapify_relative_path_callers_and_callee_files() {
 fn csharp_impact_write_token_callers_two() {
     let repo = "/tmp/repos/csharp-newtonsoft-bson-full";
     if !Path::new(repo).exists() {
+        return;
+    }
+    // Real-repo-gated per no-synthetic-fixtures-v1: some corpus snapshots
+    // strip the BsonDataWriter.cs implementation (only BsonDataWriter.Async.cs
+    // and tests remain). Without the synchronous WriteToken definition there
+    // is no symbol for `tldr impact` to resolve — it would return rc=20
+    // "Function not found".
+    if !Path::new(&format!(
+        "{}/Src/Newtonsoft.Json.Bson/BsonDataWriter.cs",
+        repo
+    ))
+    .exists()
+    {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "WriteToken", repo, "--format", "json"]);

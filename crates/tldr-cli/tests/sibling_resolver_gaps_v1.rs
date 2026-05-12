@@ -163,6 +163,16 @@ fn agg14_1_csharp_impact_writetoken_still_two_callers() {
     if skip_if_missing(repo) {
         return;
     }
+    // Real-repo-gated per no-synthetic-fixtures-v1: some corpus snapshots
+    // strip BsonDataWriter.cs (synchronous WriteToken definition). Without
+    // it `tldr impact WriteToken` returns "Function not found" and empty
+    // stdout, breaking the JSON parse below.
+    if skip_if_missing(&format!(
+        "{}/Src/Newtonsoft.Json.Bson/BsonDataWriter.cs",
+        repo
+    )) {
+        return;
+    }
     let report = run_json(&["impact", "WriteToken", repo, "--format", "json"]);
     let target = report
         .get("targets")
@@ -189,6 +199,16 @@ fn agg14_1_csharp_impact_writetoken_still_two_callers() {
 fn agg14_4_csharp_whatbreaks_writetoken_finds_callers() {
     let repo = "/tmp/repos/csharp-newtonsoft-bson-full";
     if skip_if_missing(repo) {
+        return;
+    }
+    // Real-repo-gated per no-synthetic-fixtures-v1: see agg14_1_csharp_*
+    // above — `whatbreaks` shares the impact enrichment path, so the same
+    // corpus drift (missing BsonDataWriter.cs) makes this assertion
+    // unsatisfiable.
+    if skip_if_missing(&format!(
+        "{}/Src/Newtonsoft.Json.Bson/BsonDataWriter.cs",
+        repo
+    )) {
         return;
     }
     let report = run_json(&["whatbreaks", "WriteToken", repo, "--format", "json"]);
