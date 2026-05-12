@@ -46,7 +46,21 @@ pub fn get_code_structure(
     if root.is_file() {
         let parent = root.parent().unwrap_or(root);
         match extract_file_structure(root, parent, language) {
-            Ok(structure) => {
+            Ok(mut structure) => {
+                // scala-path-canonical-v1 (v0.4.1 bug-C): in single-file
+                // mode, `extract_file_structure` runs with
+                // `root = file` and `parent = file.parent()`, so the
+                // internal `strip_prefix(parent)` collapses
+                // `files[0].path` to the basename (`ExitCode.scala`)
+                // and the user loses their input path shape
+                // (`/tmp/repos/.../ExitCode.scala`). Per the P15-B
+                // precedent (`6a3288a context-relative-and-ts-colon-v1`),
+                // preserve the user's input path shape verbatim in
+                // output. The dir-walk branch (further below) still
+                // emits paths relative to the scan root, which is the
+                // user's input there too — so the user-input-shape
+                // invariant holds across both branches.
+                structure.path = root.to_path_buf();
                 return Ok(CodeStructure {
                     root: root.to_path_buf(),
                     language: Some(language),

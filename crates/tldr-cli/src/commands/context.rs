@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use clap::Args;
 
-use tldr_core::types::RelevantContext;
-use tldr_core::{get_relevant_context, Language};
+use tldr_core::types::RelevantContext as TypesRelevantContext;
+use tldr_core::{get_relevant_context, Language, RelevantContext};
 
 use crate::commands::daemon_router::{params_with_entry_depth, try_daemon_route};
 use crate::output::{OutputFormat, OutputWriter};
@@ -122,7 +122,7 @@ impl ContextArgs {
         // daemon protocol does not currently propagate the `--file`
         // filter (would silently ignore the disambiguator).
         if effective_file.is_none() {
-            if let Some(context) = try_daemon_route::<RelevantContext>(
+            if let Some(context) = try_daemon_route::<TypesRelevantContext>(
                 &project_path,
                 "context",
                 params_with_entry_depth(&entry, Some(self.depth)),
@@ -147,7 +147,7 @@ impl ContextArgs {
         ));
 
         // Get relevant context
-        let context = get_relevant_context(
+        let mut context = get_relevant_context(
             &project_path,
             &entry,
             self.depth,
@@ -155,6 +155,22 @@ impl ContextArgs {
             self.include_docstrings,
             effective_file.as_deref(),
         )?;
+
+        // scala-path-canonical-v1 (v0.4.1 bug-C): preserve the user's
+        // input path shape for the entry-point function's `file:` field.
+        // `get_relevant_context` -> `build_function_context` strips the
+        // project prefix (crates/tldr-core/src/context/builder.rs:823),
+        // so a user who typed
+        //   `tldr context /tmp/repos/.../X.scala:apply`
+        // would see `functions[0].file = "core/.../X.scala"` (drifted
+        // shape). Per the P15-B precedent (`6a3288a
+        // context-relative-and-ts-colon-v1`), echo the user's input
+        // verbatim in output: when the entry-point function's file
+        // matches the user-supplied file (by canonical equality or
+        // suffix), substitute the user-supplied shape back in.
+        if let Some(user_input) = effective_file.as_ref() {
+            restore_user_input_shape(&mut context, user_input);
+        }
 
         // Output based on format
         if writer.is_text() {
@@ -166,6 +182,32 @@ impl ContextArgs {
         }
 
         Ok(())
+    }
+}
+
+/// Restore the user's input path shape on every `functions[].file` whose
+/// extracted form refers to the same file on disk as `user_input`.
+///
+/// scala-path-canonical-v1 (v0.4.1 bug-C): we accept either an exact
+/// suffix match (so a relative call-graph key like
+/// `core/shared/.../X.scala` agrees with a user-supplied absolute
+/// `/tmp/repos/.../X.scala`) OR a canonicalised-path equality (to
+/// reconcile macOS `/tmp` ↔ `/private/tmp` and any other symlink dance).
+/// Canonicalisation is used ONLY for the comparison; the field we write
+/// back to is the user's verbatim input.
+fn restore_user_input_shape(context: &mut RelevantContext, user_input: &Path) {
+    let user_canon = user_input.canonicalize().ok();
+    for func in context.functions.iter_mut() {
+        let emitted = &func.file;
+        let matches = user_input.ends_with(emitted)
+            || emitted.ends_with(user_input)
+            || match (user_canon.as_ref(), emitted.canonicalize().ok().as_ref()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            };
+        if matches {
+            func.file = user_input.to_path_buf();
+        }
     }
 }
 
