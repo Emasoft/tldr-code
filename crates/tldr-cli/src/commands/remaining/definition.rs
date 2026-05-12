@@ -899,7 +899,12 @@ fn python_match_target(
                     Location::with_column(
                         file.display().to_string(),
                         target.start_position().row as u32 + 1,
-                        target.start_position().column as u32,
+                        // scala-column-unification-v1 (v0.4.1 bug-B):
+                        // tree-sitter `Point::column` is 0-indexed.
+                        // Emit 1-indexed columns to agree with the
+                        // 18 sites in `analysis/references.rs` that
+                        // already do `+ 1`.
+                        target.start_position().column as u32 + 1,
                     ),
                 ))
             } else {
@@ -926,7 +931,11 @@ fn make_param_location(name: Node, file: &Path) -> (SymbolKind, Location) {
         Location::with_column(
             file.display().to_string(),
             name.start_position().row as u32 + 1,
-            name.start_position().column as u32,
+            // scala-column-unification-v1 (v0.4.1 bug-B): 1-indexed
+            // column. Used by every language's parameter scanner
+            // (rust/go/scala/java/c/cpp/ruby/kotlin/swift/php/csharp/
+            // python/elixir).
+            name.start_position().column as u32 + 1,
         ),
     )
 }
@@ -1016,7 +1025,9 @@ fn jslike_walk_for_binding(
                                 Location::with_column(
                                     file.display().to_string(),
                                     name.start_position().row as u32 + 1,
-                                    name.start_position().column as u32,
+                                    // scala-column-unification-v1
+                                    // (v0.4.1 bug-B): 1-indexed.
+                                    name.start_position().column as u32 + 1,
                                 ),
                             ));
                         }
@@ -1097,7 +1108,9 @@ fn rust_walk_for_binding(
                         Location::with_column(
                             file.display().to_string(),
                             pat.start_position().row as u32 + 1,
-                            pat.start_position().column as u32,
+                            // scala-column-unification-v1
+                            // (v0.4.1 bug-B): 1-indexed.
+                            pat.start_position().column as u32 + 1,
                         ),
                     ));
                 }
@@ -1166,7 +1179,9 @@ fn go_walk_for_binding(
                             Location::with_column(
                                 file.display().to_string(),
                                 n.start_position().row as u32 + 1,
-                                n.start_position().column as u32,
+                                // scala-column-unification-v1
+                                // (v0.4.1 bug-B): 1-indexed.
+                                n.start_position().column as u32 + 1,
                             ),
                         ));
                     }
@@ -1198,7 +1213,11 @@ fn make_var_location(name: Node, file: &Path) -> (SymbolKind, Location) {
         Location::with_column(
             file.display().to_string(),
             name.start_position().row as u32 + 1,
-            name.start_position().column as u32,
+            // scala-column-unification-v1 (v0.4.1 bug-B): 1-indexed
+            // column. Shared by every language's local-variable
+            // scanner (scala val/var, java/csharp/kotlin/swift/ruby/
+            // php/c/cpp locals).
+            name.start_position().column as u32 + 1,
         ),
     )
 }
@@ -3544,7 +3563,9 @@ fn find_definition_recursive(
                         let location = Location::with_column(
                             file.display().to_string(),
                             name_node.start_position().row as u32 + 1,
-                            name_node.start_position().column as u32,
+                            // scala-column-unification-v1
+                            // (v0.4.1 bug-B): 1-indexed column.
+                            name_node.start_position().column as u32 + 1,
                         );
                         return Some((kind, location));
                     }
@@ -3559,7 +3580,9 @@ fn find_definition_recursive(
                         let location = Location::with_column(
                             file.display().to_string(),
                             name_node.start_position().row as u32 + 1,
-                            name_node.start_position().column as u32,
+                            // scala-column-unification-v1
+                            // (v0.4.1 bug-B): 1-indexed column.
+                            name_node.start_position().column as u32 + 1,
                         );
                         return Some((SymbolKind::Class, location));
                     }
@@ -3575,7 +3598,9 @@ fn find_definition_recursive(
                             let location = Location::with_column(
                                 file.display().to_string(),
                                 left.start_position().row as u32 + 1,
-                                left.start_position().column as u32,
+                                // scala-column-unification-v1
+                                // (v0.4.1 bug-B): 1-indexed column.
+                                left.start_position().column as u32 + 1,
                             );
                             return Some((SymbolKind::Variable, location));
                         }

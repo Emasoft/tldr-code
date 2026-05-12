@@ -2474,7 +2474,16 @@ fn check_regex_rule(
         }
     }
 
-    let column = regex.find(line_text).map(|m| m.start()).unwrap_or(0) as u32;
+    // scala-column-unification-v1 (v0.4.1 bug-B): `regex.find().map(m.start())`
+    // is the 0-indexed byte offset within the trimmed line. Promote to a
+    // 1-indexed column to agree with `tldr definition` / `tldr references`.
+    // The `None` branch falls back to 1 (the start of the line) rather than 0
+    // because no `m.start()` arm exists when the regex didn't match — and a
+    // 0-column finding is meaningless for downstream tools.
+    let column = regex
+        .find(line_text)
+        .map(|m| (m.start() as u32).saturating_add(1))
+        .unwrap_or(1);
     Some(MisuseFinding {
         file: file.to_string(),
         line,
