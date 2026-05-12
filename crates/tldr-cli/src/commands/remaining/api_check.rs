@@ -14,7 +14,7 @@
 //! tldr api-check src/ --severity high --format text
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -1848,6 +1848,19 @@ pub(crate) fn analyze_file(
         Vec::new()
     };
 
+    // lu001-ast-gate-v1 (v0.4.1 bug-A): for Lua and Luau, pre-compute the
+    // AST context that gates LU001 `implicit-global` flagging. The
+    // context holds (a) lines inside `table_constructor` nodes and (b)
+    // identifiers declared `local` anywhere in the file. Other languages
+    // get an empty default context — `check_regex_rule`'s LU001 branch
+    // is itself language-gated so the default is never consulted for
+    // non-Lua files.
+    let lua_ctx: LuaApiCheckContext = if matches!(language, ApiLanguage::Lua | ApiLanguage::Luau) {
+        compute_lua_api_check_context(&content, language)
+    } else {
+        LuaApiCheckContext::default()
+    };
+
     for (line_num, line) in content.lines().enumerate() {
         let line_number = (line_num + 1) as u32;
         let trimmed = line.trim();
@@ -1884,6 +1897,7 @@ pub(crate) fn analyze_file(
                 language,
                 &rust_ctx,
                 py_ctx,
+                &lua_ctx,
                 &regex_specs,
             ) {
                 findings.push(finding);
@@ -2126,6 +2140,166 @@ struct RustLineContext<'a> {
     previous_is_loop: bool,
 }
 
+/// lu001-ast-gate-v1 (v0.4.1 bug-A): per-file AST context for the Lua and
+/// Luau api-check scanner. The LU001 `implicit-global` rule is regex-only
+/// (`^[A-Za-z_][A-Za-z0-9_]*\s*=`) and cannot tell whether a bare `x = ...`
+/// line is a fresh global, a reassignment of an earlier `local x`, or a
+/// table-constructor field initialiser. Pre-fix this produced ~37.5% false
+/// positives over the luau-luau corpus (1744 LU001 findings).
+///
+/// We pre-compute two sets per file by walking the tree-sitter parse:
+///
+///   - `table_constructor_line_set`: every source line (1-indexed) whose
+///     byte range overlaps a `table_constructor` AST node. Field
+///     initialisers `{ foo = 1, bar = 2 }` and metatable shapes
+///     `setmetatable({}, { __add = fn })` live inside these nodes — their
+///     keys are NOT global assignments.
+///   - `local_names_in_scope`: every identifier ever declared with
+///     `local` in the file (collected from `variable_declaration` nodes —
+///     both the simple `local x` form and the full `local x = ...` form).
+///     This is a conservative cross-scope union: if `local x` appears
+///     anywhere in the file, a later `x = ...` line is treated as a
+///     reassignment, not a new global. Per-scope refinement is out of
+///     scope for v0.4.1.
+///
+/// The context is consulted ONLY for LU001 inside [`check_regex_rule`].
+/// Other Lua rules (LU002–LU005) and other languages are unaffected.
+///
+/// The grammar node names are identical between `tree-sitter-lua` and
+/// `tree-sitter-luau` (see `node-types.json` for both crates):
+/// `variable_declaration` is the local-declaration form, `table_constructor`
+/// holds `field` children, `assignment_statement` is the non-local
+/// assignment.
+#[derive(Debug, Default)]
+pub(crate) struct LuaApiCheckContext {
+    /// Line numbers (1-indexed) that fall inside a `table_constructor`
+    /// node. A line in this set must not flag LU001 — the matched
+    /// `name =` is a field key, not a global assignment.
+    pub table_constructor_line_set: HashSet<u32>,
+    /// All identifier names ever declared with `local` anywhere in the
+    /// file. A line whose LHS identifier is in this set must not flag
+    /// LU001 — it's a reassignment of a previously declared local, not
+    /// a new global.
+    pub local_names_in_scope: HashSet<String>,
+}
+
+/// Build a [`LuaApiCheckContext`] by parsing `content` as Lua or Luau and
+/// walking the resulting tree-sitter parse. Returns an empty context on
+/// any parse failure — the gate is a precision optimisation, not a
+/// correctness pre-condition, so a parse failure must NOT alter the set
+/// of findings emitted for the file.
+fn compute_lua_api_check_context(content: &str, language: ApiLanguage) -> LuaApiCheckContext {
+    let lang = match language {
+        ApiLanguage::Lua => Language::Lua,
+        ApiLanguage::Luau => Language::Luau,
+        _ => return LuaApiCheckContext::default(),
+    };
+    let tree = match tldr_core::ast::parser::parse(content, lang) {
+        Ok(t) => t,
+        Err(_) => return LuaApiCheckContext::default(),
+    };
+    let mut ctx = LuaApiCheckContext::default();
+    let bytes = content.as_bytes();
+
+    fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut LuaApiCheckContext) {
+        let kind = node.kind();
+
+        if kind == "table_constructor" {
+            // Mark every line that intersects this node's byte range. Use
+            // 1-indexed lines to match the api-check emission convention.
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+            for ln in start_line..=end_line {
+                ctx.table_constructor_line_set.insert(ln);
+            }
+            // Still recurse — nested table_constructors and identifier
+            // nodes inside fields don't introduce locals, but recursing
+            // is harmless and keeps the visitor uniform.
+        }
+
+        if kind == "variable_declaration" {
+            // Lua/Luau: `variable_declaration` is the `local` form. Its
+            // children are either `assignment_statement` (the `local x =
+            // ...` shape, with a `variable_list` inside) or
+            // `variable_list` directly (the bare `local x` shape).
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "assignment_statement" => {
+                        // Descend into the inner variable_list to find
+                        // the local identifier names.
+                        let mut inner = child.walk();
+                        for ic in child.children(&mut inner) {
+                            if ic.kind() == "variable_list" {
+                                collect_variable_list_identifiers(ic, source, ctx);
+                            }
+                        }
+                    }
+                    "variable_list" => {
+                        collect_variable_list_identifiers(child, source, ctx);
+                    }
+                    "identifier" => {
+                        // Defensive: some grammars hang identifiers
+                        // directly off the declaration.
+                        if let Ok(name) = std::str::from_utf8(&source[child.byte_range()]) {
+                            ctx.local_names_in_scope.insert(name.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx);
+        }
+    }
+
+    fn collect_variable_list_identifiers(
+        node: tree_sitter::Node,
+        source: &[u8],
+        ctx: &mut LuaApiCheckContext,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                if let Ok(name) = std::str::from_utf8(&source[child.byte_range()]) {
+                    ctx.local_names_in_scope.insert(name.to_string());
+                }
+            }
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx);
+    ctx
+}
+
+/// lu001-ast-gate-v1: extract the LHS identifier from a line that the
+/// LU001 regex (`^[A-Za-z_][A-Za-z0-9_]*\s*=`) has just matched. Returns
+/// `None` if the regex shape isn't present (defensive — should never
+/// trigger in practice because the caller has already confirmed a regex
+/// match). The leading-whitespace skip mirrors the regex's `^` which is
+/// applied against the already-`trim()`ed `line_text` in `check_rule`.
+fn extract_lu001_lhs_name(line_text: &str) -> Option<String> {
+    let trimmed = line_text.trim_start();
+    let mut end = 0usize;
+    for (i, c) in trimmed.char_indices() {
+        if i == 0 && !(c.is_ascii_alphabetic() || c == '_') {
+            return None;
+        }
+        if c.is_ascii_alphanumeric() || c == '_' {
+            end = i + c.len_utf8();
+            continue;
+        }
+        break;
+    }
+    if end == 0 {
+        return None;
+    }
+    Some(trimmed[..end].to_string())
+}
+
 /// Check a single rule against a line of code
 fn check_rule(
     rule: &APIRule,
@@ -2135,6 +2309,7 @@ fn check_rule(
     language: ApiLanguage,
     rust_ctx: &RustLineContext<'_>,
     py_ctx: PyLineContext,
+    lua_ctx: &LuaApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     let trimmed = line_text.trim();
@@ -2178,7 +2353,7 @@ fn check_rule(
         "RS004" => check_detached_tokio_spawn(rule, file, line, trimmed),
         "RS005" => check_hashmap_order_dependence(rule, file, line, trimmed, rust_ctx),
         "RS006" => check_clone_in_hot_loop(rule, file, line, trimmed, rust_ctx),
-        _ => check_regex_rule(rule, file, line, trimmed, regex_specs),
+        _ => check_regex_rule(rule, file, line, trimmed, language, lua_ctx, regex_specs),
     }
 }
 
@@ -2244,6 +2419,8 @@ fn check_regex_rule(
     file: &str,
     line: u32,
     line_text: &str,
+    language: ApiLanguage,
+    lua_ctx: &LuaApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     // fastpath-extend-non-vuln-v1: lookup the pre-compiled regex by rule id
@@ -2270,6 +2447,30 @@ fn check_regex_rule(
         // idiom, not a string equality bug.
         if line_has_null_comparison(line_text) {
             return None;
+        }
+    }
+
+    // lu001-ast-gate-v1 (v0.4.1 bug-A): the LU001 `implicit-global` rule
+    // is regex-only and cannot tell whether a bare `x = ...` line is a
+    // fresh global, a reassignment of an earlier `local x`, or a
+    // table-constructor field initialiser. The AST pre-pass populated
+    // `lua_ctx` with two precision sets; consult them here. Only fires
+    // for Lua / Luau — other languages share the rule-id namespace via
+    // `rule_applies_to_language` but no other LU* rule needs this gate.
+    if rule.id == "LU001" && matches!(language, ApiLanguage::Lua | ApiLanguage::Luau) {
+        // Skip table-constructor lines: `{ foo = 1, bar = 2 }` matches
+        // the LU001 regex on the inner lines, but `foo`/`bar` are
+        // field keys, not global assignments.
+        if lua_ctx.table_constructor_line_set.contains(&line) {
+            return None;
+        }
+        // Skip reassignment of previously declared locals: if `local x`
+        // appears anywhere in the file, treat `x = ...` as a local
+        // reassignment rather than a new global.
+        if let Some(name) = extract_lu001_lhs_name(line_text) {
+            if lua_ctx.local_names_in_scope.contains(&name) {
+                return None;
+            }
         }
     }
 
