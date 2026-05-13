@@ -1,0 +1,106 @@
+{
+  "worker": "W-Q",
+  "milestone": "ux-cluster-v1",
+  "version": "v0.4.2",
+  "date": "2026-05-12",
+  "assertions": ["VAL-UX-D2", "VAL-UX-D3", "VAL-UX-D5"],
+  "verdicts": {
+    "D3": {
+      "status": "REAL_AND_FIXED",
+      "description": "tldr doctor omitted ocaml despite Language::Ocaml being a first-class supported language.",
+      "repro_pre": {
+        "command": "target/release/tldr doctor -f json -q",
+        "languages_listed": ["c", "cpp", "csharp", "elixir", "go", "java", "javascript", "kotlin", "lua", "php", "python", "ruby", "rust", "scala", "swift", "typescript"],
+        "count": 16,
+        "has_ocaml": false
+      },
+      "repro_post": {
+        "languages_listed": ["c", "cpp", "csharp", "elixir", "go", "java", "javascript", "kotlin", "lua", "ocaml", "php", "python", "ruby", "rust", "scala", "swift", "typescript"],
+        "count": 17,
+        "has_ocaml": true,
+        "ocaml_entry": {
+          "type_checker": "ocamlmerlin",
+          "linter": "ocamllsp",
+          "install_hints": "opam install merlin / opam install ocaml-lsp-server"
+        }
+      },
+      "fix": "crates/tldr-cli/src/commands/doctor.rs: added an `ocaml` entry to get_tool_info() with merlin (type_checker) and ocaml-lsp-server (linter). Install instructions cover both opam and homebrew."
+    },
+    "D2": {
+      "status": "REAL_AND_FIXED",
+      "description": "SemanticIndex::build printed 'Skipped N files (parse errors or unsupported)' but the chunker only labels skips as 'Binary or hidden file', 'Unknown language for extension', 'Filtered out by language', or 'Read error' - none of which are parse errors.",
+      "repro_pre": {
+        "source_evidence": "crates/tldr-core/src/semantic/index.rs:263 emitted: \"Skipped {} files (parse errors or unsupported)\"",
+        "chunker_evidence": "crates/tldr-core/src/semantic/chunker.rs:170-219 enumerates the actual skip reasons; none mention parse errors",
+        "note": "CLI binary built without `semantic` feature so command isn't exposed in the default release; bug is in the gated code path."
+      },
+      "repro_post": {
+        "source_evidence": "index.rs now emits: \"Skipped {} files (binary, unknown language, or read errors)\""
+      },
+      "fix": "crates/tldr-core/src/semantic/index.rs: rephrased the eprintln to describe the real skip reasons (binary / unknown language / read errors), with a comment cross-referencing the chunker categorisation."
+    },
+    "D5": {
+      "status": "REAL_AND_FIXED",
+      "description": "tldr importers on Swift returned preprocessor-conditional lines (#if, #else) as the import_statement when the real import lived adjacent to a #if block.",
+      "repro_pre": {
+        "command": "target/release/tldr importers SortedCollections /tmp/repos/swift-collections",
+        "false_positives": [
+          {
+            "file": "Benchmarks/Sources/Benchmarks/SortedDictionaryBenchmarks.swift",
+            "line": 14,
+            "import_statement": "#if false // SortedCollections is not a thing yet"
+          },
+          {
+            "file": "Tests/SortedCollectionsTests/BTree/BTree Tests.swift",
+            "line": 14,
+            "import_statement": "#if UnstableSortedCollections"
+          }
+        ],
+        "root_cause": "find_import_line() in crates/tldr-core/src/analysis/importers.rs had no Swift arm and fell through to the catch-all `_` branch that accepted any line containing the module substring."
+      },
+      "repro_post": {
+        "total_importers": 13,
+        "preprocessor_false_positives": 0,
+        "sample_statements": [
+          "import SortedCollections",
+          "@_spi(Testing) @testable import SortedCollections"
+        ]
+      },
+      "fix": "crates/tldr-core/src/analysis/importers.rs: added a Swift-specific arm in find_import_line(). It (a) skips lines starting with #if/#else/#elseif/#endif, (b) strips @attribute clusters and access modifiers (public/internal/private/fileprivate), (c) requires the remaining text to start with the `import` keyword."
+    }
+  },
+  "tdd": {
+    "test_file": "crates/tldr-cli/tests/ux_cluster_v1.rs",
+    "tests": [
+      "doctor_lists_ocaml",
+      "semantic_stderr_no_misleading_parse_errors_phrase",
+      "swift_importers_skips_preprocessor_if_lines"
+    ],
+    "red_phase": "3/3 failed before fix",
+    "green_phase": "3/3 passed after fix"
+  },
+  "smoke_tests": {
+    "doctor_tests": "7/7 ok",
+    "interface_extraction_ocaml_elixir_v1": "5/5 ok",
+    "semantic_lang_flag_test": "0/0 (feature-gated)",
+    "ux_and_explain_completeness_v1": "12/12 ok",
+    "ux_cluster_v1": "3/3 ok",
+    "cli_basic_tests": "ok",
+    "cli_p1_tests": "ok",
+    "cross_cutting_and_clear_fix_bugs_v1": "ok",
+    "language_specific_bugs_v1": "13/14 (1 pre-existing failure: nonreg_php_specs_still_works - unrelated to this milestone, tests `tldr specs --from-tests` not importers/doctor/semantic)",
+    "non_judgment_call_bugs_v1": "ok",
+    "residual_bugs_v1": "ok"
+  },
+  "files_modified": [
+    "crates/tldr-cli/src/commands/doctor.rs",
+    "crates/tldr-core/src/analysis/importers.rs",
+    "crates/tldr-core/src/semantic/index.rs",
+    "crates/tldr-cli/tests/ux_cluster_v1.rs"
+  ],
+  "scope_guardrails_respected": {
+    "no_generic_catalog_framework": true,
+    "minimal_stderr_accuracy_fix": true,
+    "minimal_swift_importer_guard": true
+  }
+}

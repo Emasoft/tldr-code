@@ -257,10 +257,23 @@ impl SemanticIndex {
             eprintln!("Building index for {} chunks...", chunk_result.chunks.len());
         }
 
-        // Report skipped files (P0: not silent)
+        // Report skipped files (P0: not silent).
+        //
+        // ux-cluster-v1 (v0.4.2 VAL-UX-D2): the previous phrasing
+        // "Skipped N files (parse errors or unsupported)" was
+        // misleading. The chunker (`chunker.rs::chunk_file`) only
+        // categorises skips as one of:
+        //   - "Binary or hidden file"
+        //   - "Unknown language for extension: <ext>"
+        //   - "Filtered out by language (<lang>)"
+        //   - "Read error: <io error>"
+        // None of those are "parse errors" — actual tree-sitter parse
+        // failures fall back to a file-level chunk with a separate
+        // "Warning: Parse failed" message and are NOT counted here.
+        // Rephrase to describe the real causes.
         if !chunk_result.skipped.is_empty() && options.show_progress {
             eprintln!(
-                "Skipped {} files (parse errors or unsupported)",
+                "Skipped {} files (binary, unknown language, or read errors)",
                 chunk_result.skipped.len()
             );
         }

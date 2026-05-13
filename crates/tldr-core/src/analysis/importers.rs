@@ -315,6 +315,65 @@ fn find_import_line(
                     return (i as u32 + 1, trimmed.to_string());
                 }
             }
+            // ux-cluster-v1 (v0.4.2 VAL-UX-D5): Swift previously fell
+            // through to the catch-all `_` arm below, which accepted
+            // ANY line containing the module substring. In Swift code
+            // where an `import` lives inside `#if <cond> … #else …
+            // #endif` blocks (or simply preceded by `#if false //
+            // ModuleName is not a thing yet`), the first matching
+            // line was the preprocessor directive itself — not the
+            // actual `import` line. Require the line to look like a
+            // real Swift import line and never accept preprocessor
+            // directives. Recognised import-line shapes:
+            //   `import Foundation`
+            //   `import struct Foo.Bar`
+            //   `@testable import Foo`
+            //   `@_spi(Testing) import Foo`
+            //   `@_implementationOnly import Foo`
+            //   `public import Foo` (Swift 5.9+ access modifier)
+            Language::Swift => {
+                // Reject preprocessor conditionals up front.
+                if trimmed.starts_with("#if")
+                    || trimmed.starts_with("#else")
+                    || trimmed.starts_with("#elseif")
+                    || trimmed.starts_with("#endif")
+                {
+                    continue;
+                }
+                // Must contain the module name AND be an import line.
+                if !trimmed.contains(module) {
+                    continue;
+                }
+                // Strip leading `@…` attribute clusters and any
+                // `public ` / `internal ` / `private ` / `fileprivate `
+                // access modifiers, then verify the remaining text
+                // begins with the `import` keyword.
+                let mut rest = trimmed;
+                while rest.starts_with('@') {
+                    // Skip the attribute (including any parenthesised
+                    // argument) up to the next whitespace.
+                    if let Some(paren_open) = rest.find('(') {
+                        if let Some(paren_close) = rest[paren_open..].find(')') {
+                            rest = rest[paren_open + paren_close + 1..].trim_start();
+                            continue;
+                        }
+                    }
+                    if let Some(space) = rest.find(char::is_whitespace) {
+                        rest = rest[space..].trim_start();
+                    } else {
+                        rest = "";
+                        break;
+                    }
+                }
+                for modifier in ["public ", "internal ", "private ", "fileprivate "] {
+                    if let Some(stripped) = rest.strip_prefix(modifier) {
+                        rest = stripped.trim_start();
+                    }
+                }
+                if rest.starts_with("import ") || rest.starts_with("import\t") {
+                    return (i as u32 + 1, trimmed.to_string());
+                }
+            }
             _ => {
                 if trimmed.contains(module) {
                     return (i as u32 + 1, trimmed.to_string());

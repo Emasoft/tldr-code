@@ -174,6 +174,30 @@ fn get_tool_info() -> BTreeMap<&'static str, LangTools> {
         },
     );
 
+    // ux-cluster-v1 (v0.4.2 VAL-UX-D3): OCaml is a first-class supported
+    // language across the rest of the toolchain (Language::Ocaml,
+    // .ml/.mli file detection, dune-project / opam manifests, AST
+    // extractors, cognitive complexity rules, …). Doctor previously
+    // omitted it, leaving users to guess which tools to install.
+    // Merlin is the canonical OCaml type-checker / IDE backend;
+    // ocaml-lsp-server provides the LSP frontend used by editors and
+    // ocamlformat is the de-facto formatter. We expose merlin as the
+    // type_checker slot and ocaml-lsp-server as the linter slot — the
+    // closest semantic fit to the existing (type_checker, linter) shape.
+    tools.insert(
+        "ocaml",
+        LangTools {
+            type_checker: Some((
+                "ocamlmerlin",
+                "opam install merlin  OR  brew install ocaml-lsp-server merlin",
+            )),
+            linter: Some((
+                "ocamllsp",
+                "opam install ocaml-lsp-server  OR  brew install ocaml-lsp-server",
+            )),
+        },
+    );
+
     tools
 }
 
