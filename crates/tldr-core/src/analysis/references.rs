@@ -2857,6 +2857,15 @@ fn check_definition_node(
         }
         Language::Go => check_go_definition(node, symbol, source, file_path),
         Language::Rust => check_rust_definition(node, symbol, source, file_path),
+        // cpp-explain-refs-cleanup-v1 (BUG-CPP-P20-03): C/C++ qualified
+        // function names (`XMLDocument::Parse`) were silently dropped
+        // because no language arm was wired. The result was an empty
+        // `definitions[]` even when a textually verified `function_definition`
+        // for the symbol existed in the project. Route C++ and C to the
+        // dedicated cpp definition matcher; the text-search + AST verifier
+        // already enumerate references, so this only fills the
+        // `definitions[]` array.
+        Language::Cpp | Language::C => check_cpp_definition(node, symbol, source, file_path),
         _ => Ok(None),
     }
 }
@@ -3193,6 +3202,189 @@ fn check_rust_definition(
     }
 
     Ok(None)
+}
+
+/// Check if a C/C++ node is a definition of the target symbol.
+///
+/// cpp-explain-refs-cleanup-v1 (BUG-CPP-P20-03): C++ definitions appear
+/// under several AST shapes that differ from Python/Go/Rust:
+///
+/// * Out-of-class definitions: `function_definition` whose declarator
+///   chain (`function_declarator` → optional `pointer_declarator`/
+///   `reference_declarator` → `qualified_identifier`) names
+///   `XMLDocument::Parse`.
+/// * In-class inline methods: `function_definition` whose declarator
+///   chain ends at a bare `field_identifier` / `identifier` named
+///   `Parse`. We accept both the qualified form and the bare leaf name
+///   here so callers can search by either spelling.
+/// * Pure declarations in headers / class bodies:
+///   `declaration` -> `function_declarator` … (used when the .cpp pairs
+///   with a forward declaration). The same matcher handles them.
+/// * Type definitions: `class_specifier`, `struct_specifier`,
+///   `union_specifier`, `enum_specifier`, `namespace_definition` —
+///   their `name` field carries a `type_identifier`/`identifier`.
+fn check_cpp_definition(
+    node: &Node,
+    symbol: &str,
+    source: &[u8],
+    file_path: &Path,
+) -> TldrResult<Option<Definition>> {
+    let node_kind = node.kind();
+
+    match node_kind {
+        "function_definition" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                if let Some((line, column)) =
+                    find_cpp_declarator_match(&decl, symbol, source)
+                {
+                    let signature = extract_signature(node, source, Language::Cpp);
+                    return Ok(Some(Definition {
+                        file: file_path.to_path_buf(),
+                        line,
+                        column,
+                        kind: DefinitionKind::Function,
+                        signature,
+                    }));
+                }
+            }
+        }
+        "declaration" => {
+            // Pure declaration (no body) — e.g. forward declaration in a
+            // header. tree-sitter-cpp wraps the function_declarator in a
+            // top-level `declaration` here, so the field-based walk above
+            // does not find it on this node directly.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "function_declarator" {
+                    if let Some((line, column)) =
+                        find_cpp_declarator_match(&child, symbol, source)
+                    {
+                        let signature = extract_signature(node, source, Language::Cpp);
+                        return Ok(Some(Definition {
+                            file: file_path.to_path_buf(),
+                            line,
+                            column,
+                            kind: DefinitionKind::Function,
+                            signature,
+                        }));
+                    }
+                }
+            }
+        }
+        "class_specifier" | "struct_specifier" | "union_specifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if name_node.utf8_text(source).unwrap_or("") == symbol {
+                    let signature = extract_signature(node, source, Language::Cpp);
+                    return Ok(Some(Definition {
+                        file: file_path.to_path_buf(),
+                        line: node.start_position().row + 1,
+                        column: name_node.start_position().column + 1,
+                        kind: DefinitionKind::Class,
+                        signature,
+                    }));
+                }
+            }
+        }
+        "enum_specifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if name_node.utf8_text(source).unwrap_or("") == symbol {
+                    let signature = extract_signature(node, source, Language::Cpp);
+                    return Ok(Some(Definition {
+                        file: file_path.to_path_buf(),
+                        line: node.start_position().row + 1,
+                        column: name_node.start_position().column + 1,
+                        kind: DefinitionKind::Type,
+                        signature,
+                    }));
+                }
+            }
+        }
+        "namespace_definition" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if name_node.utf8_text(source).unwrap_or("") == symbol {
+                    let signature = extract_signature(node, source, Language::Cpp);
+                    return Ok(Some(Definition {
+                        file: file_path.to_path_buf(),
+                        line: node.start_position().row + 1,
+                        column: name_node.start_position().column + 1,
+                        kind: DefinitionKind::Other,
+                        signature,
+                    }));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(None)
+}
+
+/// Walk a C++ declarator chain looking for the leaf name that equals
+/// `symbol`. Accepts both the qualified form (`XMLDocument::Parse`) and
+/// the bare leaf form (`Parse`); the qualified form is the canonical
+/// spelling consumers ask for. Returns `(line, column)` of the leaf name
+/// node so the resulting `Definition` carries 1-indexed positions
+/// identical to the other language arms.
+fn find_cpp_declarator_match(
+    decl: &Node,
+    symbol: &str,
+    source: &[u8],
+) -> Option<(usize, usize)> {
+    let kind = decl.kind();
+    match kind {
+        "function_declarator" => {
+            // The function_declarator wraps the actual name in its
+            // `declarator` field — recurse so qualified / pointer /
+            // reference wrappers all funnel into the leaf handlers.
+            if let Some(inner) = decl.child_by_field_name("declarator") {
+                return find_cpp_declarator_match(&inner, symbol, source);
+            }
+        }
+        "pointer_declarator" | "reference_declarator" | "parenthesized_declarator" => {
+            if let Some(inner) = decl.child_by_field_name("declarator") {
+                return find_cpp_declarator_match(&inner, symbol, source);
+            }
+        }
+        "qualified_identifier" | "scoped_identifier" => {
+            // Compare both the full qualified text (`XMLDocument::Parse`)
+            // and the trailing name segment (`Parse`) so callers can use
+            // either spelling.
+            let full = decl.utf8_text(source).unwrap_or("");
+            if full == symbol {
+                return Some((
+                    decl.start_position().row + 1,
+                    decl.start_position().column + 1,
+                ));
+            }
+            if let Some(name) = decl.child_by_field_name("name") {
+                let name_text = name.utf8_text(source).unwrap_or("");
+                if name_text == symbol {
+                    return Some((
+                        name.start_position().row + 1,
+                        name.start_position().column + 1,
+                    ));
+                }
+                // The trailing name field may itself be another
+                // qualified_identifier (template-nested names); recurse.
+                if name.kind() == "qualified_identifier" {
+                    if let Some(pos) = find_cpp_declarator_match(&name, symbol, source) {
+                        return Some(pos);
+                    }
+                }
+            }
+        }
+        "identifier" | "field_identifier" | "destructor_name" | "operator_name" => {
+            let text = decl.utf8_text(source).unwrap_or("");
+            if text == symbol {
+                return Some((
+                    decl.start_position().row + 1,
+                    decl.start_position().column + 1,
+                ));
+            }
+        }
+        _ => {}
+    }
+    None
 }
 
 /// Extract function/class signature from AST node

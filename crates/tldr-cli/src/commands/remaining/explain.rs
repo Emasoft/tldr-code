@@ -1105,9 +1105,17 @@ fn find_callees(
     source: &[u8],
     file_path: &str,
     local_functions: &HashSet<String>,
+    language: Language,
 ) -> Vec<CallInfo> {
     let mut callees = Vec::new();
-    find_callees_recursive(func_node, source, file_path, local_functions, &mut callees);
+    find_callees_recursive(
+        func_node,
+        source,
+        file_path,
+        local_functions,
+        language,
+        &mut callees,
+    );
     callees
 }
 
@@ -1116,6 +1124,7 @@ fn find_callees_recursive(
     source: &[u8],
     file_path: &str,
     local_functions: &HashSet<String>,
+    language: Language,
     callees: &mut Vec<CallInfo>,
 ) {
     // language-specific-bugs-v1 (P14.AGG14-16): Java / Kotlin / C# tree-sitter
@@ -1143,6 +1152,37 @@ fn find_callees_recursive(
     );
     if is_call {
         if let Some(name) = extract_call_name(node, source) {
+            // cpp-explain-refs-cleanup-v1 (BUG-CPP-P20-04): tree-sitter-cpp
+            // parses `static_cast<T>(x)`, `const_cast<T>(x)`,
+            // `dynamic_cast<T>(x)`, and `reinterpret_cast<T>(x)` as
+            // `call_expression` nodes whose `function` field is a
+            // `template_function`. Extracted as plain identifier text, the
+            // leading segment is the cast keyword, and `extract_call_name`
+            // surfaces it as a callee — but no function call happens at
+            // runtime (the cast keyword is a syntactic construct).
+            // Similarly, preprocessor macros (`TIXMLASSERT`, `M_PI`,
+            // `MIN`, …) by C/C++ convention use ALL_CAPS_WITH_UNDERSCORES
+            // identifiers; they are not callable functions for the
+            // purposes of explain's `callees[]` enumeration.
+            if matches!(language, Language::Cpp | Language::C)
+                && is_cpp_non_callee(node, &name)
+            {
+                // Recurse anyway so any real call buried inside the
+                // cast's argument list (e.g. `static_cast<int>(foo())`)
+                // still gets enumerated.
+                for child in node.children(&mut node.walk()) {
+                    find_callees_recursive(
+                        child,
+                        source,
+                        file_path,
+                        local_functions,
+                        language,
+                        callees,
+                    );
+                }
+                return;
+            }
+
             // Get base name for local function check
             let base_name = name.split('.').next().unwrap_or(&name);
 
@@ -1175,8 +1215,76 @@ fn find_callees_recursive(
     }
 
     for child in node.children(&mut node.walk()) {
-        find_callees_recursive(child, source, file_path, local_functions, callees);
+        find_callees_recursive(child, source, file_path, local_functions, language, callees);
     }
+}
+
+/// cpp-explain-refs-cleanup-v1 (BUG-CPP-P20-04): return `true` when a
+/// C/C++ `call_expression` node should NOT be reported as a callee
+/// because it is either (a) a `*_cast<T>(x)` cast keyword or (b) a
+/// preprocessor-macro invocation matching the
+/// ALL_CAPS_WITH_UNDERSCORES naming convention.
+///
+/// Heuristics:
+///
+/// * `function` field is a `template_function` whose `name`/leading
+///   identifier is `static_cast`, `const_cast`, `dynamic_cast`, or
+///   `reinterpret_cast`. These are syntactic casts, not function calls.
+/// * `function` field is a bare `identifier` whose text is entirely
+///   uppercase, digits, and underscores AND begins with an uppercase
+///   letter. C/C++ style guides (Google, LLVM, Mozilla, ISO) reserve
+///   this spelling for preprocessor macros — flagging them as callees
+///   produces noise in `explain` output (BUG-CPP-P20-04 observed
+///   `TIXMLASSERT` polluting the tinyxml2 dataset).
+fn is_cpp_non_callee(node: Node, name: &str) -> bool {
+    // Cast keywords (template_function-shaped). The plain `name` extracted
+    // above for `static_cast<int>(x)` is just `static_cast` — the trailing
+    // type argument is dropped by extract_trailing_identifier — so we can
+    // string-compare directly.
+    let cast_keywords = [
+        "static_cast",
+        "const_cast",
+        "dynamic_cast",
+        "reinterpret_cast",
+    ];
+    if cast_keywords.contains(&name) {
+        // Sanity check: the underlying function field should be a
+        // template_function so we don't accidentally drop a real
+        // user-defined function (vanishingly unlikely given naming
+        // collisions, but cheap to verify).
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "template_function" {
+                return true;
+            }
+        }
+        // Fall through: if the function shape is unexpected, prefer
+        // false-positive-noise over silently dropping it.
+    }
+
+    // Preprocessor macro convention: ALL_CAPS_WITH_UNDERSCORES,
+    // starting with an uppercase letter, length >= 2 (single-letter
+    // identifiers like `T` are likely template parameters surfaced
+    // through an unusual AST path; skip those). Requires the function
+    // field be a plain identifier — qualified / member / template
+    // shapes are real calls.
+    if name.len() >= 2
+        && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        // Require at least one underscore or be entirely uppercase letters >= 3 chars
+        // so we don't accidentally drop two-letter uppercase symbols
+        // (e.g. enum-like identifiers passed to a function-shaped macro).
+        && (name.contains('_') || name.len() >= 3)
+    {
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "identifier" {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 /// Find callers (functions that call this function) - searches the entire file
@@ -2367,13 +2475,52 @@ impl ExplainArgs {
         ) {
             complexity_info.cyclomatic = canonical.cyclomatic;
         }
+        // cpp-explain-refs-cleanup-v1 (BUG-CPP-P20-04): align
+        // `complexity.num_blocks` with the canonical CFG block count so
+        // `tldr explain` and `tldr context` never disagree on the same
+        // function. The local `count_complexity_recursive` walker only
+        // increments on Python-shaped node kinds (`if_statement` /
+        // `for_statement` / `while_statement` / `try_statement` /
+        // `except_clause`); a C++ function with `switch_statement`,
+        // `case_statement`, `do_statement`, `goto_statement`, … was
+        // therefore severely under-counted. The CFG builder handles
+        // every supported language uniformly, so delegating mirrors the
+        // cyclomatic alignment above.
+        //
+        // The lookup name is stripped of class prefix because
+        // `get_cfg_context` matches by trailing identifier — same shape
+        // as `get_cfg_metrics` in `tldr-core/src/context/builder.rs`.
+        let lookup_name = self
+            .function
+            .rsplit("::")
+            .next()
+            .unwrap_or(&self.function);
+        let lookup_name = lookup_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(lookup_name);
+        if let Ok(cfg) = tldr_core::get_cfg_context(
+            self.file.to_str().unwrap_or_default(),
+            lookup_name,
+            language,
+        ) {
+            if !cfg.blocks.is_empty() {
+                complexity_info.num_blocks = cfg.blocks.len() as u32;
+            }
+        }
         report.complexity = Some(complexity_info);
 
         // Collect local function names for call graph analysis
         let local_functions = collect_function_names(root, source_bytes, func_kinds);
 
         // Find callees
-        report.callees = find_callees(func_node, source_bytes, &file_path, &local_functions);
+        report.callees = find_callees(
+            func_node,
+            source_bytes,
+            &file_path,
+            &local_functions,
+            language,
+        );
 
         // Find callers
         report.callers = find_callers(root, source_bytes, &self.function, &file_path, func_kinds);
@@ -2559,7 +2706,13 @@ def complex_func(x, y):
 
         let local_funcs = collect_function_names(root, SAMPLE_CODE.as_bytes(), func_kinds);
         let func = find_function_node(root, SAMPLE_CODE.as_bytes(), "main", func_kinds).unwrap();
-        let callees = find_callees(func, SAMPLE_CODE.as_bytes(), "test.py", &local_funcs);
+        let callees = find_callees(
+            func,
+            SAMPLE_CODE.as_bytes(),
+            "test.py",
+            &local_funcs,
+            language,
+        );
 
         assert!(callees.iter().any(|c| c.name == "calculate_total"));
         assert!(callees.iter().any(|c| c.name == "helper_function"));
