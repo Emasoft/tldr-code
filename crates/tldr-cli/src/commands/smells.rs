@@ -200,11 +200,19 @@ impl SmellsArgs {
         }
 
         // Try daemon first for cached result
-        if let Some(report) = try_daemon_route::<SmellsReport>(
+        if let Some(mut report) = try_daemon_route::<SmellsReport>(
             &self.path,
             "smells",
             params_for_smells(Some(&self.path), &validated_files, include_tests),
         ) {
+            // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): both the daemon
+            // payload and the direct-compute path canonicalise file
+            // paths via `dunce::canonicalize` (crates/tldr-core/src/
+            // quality/smells.rs:494-498), so on macOS the user's
+            // `/tmp/...` input is mirrored as `/private/tmp/...` in
+            // every `smells[].file` and `by_file` key. Echo the user's
+            // verbatim input shape in output (M3 pattern).
+            restore_smells_path_shape(&mut report, &self.path);
             // Output based on format
             if writer.is_text() {
                 let text = format_smells_text(&report);
@@ -284,6 +292,13 @@ impl SmellsArgs {
             report.warnings.push(msg);
         }
 
+        // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): direct-compute path
+        // also runs `smell.file` through `dunce::canonicalize` (see
+        // crates/tldr-core/src/quality/smells.rs:494-498). Substitute
+        // the user's verbatim input shape back into every emitted
+        // path.
+        restore_smells_path_shape(&mut report, &self.path);
+
         // Output based on format
         if writer.is_text() {
             let text = format_smells_text(&report);
@@ -294,4 +309,65 @@ impl SmellsArgs {
 
         Ok(())
     }
+}
+
+/// cross-cmd-path-shape-v1 (v0.4.2 bug-A5): re-assert the user's input
+/// path shape on every path emitted in a `SmellsReport`.
+///
+/// The core analyzer canonicalises file paths via `dunce::canonicalize`
+/// (crates/tldr-core/src/quality/smells.rs:494-498) for stable
+/// dedup/sort semantics, but the canonical form leaks the macOS
+/// `/private/tmp` resolution into output. The CLI restores the user's
+/// verbatim input shape after the core analysis returns, mirroring the
+/// M3 (`5f6009e scala-path-canonical-v1`) and P15-B precedent:
+/// canonicalise for internal filter/match only, echo user input
+/// verbatim in output.
+///
+/// The substitution rule is a prefix rewrite: every emitted path whose
+/// canonical form starts with the canonical user-input root is
+/// rewritten to the user-input root + the same suffix. Paths that do
+/// not share the canonical prefix (e.g. cross-class smells with the
+/// sentinel `<cross-class>` path) are left untouched.
+fn restore_smells_path_shape(report: &mut SmellsReport, user_root: &std::path::Path) {
+    let canon_user_root = dunce::canonicalize(user_root).ok();
+    let rewrite = |p: &std::path::Path| -> Option<std::path::PathBuf> {
+        // If `p` already starts with the user's input root verbatim,
+        // there's nothing to do.
+        if p.starts_with(user_root) {
+            return None;
+        }
+        // If `p` starts with the canonical form of the user's input
+        // root (`/private/tmp/...` when user typed `/tmp/...`),
+        // rewrite the prefix back to the user's input.
+        if let Some(canon) = canon_user_root.as_ref() {
+            if let Ok(suffix) = p.strip_prefix(canon) {
+                if user_root.as_os_str().is_empty() {
+                    return Some(suffix.to_path_buf());
+                }
+                return Some(user_root.join(suffix));
+            }
+        }
+        None
+    };
+
+    for smell in report.smells.iter_mut() {
+        if let Some(new_path) = rewrite(&smell.file) {
+            smell.file = new_path;
+        }
+    }
+    // Rebuild `by_file` so the keys agree with `smells[].file` after
+    // rewriting. HashMap key rewrite in-place is awkward; build a new
+    // map.
+    let mut new_by_file: std::collections::HashMap<PathBuf, Vec<tldr_core::SmellFinding>> =
+        std::collections::HashMap::with_capacity(report.by_file.len());
+    for (key, mut findings) in report.by_file.drain() {
+        let new_key = rewrite(&key).unwrap_or(key);
+        for f in findings.iter_mut() {
+            if let Some(np) = rewrite(&f.file) {
+                f.file = np;
+            }
+        }
+        new_by_file.entry(new_key).or_default().extend(findings);
+    }
+    report.by_file = new_by_file;
 }

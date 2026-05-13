@@ -2137,6 +2137,124 @@ fn collect_functions_with_bounds(file: &std::path::Path) -> Vec<(String, u32, u3
 }
 
 // =============================================================================
+// Path-shape restoration (cross-cmd-path-shape-v1, v0.4.2 bug-A5)
+// =============================================================================
+
+/// Re-assert the user-supplied input path shape on every
+/// `callers[].file` and `callees[].file` in a `ExplainReport`.
+///
+/// The audit (Phase-20, worker B-c-002) flagged that `tldr explain
+/// /tmp/repos/.../IO.scala interpret` emits three different shapes for
+/// the same file inside one response:
+///   - top-level `file`: `/tmp/...` (verbatim user input — OK)
+///   - `callers[]` from `enrich_with_project_graph`: project-relative
+///     `core/.../SyncIO.scala` (the call-graph storage emits these)
+///   - `callers[]` from `enrich_with_references`: canonicalised abs
+///     `/private/tmp/.../SyncIO.scala` (find_references canonicalises)
+///
+/// The fix rewrites every emitted path to the user-input prefix
+/// (`/tmp/repos/.../scala-cats-effect/...`). The rewrite has three
+/// branches:
+///   1. Path already starts with the user-input root  -> no rewrite.
+///   2. Path starts with the canonical user-input root (macOS
+///      `/private/tmp/...` form) -> rewrite the prefix back to the
+///      user-input root.
+///   3. Path is project-relative (`core/.../SyncIO.scala`) -> join it
+///      with the user-input project root so the shape matches the
+///      user-typed absolute prefix.
+///
+/// Mirrors the M3 (`5f6009e scala-path-canonical-v1`) and P15-B
+/// (`6a3288a context-relative-and-ts-colon-v1`) precedent:
+/// canonicalise for internal filter/match only, echo user input
+/// verbatim in output.
+fn restore_explain_path_shape(report: &mut super::types::ExplainReport, user_file: &std::path::Path) {
+    // The user-supplied project root: walk up from `user_file` using
+    // the same marker-based heuristic the rest of explain uses. This
+    // produces the same `project_root` shape as
+    // `explain_project_root`, but keyed against the user's INPUT
+    // shape (not canonicalised) so the join produces a user-shaped
+    // absolute path.
+    let user_project_root = user_project_root_from_input(user_file);
+    let canon_project_root = user_project_root
+        .as_ref()
+        .and_then(|p| dunce::canonicalize(p).ok());
+
+    let rewrite = |s: &str| -> Option<String> {
+        let p = std::path::Path::new(s);
+        // 1. Already user-input-shaped? (starts with the user's
+        //    project root). Leave alone.
+        if let Some(root) = user_project_root.as_ref() {
+            if p.starts_with(root) {
+                return None;
+            }
+        }
+        // 2. Canonical-prefix rewrite (macOS `/private/tmp/...`).
+        if let (Some(canon), Some(root)) =
+            (canon_project_root.as_ref(), user_project_root.as_ref())
+        {
+            if let Ok(suffix) = p.strip_prefix(canon) {
+                if root.as_os_str().is_empty() {
+                    return Some(suffix.display().to_string());
+                }
+                return Some(root.join(suffix).display().to_string());
+            }
+        }
+        // 3. Project-relative -> absolutise against user project root.
+        if p.is_relative() {
+            if let Some(root) = user_project_root.as_ref() {
+                return Some(root.join(p).display().to_string());
+            }
+        }
+        None
+    };
+
+    for c in report.callers.iter_mut() {
+        if let Some(np) = rewrite(&c.file) {
+            c.file = np;
+        }
+    }
+    for c in report.callees.iter_mut() {
+        if let Some(np) = rewrite(&c.file) {
+            c.file = np;
+        }
+    }
+}
+
+/// Walk upward from `user_file`'s parent directory (KEEPING the user's
+/// input shape — no canonicalisation) until a project-root marker is
+/// found. Mirrors `explain_project_root` but does not canonicalise the
+/// path, so the returned root keeps the user-supplied prefix
+/// (`/tmp/...`, `./repo/`, etc.).
+fn user_project_root_from_input(user_file: &std::path::Path) -> Option<std::path::PathBuf> {
+    let parent = user_file.parent()?;
+    let markers = [
+        "Cargo.toml",
+        "package.json",
+        "go.mod",
+        "pyproject.toml",
+        "setup.py",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        ".git",
+    ];
+    let mut cursor: Option<&std::path::Path> = Some(parent);
+    while let Some(dir) = cursor {
+        if dir.as_os_str().is_empty() {
+            cursor = dir.parent();
+            continue;
+        }
+        for m in &markers {
+            if dir.join(m).exists() {
+                return Some(dir.to_path_buf());
+            }
+        }
+        cursor = dir.parent();
+    }
+    Some(parent.to_path_buf())
+}
+
+// =============================================================================
 // Entry Point
 // =============================================================================
 
@@ -2279,6 +2397,21 @@ impl ExplainArgs {
         // call-graph results that already populated the list won't be
         // duplicated.
         enrich_with_references(&mut report, &self.file, &self.function, language);
+
+        // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): unify every
+        // emitted `callers[].file` and `callees[].file` to the
+        // user-supplied input shape. Three drift sources combine in a
+        // single response:
+        //   - `enrich_with_project_graph` emits project-relative
+        //     (`core/.../X.scala`) from the call-graph storage.
+        //   - `enrich_with_references` emits canonicalised absolute
+        //     (`/private/tmp/.../X.scala`) from `find_references`.
+        //   - The per-file walker emits `self.file.to_string_lossy()`
+        //     (user input shape), agreeing with the top-level `file`.
+        // The audit specifically flagged THREE shapes for the SAME
+        // file in the same response. Rewriting every path to the
+        // user-input prefix produces a homogeneous shape (M3 pattern).
+        restore_explain_path_shape(&mut report, &self.file);
 
         // Output based on format
         if writer.is_text() {

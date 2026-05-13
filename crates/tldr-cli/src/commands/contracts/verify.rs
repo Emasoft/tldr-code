@@ -125,12 +125,20 @@ impl VerifyArgs {
         });
 
         // Run verification
-        let report = run_verify(
+        let mut report = run_verify(
             &canonical_path,
             language,
             self.quick,
             self.detail.as_deref(),
         )?;
+
+        // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): re-assert user input
+        // shape on the top-level `path` field. `run_verify` stores the
+        // canonical path on macOS (`/private/tmp/...`), which leaks
+        // here even though it never appears in the user's input.
+        // Per the M3 pattern (5f6009e): canonicalise for internal
+        // filter/match only, echo user input verbatim in output.
+        report.path = self.path.clone();
 
         // Output based on format
         let use_text = matches!(self.output_format, ContractsOutputFormat::Text)

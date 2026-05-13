@@ -173,7 +173,18 @@ impl DepsArgs {
         ));
 
         // Run analysis
-        let report = analyze_dependencies(&self.path, &options)?;
+        let mut report = analyze_dependencies(&self.path, &options)?;
+
+        // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): `analyze_dependencies`
+        // canonicalises the user-supplied path internally (see
+        // crates/tldr-core/src/analysis/deps.rs:427), which on macOS
+        // rewrites `/tmp/...` to `/private/tmp/...`. The CLI re-asserts
+        // the user's verbatim input shape on the emitted `root` field
+        // (per the M3 pattern: canonicalise for internal filter/match
+        // only, echo user input in output). Internal-dependency keys
+        // and values are project-relative, so they do not need
+        // restoration.
+        report.root = self.path.clone();
 
         // Output based on effective format
         match effective {

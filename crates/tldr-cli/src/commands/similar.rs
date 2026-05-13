@@ -127,6 +127,46 @@ impl SimilarArgs {
             snippet_lines: 5,
         };
 
+        // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): the index stores
+        // every chunk under its canonical (`dunce::canonicalize`d) file
+        // path because `effective_path` is canonicalised above and the
+        // index walker honours that. On macOS this means `tldr similar
+        // /tmp/repos/.../IO.scala` emits `source_file` and
+        // `similar_files[].file_path` as `/private/tmp/.../...`,
+        // leaking the symlink resolution into output. We rewrite the
+        // canonical prefix back to the user-input prefix on output —
+        // the M3 pattern. The canonical root for the rewrite is the
+        // PARENT directory's canonicalisation (because `effective_path`
+        // is parent-based), and the user-input root is the user's
+        // input file's parent directory verbatim.
+        let user_input_root = self
+            .file
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let canon_user_root = dunce::canonicalize(&user_input_root).ok();
+        let rewrite_path = |p: &std::path::Path| -> Option<std::path::PathBuf> {
+            // 1. Whole-file equality: `p` is exactly the canonical
+            //    form of `self.file` -> swap to verbatim user input.
+            if let Ok(c) = dunce::canonicalize(&self.file) {
+                if p == c.as_path() {
+                    return Some(self.file.clone());
+                }
+            }
+            if p.starts_with(&user_input_root) {
+                return None;
+            }
+            if let Some(canon) = canon_user_root.as_ref() {
+                if let Ok(suffix) = p.strip_prefix(canon) {
+                    if user_input_root.as_os_str().is_empty() {
+                        return Some(suffix.to_path_buf());
+                    }
+                    return Some(user_input_root.join(suffix));
+                }
+            }
+            None
+        };
+
         // M16 (med-cleanup-bundle-v1): when the user passed a whole
         // file (no `--function`) and did not opt into the legacy
         // per-chunk view via `--by-chunk`, aggregate matches per
@@ -134,12 +174,21 @@ impl SimilarArgs {
         // granularity made `tldr similar lib/application.js` (~600
         // LOC) return five unrelated 4-9 line helpers — useless.
         if self.function.is_none() && !self.by_chunk {
-            let report = aggregate_similar_by_file(
+            let mut report = aggregate_similar_by_file(
                 &index,
                 &file_str,
                 self.top,
                 self.threshold,
             )?;
+            // Restore user-input shape on every emitted path.
+            if let Some(np) = rewrite_path(&report.source_file) {
+                report.source_file = np;
+            }
+            for f in report.similar_files.iter_mut() {
+                if let Some(np) = rewrite_path(&f.file_path) {
+                    f.file_path = np;
+                }
+            }
             if writer.is_text() {
                 let text = format_aggregated_similar_text(&report);
                 writer.write_text(&text)?;
@@ -151,7 +200,18 @@ impl SimilarArgs {
 
         // Find similar (legacy per-chunk path: explicit --function or
         // explicit --by-chunk).
-        let report = index.find_similar(&file_str, self.function.as_deref(), &search_opts)?;
+        let mut report = index.find_similar(&file_str, self.function.as_deref(), &search_opts)?;
+
+        // Restore user-input shape on every emitted path
+        // (`source.file_path` + per-result `file_path`).
+        if let Some(np) = rewrite_path(&report.source.file_path) {
+            report.source.file_path = np;
+        }
+        for s in report.similar.iter_mut() {
+            if let Some(np) = rewrite_path(&s.file_path) {
+                s.file_path = np;
+            }
+        }
 
         // Output based on format
         if writer.is_text() {
