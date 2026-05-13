@@ -31,8 +31,19 @@ pub struct CallsArgs {
     #[arg(long, default_value = "true")]
     pub respect_ignore: bool,
 
-    /// Maximum items (edges) to include in output (default: 200)
-    #[arg(long, default_value = "200")]
+    /// Maximum edges to include in **text/DOT** output (default: 200).
+    ///
+    /// calls-edge-limit-v1 (v0.4.2 M-003): this cap applies ONLY to the
+    /// text and DOT renderers — they are pretty-print surfaces and dumping
+    /// thousands of edges into a terminal is hostile. `--format json` always
+    /// emits the full edge set regardless of `--max-items`; downstream
+    /// tooling that consumes the JSON wants the complete graph, and silent
+    /// truncation there was a real bug (M-003) where shown_edges plateaued
+    /// at 200 even when total_edges was thousands.
+    ///
+    /// `--limit` is a short alias kept for ergonomic parity with other
+    /// CLIs that use that flag name.
+    #[arg(long, alias = "limit", default_value = "200")]
     pub max_items: usize,
 }
 
@@ -211,22 +222,26 @@ impl CallsArgs {
             })
             .collect();
 
-        // Sort and truncate edges by max_items
-        let total_edges = edges.len();
-        let truncated = total_edges > self.max_items;
+        // calls-edge-limit-v1 (v0.4.2 M-003): the prior implementation
+        // truncated `edges` UNCONDITIONALLY at `--max-items` (default 200)
+        // before serialization, which silently capped JSON consumers at
+        // 200 even when total_edges was thousands (kotlin 2570, swift
+        // 7110, lua 2964, elixir 676, typescript 440, csharp 207). The
+        // cap was a pretty-print heuristic that leaked into the data API.
+        //
+        // Fix: sort once (stable order makes the truncated text view
+        // deterministic), keep ALL edges in `CallGraphOutput`, and only
+        // narrow the slice when rendering text/DOT. JSON gets the full
+        // graph; truncated=false and shown_edges==total_edges there.
         let mut edges = edges;
-        if edges.len() > self.max_items {
-            // Sort by source file + function as a simple importance metric
-            edges.sort_by(|a, b| {
-                let a_key = format!("{}:{}", a.src_file.display(), a.src_func);
-                let b_key = format!("{}:{}", b.src_file.display(), b.src_func);
-                a_key.cmp(&b_key)
-            });
-            edges.truncate(self.max_items);
-        }
-        let shown_edges = edges.len();
+        edges.sort_by(|a, b| {
+            let a_key = format!("{}:{}", a.src_file.display(), a.src_func);
+            let b_key = format!("{}:{}", b.src_file.display(), b.src_func);
+            a_key.cmp(&b_key)
+        });
+        let total_edges = edges.len();
 
-        // Build unique node set from truncated edges AND from every
+        // Build unique node set from ALL edges AND from every
         // defined function in the project. The original derivation was
         // edges-only, which under-reported the call graph for files like
         // OCaml functor bodies (`module Make (V) = struct ... end`)
@@ -258,35 +273,53 @@ impl CallsArgs {
         }
         let nodes: Vec<String> = node_set.into_iter().collect();
 
+        // calls-edge-limit-v1: JSON gets the full edge set, so for the
+        // serialized `CallGraphOutput` shown_edges==total_edges and
+        // truncated is always false. Text/DOT renderers below derive
+        // their own truncated slice from `output.edges` (still the full
+        // set on the struct — the cap is a presentation concern).
         let output = CallGraphOutput {
             root: self.path.clone(),
             language: detected_language,
             nodes,
             edges,
-            truncated,
+            truncated: false,
             total_edges,
-            shown_edges,
+            shown_edges: total_edges,
         };
+
+        // Text/DOT presentation cap: clamp to --max-items and warn on
+        // stderr when truncation fires so terminal users don't silently
+        // get a partial picture. JSON consumers bypass this branch
+        // entirely (writer.write(&output) below) and get the full graph.
+        let text_dot_limit = self.max_items;
+        let text_dot_truncated = output.edges.len() > text_dot_limit;
+        let visible_edges_len = output.edges.len().min(text_dot_limit);
 
         // Output based on format
         if writer.is_dot() {
             // surface-gaps-v1 (BUG-19): direct-compute DOT path.
+            // calls-edge-limit-v1: honor --max-items here (pretty-print
+            // surface) by slicing to `visible_edges_len`.
             let srcs: Vec<String> = output
                 .edges
                 .iter()
+                .take(visible_edges_len)
                 .map(|e| format!("{}:{}", e.src_file.display(), e.src_func))
                 .collect();
             let dsts: Vec<String> = output
                 .edges
                 .iter()
+                .take(visible_edges_len)
                 .map(|e| format!("{}:{}", e.dst_file.display(), e.dst_func))
                 .collect();
             let labels: Vec<String> = output
                 .edges
                 .iter()
+                .take(visible_edges_len)
                 .map(|e| format!("{:?}", e.call_type))
                 .collect();
-            let dot_edges: Vec<DotCallEdge<'_>> = (0..output.edges.len())
+            let dot_edges: Vec<DotCallEdge<'_>> = (0..visible_edges_len)
                 .map(|i| DotCallEdge {
                     src: srcs[i].as_str(),
                     dst: dsts[i].as_str(),
@@ -295,6 +328,12 @@ impl CallsArgs {
                 .collect();
             let dot = format_calls_dot(&dot_edges);
             writer.write_text(&dot)?;
+            if text_dot_truncated {
+                eprintln!(
+                    "warning: DOT output truncated to {} of {} edges (use --max-items / --limit to raise, or --format json for the full graph)",
+                    visible_edges_len, total_edges
+                );
+            }
             return Ok(());
         }
         if writer.is_text() {
@@ -309,7 +348,7 @@ impl CallsArgs {
             ));
             text.push_str(&format!("Edges: {}\n\n", output.total_edges));
 
-            for edge in &output.edges {
+            for edge in output.edges.iter().take(visible_edges_len) {
                 text.push_str(&format!(
                     "{}:{} -> {}:{}\n",
                     edge.src_file.display(),
@@ -320,6 +359,12 @@ impl CallsArgs {
             }
 
             writer.write_text(&text)?;
+            if text_dot_truncated {
+                eprintln!(
+                    "warning: text output truncated to {} of {} edges (use --max-items / --limit to raise, or --format json for the full graph)",
+                    visible_edges_len, total_edges
+                );
+            }
         } else {
             writer.write(&output)?;
         }
