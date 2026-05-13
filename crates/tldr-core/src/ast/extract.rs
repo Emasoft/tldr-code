@@ -6044,39 +6044,35 @@ fn extract_kotlin_function_info(node: &Node, source: &str, is_method: bool) -> F
 fn extract_kotlin_params(node: &Node, source: &str) -> Vec<String> {
     let mut params = Vec::new();
 
-    // Look for function_value_parameters child
+    // Look for function_value_parameters child (a named child, NOT a field).
+    // Two grammar generations are supported:
+    //  * tree-sitter-kotlin (legacy): `parameter` > `simple_identifier`
+    //  * tree-sitter-kotlin-ng 1.1.0+ : `parameter` > `identifier`
+    // We also tolerate `function_value_parameter` from intermediate grammars
+    // that wrap the parameter under a "parameter" field.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "function_value_parameters" {
             let mut inner = child.walk();
             for param_wrapper in child.children(&mut inner) {
-                if param_wrapper.kind() == "parameter" {
-                    // Parameter has a simple_identifier as name
-                    let mut param_cursor = param_wrapper.walk();
-                    for param_child in param_wrapper.children(&mut param_cursor) {
-                        if param_child.kind() == "simple_identifier" {
+                let target = match param_wrapper.kind() {
+                    "parameter" => Some(param_wrapper),
+                    "function_value_parameter" => param_wrapper
+                        .child_by_field_name("parameter")
+                        .or(Some(param_wrapper)),
+                    _ => None,
+                };
+                if let Some(param_node) = target {
+                    let mut param_cursor = param_node.walk();
+                    for param_child in param_node.children(&mut param_cursor) {
+                        // The first identifier-shaped child is the param name.
+                        // Skip type qualifiers / modifiers by accepting only
+                        // the well-known identifier kinds.
+                        if param_child.kind() == "simple_identifier"
+                            || param_child.kind() == "identifier"
+                        {
                             params.push(get_node_text(&param_child, source));
                             break;
-                        }
-                    }
-                } else if param_wrapper.kind() == "function_value_parameter" {
-                    // function_value_parameter wraps a parameter node
-                    if let Some(param) = param_wrapper.child_by_field_name("parameter") {
-                        let mut param_cursor = param.walk();
-                        for param_child in param.children(&mut param_cursor) {
-                            if param_child.kind() == "simple_identifier" {
-                                params.push(get_node_text(&param_child, source));
-                                break;
-                            }
-                        }
-                    } else {
-                        // Fallback: find simple_identifier directly
-                        let mut param_cursor = param_wrapper.walk();
-                        for param_child in param_wrapper.children(&mut param_cursor) {
-                            if param_child.kind() == "simple_identifier" {
-                                params.push(get_node_text(&param_child, source));
-                                break;
-                            }
                         }
                     }
                 }

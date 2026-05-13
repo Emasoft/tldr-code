@@ -609,6 +609,17 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     // Extract parameters
     if let Some(params_node) = func_node.child_by_field_name("parameters") {
         sig.params = extract_params(params_node, source);
+    } else if matches!(language, Language::Kotlin) {
+        // Kotlin's tree-sitter grammar exposes the parameter list as a
+        // NAMED child `function_value_parameters` rather than a field, so
+        // `child_by_field_name("parameters")` silently misses it. Walk the
+        // children directly. (kotlin-extract-params-v1 / VAL-KT-EXTRACT)
+        if let Some(params_node) = func_node
+            .children(&mut func_node.walk())
+            .find(|c| c.kind() == "function_value_parameters")
+        {
+            sig.params = extract_kotlin_params(params_node, source);
+        }
     }
 
     // Extract return type
@@ -623,6 +634,61 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     sig.docstring = extract_docstring(func_node, source);
 
     sig
+}
+
+/// Extract kotlin parameters from a `function_value_parameters` node.
+///
+/// Each `parameter` child has shape `identifier ":" <type>` under the
+/// tree-sitter-kotlin-ng 1.1.0 grammar. Older grammars used
+/// `simple_identifier` for the name; both are accepted for back-compat.
+fn extract_kotlin_params(params_node: Node, source: &[u8]) -> Vec<ParamInfo> {
+    let mut params = Vec::new();
+
+    for child in params_node.children(&mut params_node.walk()) {
+        // The wrapper may be `parameter` (current) or
+        // `function_value_parameter` (legacy grammars).
+        let inner = match child.kind() {
+            "parameter" => Some(child),
+            "function_value_parameter" => child
+                .child_by_field_name("parameter")
+                .or(Some(child)),
+            _ => None,
+        };
+        let Some(param_node) = inner else { continue };
+
+        let mut name: Option<String> = None;
+        let mut type_hint: Option<String> = None;
+        let mut saw_colon = false;
+
+        for part in param_node.children(&mut param_node.walk()) {
+            match part.kind() {
+                "simple_identifier" | "identifier" if name.is_none() => {
+                    name = Some(node_text(part, source).to_string());
+                }
+                ":" => {
+                    saw_colon = true;
+                }
+                _ if saw_colon && type_hint.is_none() => {
+                    // First non-trivial node after the colon is the type.
+                    let txt = node_text(part, source);
+                    if !txt.is_empty() && part.kind() != "=" {
+                        type_hint = Some(txt.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(n) = name {
+            let mut p = ParamInfo::new(n);
+            if let Some(t) = type_hint {
+                p = p.with_type(t);
+            }
+            params.push(p);
+        }
+    }
+
+    params
 }
 
 /// Extract parameters from a parameters node
