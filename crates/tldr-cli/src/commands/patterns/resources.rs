@@ -1184,6 +1184,21 @@ struct DetectedResource {
 // the function body before flagging it as a managed resource.
 const TS_JS_AMBIGUOUS_NAMES: &[&str] = &["event", "request", "response", "data"];
 
+/// (js-resources-and-dead-fps-v1 F1) Resource-creator aliases whose name alone
+/// is too generic to confirm an HTTP/network handle. `get` / `post` map to
+/// the TS/JS creator entries `("get","request")` / `("post","request")` but
+/// also legitimately appear as Map/Object/Cache lookups (`this.get('view')`,
+/// `cache.get(name)`, `config.post(...)`). For these creators we ALSO require
+/// a confirming cleanup-method call on the LHS variable inside the same
+/// function body, regardless of the LHS variable's name (the AGG17-7 gate
+/// was LHS-name-driven; this extension is creator-driven).
+///
+/// High-precision creators (`fetch`, `createServer`, `createConnection`,
+/// `createReadStream`, `createWriteStream`, `open`, `openSync`, `WebSocket`,
+/// `createPool`) are NOT in this list — their name alone is a strong hint.
+const TS_JS_AMBIGUOUS_CREATORS: &[&str] =
+    &["get", "post", "request", "connect", "getConnection"];
+
 /// Cleanup-style methods whose presence on `<var>.<method>(...)` confirms that
 /// `var` is a real resource handle (rather than a Map lookup or plain object).
 const TS_JS_CLEANUP_METHODS: &[&str] = &[
@@ -1272,6 +1287,24 @@ impl ResourceDetector {
             return false;
         }
         if !TS_JS_AMBIGUOUS_NAMES.contains(&var_name) {
+            return false;
+        }
+        !self.ts_js_cleanup_vars.contains(var_name)
+    }
+
+    /// (js-resources-and-dead-fps-v1 F1) TS/JS-only secondary gate keyed on
+    /// the RHS creator alias rather than the LHS variable name. When the
+    /// matched creator is in `TS_JS_AMBIGUOUS_CREATORS` and the LHS variable
+    /// has no observed cleanup-method call, skip flagging the resource.
+    fn ts_js_should_skip_ambiguous_creator(
+        &self,
+        var_name: &str,
+        creator: &str,
+    ) -> bool {
+        if !matches!(self.lang, Language::TypeScript | Language::JavaScript) {
+            return false;
+        }
+        if !TS_JS_AMBIGUOUS_CREATORS.contains(&creator) {
             return false;
         }
         !self.ts_js_cleanup_vars.contains(var_name)
@@ -1681,6 +1714,20 @@ impl ResourceDetector {
                                     if self.ts_js_should_skip_ambiguous(&var_name) {
                                         continue;
                                     }
+                                    // js-resources-and-dead-fps-v1 F1: also
+                                    // skip when the *creator alias* is in the
+                                    // ambiguous-creator set (get/post/request/
+                                    // connect/getConnection) and no cleanup-
+                                    // method call was observed on `var_name`.
+                                    if let Some(creator) =
+                                        self.ts_js_creator_alias(value, source, patterns)
+                                    {
+                                        if self.ts_js_should_skip_ambiguous_creator(
+                                            &var_name, &creator,
+                                        ) {
+                                            continue;
+                                        }
+                                    }
                                     self.resources.push(DetectedResource {
                                         name: var_name,
                                         resource_type,
@@ -1704,6 +1751,18 @@ impl ResourceDetector {
                                 // confirming cleanup-method call to be flagged.
                                 if self.ts_js_should_skip_ambiguous(&var_name) {
                                     return;
+                                }
+                                // js-resources-and-dead-fps-v1 F1: also skip
+                                // when the *creator alias* is in the
+                                // ambiguous-creator set.
+                                if let Some(creator) =
+                                    self.ts_js_creator_alias(right, source, patterns)
+                                {
+                                    if self.ts_js_should_skip_ambiguous_creator(
+                                        &var_name, &creator,
+                                    ) {
+                                        return;
+                                    }
                                 }
                                 self.resources.push(DetectedResource {
                                     name: var_name,
@@ -1930,6 +1989,33 @@ impl ResourceDetector {
                 }
             }
         }
+    }
+
+    /// (js-resources-and-dead-fps-v1 F1) For TS/JS only: return the matched
+    /// creator-alias string (e.g. `"get"`, `"createServer"`) without the
+    /// resource type, by re-running just the creator-name match against the
+    /// language patterns. Used by the ambiguous-creator gate. Returns `None`
+    /// when the language is not TS/JS, the call shape is not extractable, or
+    /// the call doesn't match any known TS/JS creator alias.
+    fn ts_js_creator_alias(
+        &self,
+        node: Node,
+        source: &[u8],
+        patterns: &LangResourcePatterns,
+    ) -> Option<String> {
+        if !matches!(self.lang, Language::TypeScript | Language::JavaScript) {
+            return None;
+        }
+        let func_name = extract_call_name(node, source)?;
+        for &(creator, _rtype) in patterns.creators {
+            if func_name == creator
+                || func_name.ends_with(&format!("::{}", creator))
+                || func_name.ends_with(&format!(".{}", creator))
+            {
+                return Some(creator.to_string());
+            }
+        }
+        None
     }
 
     /// Multi-language resource type detection from call expressions.

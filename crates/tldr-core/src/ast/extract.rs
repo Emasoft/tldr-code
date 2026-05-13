@@ -1937,6 +1937,34 @@ fn extract_ts_assignment_function(
     });
 }
 
+/// (js-resources-and-dead-fps-v1 F2) Return true iff `s` is shaped like a
+/// JavaScript identifier — `[A-Za-z_$][A-Za-z0-9_$]*`. This is the ASCII
+/// approximation used by the object-literal-pair extractor to filter
+/// non-function string keys (MIME types, headers, URL fragments) out of
+/// the dead-code analysis function set.
+///
+/// Identifiers in the full ECMAScript grammar additionally permit certain
+/// Unicode categories (ID_Start / ID_Continue) and escape sequences; the
+/// ASCII subset is strictly more conservative — it accepts every name a
+/// runtime would also bind via plain `var`/`let`/`const`/function-name
+/// declaration without unicode-escape rewriting, which covers the
+/// real-world dead-code consumer surface.
+fn is_js_identifier_shape(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || c == '_' || c == '$') {
+            return false;
+        }
+    }
+    true
+}
+
 /// (js-extract-function-expressions-v1) Extract a function from an object
 /// literal `pair` whose value is a function-like node:
 ///   `{ foo: function() {} }` / `{ foo: () => {} }`
@@ -1958,8 +1986,26 @@ fn extract_ts_pair_function(pair: &Node, source: &str, functions: &mut Vec<Funct
         "string" => {
             // "foo": function() {} — strip surrounding quotes if present.
             let raw = get_node_text(&key, source);
-            raw.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-                .to_string()
+            let unquoted = raw
+                .trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                .to_string();
+            // js-resources-and-dead-fps-v1 F2: object-literal string keys are
+            // legitimate function-name carriers ONLY when they shape like a
+            // JavaScript identifier. Real-world FP class: MIME-type / header
+            // / URL-fragment string keys passed to APIs like
+            //   res.format({ "text/plain": function() {...},
+            //                "application/json; q=0.5": function() {...} })
+            // are content-negotiation handler entries, not named function
+            // definitions. We filter those by requiring the unquoted key to
+            // match the ASCII JavaScript identifier grammar
+            // `[A-Za-z_$][A-Za-z0-9_$]*`. This preserves the legitimate
+            // `{ "foo": function() {} }` case while rejecting
+            // `text/plain`, `application/json`, `text/html; charset=utf-8`,
+            // `image/svg+xml`, `with space`, `*/*`, etc.
+            if !is_js_identifier_shape(&unquoted) {
+                return;
+            }
+            unquoted
         }
         // computed_property_name has dynamic key — skip.
         _ => return,
