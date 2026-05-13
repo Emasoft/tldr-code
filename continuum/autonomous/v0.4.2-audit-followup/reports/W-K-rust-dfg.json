@@ -1,0 +1,63 @@
+{
+  "worker": "W-K",
+  "version": "v0.4.2",
+  "assertion": "VAL-RUST-DFG",
+  "id": "rust-dataflow-v1",
+  "code_finding": "C2",
+  "bug": "B4",
+  "summary": "tldr reaching-defs on real rust functions returned `definitions: 0` and empty gen/kill/in/out for every block, regardless of body content. Root cause: the rust DFG extractor (process_rust_let + extract_refs_from_node dispatch in crates/tldr-core/src/dfg/extractor.rs) only recognised `identifier`, `mut_pattern`, and `tuple_pattern` as let-binding shapes, and did not dispatch the `let_condition` AST node at all. Real rust code overwhelmingly uses `tuple_struct_pattern` (`Some(c)`, `Ok(v)`, `Err(_)`), `reference_pattern` (`&x`, `&mut y`), `or_pattern`, and `struct_pattern` in let bindings, AND `let_condition` is the node that wraps the `let pat = expr` form inside `while let`, `if let`, and the 2024-edition `let_chain`. Fixed by routing both `let_declaration` and `let_condition` through a new recursive `extract_rust_binding_identifiers` walker that handles all canonical pattern kinds.",
+  "files_changed": [
+    "crates/tldr-core/src/dfg/extractor.rs",
+    "crates/tldr-cli/tests/rust_dataflow_v1.rs"
+  ],
+  "tests": {
+    "new_suite": "crates/tldr-cli/tests/rust_dataflow_v1.rs",
+    "tests_added": [
+      "rust_reaching_defs_non_empty_gen_kill",
+      "rust_available_function_name_not_null",
+      "python_reaching_defs_still_works",
+      "python_available_still_works"
+    ],
+    "pre_fix_failing": 1,
+    "post_fix_passing": 4
+  },
+  "repro": {
+    "pre_fix_artifact_c2": "/tmp/v042_pre_VAL-RUST-DFG_rdef.json",
+    "post_fix_artifact_c2": "/tmp/v042_post_VAL-RUST-DFG_rdef.json",
+    "pre_fix_observation_c2": "47 blocks, all gen=kill=in=out=[]; stats.definitions=0; confidence=medium",
+    "post_fix_observation_c2": "stats.definitions>0; >=1 block has non-empty gen; confidence=high on Parser::parse",
+    "pre_fix_artifact_c3": "/tmp/v042_pre_VAL-RUST-DFG_avail.json",
+    "post_fix_artifact_c3": "/tmp/v042_post_VAL-RUST-DFG_avail.json",
+    "pre_fix_observation_c3": "all_exprs=2, uncertain=59, confidence=low; same as python on same-size function",
+    "post_fix_observation_c3": "unchanged (see deferred_c3 note)"
+  },
+  "bug_status": {
+    "C2": "FIXED — rust reaching-defs now emits gen/kill/in/out per block when the body contains any let_declaration / let_condition / for_expression binding (tuple_struct_pattern, reference_pattern, or_pattern, struct_pattern, mut_pattern, tuple_pattern, identifier).",
+    "C3": "DEFERRED with explanation — the audit assertion `available reports function name not null` does not match the AvailableExprsInfo struct shape: there is no `function` field in the JSON for ANY language (python, rust, c all return the same key set: avail_in/avail_out/all_exprs/entry_block/uncertain_exprs/confidence). The user-visible symptom that the audit likely meant — `low confidence` on rust — comes from the text-based `detect_uncertain_expression` (crates/tldr-core/src/dataflow/available.rs:957) which flags any line containing `= ... fn_call(...) + ...` as uncertain. This is language-agnostic; python flask::make_response shows the same `confidence=low` with all_exprs=5 / uncertain=37. Fixing C2 (rust DFG defs) does NOT change the rust available confidence because uncertain detection runs on source text, not on refs. A proper C3 fix would require either (a) language-aware purity inference for callees, or (b) reweighting compute_confidence to ignore uncertain_exprs when at least one binary_expression was confirmed — both larger structural changes outside this milestone's scope. Per task scope guardrail (`fix the smaller one fully and commit; defer the bigger one with a TODO`), C3 is left to a future milestone; the regression test `rust_available_function_name_not_null` guards the analysis-runs-and-returns-data invariant so a regression to truly null output would still be caught."
+  },
+  "fix_summary": "Two changes in crates/tldr-core/src/dfg/extractor.rs:\n  1. `extract_refs_from_node` now matches `\"let_declaration\" | \"let_condition\"` for the rust binding-statement form (was: only `\"let_declaration\"`). This catches `while let Some(c) = ...` and `if let Ok(v) = ...`.\n  2. `process_rust_let` and `process_rust_for` delegate the pattern walk to a new `extract_rust_binding_identifiers` recursive helper. The helper kind-dispatches on identifier / mut_pattern / tuple_pattern / tuple_struct_pattern / reference_pattern / or_pattern / struct_pattern, with the constructor-vs-binding split inside `tuple_struct_pattern` (first named child is the ctor, subsequent named children are bindings) and the field-vs-binding split inside `struct_pattern::field_pattern` (shorthand `{ y }` makes the field its own binding; `{ field: pat }` recurses into pat). `process_rust_let` also visits the let-else `block` child so divergent branches with their own statements are walked.",
+  "dogfood_probes": [
+    "target/release/tldr structure crates/tldr-core/src/dfg → confirmed reaching.rs is the report builder, extractor.rs is the refs walker",
+    "target/release/tldr reaching-defs /tmp/repos/flask/src/flask/app.py make_response → control: stats.definitions=20, 16 blocks with gen — used as ground truth for the regression test",
+    "target/release/tldr reaching-defs /tmp/repos/ripgrep/.../glob.rs parse → pre-fix: stats.definitions=0; post-fix: >0",
+    "ad-hoc tree-sitter-rust python walker on /tmp/test_rust_full.rs → confirmed AST shapes for tuple_struct_pattern, reference_pattern, let_condition, let_chain, struct_pattern, or_pattern, and let-else before writing the recursive walker"
+  ],
+  "scope_decisions": [
+    "Did NOT touch crates/tldr-core/src/dfg/reaching.rs — the gen/kill computation is correct; the bug was purely upstream in the refs extractor.",
+    "Did NOT touch crates/tldr-core/src/dataflow/available.rs — see deferred_c3 note above.",
+    "Did NOT add a generic language-agnostic pattern visitor; stayed inside the rust arm. The new `extract_rust_binding_identifiers` lives next to `process_rust_let` and only `match`es rust AST node kinds.",
+    "Did NOT migrate process_rust_for off its old inline pattern handling beyond making it call the new helper — kept the change surgical."
+  ],
+  "smoke": {
+    "command": "cargo test --release --features semantic -p tldr-cli --test pattern_match_arm_undercount_v1 --test p19_secondary_fixes_v1 --test lu001_ast_gate_v1 --test scala_column_unification_v1 --test scala_path_canonical_v1 --test cross_lang_definition_column_v1 --test diff_column_one_indexed_v1 --test cross_cmd_path_shape_v1 --test cpp_class_count_agreement_v1 --test cpp_interface_macro_filter_v1 --test cpp_explain_refs_v1 --test c_structure_schema_v1 --test kotlin_extract_params_v1 --test kotlin_deps_wiring_v1 --test rust_dataflow_v1",
+    "result": "all 15 files green, 76/0/0",
+    "regressions": "none"
+  },
+  "evidence": {
+    "pre_fix_repro_c2": "/tmp/v042_pre_VAL-RUST-DFG_rdef.json",
+    "post_fix_repro_c2": "/tmp/v042_post_VAL-RUST-DFG_rdef.json",
+    "pre_fix_repro_c3": "/tmp/v042_pre_VAL-RUST-DFG_avail.json",
+    "post_fix_repro_c3": "/tmp/v042_post_VAL-RUST-DFG_avail.json",
+    "control_python": "/tmp/v042_W-K_py_rdef.json (flask make_response, stats.definitions=20)"
+  }
+}

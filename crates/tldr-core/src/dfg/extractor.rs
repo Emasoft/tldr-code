@@ -633,8 +633,17 @@ impl<'a> DfgBuilder<'a> {
 
             // =================================================================
             // Rust let declarations: let x = ...; let mut x = ...;
+            // rust-dataflow-v1 (v0.4.2 bug-C2): `let_condition` is the AST
+            // node for the `let pat = expr` form that appears INSIDE
+            // `while let`, `if let`, and `let_chain` (`if let A && let B`).
+            // tree-sitter-rust does NOT reuse `let_declaration` for those —
+            // they share the same field layout (`pattern` / `value`), so
+            // we route both kinds through `process_rust_let`. Without this
+            // arm the loop binding in `while let Some(c) = self.bump()`
+            // was never registered as a definition, leaving rust
+            // reaching-defs with empty gen/kill sets everywhere.
             // =================================================================
-            "let_declaration" => {
+            "let_declaration" | "let_condition" => {
                 self.process_rust_let(node, depth)?;
             }
 
@@ -1188,55 +1197,189 @@ impl<'a> DfgBuilder<'a> {
     // =====================================================================
 
     /// Process Rust let declaration: let x = ...; let mut x = ...;
-    /// AST: let_declaration -> pattern (identifier), value
+    /// Also handles the `let_condition` form used inside `while let` /
+    /// `if let` (rust-dataflow-v1 / v0.4.2 bug-C2).
+    ///
+    /// AST: let_declaration -> pattern, value
+    ///      let_condition   -> pattern, value (same fields)
+    ///
+    /// Pattern kinds recognised (each adds the bound identifier(s) as
+    /// `RefType::Definition` via [`extract_rust_binding_identifiers`]):
+    /// * `identifier`               — `let x = ...`
+    /// * `mut_pattern`              — `let mut x = ...`
+    /// * `tuple_pattern`            — `let (a, b) = ...`
+    /// * `tuple_struct_pattern`     — `let Some(c) = ...`, `let Ok(v) = ...`
+    /// * `reference_pattern`        — `let &x = ...`, `let &mut y = ...`,
+    ///                                 also `let &Some(z) = ...` (recurses)
+    /// * `or_pattern`               — `let Some(a) | None = ...` (recurses
+    ///                                 into each alternative; the same
+    ///                                 binding name appears in each)
+    /// * `struct_pattern`           — `let Foo { field: x, y } = ...`
+    ///   (handles both `field: binding` and shorthand `field`)
+    /// * `_` (wildcard)             — produces no binding (intentional)
+    ///
+    /// Anything else falls through silently to preserve forward-compat
+    /// with future tree-sitter-rust grammar updates.
     fn process_rust_let(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         // "pattern" field contains the binding
         if let Some(pattern) = node.child_by_field_name("pattern") {
-            if pattern.kind() == "identifier" {
-                self.add_ref_from_node(pattern, RefType::Definition);
-            } else if pattern.kind() == "mut_pattern" {
-                // let mut x = ... -> mut_pattern has an inner identifier
-                let mut cursor = pattern.walk();
-                for child in pattern.children(&mut cursor) {
-                    if child.kind() == "identifier" {
-                        self.add_ref_from_node(child, RefType::Definition);
-                        break;
-                    }
-                }
-            } else if pattern.kind() == "tuple_pattern" {
-                // let (a, b) = ...
-                let mut cursor = pattern.walk();
-                for child in pattern.children(&mut cursor) {
-                    if child.kind() == "identifier" {
-                        self.add_ref_from_node(child, RefType::Definition);
-                    }
-                }
-            }
+            self.extract_rust_binding_identifiers(pattern);
         }
 
-        // "value" field contains the initializer
+        // "value" field contains the initializer (a use)
         if let Some(value) = node.child_by_field_name("value") {
             self.extract_refs_from_node(value, depth + 1)?;
+        }
+
+        // let-else: `let Pat = expr else { diverge };` carries an `else`
+        // block of arbitrary statements which may themselves declare or
+        // use variables. tree-sitter exposes the block as an unnamed
+        // child after the `else` keyword. Visit any block child(ren)
+        // that follow the value to capture refs inside the divergence.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "block" {
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
         }
 
         Ok(())
     }
 
-    /// Process Rust for expression: for x in items { ... }
-    /// AST: for_expression -> pattern, value, body
-    fn process_rust_for(&mut self, node: Node, depth: usize) -> TldrResult<()> {
-        // "pattern" field: loop variable
-        if let Some(pattern) = node.child_by_field_name("pattern") {
-            if pattern.kind() == "identifier" {
+    /// Recursively descend a Rust binding pattern and register every
+    /// bound identifier as `RefType::Definition`.
+    ///
+    /// Used by `process_rust_let` and `process_rust_for` to support the
+    /// full set of pattern kinds that real Rust code uses (see
+    /// `process_rust_let` doc for the matrix). The walker is a small
+    /// hand-written recursive descent rather than a generic visitor
+    /// because the binding/constructor distinction inside
+    /// `tuple_struct_pattern` (first identifier is the constructor, not
+    /// a binding) and the field-vs-binding split inside `struct_pattern`
+    /// require kind-aware handling.
+    fn extract_rust_binding_identifiers(&mut self, pattern: Node) {
+        match pattern.kind() {
+            "identifier" => {
                 self.add_ref_from_node(pattern, RefType::Definition);
-            } else if pattern.kind() == "tuple_pattern" {
+            }
+            "mut_pattern" => {
+                // `let mut x = ...` — single inner identifier.
                 let mut cursor = pattern.walk();
                 for child in pattern.children(&mut cursor) {
                     if child.kind() == "identifier" {
                         self.add_ref_from_node(child, RefType::Definition);
+                        break;
+                    } else if child.is_named() && child.kind() != "mutable_specifier" {
+                        // Recurse into nested patterns (rare but valid).
+                        self.extract_rust_binding_identifiers(child);
+                        break;
                     }
                 }
             }
+            "tuple_pattern" => {
+                // `let (a, b) = ...` — every named pattern child is a binding.
+                let mut cursor = pattern.walk();
+                for child in pattern.children(&mut cursor) {
+                    if child.is_named() {
+                        self.extract_rust_binding_identifiers(child);
+                    }
+                }
+            }
+            "tuple_struct_pattern" => {
+                // `let Some(c) = ...`, `let Ok(v) = ...`, `let Variant(a, b) = ...`.
+                // tree-sitter shape: [identifier(ctor) | scoped_identifier(ctor),
+                //                     (, <pattern>*, )].
+                // The first named child is the constructor — NOT a binding —
+                // every subsequent named pattern child is.
+                let mut cursor = pattern.walk();
+                let mut seen_ctor = false;
+                for child in pattern.children(&mut cursor) {
+                    if !child.is_named() {
+                        continue;
+                    }
+                    if !seen_ctor {
+                        seen_ctor = true;
+                        // Constructor identifier is not a variable binding.
+                        continue;
+                    }
+                    self.extract_rust_binding_identifiers(child);
+                }
+            }
+            "reference_pattern" => {
+                // `let &x = ...`, `let &mut y = ...`, `let &Some(z) = ...`.
+                // Layout: [&, mutable_specifier?, <inner_pattern>].
+                let mut cursor = pattern.walk();
+                for child in pattern.children(&mut cursor) {
+                    if child.is_named() && child.kind() != "mutable_specifier" {
+                        self.extract_rust_binding_identifiers(child);
+                    }
+                }
+            }
+            "or_pattern" => {
+                // `let Some(a) | None = ...` — each alternative is a pattern;
+                // recurse into all of them. Rust requires every alternative
+                // to bind the same identifiers, but emitting per-arm
+                // definitions is harmless (the reaching-defs analyzer
+                // deduplicates by name+line).
+                let mut cursor = pattern.walk();
+                for child in pattern.children(&mut cursor) {
+                    if child.is_named() {
+                        self.extract_rust_binding_identifiers(child);
+                    }
+                }
+            }
+            "struct_pattern" => {
+                // `let Foo { field: x, y } = ...`.
+                // Children: [type_identifier(or scoped), {, field_pattern*, }].
+                // Each field_pattern is `[field_identifier, :, pattern]`
+                // (with binding) or `[field_identifier]` (shorthand: the
+                // field_identifier itself IS the binding name).
+                let mut cursor = pattern.walk();
+                for child in pattern.children(&mut cursor) {
+                    if child.kind() == "field_pattern" {
+                        let mut fcursor = child.walk();
+                        let named_children: Vec<Node> =
+                            child.children(&mut fcursor).filter(|c| c.is_named()).collect();
+                        match named_children.len() {
+                            0 => {}
+                            1 => {
+                                // Shorthand `{ y }` — the lone child is the
+                                // field_identifier and also the binding.
+                                let only = named_children[0];
+                                if only.kind() == "field_identifier"
+                                    || only.kind() == "identifier"
+                                {
+                                    self.add_ref_from_node(only, RefType::Definition);
+                                }
+                            }
+                            _ => {
+                                // `field: pattern` — the LAST named child is
+                                // the binding pattern, the first is the
+                                // field_identifier (which is NOT a binding).
+                                let last = named_children[named_children.len() - 1];
+                                self.extract_rust_binding_identifiers(last);
+                            }
+                        }
+                    }
+                }
+            }
+            // `_` wildcard, range_pattern, literal_pattern, etc. — no
+            // identifier is bound, intentionally a no-op.
+            _ => {}
+        }
+    }
+
+    /// Process Rust for expression: for x in items { ... }
+    /// AST: for_expression -> pattern, value, body
+    ///
+    /// rust-dataflow-v1: delegate the pattern walk to the shared
+    /// `extract_rust_binding_identifiers` so `for &x in &items`,
+    /// `for Some(c) in iter`, `for (k, v) in map`, etc. all register
+    /// their bindings.
+    fn process_rust_for(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // "pattern" field: loop variable(s)
+        if let Some(pattern) = node.child_by_field_name("pattern") {
+            self.extract_rust_binding_identifiers(pattern);
         }
 
         // "value" field: the iterable (use)
