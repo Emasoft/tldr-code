@@ -995,6 +995,15 @@ fn is_framework_entry_file(path: &Path, language: crate::types::Language) -> boo
                 || (path_str.contains("/channels/") && file_name.ends_with("_channel.ex"))
                 || file_name == "router.ex"
                 || file_name == "endpoint.ex"
+                // elixir-multiclause-and-mix-v1 (v0.4.2 bug-E2): `mix.exs`
+                // is the build manifest. Its top-level public callbacks
+                // (`project/0`, `application/0`, `deps/0`, etc.) are
+                // reflection entry points invoked by the Mix build tool
+                // — they have no explicit caller in project source but
+                // are NEVER dead. Treating the whole file as a framework
+                // entry rescues all public defs (the equivalent of
+                // Python's `wsgi.py` or Django `views.py`).
+                || file_name == "mix.exs"
         }
         Language::Swift => {
             // SwiftUI / iOS conventions

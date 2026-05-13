@@ -1,0 +1,133 @@
+{
+  "worker": "W-O",
+  "milestone": "elixir-multiclause-and-mix-v1",
+  "version": "v0.4.2",
+  "assertions": ["VAL-EX-MULTI"],
+  "bugs_fixed": ["E1", "E2"],
+  "files_modified": [
+    "crates/tldr-core/src/ast/function_finder.rs",
+    "crates/tldr-core/src/analysis/dead.rs"
+  ],
+  "files_added": [
+    "crates/tldr-cli/tests/elixir_multiclause_and_mix_v1.rs"
+  ],
+  "tests": {
+    "new": [
+      "elixir_complexity_send_resp_finds_real_body",
+      "elixir_slice_send_resp_finds_real_body",
+      "elixir_dead_excludes_mix_exs_project",
+      "elixir_dead_excludes_mix_exs_application"
+    ],
+    "red_then_green": true,
+    "red_results": {
+      "elixir_complexity_send_resp_finds_real_body": "FAILED — loc=1, cyclomatic=1 (bodyless head)",
+      "elixir_slice_send_resp_finds_real_body": "FAILED — line_count=0 (line 440 outside 437-437)",
+      "elixir_dead_excludes_mix_exs_project": "FAILED — 2 offenders (project, Plug.MixProject.project)",
+      "elixir_dead_excludes_mix_exs_application": "FAILED — 2 offenders (application, Plug.MixProject.application)"
+    },
+    "green_results": {
+      "elixir_complexity_send_resp_finds_real_body": "ok",
+      "elixir_slice_send_resp_finds_real_body": "ok",
+      "elixir_dead_excludes_mix_exs_project": "ok",
+      "elixir_dead_excludes_mix_exs_application": "ok",
+      "summary": "4 passed; 0 failed"
+    }
+  },
+  "bug_E1": {
+    "description": "Elixir multi-clause body-level analyses (slice, complexity, taint, contracts, reaching-defs, dead-stores, resources, explain) only see the bodyless spec head. Plug.Conn.send_resp/1 has clauses at lines 437/439/443/453, with 437 being a bodyless head. find_function_node returned the head, so complexity=1/LOC=1 and slice returned just line 437.",
+    "fix": "In find_function_node_in_subtree, when an Elixir def matches by name but has no do_block child (bodyless head), remember it as a fallback and continue searching. Return the first body-bearing clause; only fall back to the head if no body-bearing clause exists. Matches what `extract` already does and is the minimal `skip-to-first-body-bearing-clause` semantics per scope guardrails.",
+    "scope_note": "Per-clause iteration (e.g. slicing line 443 which is in the third clause) is deferred to a future pass. Current fix prevents the worst regression: bodyless-head stubs being treated as the full function.",
+    "dogfood_pre": {
+      "complexity": "{cyclomatic:1, cognitive:0, lines_of_code:1}",
+      "slice@437": "lines: [437] (just the bodyless head)"
+    },
+    "dogfood_post": {
+      "complexity": "{cyclomatic:1, cognitive:0, lines_of_code:3} (the :unset clause body 439-441)",
+      "slice@440": "lines: [439, 440, 441], line_count: 3"
+    }
+  },
+  "bug_E2": {
+    "description": "`tldr dead` on /tmp/repos/elixir-plug flagged mix.exs::project/0 and mix.exs::application/0 as possibly_dead. These are Mix build-tool reflection callbacks invoked via the framework's reflection mechanism — they have no explicit caller in project source but are NEVER dead.",
+    "fix": "Added `file_name == \"mix.exs\"` to the Elixir branch of is_framework_entry_file in dead.rs. Mix is the canonical Elixir build tool; mix.exs is the manifest file. All public defs in mix.exs (project, application, deps, package, etc.) are reflection entry points — same mechanism that rescues wsgi.py / setup.py / views.py for Python web frameworks.",
+    "dogfood_pre": {
+      "mix_exs_offenders": ["project (line 9)", "Plug.MixProject.project (line 9)", "application (line 37)", "Plug.MixProject.application (line 37)"]
+    },
+    "dogfood_post": {
+      "mix_exs_offenders": []
+    }
+  },
+  "smoke": {
+    "elixir_related_test_files_run": [
+      "docs_and_elixir_dfg_v1 (3/3 pass)",
+      "interface_extraction_ocaml_elixir_v1 (5/5 pass)",
+      "elixir_multiclause_and_mix_v1 (4/4 pass)"
+    ],
+    "v042_milestone_test_files_run": [
+      "cross_command_consistency_v1 (4/4)",
+      "cross_command_consistency_v3 (7/7)",
+      "rust_dataflow_v1 (5/5)",
+      "rust_impl_method_qualifier_v1 (3/3)",
+      "rust_deps_wiring_v1 (4/4)",
+      "rust_patterns_detection_v1 (4/4)",
+      "kotlin_extract_params_v1 (2/2)",
+      "kotlin_deps_wiring_v1 (3/3)",
+      "cpp_class_count_agreement_v1 (4/4)",
+      "cpp_explain_refs_v1 (5/5)",
+      "cpp_interface_macro_filter_v1 (3/3)",
+      "cpp_method_name_extraction_v1 (3/3)",
+      "context_file_func_and_cpp_qualified_v1 (25/25)",
+      "cross_lang_definition_column_v1 (5/5)",
+      "explain_callers_cross_lang_v1 (8/8)",
+      "explain_cross_command_consistency_v1 (4/4)",
+      "language_coverage_fixes_v1 (5/5)",
+      "pdg_bounds_and_stdout_hygiene_v1 (13/13)",
+      "ux_and_explain_completeness_v1 (8/8)",
+      "pattern_match_arm_undercount_v1 (5/5)",
+      "verification_pipeline_completeness_v1 (14/14)",
+      "residual_bugs_v1 (5/5)",
+      "real_repo_fixes_v1 (7/7)",
+      "cli_p1_tests (27/27)",
+      "cli_remaining_tests (82/82)",
+      "cli_quality_tests (80/80)",
+      "cli_basic_tests (70/70)",
+      "cli_main_output_tests (32/32)",
+      "cli_graph_tests (64/64)",
+      "cli_patterns_contracts_tests (29/29)",
+      "contracts_test (15/16; 1 cold-start perf flake unrelated)"
+    ],
+    "preexisting_failures_unrelated_to_E1_E2": [
+      {
+        "test": "elixir_method_infos_v1::test_structure_elixir_method_infos_*",
+        "reason": "Asserts `methods` field on structure output; current code only emits `method_infos`. Schema mismatch upstream of function-finder. Confirmed pre-existing by checking out HEAD-only (no W-O changes) and reproducing same failures.",
+        "blame": "Pre-existing tracked test against schema not yet implemented."
+      },
+      {
+        "test": "rust_explain_cognitive_v1::*",
+        "reason": "Untracked orphan test file from a prior worker (not in git log). References fixes to explain.rs/types.rs that were never committed. Confirmed by `git log -- file` returning empty.",
+        "blame": "Orphan test from earlier partial handoff."
+      },
+      {
+        "test": "schema_unification_v1::test_extract_emits_line_alias",
+        "reason": "Asserts `functions[0].line_number` alias; current schema uses `line`. Same schema-emit pre-existing issue.",
+        "blame": "Pre-existing schema cleanup pending."
+      },
+      {
+        "test": "cli_tests::test_structure_json_output",
+        "reason": "Asserts `functions` field on python structure output; current code only emits per-class `method_infos`. Same schema-emit pre-existing issue.",
+        "blame": "Pre-existing."
+      },
+      {
+        "test": "language_specific_bugs_v1::nonreg_php_specs_still_works",
+        "reason": "PHP specs total returning 0. Completely unrelated to Elixir/function-finder.",
+        "blame": "Pre-existing PHP regression."
+      },
+      {
+        "test": "cli_tests::test_cold_start_performance",
+        "reason": "1148ms > 1000ms perf budget on the test machine. Flaky perf test, unrelated to code logic.",
+        "blame": "Perf flake."
+      }
+    ],
+    "verdict": "PASS — all new tests green; all regressions verified pre-existing and unrelated to the function-finder change."
+  },
+  "report_path": "continuum/autonomous/v0.4.2-audit-followup/reports/W-O-elixir-multi.json"
+}

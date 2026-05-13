@@ -237,6 +237,22 @@ fn find_function_node_in_subtree<'a>(
 
     let mut stack = vec![root];
 
+    // elixir-multiclause-and-mix-v1 (v0.4.2 bug-E1): Elixir multi-clause
+    // functions begin with an optional bodyless spec head
+    // (`def send_resp(conn)`) followed by 1..N body-bearing clauses
+    // (`def send_resp(%Conn{state: :unset}) do … end`). Previously the
+    // first def matching the name was returned — which for canonical
+    // libraries (Plug.Conn, Ecto, Phoenix) is the bodyless head with
+    // zero analyzable body. All body-level analyses (slice, complexity,
+    // taint, contracts, reaching-defs, dead-stores, resources, explain)
+    // then ran on a single-line stub. The fix: remember a bodyless head
+    // as a fallback, but keep searching for the first clause that has
+    // a `do_block` (a real body) — only fall back to the head if no
+    // body-bearing clause exists in the file. This matches what
+    // `extract` already does (it emits all clauses) and what cognitive
+    // analysis does via the canonical analyzer.
+    let mut elixir_bodyless_fallback: Option<Node<'a>> = None;
+
     while let Some(node) = stack.pop() {
         // Check direct function nodes
         if func_kinds.contains(&node.kind()) {
@@ -254,7 +270,17 @@ fn find_function_node_in_subtree<'a>(
                             .next()
                             .is_some_and(|short| short == function_name))
                 {
-                    return Some(node);
+                    // elixir-multiclause-and-mix-v1: defer bodyless heads.
+                    if matches!(language, Language::Elixir)
+                        && !elixir_call_has_do_block(node)
+                    {
+                        if elixir_bodyless_fallback.is_none() {
+                            elixir_bodyless_fallback = Some(node);
+                        }
+                        // continue searching for a body-bearing clause
+                    } else {
+                        return Some(node);
+                    }
                 }
             }
         }
@@ -419,7 +445,31 @@ fn find_function_node_in_subtree<'a>(
         }
     }
 
+    // elixir-multiclause-and-mix-v1: if we only saw bodyless heads
+    // (e.g. a behaviour/protocol with a `@spec`-only declaration),
+    // return the head so callers don't fail with "function not found"
+    // — they'll still see a degraded but truthful single-line stub.
+    if matches!(language, Language::Elixir) {
+        if let Some(head) = elixir_bodyless_fallback {
+            return Some(head);
+        }
+    }
+
     None
+}
+
+/// elixir-multiclause-and-mix-v1: return true if an Elixir `def`/`defp`
+/// call node has a `do_block` child — i.e. has a real body. Bodyless
+/// heads like `def send_resp(conn)` (used to attach `@spec` typespecs)
+/// return false.
+fn elixir_call_has_do_block(node: Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "do_block" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Get the node kinds that represent functions in each language
