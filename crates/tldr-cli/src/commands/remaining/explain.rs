@@ -622,6 +622,36 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
         }
     }
 
+    // explain-signature-params-v1 (v0.4.2 M-001): if the legacy generic
+    // walker above returned no params, fall back to the canonical
+    // language-aware dispatcher from `tldr_core::ast::extract`. This is
+    // the same code path that `tldr extract` uses to populate
+    // `functions[].params`, so explain.signature.params now matches
+    // extract.params for the 15 langs whose tree-sitter grammar does not
+    // expose a `parameters` field with python-style children
+    // (rust, java, javascript/typescript, go, c, cpp, csharp, scala,
+    // swift, ruby, php, lua, luau, ocaml, elixir).
+    //
+    // The dispatcher returns `Vec<String>` of name fragments; we wrap each
+    // entry in a `ParamInfo` (name-only) so the existing schema
+    // `signature.params[].{name,type?,default?}` is preserved. Type and
+    // default fields are intentionally absent on the fallback path because
+    // the language-specific extractors in tldr-core only emit names
+    // today — extending them to typed entries is a follow-up. Python's
+    // generic walker still runs first, so the rich typed entries python
+    // already emits are not regressed.
+    if sig.params.is_empty() {
+        let source_str = std::str::from_utf8(source).unwrap_or("");
+        let fallback = tldr_core::ast::extract_function_params(&func_node, source_str, language);
+        if !fallback.is_empty() {
+            sig.params = fallback
+                .into_iter()
+                .filter(|n| !n.is_empty())
+                .map(ParamInfo::new)
+                .collect();
+        }
+    }
+
     // Extract return type
     if let Some(return_node) = func_node.child_by_field_name("return_type") {
         sig.return_type = Some(node_text(return_node, source).to_string());

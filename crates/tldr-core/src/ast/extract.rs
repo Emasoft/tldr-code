@@ -145,6 +145,143 @@ pub fn extract_from_tree(
     })
 }
 
+/// Extract parameter names for a single function-like AST node.
+///
+/// explain-signature-params-v1 (v0.4.2 M-001): the `tldr explain` pipeline
+/// historically built its own simplified param walker that only handled
+/// python-style tree-sitter node kinds (`identifier`, `typed_parameter`,
+/// `default_parameter`), so on 15 other languages `signature.params`
+/// silently emitted `[]` even though `tldr extract` on the same file
+/// already returned the correct list. Rather than duplicating the
+/// per-language walkers inside `crates/tldr-cli/src/commands/remaining/explain.rs`,
+/// this function exposes the canonical extract-side dispatcher so explain
+/// (and any future consumer) can reuse it.
+///
+/// # Arguments
+/// * `func_node` - The AST node identified by the per-language function
+///   kinds in `crates/tldr-cli/src/commands/remaining/explain.rs::get_function_node_kinds`.
+///   For ocaml this is a `value_definition` (this dispatcher finds the
+///   inner `let_binding`). For elixir this is the outer `call` node
+///   (this dispatcher finds the `arguments` call_args inside).
+/// * `source` - Source-file UTF-8 string.
+/// * `language` - Language hint matching the parser that produced the tree.
+///
+/// # Returns
+/// A `Vec<String>` of parameter name fragments (or short snippets for
+/// pattern-matched / receiver-style params like rust `&mut self`). The
+/// list is empty when the language has no parameter list, when the node
+/// is not a function-like node, or when no params can be extracted.
+///
+/// # Notes
+/// - This is additive: it does NOT alter the per-language extractors;
+///   it simply forwards to them.
+/// - Returning `Vec<String>` matches the schema of
+///   `tldr_core::types::FunctionInfo::params`, so callers that need a
+///   richer `{name, type, default}` shape (like the `explain` command's
+///   `ParamInfo`) should treat each entry as a parameter name and
+///   construct their richer type around it.
+pub fn extract_function_params(
+    func_node: &Node,
+    source: &str,
+    language: Language,
+) -> Vec<String> {
+    match language {
+        Language::Python => extract_python_params(func_node, source),
+        Language::TypeScript | Language::JavaScript => {
+            // Try the regular extractor first (function_declaration /
+            // method_definition / function expressions). Fall back to the
+            // arrow-style extractor for `arrow_function` nodes.
+            let p = extract_ts_params(func_node, source);
+            if !p.is_empty() {
+                p
+            } else {
+                extract_ts_arrow_params(func_node, source)
+            }
+        }
+        Language::Go => extract_go_params(func_node, source),
+        Language::Rust => extract_rust_params(func_node, source),
+        Language::Java => extract_java_params(func_node, source),
+        Language::C | Language::Cpp => extract_c_params(func_node, source),
+        Language::CSharp => extract_csharp_params(func_node, source),
+        Language::Kotlin => extract_kotlin_params(func_node, source),
+        Language::Scala => extract_scala_params(func_node, source),
+        Language::Php => extract_php_params(func_node, source),
+        Language::Ruby => extract_ruby_params(func_node, source),
+        Language::Lua => extract_lua_params(func_node, source),
+        Language::Luau => extract_luau_params(func_node, source),
+        Language::Swift => extract_swift_params(func_node, source),
+        Language::Ocaml => {
+            // explain identifies ocaml function nodes as `value_definition`,
+            // but `extract_ocaml_params` expects the inner `let_binding`.
+            // Find the first `let_binding` child and dispatch on that.
+            let mut cursor = func_node.walk();
+            for child in func_node.children(&mut cursor) {
+                if child.kind() == "let_binding" {
+                    return extract_ocaml_params(&child, source);
+                }
+            }
+            // If the caller already passed a `let_binding`, dispatch directly.
+            if func_node.kind() == "let_binding" {
+                return extract_ocaml_params(func_node, source);
+            }
+            Vec::new()
+        }
+        Language::Elixir => {
+            // explain identifies elixir function nodes as the outer `call`
+            // node (def/defp ...). The actual params live inside
+            // `arguments > call > arguments` (or `arguments > binary_operator > call > arguments`
+            // when a guard is present). Walk into the structure mirroring
+            // `extract_elixir_functions_detailed` so we share the proven path.
+            elixir_params_from_def_call(func_node, source)
+        }
+    }
+}
+
+/// Helper for `extract_function_params` (elixir branch). Mirrors the
+/// nesting walked by `extract_elixir_functions_detailed`.
+fn elixir_params_from_def_call(node: &Node, source: &str) -> Vec<String> {
+    // The outer `call` has children: identifier "def"/"defp" + arguments.
+    // The `arguments` wraps either the function-as-call or a binary_operator
+    // (when there's a guard).
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "arguments" {
+            // First child of `arguments` is either:
+            //   * `call` — the signature with its own arguments wrapper
+            //   * `binary_operator` — `call ... when guard`
+            //   * `identifier` — zero-arg def with no parens
+            if let Some(first) = child.child(0) {
+                match first.kind() {
+                    "call" => {
+                        // call.child(1) is the inner `arguments` containing the params.
+                        if let Some(inner_args) = first.child(1) {
+                            if inner_args.kind() == "arguments" {
+                                return extract_elixir_params(&inner_args, source);
+                            }
+                        }
+                    }
+                    "binary_operator" => {
+                        let mut bin_cursor = first.walk();
+                        for bin_child in first.children(&mut bin_cursor) {
+                            if bin_child.kind() == "call" {
+                                if let Some(inner_args) = bin_child.child(1) {
+                                    if inner_args.kind() == "arguments" {
+                                        return extract_elixir_params(&inner_args, source);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            break;
+        }
+    }
+    Vec::new()
+}
+
 /// Extract module-level docstring
 fn extract_module_docstring(tree: &Tree, source: &str, language: Language) -> Option<String> {
     let root = tree.root_node();
