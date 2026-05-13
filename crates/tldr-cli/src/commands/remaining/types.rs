@@ -651,6 +651,19 @@ pub struct ComplexityInfo {
     pub num_edges: u32,
     /// Whether the function contains loops
     pub has_loops: bool,
+    /// Cognitive complexity (SonarSource algorithm).
+    ///
+    /// rust-explain-cognitive-v1 (v0.4.2 bug-C6 / VAL-RUST-EXPLAIN):
+    /// joins `tldr cognitive`'s per-function value into `tldr
+    /// explain`'s complexity block so the two commands agree on the
+    /// same function. `None` only when the cognitive analysis cannot
+    /// be run (parse error, language unsupported by the cognitive
+    /// crate, or function not found) — the field is then omitted
+    /// from JSON via `skip_serializing_if`. Wiring is
+    /// language-agnostic: every language `tldr cognitive` supports
+    /// gets populated.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cognitive: Option<u32>,
 }
 
 impl ComplexityInfo {
@@ -661,6 +674,7 @@ impl ComplexityInfo {
             num_blocks,
             num_edges,
             has_loops,
+            cognitive: None,
         }
     }
 }
@@ -672,6 +686,7 @@ impl Default for ComplexityInfo {
             num_blocks: 1,
             num_edges: 0,
             has_loops: false,
+            cognitive: None,
         }
     }
 }

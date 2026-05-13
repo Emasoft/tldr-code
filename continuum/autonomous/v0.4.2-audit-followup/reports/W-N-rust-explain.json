@@ -1,0 +1,67 @@
+{
+  "worker": "W-N",
+  "milestone": "rust-explain-cognitive-v1",
+  "bug": "v0.4.2 C6 / VAL-RUST-EXPLAIN / VAL-RUST-MISC",
+  "claim": "tldr explain /tmp/repos/ripgrep/crates/globset/src/glob.rs <function> reports complexity.cognitive: null even though tldr cognitive on the same file reports cog=19 for the same function. The explain aggregator isn't propagating the cognitive metric.",
+  "verdict": "partial-artifact-real-gap",
+  "verdict_detail": {
+    "artifact_aspect": "The audit's 'null' claim was a serde-skipped-Option appearance under jq probes that coalesce missing keys to null. The complexity.cognitive field never existed in ComplexityInfo at all — for ANY language (verified python+rust pre-fix both lacked the key).",
+    "real_aspect": "The underlying user-facing gap IS real: tldr explain's complexity block reports cyclomatic/num_blocks/num_edges/has_loops while tldr cognitive computes a SonarSource cognitive score from the same AST — these two related commands disagree on the same function's complexity surface. Closing this gap is the user-facing fix the audit intended."
+  },
+  "fix": {
+    "scope": "additive, language-agnostic",
+    "added_field": "ComplexityInfo.cognitive: Option<u32>",
+    "serialization": "#[serde(skip_serializing_if = \"Option::is_none\", default)] — backward-compatible JSON",
+    "wiring_site": "crates/tldr-cli/src/commands/remaining/explain.rs around line 2577 (right after the get_cfg_context num_blocks alignment)",
+    "implementation": "Calls tldr_core::metrics::analyze_cognitive with function_filter=Some(self.function) and joins by (line, name) preference falling back to plain name. Failure modes (parse error, unsupported language, function not found) leave the field None — the additive wiring never breaks consumers.",
+    "text_formatter": "format_explain_text also prints `  Cognitive: <n>` line when populated, mirroring the JSON additive surface."
+  },
+  "files_changed": [
+    "crates/tldr-cli/src/commands/remaining/types.rs",
+    "crates/tldr-cli/src/commands/remaining/explain.rs",
+    "crates/tldr-cli/tests/rust_explain_cognitive_v1.rs"
+  ],
+  "tests": {
+    "file": "crates/tldr-cli/tests/rust_explain_cognitive_v1.rs",
+    "count": 3,
+    "passing": 3,
+    "failing": 0,
+    "list": [
+      "rust_explain_complexity_cognitive_not_null — asserts explain.complexity.cognitive is a non-null u64 > 0 for ripgrep/globset/glob.rs::parse",
+      "rust_explain_cognitive_matches_standalone — asserts explain.complexity.cognitive == standalone `tldr cognitive` for the same function",
+      "python_explain_cognitive_still_works (non-regression) — pins the same agreement for flask app.py::make_response, verifying the fix is language-agnostic"
+    ],
+    "gated_on_real_repos": ["/tmp/repos/ripgrep/crates/globset/src/glob.rs", "/tmp/repos/flask/src/flask/app.py"]
+  },
+  "smoke": {
+    "files": 16,
+    "passed_tests": 74,
+    "failed_tests": 0,
+    "files_tested": [
+      "rust_explain_cognitive_v1",
+      "explain_cross_command_consistency_v1",
+      "cross_command_consistency_v1",
+      "cross_command_consistency_v3",
+      "rust_dataflow_v1",
+      "rust_deps_wiring_v1",
+      "rust_impl_method_qualifier_v1",
+      "ux_and_explain_completeness_v1",
+      "explain_callers_cross_lang_v1",
+      "cpp_explain_refs_v1",
+      "kotlin_deps_wiring_v1",
+      "kotlin_extract_params_v1",
+      "c_structure_schema_v1",
+      "cpp_class_count_agreement_v1",
+      "cpp_interface_macro_filter_v1",
+      "cpp_method_name_extraction_v1"
+    ]
+  },
+  "evidence": {
+    "pre_fix_rust": "/tmp/v042_pre_VAL-RUST-EXPLAIN_rust.json — complexity={cyclomatic:9, num_blocks:47, num_edges:0, has_loops:false} — no cognitive key",
+    "pre_fix_python": "/tmp/v042_W-N_py_ref.json — complexity={cyclomatic:18, num_blocks:34, num_edges:26, has_loops:false} — no cognitive key (proves the gap was global, not rust-only)",
+    "standalone_cognitive_rust": "/tmp/v042_W-N_rust_cog.json — parse cognitive=19, max_nesting=2, nesting_penalty=9 (severity violation)",
+    "post_fix_rust": "complexity={cyclomatic:9, num_blocks:47, num_edges:0, has_loops:false, cognitive:19}",
+    "post_fix_python": "complexity={cyclomatic:18, num_blocks:34, num_edges:26, has_loops:false, cognitive:26}"
+  },
+  "commit": "PENDING-fill-after-commit"
+}

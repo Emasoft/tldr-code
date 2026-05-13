@@ -1538,6 +1538,12 @@ fn format_explain_text(report: &ExplainReport) -> String {
         lines.push(format!("  Blocks: {}", cx.num_blocks));
         lines.push(format!("  Edges: {}", cx.num_edges));
         lines.push(format!("  Has loops: {}", cx.has_loops));
+        // rust-explain-cognitive-v1: surface cognitive in the text
+        // formatter too when the join succeeded, so the human-readable
+        // view stays consistent with the JSON output.
+        if let Some(cog) = cx.cognitive {
+            lines.push(format!("  Cognitive: {}", cog));
+        }
         lines.push(String::new());
     }
 
@@ -2572,6 +2578,50 @@ impl ExplainArgs {
         ) {
             if !cfg.blocks.is_empty() {
                 complexity_info.num_blocks = cfg.blocks.len() as u32;
+            }
+        }
+        // rust-explain-cognitive-v1 (v0.4.2 bug-C6 / VAL-RUST-EXPLAIN):
+        // join `tldr cognitive`'s per-function value into explain's
+        // complexity block so the two commands agree on the same
+        // function. The audit flagged `complexity.cognitive: null` on
+        // `tldr explain /tmp/repos/ripgrep/.../globset/src/glob.rs
+        // parse` despite `tldr cognitive` reporting cog=19 for the
+        // same function — the field never existed at all (partial
+        // measurement artifact), but the underlying gap (explain's
+        // complexity block missing the cognitive counterpart) is
+        // real. Wiring is language-agnostic: every language the
+        // cognitive analyzer supports gets populated. `None` on any
+        // analysis error so the additive field never breaks consumers
+        // that don't reference it.
+        let cog_options = tldr_core::metrics::CognitiveOptions {
+            function_filter: Some(self.function.clone()),
+            threshold: tldr_core::metrics::cognitive::DEFAULT_THRESHOLD,
+            high_threshold: tldr_core::metrics::cognitive::DEFAULT_HIGH_THRESHOLD,
+            show_contributors: false,
+            include_cyclomatic: false,
+            // Match by name; the cognitive analyzer enumerates all
+            // functions before filtering, so `top=0` (all) prevents
+            // truncation when a same-named overload appears earlier.
+            top: 0,
+        };
+        if let Ok(cog_report) = tldr_core::metrics::analyze_cognitive(&self.file, &cog_options) {
+            // Prefer exact (name, line) match against the explain
+            // target's start line; fall back to plain name match when
+            // line ordering differs (e.g. lookup_name vs qualified
+            // self.function). This handles same-named methods in
+            // different impl blocks: explain has already resolved a
+            // specific `func_node`, so its start line is canonical.
+            let want_line = get_line_number(func_node);
+            let by_line = cog_report
+                .functions
+                .iter()
+                .find(|f| f.line == want_line && (f.name == self.function || f.name == lookup_name));
+            let by_name = cog_report
+                .functions
+                .iter()
+                .find(|f| f.name == self.function || f.name == lookup_name);
+            if let Some(fc) = by_line.or(by_name) {
+                complexity_info.cognitive = Some(fc.cognitive);
             }
         }
         report.complexity = Some(complexity_info);
