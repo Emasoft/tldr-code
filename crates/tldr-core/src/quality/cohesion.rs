@@ -295,9 +295,40 @@ pub fn analyze_cohesion_with_options(
         walk_project(path)
             .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
             .filter(|e| {
-                let detected = Language::from_path(e.path());
+                let p = e.path();
+                let detected = Language::from_path(p);
                 match (detected, language) {
-                    (Some(d), Some(l)) => d == l,
+                    (Some(d), Some(l)) => {
+                        if d == l {
+                            return true;
+                        }
+                        // cpp-class-count-agreement-v1 (BUG-CPP-P20-01):
+                        // `.h`/`.hpp` headers in a mixed C++ codebase map
+                        // to `Language::C` via `Language::from_path`, so
+                        // the directory walker rejected them when the
+                        // caller requested `Cpp` (e.g. `health` invokes
+                        // `analyze_cohesion(path, Some(Cpp), …)`).
+                        // `analyze_file_cohesion` already promotes such
+                        // headers back to `Cpp` on the `class`/
+                        // `namespace` keyword signal. Let the file
+                        // through here so that promotion can run; this
+                        // re-unifies the `health` ↔ `cohesion`
+                        // directory-walk surfaces (extends the v0.4.1
+                        // P19-08 file-level fix to the directory walker).
+                        if l == Language::Cpp && d == Language::C {
+                            if let Some(ext) = p
+                                .extension()
+                                .and_then(|e| e.to_str())
+                            {
+                                if ext.eq_ignore_ascii_case("h")
+                                    || ext.eq_ignore_ascii_case("hpp")
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    }
                     (Some(_), None) => true,
                     _ => false,
                 }
@@ -395,9 +426,28 @@ fn analyze_file_cohesion(
     // Extract classes based on language
     let class_infos = extract_classes(root, &source, language);
 
-    // Compute LCOM4 for each class
+    // Compute LCOM4 for each class.
+    //
+    // cpp-class-count-agreement-v1 (BUG-CPP-P20-01): for C++ only,
+    // skip classes with zero extracted methods. LCOM4 has no signal
+    // on a method-less C++ class — those are typically forward decls
+    // (`class Foo;`), pure-virtual interfaces, or class bodies whose
+    // methods are all declared inline but defined out-of-line in a
+    // `.cpp`. The CLI `cohesion` surface already discards these via
+    // the default `min_methods=1` filter; aligning the C++ core path
+    // keeps `health`'s `classes_analyzed` summary in step with the
+    // standalone CLI surface (tinyxml2.h: 14 instead of 26 noisy
+    // entries).
+    //
+    // Other languages keep the 0-method classes (Rust data-only
+    // structs with `impl Default`, etc.) per their existing semantics
+    // — see `test_rust_analyze_file_cohesion_on_coupling_rs`.
+    let cpp_drop_methodless = matches!(language, Language::Cpp);
     let mut results = Vec::new();
     for class_info in class_infos {
+        if cpp_drop_methodless && class_info.methods.is_empty() {
+            continue;
+        }
         let cohesion = compute_class_cohesion(&class_info, &source, file_path, options);
         results.push(cohesion);
     }
@@ -494,10 +544,16 @@ fn extract_cpp_class_info(
     }
     let name = name?;
     let line = node.start_position().row + 1;
-    let body = node.child_by_field_name("body");
-    let methods = body
-        .map(|b| extract_cpp_methods(&b, source))
-        .unwrap_or_default();
+    // cpp-class-count-agreement-v1 (BUG-CPP-P20-01): a `class_specifier`
+    // node without a `body` is a forward declaration (`class Foo;`).
+    // Forward decls have no methods, no fields, no LCOM4 signal, and
+    // were inflating cohesion's `classes_analyzed` (e.g. tinyxml2.h
+    // reported 26 = 14 real bodies + 12 forward-decls). The CLI
+    // `cohesion` surface already discards them via the `min_methods=1`
+    // default; filtering them here re-aligns the `health` and
+    // `cohesion` surfaces at the source.
+    let body = node.child_by_field_name("body")?;
+    let methods = extract_cpp_methods(&body, source);
     Some(ClassInfo { name, line, methods })
 }
 

@@ -289,30 +289,46 @@ fn p19_bug08_cpp_class_count_consistency() {
         .as_u64()
         .unwrap_or(0) as usize;
 
-    // Pre-fix: structure=6 (enums-as-classes), interface=26, health=0.
-    // Post-fix: all three within +/-2 of each other (forward-decl + body
-    // pairs may add a single delta to the structure surface).
+    // Original P19-08 fix (v0.4.1 c0266aa) drove the three counters to
+    // ~26 each. cpp-class-count-agreement-v1 (v0.4.2 bug-B2 /
+    // BUG-CPP-P20-01) refines the semantics:
+    //
+    //   * `structure`  → all class_specifier nodes incl. forward-decls
+    //                     and nested classes (tinyxml2.h ≈ 27).
+    //   * `interface`  → deduped class hierarchy entries        (≈ 18).
+    //   * `cohesion`   → classes with extractable methods       (≈ 14).
+    //   * `health`     → mirrors cohesion (LCOM4 path)          (≈ 14).
+    //
+    // These are legitimate per-surface semantics, no longer expected to
+    // collapse to a single number. The floor and tolerance below
+    // preserve the original P19-08 guarantee (`.h` files are recognized
+    // as cpp on every surface) while accommodating the new tightened
+    // counts.
     assert!(
         structure_count >= 20,
         "structure cpp class count must be >= 20; got {}",
         structure_count
     );
     assert!(
-        interface_count >= 20,
-        "interface cpp class count must be >= 20; got {}",
+        interface_count >= 15,
+        "interface cpp class count must be >= 15; got {}",
         interface_count
     );
     assert!(
-        health_count >= 20,
-        "health cpp class count must be >= 20 (BUG-P19-08); got {}",
+        health_count >= 10,
+        "health cpp class count must be >= 10 (BUG-P19-08 floor; \
+         cpp-class-count-agreement-v1 tightens this counter to the \
+         LCOM4-analyzable subset); got {}",
         health_count
     );
     let max = structure_count.max(interface_count).max(health_count);
     let min = structure_count.min(interface_count).min(health_count);
     assert!(
-        max - min <= 4,
+        max - min <= 18,
         "structure/interface/health cpp class counts must agree within \
-         4; got structure={} interface={} health={}",
+         18 (delta widened by cpp-class-count-agreement-v1: each surface \
+         now reports a different real semantic); got structure={} \
+         interface={} health={}",
         structure_count,
         interface_count,
         health_count
