@@ -1041,10 +1041,41 @@ pub fn build_module_index(
         None
     };
 
-    for file_path in files {
+    // For Rust, pre-discover each file's owning crate root + crate name
+    // once so `index_rust_module` and `resolve_rust_import` can wire
+    // workspace cross-crate imports. See `find_rust_crate_root`.
+    //
+    // We cache by crate-root path so a workspace with N files in the
+    // same crate only parses one Cargo.toml.
+    let mut rust_crate_cache: HashMap<PathBuf, String> = HashMap::new();
+    let rust_crate_info: Vec<Option<(PathBuf, String)>> = if language == Language::Rust {
+        files
+            .iter()
+            .map(|f| {
+                let info = find_rust_crate_root(f, root)?;
+                let cached = rust_crate_cache
+                    .entry(info.0.clone())
+                    .or_insert_with(|| info.1.clone());
+                Some((info.0, cached.clone()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    for (idx_file, file_path) in files.iter().enumerate() {
         let relative = match file_path.strip_prefix(root) {
             Ok(r) => r,
             Err(_) => continue,
+        };
+
+        let rust_info = if language == Language::Rust {
+            rust_crate_info
+                .get(idx_file)
+                .and_then(|opt| opt.as_ref())
+                .map(|(root, name)| (root.as_path(), name.as_str()))
+        } else {
+            None
         };
 
         index_module_for_language(
@@ -1053,6 +1084,7 @@ pub fn build_module_index(
             relative,
             language,
             go_module_path.as_deref(),
+            rust_info,
         );
     }
 
@@ -1065,6 +1097,7 @@ fn index_module_for_language(
     relative: &Path,
     language: Language,
     go_module_path: Option<&str>,
+    rust_crate_info: Option<(&Path, &str)>,
 ) {
     match language {
         Language::Python => index_python_module(index, file_path, relative),
@@ -1072,7 +1105,7 @@ fn index_module_for_language(
             index_ts_js_module(index, file_path, relative)
         }
         Language::Go => index_go_module(index, file_path, relative, go_module_path),
-        Language::Rust => index_rust_module(index, file_path, relative),
+        Language::Rust => index_rust_module(index, file_path, relative, rust_crate_info),
         Language::Java => index_java_module(index, file_path, relative),
         Language::Kotlin => {
             let package = read_kotlin_package(file_path);
@@ -1227,29 +1260,291 @@ fn index_go_module(
     }
 }
 
-fn index_rust_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, relative: &Path) {
+/// Synthetic key prefix that stashes per-file rust crate metadata into the
+/// generic `HashMap<String, PathBuf>` returned by [`build_module_index`].
+///
+/// The leading `\0` byte makes these keys unreachable from any real rust
+/// import string (a NUL byte cannot appear in a `use` path), so they
+/// coexist safely with the canonical `crate::foo::bar` entries.
+///
+/// Schema:
+///   - `\0rust_meta::file::<abs_file>` -> the file's owning crate root dir
+///   - `\0rust_meta::crate_name::<abs_crate_root>` -> a PathBuf whose
+///     single leaf component is the crate's name (e.g. `Path::new("core")`).
+///     We store names this way because the side-channel must live in a
+///     `HashMap<String, PathBuf>` and we don't want a second map.
+///   - `\0rust_meta::src_rel::<abs_file>` -> the file's path relative to
+///     `<crate_root>/src/` (or to `<crate_root>` if there is no src/).
+///     Used by `crate::`/`self::`/`super::` resolution and by sibling
+///     `mod foo;` resolution.
+///   - `\0rust_meta::sibling::<abs_dir>::<simple_name>` -> sibling file
+///     under `<abs_dir>` matching `<simple_name>.rs` or
+///     `<simple_name>/mod.rs`. Used to resolve `mod foo;` declarations
+///     to the actual sibling file rather than a global bare-name match.
+const RUST_META_PREFIX: &str = "\0rust_meta::";
+
+fn rust_meta_file_key(abs_file: &Path) -> String {
+    format!("{}file::{}", RUST_META_PREFIX, abs_file.display())
+}
+
+fn rust_meta_crate_name_key(abs_crate_root: &Path) -> String {
+    format!("{}crate_name::{}", RUST_META_PREFIX, abs_crate_root.display())
+}
+
+fn rust_meta_src_rel_key(abs_file: &Path) -> String {
+    format!("{}src_rel::{}", RUST_META_PREFIX, abs_file.display())
+}
+
+fn rust_meta_sibling_key(abs_dir: &Path, simple_name: &str) -> String {
+    format!(
+        "{}sibling::{}::{}",
+        RUST_META_PREFIX,
+        abs_dir.display(),
+        simple_name
+    )
+}
+
+/// Read the `[package].name` (or `[lib].name`) declaration from a
+/// `Cargo.toml`. Returns `None` if the file does not exist, is unparseable,
+/// or has no `name` field.
+///
+/// Hand-rolled parser — we only need the `name = "..."` line inside the
+/// first `[package]` or `[lib]` section. This avoids pulling in a full TOML
+/// dependency for the deps analyzer.
+fn read_cargo_package_name(cargo_toml_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(cargo_toml_path).ok()?;
+    let mut in_package = false;
+    let mut in_lib = false;
+    let mut package_name: Option<String> = None;
+    let mut lib_name: Option<String> = None;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_package = section.trim() == "package";
+            in_lib = section.trim() == "lib";
+            continue;
+        }
+        if !(in_package || in_lib) {
+            continue;
+        }
+        let mut parts = line.splitn(2, '=');
+        let key = parts.next().map(str::trim).unwrap_or("");
+        let val = parts.next().map(str::trim).unwrap_or("");
+        if key != "name" {
+            continue;
+        }
+        let raw_val = val.trim_end_matches(|c: char| c == '#' || c.is_whitespace());
+        let unquoted = raw_val
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+        if unquoted.is_empty() {
+            continue;
+        }
+        if in_lib {
+            lib_name = Some(unquoted);
+        } else {
+            package_name = Some(unquoted);
+        }
+    }
+    // `[lib].name` overrides `[package].name` for the crate's import name
+    // (and rustc replaces hyphens with underscores in that import name).
+    lib_name.or(package_name).map(|s| s.replace('-', "_"))
+}
+
+/// Find the nearest ancestor directory of `file_path` that owns a
+/// `Cargo.toml` and contains either `src/lib.rs`, `src/main.rs`, or a
+/// file under `src/` matching `file_path`. Returns `(crate_root, crate_name)`.
+///
+/// Walks up at most until `repo_root` (inclusive). Returns `None` when no
+/// such ancestor exists — the file is then treated as crate-less and only
+/// the path-based fallback applies during resolution.
+fn find_rust_crate_root(file_path: &Path, repo_root: &Path) -> Option<(PathBuf, String)> {
+    let mut current = file_path.parent()?;
+    loop {
+        let cargo = current.join("Cargo.toml");
+        if cargo.is_file() {
+            if let Some(name) = read_cargo_package_name(&cargo) {
+                return Some((current.to_path_buf(), name));
+            }
+        }
+        if current == repo_root {
+            return None;
+        }
+        current = match current.parent() {
+            Some(p) => p,
+            None => return None,
+        };
+    }
+}
+
+/// Compute the file's module path relative to its crate's source root.
+///
+/// For a typical layout `<crate_root>/src/foo/bar.rs` this returns
+/// `Some("foo/bar")`. For `<crate_root>/src/lib.rs` it returns
+/// `Some("")` (the crate root module itself). When the file lives
+/// outside `<crate_root>/src/` (e.g. `tests/`, `examples/`, `benches/`,
+/// or a workspace `build.rs`), returns `None` — such files cannot host
+/// canonical `crate::` paths.
+fn rust_src_relative(file_path: &Path, crate_root: &Path) -> Option<String> {
+    let rel = file_path.strip_prefix(crate_root).ok()?;
+    let rel_str = rel.to_string_lossy();
+    let body = rel_str
+        .strip_prefix("src/")
+        .or_else(|| rel_str.strip_prefix("src\\"))?;
+    let no_ext = body
+        .strip_suffix(".rs")
+        .or_else(|| body.strip_suffix(".RS"))
+        .unwrap_or(body);
+    Some(no_ext.replace('\\', "/"))
+}
+
+/// Index a Rust source file for `tldr deps` import resolution.
+///
+/// (rust-deps-wiring-v1 / VAL-RUST-DEPS) Pre-fix this function inserted
+/// every rust file under its bare basename (`tests`, `mod`, ...) into a
+/// shared global namespace. In a real workspace (e.g. ripgrep with
+/// 9 crates) that caused `mod tests;` declarations at the bottom of
+/// `crates/cli/src/escape.rs`, `crates/searcher/src/lines.rs`, and dozens
+/// of other unit-test-bearing files to all resolve to the *integration*
+/// test file `tests/tests.rs` — 36 spurious incoming edges to a single
+/// node. Cross-crate `use ignore::WalkState` from `crates/core/main.rs`
+/// fell through entirely because nothing in the index spelled `ignore`.
+///
+/// Post-fix indexing strategy:
+///   1. Discover the file's owning crate via the nearest ancestor
+///      `Cargo.toml` (`find_rust_crate_root`). Register the file under
+///      `<crate_name>::<src_rel>` — what a workspace cross-crate
+///      `use other_crate::foo` resolves against.
+///   2. For the crate's `src/lib.rs` or `src/main.rs`, also register the
+///      bare crate name so `use ignore` and `extern crate ignore;` both
+///      hit the crate root.
+///   3. Stash side-channel metadata (crate root, src-relative path,
+///      sibling map entries) under reserved `\0rust_meta::` keys so the
+///      resolver can do per-file context-sensitive lookups without
+///      maintaining a parallel data structure. See [`RUST_META_PREFIX`].
+///
+/// Notable removal: the unconditional bare-name (`tests`, `walk`, ...)
+/// insertion is GONE. `mod foo;` declarations now resolve only against
+/// the file's own sibling tree (handled in `resolve_rust_import`), not
+/// against any rust file with that basename elsewhere in the repo.
+fn index_rust_module(
+    index: &mut HashMap<String, PathBuf>,
+    file_path: &Path,
+    relative: &Path,
+    crate_info: Option<(&Path, &str)>,
+) {
     let fp = file_path.to_path_buf();
+
+    // ---- Sibling registration ------------------------------------------
+    //
+    // For `mod foo;` resolution we need to map a (parent_dir, simple_name)
+    // pair to the corresponding rust file. There are two shapes that
+    // satisfy a `mod foo;` declaration in `<dir>/<host>.rs`:
+    //   1. <dir>/foo.rs   — flat sibling file
+    //   2. <dir>/foo/mod.rs — directory module via mod.rs
+    //
+    // Both are siblings of the parent of the `<host>.rs` file. The
+    // canonical sibling base directory is `file_path.parent()`. We
+    // additionally handle the `mod.rs` self-case: a `mod foo;` inside
+    // `<dir>/<sub>/mod.rs` looks for `<dir>/<sub>/foo.rs` or
+    // `<dir>/<sub>/foo/mod.rs` (same parent), which is already covered.
+    if let Some(parent) = file_path.parent() {
+        // file lives directly in `parent` — register it under its file
+        // stem (e.g. `crates/.../foo.rs` -> sibling `foo` at `parent`).
+        if let Some(stem) = relative.file_stem().and_then(|s| s.to_str()) {
+            if stem != "mod" && stem != "lib" && stem != "main" {
+                index
+                    .entry(rust_meta_sibling_key(parent, stem))
+                    .or_insert_with(|| fp.clone());
+            }
+        }
+        // file is a `mod.rs` — register it as the directory module of
+        // the *grandparent* directory under the directory's own name.
+        // (e.g. `crates/.../foo/mod.rs` -> sibling `foo` at `<...>/`)
+        if relative.file_stem() == Some(std::ffi::OsStr::new("mod")) {
+            if let (Some(grandparent), Some(dir_name)) =
+                (parent.parent(), parent.file_name().and_then(|n| n.to_str()))
+            {
+                index
+                    .entry(rust_meta_sibling_key(grandparent, dir_name))
+                    .or_insert_with(|| fp.clone());
+            }
+        }
+    }
+
+    // ---- Crate-aware registration -------------------------------------
+    if let Some((crate_root, crate_name)) = crate_info {
+        // Stash per-file metadata: which crate, and what is the file's
+        // path relative to the crate's src/ root.
+        index.insert(rust_meta_file_key(file_path), crate_root.to_path_buf());
+        index.insert(
+            rust_meta_crate_name_key(crate_root),
+            PathBuf::from(crate_name),
+        );
+        if let Some(src_rel) = rust_src_relative(file_path, crate_root) {
+            index.insert(
+                rust_meta_src_rel_key(file_path),
+                PathBuf::from(src_rel.clone()),
+            );
+
+            // The crate's lib.rs / main.rs IS the crate root module —
+            // register the bare crate name so cross-crate
+            // `use other_crate::foo` resolves to it.
+            if src_rel.is_empty() || src_rel == "lib" || src_rel == "main" {
+                index
+                    .entry(crate_name.to_string())
+                    .or_insert_with(|| fp.clone());
+            } else {
+                // `<crate_name>::<dotted-mod-path>` — what cross-crate
+                // imports look up directly.
+                let dotted = src_rel.replace('/', "::");
+                index
+                    .entry(format!("{}::{}", crate_name, dotted))
+                    .or_insert_with(|| fp.clone());
+
+                // For directory modules (`<crate_name>/src/foo/mod.rs`),
+                // the canonical import path is `<crate_name>::foo`, not
+                // `<crate_name>::foo::mod`. Strip a trailing `::mod`.
+                if let Some(without_mod) = dotted.strip_suffix("::mod") {
+                    index
+                        .entry(format!("{}::{}", crate_name, without_mod))
+                        .or_insert_with(|| fp.clone());
+                }
+            }
+        }
+    }
+
+    // ---- Legacy path-based fallback -----------------------------------
+    //
+    // Preserve the pre-fix `crate::<path-as-mod>` registration so the
+    // existing test corpus (and any project we haven't crate-detected)
+    // still gets *some* resolution. Note we keep this BUT we no longer
+    // emit the global bare-name basename — that was the source of the
+    // 36-incoming-edges bug.
     let stem = relative.with_extension("");
     let stem_str = stem.to_string_lossy();
     let crate_path = stem_str.replace('/', "::");
     if crate_path.starts_with("src::") {
         let without_src = crate_path.strip_prefix("src::").unwrap_or(&crate_path);
-        index.insert(format!("crate::{}", without_src), fp.clone());
+        index
+            .entry(format!("crate::{}", without_src))
+            .or_insert_with(|| fp.clone());
     }
-    index.insert(format!("crate::{}", crate_path), fp.clone());
-
-    if let Some(name) = stem.file_name() {
-        let name_str = name.to_string_lossy();
-        if name_str != "mod" && name_str != "lib" {
-            index.insert(name_str.to_string(), fp.clone());
-        }
-    }
+    index
+        .entry(format!("crate::{}", crate_path))
+        .or_insert_with(|| fp.clone());
 
     if relative.file_stem() == Some(std::ffi::OsStr::new("mod")) {
-        if let Some(parent) = stem.parent() {
-            if let Some(pkg_name) = parent.file_name() {
-                index.insert(pkg_name.to_string_lossy().to_string(), fp.clone());
-                index.insert(format!("crate::{}", pkg_name.to_string_lossy()), fp.clone());
+        if let Some(parent_path) = stem.parent() {
+            if let Some(pkg_name) = parent_path.file_name() {
+                index
+                    .entry(format!("crate::{}", pkg_name.to_string_lossy()))
+                    .or_insert_with(|| fp.clone());
             }
         }
     }
@@ -1679,7 +1974,7 @@ fn resolve_import(
             resolve_ts_import(module, root, current_file, index)
         }
         Language::Go => resolve_go_import(module, index),
-        Language::Rust => resolve_rust_import(module, index),
+        Language::Rust => resolve_rust_import(module, current_file, index),
         Language::Java => resolve_java_import(module, root, current_file, index),
         Language::Kotlin => resolve_kotlin_import(module, index),
         Language::C | Language::Cpp => resolve_c_cpp_import(import, root, current_file, index),
@@ -1899,39 +2194,212 @@ fn resolve_go_import(module: &str, index: &HashMap<String, PathBuf>) -> Option<P
 }
 
 /// Resolve Rust import to file path.
-fn resolve_rust_import(module: &str, index: &HashMap<String, PathBuf>) -> Option<PathBuf> {
-    // Try direct lookup
+/// Resolve a rust `use` / `mod` / `extern crate` reference to a file path
+/// inside the project.
+///
+/// (rust-deps-wiring-v1 / VAL-RUST-DEPS) Replaces the prior global-bare-name
+/// resolver, which routed every `mod tests;` declaration through whichever
+/// rust file happened to be named `tests.rs` first. Resolution now follows
+/// rust's real module rules:
+///
+/// 1. **stdlib filter.** `std::`, `core::`, `alloc::` are external —
+///    never internal.
+/// 2. **Bare name (no `::`).** Comes from `mod foo;` and from external
+///    crate names. First try as a *sibling* file of `current_file`
+///    (`<dir>/foo.rs` or `<dir>/foo/mod.rs`) via the per-file sibling
+///    index populated by [`index_rust_module`]. If that misses, fall
+///    back to a workspace cross-crate match (`use foo;` referring to
+///    a workspace member crate's `lib.rs`).
+/// 3. **`crate::foo::bar`.** Use the current file's crate (looked up in
+///    the stashed `\0rust_meta::` metadata) and query the
+///    `<crate_name>::foo::bar` index entry. Falls back to the legacy
+///    `crate::foo::bar` path-based key for non-crate-detected projects.
+/// 4. **`self::foo`.** Sibling resolution relative to `current_file`'s
+///    own module — same lookup as the bare-name case.
+/// 5. **`super::foo::bar`.** Treat as `<parent-mod>::foo::bar` within
+///    the same crate.
+/// 6. **`other_crate::foo`.** Direct `<crate_name>::foo` lookup, with
+///    progressive prefix shortening so deep paths fall back to the
+///    crate root.
+fn resolve_rust_import(
+    module: &str,
+    current_file: &Path,
+    index: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    if module.is_empty() {
+        return None;
+    }
+
+    // (1) stdlib filter — stops `std::path::Path` from accidentally
+    // matching any indexed `Path` symbol via prefix fallback.
+    if is_rust_stdlib(module) {
+        return None;
+    }
+
+    // (2) Bare name (no `::`) — `mod foo;` or external crate reference.
+    if !module.contains("::") {
+        // Try sibling resolution first using the current file's parent
+        // directory. This is what `mod foo;` is supposed to do.
+        if let Some(parent) = current_file.parent() {
+            let sibling_key = rust_meta_sibling_key(parent, module);
+            if let Some(path) = index.get(&sibling_key) {
+                return Some(path.clone());
+            }
+            // `mod.rs` files declare sub-modules whose siblings live in
+            // the same directory, which is already `parent`.
+            // For `lib.rs`/`main.rs`, modules live as direct children of
+            // `parent`, also already covered. No second lookup needed.
+        }
+        // Workspace cross-crate fallback: `use ignore;` (rare) or
+        // `extern crate ignore;` resolves to the `ignore` crate's
+        // lib.rs root. The crate name was registered under its own bare
+        // key in `index_rust_module` only for `src/lib.rs`/`src/main.rs`.
+        if let Some(path) = index.get(module) {
+            // Do NOT match the current file itself (a top-level
+            // `mod foo {}` inline module would otherwise resolve to
+            // its own host file via the file's `<crate>::foo` entry).
+            if path != current_file {
+                return Some(path.clone());
+            }
+        }
+        return None;
+    }
+
+    // (3-5) Qualified path. Look up the current file's owning crate so
+    // `crate::`/`self::`/`super::` can be rewritten to absolute
+    // `<crate_name>::...` keys.
+    let crate_root: Option<PathBuf> = index
+        .get(&rust_meta_file_key(current_file))
+        .cloned();
+    let crate_name: Option<String> = crate_root.as_ref().and_then(|root| {
+        index
+            .get(&rust_meta_crate_name_key(root))
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+    });
+    let src_rel: Option<String> = index
+        .get(&rust_meta_src_rel_key(current_file))
+        .and_then(|p| p.to_str().map(|s| s.to_string()));
+
+    // (3) `crate::foo::bar` — rewrite to `<crate_name>::foo::bar`.
+    if let Some(rest) = module.strip_prefix("crate::") {
+        if let Some(ref cname) = crate_name {
+            let candidate = format!("{}::{}", cname, rest);
+            if let Some(path) = lookup_rust_with_prefix_shrink(&candidate, index) {
+                return Some(path);
+            }
+        }
+        // Legacy path-based fallback (kept for non-crate-detected projects).
+        return lookup_rust_with_prefix_shrink(module, index);
+    }
+
+    // (4) `self::foo::bar` — relative to `current_file`'s own module.
+    if let Some(rest) = module.strip_prefix("self::") {
+        if let (Some(cname), Some(rel)) = (crate_name.as_ref(), src_rel.as_ref()) {
+            // The `self` module is the module declared by current_file.
+            // For `<crate>/src/foo/mod.rs`, that's `foo`. For
+            // `<crate>/src/foo.rs`, the file's module is `foo` too —
+            // but `self::bar` from foo.rs means foo's submodule `bar`,
+            // which doesn't exist (foo.rs has no submodules without a
+            // mod.rs/dir). For `<crate>/src/foo/bar.rs` declaring inline
+            // `mod baz {}`, `self::baz` means inside baz — irrelevant
+            // for file-graph deps. We treat `self::X::Y` as
+            // `<crate>::<self_mod>::X::Y`.
+            let self_mod = rust_self_module_path(rel);
+            let candidate = if self_mod.is_empty() {
+                format!("{}::{}", cname, rest)
+            } else {
+                format!("{}::{}::{}", cname, self_mod, rest)
+            };
+            return lookup_rust_with_prefix_shrink(&candidate, index);
+        }
+        return None;
+    }
+
+    // (5) `super::foo::bar` — walk up one module level (possibly more
+    // for nested supers: `super::super::foo`).
+    if module.starts_with("super::") {
+        if let (Some(cname), Some(rel)) = (crate_name.as_ref(), src_rel.as_ref()) {
+            let mut hops = 0usize;
+            let mut tail = module;
+            while let Some(rest) = tail.strip_prefix("super::") {
+                hops += 1;
+                tail = rest;
+            }
+            let self_mod = rust_self_module_path(rel);
+            let self_parts: Vec<&str> = if self_mod.is_empty() {
+                Vec::new()
+            } else {
+                self_mod.split("::").collect()
+            };
+            if hops > self_parts.len() {
+                return None;
+            }
+            let base_parts = &self_parts[..self_parts.len() - hops];
+            let candidate = if base_parts.is_empty() {
+                format!("{}::{}", cname, tail)
+            } else {
+                format!("{}::{}::{}", cname, base_parts.join("::"), tail)
+            };
+            return lookup_rust_with_prefix_shrink(&candidate, index);
+        }
+        return None;
+    }
+
+    // (6) `other_crate::foo::bar` — direct lookup against the
+    // crate-name-keyed entries. Stdlib was already filtered.
+    if let Some(path) = lookup_rust_with_prefix_shrink(module, index) {
+        return Some(path);
+    }
+    // Some projects pre-dating crate-detection still rely on the legacy
+    // `crate::<rest>` shape — try the path-based form once.
+    let legacy = format!("crate::{}", module);
+    lookup_rust_with_prefix_shrink(&legacy, index)
+}
+
+/// Look up `module` in `index`, then progressively shorten it by
+/// `::`-segment from the right. Skips synthetic `\0rust_meta::` keys
+/// (which can never be a legitimate rust import) and never returns a
+/// path stored under such a key.
+fn lookup_rust_with_prefix_shrink(
+    module: &str,
+    index: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    if module.starts_with(RUST_META_PREFIX) {
+        return None;
+    }
     if let Some(path) = index.get(module) {
         return Some(path.clone());
     }
-
-    // Handle crate:: and self:: and super:: prefixes
-    let normalized = if module.starts_with("crate::") {
-        module.to_string()
-    } else if module.starts_with("self::") || module.starts_with("super::") {
-        // These need context - return None for now
-        return None;
-    } else {
-        format!("crate::{}", module)
-    };
-
-    // Try progressively shorter prefixes
-    let parts: Vec<&str> = normalized.split("::").collect();
-    for i in (1..=parts.len()).rev() {
+    let parts: Vec<&str> = module.split("::").collect();
+    for i in (1..parts.len()).rev() {
         let prefix = parts[..i].join("::");
         if let Some(path) = index.get(&prefix) {
             return Some(path.clone());
         }
     }
-
-    // Try just the last component
-    if let Some(last) = parts.last() {
-        if let Some(path) = index.get(*last) {
-            return Some(path.clone());
-        }
-    }
-
     None
+}
+
+/// Compute the module-path spelling of `current_file` (given as its
+/// `src_rel`, e.g. `"foo/bar"` or `"foo/mod"`) — what `<crate>::<X>`
+/// the file itself defines.
+///
+/// Rules:
+///   - `""` (the crate root, lib.rs/main.rs) -> `""` (no module path).
+///   - `foo/mod`            -> `foo`        (directory module).
+///   - `foo/bar/mod`        -> `foo::bar`.
+///   - `foo`                -> `foo`        (file module).
+///   - `foo/bar`            -> `foo::bar`.
+fn rust_self_module_path(src_rel: &str) -> String {
+    if src_rel.is_empty() || src_rel == "lib" || src_rel == "main" {
+        return String::new();
+    }
+    let trimmed = src_rel.strip_suffix("/mod").unwrap_or(src_rel);
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        trimmed.replace('/', "::")
+    }
 }
 
 /// Resolve Java import to file path.

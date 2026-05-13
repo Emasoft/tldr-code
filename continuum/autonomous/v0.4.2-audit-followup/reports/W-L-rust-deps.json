@@ -1,0 +1,113 @@
+{
+  "worker": "W-L",
+  "release": "v0.4.2",
+  "bug_id": "C5",
+  "assertion": "VAL-RUST-DEPS",
+  "fix_id": "rust-deps-wiring-v1",
+  "summary": "Rewired `tldr deps` rust import-to-module resolution so workspace cross-crate `use other_crate::foo` and intra-crate `use crate::foo::bar` both resolve correctly, and `mod foo;` declarations look for SIBLING files instead of falling through to a global bare-name match.",
+  "root_cause": {
+    "headline": "Global bare-name index funnelled all `mod tests;` (and similar) into whichever rust file happened to be named `tests.rs` first, with no per-crate context for workspace-style projects.",
+    "details": [
+      "`index_rust_module` unconditionally inserted every rust file under its basename — `tests`, `walk`, `lib`, `mod` — into a single `HashMap<String, PathBuf>` namespace.",
+      "ripgrep's 9-crate workspace has dozens of files containing `mod tests;` at the bottom (unit test modules). Each of those bare-name lookups hit the FIRST `tests.rs` indexed, which happened to be the top-level integration test file `tests/tests.rs`. Result: 36 spurious incoming edges to `tests/tests.rs`.",
+      "Cross-crate `use ignore::WalkState` from `crates/core/main.rs` fell through entirely — nothing in the index spelled `ignore`.",
+      "Intra-crate `use crate::flags` worked by accident on `crates/core/main.rs` because `crates/core/flags/mod.rs` happened to be the first file indexed under `crate::flags`; other crates with same-named submodules would lose the race."
+    ]
+  },
+  "fix": {
+    "files_modified": [
+      "crates/tldr-core/src/analysis/deps.rs"
+    ],
+    "files_added": [
+      "crates/tldr-cli/tests/rust_deps_wiring_v1.rs"
+    ],
+    "approach": [
+      "Per-file crate discovery: `find_rust_crate_root` walks up from each rust file to the nearest ancestor `Cargo.toml`, reads `[package].name` / `[lib].name` via a hand-rolled mini-parser (`read_cargo_package_name`), and reports the crate root + crate name.",
+      "`build_module_index` does a single up-front pre-pass for rust to map each file to its owning crate root (cached so a workspace with N files in the same crate only parses one Cargo.toml).",
+      "Rewritten `index_rust_module(index, file_path, relative, crate_info)`: registers each file under `<crate_name>::<src_rel>` for cross-crate lookup; registers the bare crate name for lib.rs/main.rs (crate root module); records sibling-file metadata under a reserved `\\0rust_meta::sibling::<dir>::<name>` key; stashes per-file crate root + src-relative module path under reserved `\\0rust_meta::file::...` / `\\0rust_meta::src_rel::...` keys (NUL byte ensures collision-free coexistence with real rust paths in the shared map). The unconditional global bare-name insertion is REMOVED.",
+      "Rewritten `resolve_rust_import(module, current_file, index)`: stdlib filter -> bare-name sibling resolution -> `crate::`/`self::`/`super::` rewritten to absolute `<crate_name>::...` via stashed metadata -> direct cross-crate lookup with progressive `::`-prefix shrink. Synthetic `\\0rust_meta::` keys are explicitly filtered from the shrink fallback path."
+    ],
+    "preserved": [
+      "Legacy `crate::<path-as-mod-form>` registration kept as fallback for non-crate-detected projects (entry().or_insert_with so crate-aware entries win on collision).",
+      "All 90 `analysis::deps` unit tests still pass.",
+      "Kotlin deps wiring (W-H, 2addf07) unchanged and re-verified by the new test."
+    ]
+  },
+  "verification": {
+    "pre_fix": {
+      "tldr_deps_ripgrep": {
+        "files_total": 100,
+        "total_internal_deps": 172,
+        "cycles_found": 9,
+        "tests_rs_incoming_edges": 36,
+        "main_rs_resolves_ignore_crate": false
+      }
+    },
+    "post_fix": {
+      "tldr_deps_ripgrep": {
+        "files_total": 100,
+        "total_internal_deps": 140,
+        "files_with_edges": 58,
+        "unique_targets": 88,
+        "cycles_found": 9,
+        "tests_rs_incoming_edges": "absent from top-10 (was 36)",
+        "main_rs_resolves_ignore_crate": true,
+        "main_rs_deps": [
+          "crates/ignore/src/lib.rs",
+          "crates/core/flags/mod.rs",
+          "crates/core/messages.rs",
+          "crates/core/haystack.rs",
+          "crates/core/logger.rs",
+          "crates/core/search.rs"
+        ],
+        "ignore_lib_rs_deps_count": 7,
+        "top_5_incoming_targets": [
+          {"target": "crates/matcher/src/lib.rs", "count": 13},
+          {"target": "crates/core/flags/mod.rs", "count": 9},
+          {"target": "crates/globset/src/lib.rs", "count": 5},
+          {"target": "crates/ignore/src/gitignore.rs", "count": 4},
+          {"target": "crates/printer/src/color.rs", "count": 4}
+        ]
+      },
+      "explanation": "Total internal deps dropped 172->140 because 32 spurious bare-name matches were eliminated. The 140 remaining edges have a balanced distribution (max single-target = 13, was 36) and correctly include workspace cross-crate edges that were previously invisible."
+    }
+  },
+  "tests": {
+    "added": "crates/tldr-cli/tests/rust_deps_wiring_v1.rs",
+    "cases": [
+      {
+        "name": "rust_deps_has_non_zero_modules",
+        "verifies": "deps returns >0 files & >0 edges on ripgrep; AND no single target receives >5 incoming edges from spurious bare-name `mod tests;` matches (pre-fix: 36, post-fix: absent from top 10)."
+      },
+      {
+        "name": "rust_deps_resolves_intra_crate_use",
+        "verifies": "concrete edge crates/core/main.rs -> crates/core/flags/mod.rs (intra-crate `use crate::flags`), plus >=5 intra-crate edges across the workspace as a whole."
+      },
+      {
+        "name": "kotlin_deps_still_wires",
+        "verifies": "non-regression — kotlin-datetime still has >=100 internal edges (W-H baseline: 317)."
+      }
+    ],
+    "results": {
+      "rust_deps_wiring_v1": "3 passed / 0 failed",
+      "tldr_core_lib_full": "4767 passed / 0 failed / 342 ignored",
+      "deps_unit_tests": "90 passed / 0 failed / 21 ignored",
+      "smoke_14_milestone_files_plus_new": "75 passed / 0 failed across 15 test binaries"
+    }
+  },
+  "smoke": {
+    "command": "cargo test --release --features semantic -p tldr-cli --test pattern_match_arm_undercount_v1 --test p19_secondary_fixes_v1 --test lu001_ast_gate_v1 --test scala_column_unification_v1 --test scala_path_canonical_v1 --test cross_cmd_path_shape_v1 --test cross_lang_definition_column_v1 --test diff_column_one_indexed_v1 --test cpp_interface_macro_filter_v1 --test cpp_explain_refs_v1 --test cpp_class_count_agreement_v1 --test c_structure_schema_v1 --test kotlin_extract_params_v1 --test kotlin_deps_wiring_v1 --test rust_deps_wiring_v1",
+    "exit_code": 0,
+    "binaries": 15,
+    "tests_passed": 75,
+    "tests_failed": 0
+  },
+  "before_after_artifacts": {
+    "pre_snapshot": "/tmp/v042_W-L_pre.json",
+    "post_snapshot": "/tmp/v042_W-L_post.json"
+  },
+  "scope_notes": {
+    "in_scope": "Workspace-aware crate-root discovery via Cargo.toml; sibling-file resolution for `mod foo;`; `crate::`/`self::`/`super::` rewriting; cross-crate `use other_crate::foo`; stdlib filter.",
+    "out_of_scope": "Macro-imported re-exports (`pub use other_crate::foo as bar`), feature-gated `#[cfg(...)]` modules, build.rs-generated module paths. The fix uses purely lexical resolution off the file tree + Cargo.toml — no `cargo metadata` invocation or macro expansion."
+  }
+}
