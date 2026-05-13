@@ -167,8 +167,21 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
                     || stem.ends_with("Tests")
                     || path.components().any(|c| c.as_os_str() == "test"))
         }
-        // PHP: PHPUnit convention — class FooTest in FooTest.php.
-        Language::Php => lower.ends_with(".php") && (stem.ends_with("Test") || stem.ends_with("Tests")),
+        // PHP: PHPUnit convention — class FooTest in FooTest.php; plus the
+        // Symfony pattern of abstract bases ending in `TestCase`
+        // (e.g. `AbstractAsciiTestCase.php`) and the Codeception convention
+        // of acceptance tests ending in `Cest` (e.g. `LoginCest.php`).
+        // test-recognizer-expansion-v1 (P22 M-005): the file-name gate was
+        // previously `*Test|*Tests` only, dropping real-world test fixtures
+        // from large frameworks at the directory-walk stage.
+        Language::Php => {
+            lower.ends_with(".php")
+                && (stem.ends_with("Test")
+                    || stem.ends_with("Tests")
+                    || stem.ends_with("TestCase")
+                    || stem.ends_with("TestCases")
+                    || stem.ends_with("Cest"))
+        }
         // Swift: XCTest convention — files named `*Tests.swift`.
         Language::Swift => {
             lower.ends_with(".swift")
@@ -435,62 +448,83 @@ fn js_is_test_call(node: &Node, source: &[u8]) -> bool {
     matches!(name.as_str(), "it" | "test" | "fit" | "xit" | "xtest")
 }
 
-// -- Java/Kotlin: methods with @Test annotation -------------------------------
+// -- Java/Kotlin: methods with @Test / @ParameterizedTest / @RepeatedTest ----
+//
+// JUnit5 ships several annotations beyond the bare `@Test`:
+//   * `@ParameterizedTest` (junit-jupiter-params)
+//   * `@RepeatedTest`      (junit-jupiter-api)
+//   * `@TestFactory`       (dynamic tests)
+//   * `@TestTemplate`      (extension point for custom test types)
+// Kotest / JUnit4 / TestNG add a few more variants that share the same
+// tail identifier (`Test`). We accept any annotation whose tail
+// identifier is in this set — the import path / package qualifier is
+// irrelevant.
+//
+// test-recognizer-expansion-v1 (P22 M-005): the previous predicate hard-
+// coded the tail `"Test"`, silently dropping JUnit5 parameterized/repeated
+// tests at the AST count stage.
+const JVM_TEST_ANNOTATIONS: &[&str] = &[
+    "Test",
+    "ParameterizedTest",
+    "RepeatedTest",
+    "TestFactory",
+    "TestTemplate",
+];
+
 fn jvm_has_test_annotation(node: &Node, source: &[u8]) -> bool {
     // Java tree-sitter: `method_declaration` with a sibling `modifiers`
     // child containing `marker_annotation` / `annotation` whose name is
-    // `Test`. Kotlin (kotlin-ng): `function_declaration` with a `modifiers`
-    // child containing `annotation` -> `user_type` -> `type_identifier`
-    // text "Test".
+    // one of `JVM_TEST_ANNOTATIONS`. Kotlin (kotlin-ng):
+    // `function_declaration` with a `modifiers` child containing
+    // `annotation` -> `user_type` -> `type_identifier`.
     let kind = node.kind();
     if kind != "method_declaration" && kind != "function_declaration" {
         return false;
     }
 
-    // Walk this node's modifier subtree looking for an annotation whose
-    // last identifier component is "Test". Spans both Java and Kotlin AST
-    // shapes, since both use roughly the same node names.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "modifiers" {
-            if subtree_contains_annotation_named(&child, source, "Test") {
+            if subtree_contains_annotation_in(&child, source, JVM_TEST_ANNOTATIONS) {
                 return true;
             }
-        } else if child.kind() == "annotation" || child.kind() == "marker_annotation" {
-            if annotation_has_name(&child, source, "Test") {
-                return true;
-            }
+        } else if (child.kind() == "annotation" || child.kind() == "marker_annotation")
+            && annotation_name_in(&child, source, JVM_TEST_ANNOTATIONS)
+        {
+            return true;
         }
     }
     false
 }
 
-fn subtree_contains_annotation_named(node: &Node, source: &[u8], target: &str) -> bool {
+fn subtree_contains_annotation_in(node: &Node, source: &[u8], targets: &[&str]) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let kind = child.kind();
         if (kind == "annotation" || kind == "marker_annotation")
-            && annotation_has_name(&child, source, target)
+            && annotation_name_in(&child, source, targets)
         {
             return true;
         }
-        if subtree_contains_annotation_named(&child, source, target) {
+        if subtree_contains_annotation_in(&child, source, targets) {
             return true;
         }
     }
     false
 }
 
-/// True if `annotation_node` has its tail identifier equal to `target`
-/// (e.g. `@Test`, `@org.junit.Test`, `@org.junit.jupiter.api.Test`).
-fn annotation_has_name(annotation_node: &Node, source: &[u8], target: &str) -> bool {
+/// True if `annotation_node`'s tail identifier (after the last `.`) is in
+/// `targets`. Handles fully-qualified annotations like
+/// `@org.junit.jupiter.api.Test` and bare ones like `@ParameterizedTest`.
+fn annotation_name_in(annotation_node: &Node, source: &[u8], targets: &[&str]) -> bool {
     let text = node_text(*annotation_node, source);
-    // Strip leading `@` and any argument list, then compare the tail
-    // identifier (after the last `.`).
     let trimmed = text.trim_start_matches('@');
-    let head = trimmed.split(|c: char| c == '(' || c.is_whitespace()).next().unwrap_or("");
+    let head = trimmed
+        .split(|c: char| c == '(' || c.is_whitespace())
+        .next()
+        .unwrap_or("");
     let last = head.rsplit('.').next().unwrap_or("");
-    last == target
+    targets.iter().any(|t| *t == last)
 }
 
 // -- PHP: PHPUnit `public function test*` -------------------------------------
