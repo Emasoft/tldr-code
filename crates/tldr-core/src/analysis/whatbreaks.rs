@@ -586,7 +586,19 @@ pub fn whatbreaks_analysis(
             let impact_result =
                 run_impact_analysis(target, project_path, &call_graph, options.depth, language);
 
-            // Extract counts from successful result
+            // Extract counts from successful result and stash the function's
+            // defining file (if any) so the importers/change-impact sub-runners
+            // below can target it precisely.
+            //
+            // whatbreaks-sub-runners-v1 (v0.4.2 M-010): the Function branch
+            // historically only ran `impact` and silently left
+            // `importer_count` / `affected_test_count` at zero even when the
+            // target symbol clearly had both. The schema already had those
+            // fields — they just weren't wired. We now also run
+            // `run_importers_analysis` (symbol-name-based) and
+            // `run_change_impact_analysis` (file-based, using the impact
+            // report's resolved definition file when available).
+            let mut definition_file: Option<String> = None;
             if impact_result.success {
                 if let Some(data) = &impact_result.data {
                     if let Some(direct) = data.get("direct_callers").and_then(|v| v.as_u64()) {
@@ -599,19 +611,98 @@ pub fn whatbreaks_analysis(
                     }
                     // VAL-002 (#1.E): read the test-file count emitted by
                     // run_impact_analysis. Mirrors the direct/transitive
-                    // pattern above. The File-target branch populates this
-                    // same field via change_impact, but the Function path
-                    // had been silently leaving it at the
-                    // WhatbreaksSummary::default() value of 0.
+                    // pattern above. Note the change-impact sub-runner below
+                    // may overwrite this with a higher count when it
+                    // discovers tests not reachable through the caller tree.
                     if let Some(test_count) =
                         data.get("affected_test_count").and_then(|v| v.as_u64())
                     {
                         summary.affected_test_count = test_count as usize;
                     }
+                    // M-010: pull the defining file of the first target from
+                    // the impact report. `CallerTree.file` is project-relative.
+                    if let Some(targets) = data.get("report")
+                        .and_then(|r| r.get("targets"))
+                        .and_then(|t| t.as_object())
+                    {
+                        for tree in targets.values() {
+                            if let Some(f) = tree.get("file").and_then(|v| v.as_str()) {
+                                if !f.is_empty() {
+                                    definition_file = Some(f.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             sub_results.insert("impact".to_string(), impact_result);
+
+            // M-010: run the `importers` sub-runner. Prefer the file
+            // stem of the symbol's defining file (e.g.
+            // `lib/application.js` -> `application`) so the importers
+            // index sees the module name as it appears in import
+            // statements (e.g. `require('./application')`). Falls back
+            // to the bare target string when impact couldn't resolve a
+            // file. Using the path-as-module via `derive_module_name`
+            // (e.g. `lib.application`) under-matches in many ecosystems
+            // because real import statements use the basename or a
+            // relative path, not a dotted module path.
+            let importers_target = definition_file
+                .as_deref()
+                .and_then(|f| Path::new(f).file_stem())
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| target.to_string());
+            let importers_result =
+                run_importers_analysis(&importers_target, project_path, language);
+            if importers_result.success {
+                if let Some(data) = &importers_result.data {
+                    if let Some(count) = data.get("count").and_then(|v| v.as_u64()) {
+                        summary.importer_count = count as usize;
+                    }
+                }
+            }
+            sub_results.insert("importers".to_string(), importers_result);
+
+            // M-010: run the `change-impact` sub-runner against the function's
+            // defining file (when impact resolved it). This populates
+            // `affected_test_count` with tests that import/depend on the
+            // file even if they don't appear in the caller tree (e.g.,
+            // integration tests that exercise the file indirectly).
+            // Skipped when --quick or when impact couldn't resolve a file.
+            if options.quick {
+                sub_results.insert(
+                    "change-impact".to_string(),
+                    SubResult::skipped("Skipped due to --quick flag"),
+                );
+            } else if let Some(def_file) = definition_file {
+                let change_impact_result =
+                    run_change_impact_analysis(&def_file, project_path, language);
+                if change_impact_result.success {
+                    if let Some(data) = &change_impact_result.data {
+                        if let Some(tests) = data.get("affected_tests").and_then(|v| v.as_array())
+                        {
+                            // Prefer the larger count: change-impact may
+                            // discover tests the caller tree missed, but
+                            // never under-report what impact already found.
+                            let ci_tests = tests.len();
+                            if ci_tests > summary.affected_test_count {
+                                summary.affected_test_count = ci_tests;
+                            }
+                        }
+                    }
+                }
+                sub_results.insert("change-impact".to_string(), change_impact_result);
+            } else {
+                sub_results.insert(
+                    "change-impact".to_string(),
+                    SubResult::skipped(
+                        "Skipped: impact analysis could not resolve a defining file for the target",
+                    ),
+                );
+            }
         }
 
         TargetType::File => {
