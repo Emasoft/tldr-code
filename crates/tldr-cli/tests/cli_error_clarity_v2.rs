@@ -89,11 +89,31 @@ fn whatbreaks_on_file_clear_error() {
     assert_clear_file_error("whatbreaks", &["whatbreaks", "bar", &file_str, "-q"]);
 }
 
+// change-impact-file-or-dir-v1 (v0.4.2 bug-D1-D4): change-impact now
+// ACCEPTS a regular file path and promotes it to a single-file change
+// set. The original P2.BUG-4 contract (reject file with clear error) no
+// longer applies to change-impact — the inconsistency with other
+// inference commands (dead, smells, …) was the bug. The other three
+// commands (hubs, impact, whatbreaks) still reject files because they do
+// not have a "scope to one file" semantics.
+//
+// This test pins the new contract: passing a regular file succeeds and
+// emits a valid JSON report.
 #[test]
-fn change_impact_on_file_clear_error() {
+fn change_impact_on_file_now_succeeds() {
     let (_temp, file) = make_temp_project_with_file();
     let file_str = file.to_string_lossy().to_string();
-    assert_clear_file_error("change-impact", &["change-impact", &file_str, "-q"]);
+    let assert = tldr_cmd()
+        .args(["change-impact", &file_str, "--format", "json", "-q"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: Value = serde_json::from_str(&stdout).expect("change-impact must emit valid JSON");
+    assert!(
+        v.get("status").is_some(),
+        "expected status field in report; got: {}",
+        v
+    );
 }
 
 // =============================================================================

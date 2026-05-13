@@ -24,7 +24,7 @@ use tldr_core::{
 };
 
 use crate::output::{format_change_impact_text, OutputFormat, OutputWriter};
-use crate::path_validation::require_directory;
+use crate::path_validation::infer_project_root_for_file;
 
 /// Find tests affected by code changes
 #[derive(Debug, Args)]
@@ -113,36 +113,87 @@ impl ChangeImpactArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(self.output_format.unwrap_or(format), quiet);
 
-        // cli-error-clarity-v2 (P2.BUG-4): reject regular files up-front so
-        // callers don't get the cryptic "Git: Not a directory (os error 20)"
-        // surfaced from the git invocation downstream.
-        require_directory(&self.path, "change-impact")?;
+        // change-impact-file-or-dir-v1 (v0.4.2 bug-D1-D4): accept either a
+        // directory (project root, original semantics) or a regular file
+        // (single-file change set — infer the project root by walking up
+        // for a project-root marker). The previous behaviour rejected files
+        // up-front via `require_directory`, which was inconsistent with
+        // other inference commands (dead, smells, debt, …) that accept
+        // either shape, and which produced a "requires a directory" error
+        // that contradicted the catalog signature `change-impact [PATH]`.
+        if !self.path.exists() {
+            anyhow::bail!("Path not found: {}", self.path.display());
+        }
+        let (project, explicit_files_from_path): (PathBuf, Option<Vec<PathBuf>>) =
+            if self.path.is_file() {
+                // Single-file mode: infer the project root and promote the
+                // file to a one-element explicit change set. This forces
+                // DetectionMethod::Explicit downstream so the call graph is
+                // built from `project` but only this file is treated as
+                // "changed".
+                let inferred = infer_project_root_for_file(&self.path);
+                (inferred, Some(vec![self.path.clone()]))
+            } else if self.path.is_dir() {
+                (self.path.clone(), None)
+            } else {
+                anyhow::bail!(
+                    "change-impact: '{}' is neither a file nor a directory. Pass a project root or a source file.",
+                    self.path.display()
+                );
+            };
 
-        // Determine language (auto-detect from directory, default to Python)
-        let language = self
-            .lang
-            .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+        // Determine language (auto-detect from directory, default to Python).
+        // When we were given a file, prefer the file's extension over the
+        // inferred project root's mixed-language contents.
+        let language = self.lang.unwrap_or_else(|| {
+            if self.path.is_file() {
+                self.path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(Language::from_extension)
+                    .unwrap_or_else(|| {
+                        Language::from_directory(&project).unwrap_or(Language::Python)
+                    })
+            } else {
+                Language::from_directory(&project).unwrap_or(Language::Python)
+            }
+        });
 
-        // Determine detection method based on flags
-        let detection = self.determine_detection_method();
+        // Determine detection method. When the caller passed a file path
+        // and did NOT pass any explicit override flags, we promote to
+        // Explicit mode with the file as the change set. Otherwise, the
+        // user's explicit flags (--files / --base / --staged / --uncommitted)
+        // win and they take precedence over the file-derived change set.
+        let user_specified_detection = !self.files.is_empty()
+            || self.base.is_some()
+            || self.staged
+            || self.uncommitted;
+        let (detection, explicit_files) = match (&explicit_files_from_path, user_specified_detection)
+        {
+            (Some(files_from_path), false) => {
+                (DetectionMethod::Explicit, Some(files_from_path.clone()))
+            }
+            _ => {
+                let det = self.determine_detection_method();
+                let ef = if !self.files.is_empty() {
+                    Some(self.files.clone())
+                } else {
+                    None
+                };
+                (det, ef)
+            }
+        };
 
         writer.progress(&format!(
             "Detecting changes via {} for {:?} in {}...",
             detection,
             language,
-            self.path.display()
+            project.display()
         ));
-
-        // Prepare explicit files if provided
-        let explicit_files = if !self.files.is_empty() {
-            Some(self.files.clone())
-        } else {
-            None
-        };
 
         // Call core change_impact_extended function
         let report = change_impact_extended(
-            &self.path,
+            &project,
             detection,
             language,
             self.depth,
