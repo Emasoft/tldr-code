@@ -397,8 +397,14 @@ pub fn change_impact_extended(
     let changed_functions = find_functions_in_files(&call_graph, &changed_files, project);
 
     // Step 4: Find all affected functions (callers of changed functions) with depth limit
-    let affected_functions =
+    let mut affected_functions =
         find_affected_functions_with_depth(&call_graph, &changed_functions, depth);
+
+    // change-impact-line-attribution-v1 (v0.4.2 M-004): enrich each
+    // affected function with its real line/visibility/decorators from the
+    // AST. Without this pass, every `affected_functions[i].line` is 0 —
+    // the cluster M-004 bug that this fix addresses.
+    enrich_affected_functions_from_ast(&mut affected_functions, project);
 
     // Step 5: Find all project files
     let all_files = get_all_project_files(project, language)?;
@@ -894,6 +900,143 @@ fn find_functions_in_files(
     }
 
     functions
+}
+
+/// change-impact-line-attribution-v1 (v0.4.2 M-004): populate
+/// `FunctionRef.line` (and `signature` / `is_public` / `is_test` /
+/// `has_decorator` / `decorator_names`) for the affected-functions list.
+///
+/// `find_functions_in_files` and `find_affected_functions_with_depth`
+/// construct `FunctionRef`s via `FunctionRef::new`, which leaves `line: 0`
+/// and all metadata bits at their defaults. The call graph's `Edge`
+/// representation does not carry the function's defining line, so the
+/// information has to come from the AST. This helper does one AST
+/// extraction per unique file (cached) and joins on (`file`, `name`),
+/// including the qualified `Class.method` form that `find_functions_in_files`
+/// emits.
+///
+/// Names that do not resolve to an AST function/method definition keep
+/// `line: 0` — examples include closures with synthesised names, names
+/// emitted by callgraph builders for constructs whose definition lives
+/// in a non-source-file location (build scripts, generated bindings) and
+/// names produced by language plugins whose extractor is not yet wired.
+fn enrich_affected_functions_from_ast(
+    functions: &mut [FunctionRef],
+    project_root: &Path,
+) {
+    use std::collections::HashMap;
+
+    // Group entries by file so each file is parsed at most once.
+    let mut indices_by_file: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    for (idx, f) in functions.iter().enumerate() {
+        indices_by_file.entry(f.file.clone()).or_default().push(idx);
+    }
+
+    for (rel_file, indices) in indices_by_file {
+        let absolute_path = if rel_file.is_absolute() {
+            rel_file.clone()
+        } else {
+            project_root.join(&rel_file)
+        };
+
+        let module_info = match crate::ast::extract_file(&absolute_path, Some(project_root)) {
+            Ok(m) => m,
+            Err(_) => continue, // Leave entries at line:0 if AST extraction fails.
+        };
+
+        // Build a (name -> (line, is_public, decorator_count, is_method))
+        // lookup, including the qualified `Class.method` form so we match
+        // the same naming scheme used by `find_functions_in_files` Pass-2.
+        // Visibility heuristics mirror what `dead::collect_all_functions`
+        // does, but staying conservative: when in doubt, leave bits at
+        // false so we don't quietly change downstream semantics.
+        let mut lookup: HashMap<String, (u32, bool, Vec<String>, bool)> = HashMap::new();
+        let language = module_info.language;
+        for func in &module_info.functions {
+            let is_public = infer_public_visibility(&func.name, language, &func.decorators);
+            lookup.insert(
+                func.name.clone(),
+                (func.line_number, is_public, func.decorators.clone(), false),
+            );
+        }
+        for class in &module_info.classes {
+            let is_trait = matches!(
+                language,
+                Language::Java
+                    | Language::Kotlin
+                    | Language::TypeScript
+                    | Language::CSharp
+                    | Language::Scala
+                    | Language::Swift
+            ) && class
+                .decorators
+                .iter()
+                .any(|d| d.contains("interface") || d.contains("abstract"));
+            for method in &class.methods {
+                let qualified = format!("{}.{}", class.name, method.name);
+                let is_public =
+                    infer_public_visibility(&method.name, language, &method.decorators);
+                lookup.insert(
+                    qualified,
+                    (
+                        method.line_number,
+                        is_public,
+                        method.decorators.clone(),
+                        is_trait,
+                    ),
+                );
+                // Also index the bare method name so call-graph edges that
+                // use the short form (some language plugins emit `method`
+                // rather than `Class.method`) still join.
+                lookup
+                    .entry(method.name.clone())
+                    .or_insert((method.line_number, is_public, method.decorators.clone(), is_trait));
+            }
+        }
+
+        for idx in indices {
+            let entry = &mut functions[idx];
+            if let Some((line, is_public, decorators, is_trait_method)) =
+                lookup.get(&entry.name).cloned()
+            {
+                entry.line = line;
+                // Only overwrite metadata bits that are still at their
+                // default. This preserves any enrichment that an upstream
+                // caller may have done (none today, but keeps the helper
+                // composable).
+                if !entry.is_public {
+                    entry.is_public = is_public;
+                }
+                if !entry.has_decorator && !decorators.is_empty() {
+                    entry.has_decorator = true;
+                }
+                if entry.decorator_names.is_empty() && !decorators.is_empty() {
+                    entry.decorator_names = decorators;
+                }
+                if !entry.is_trait_method {
+                    entry.is_trait_method = is_trait_method;
+                }
+            }
+        }
+    }
+}
+
+/// Conservative visibility inference shared between the AST enrichment
+/// path and downstream consumers. Mirrors the language conventions used
+/// in `dead::infer_visibility_from_name` but kept local to avoid pulling
+/// the entire dead-code module into the change-impact compile graph.
+fn infer_public_visibility(name: &str, language: Language, decorators: &[String]) -> bool {
+    if !decorators.is_empty() {
+        // Decorated functions are typically framework entry points.
+        return true;
+    }
+    match language {
+        Language::Go => name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
+        Language::Python => !name.starts_with('_'),
+        Language::JavaScript | Language::TypeScript => true,
+        Language::Rust => false, // No reliable signal from name alone.
+        _ => true,
+    }
 }
 
 /// Find all functions affected by changes with depth limiting
