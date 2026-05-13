@@ -1,0 +1,74 @@
+{
+  "worker": "W-H",
+  "assertion": "VAL-KT-DEPS",
+  "bug": "v0.4.2 bug-B5 / CF-KT-02",
+  "title": "kotlin tldr deps module-graph wiring",
+  "status": "PASS",
+  "summary": "Kotlin was missing from the resolve_import dispatch in analysis/deps.rs, so although the per-file kotlin import parser worked correctly, no kotlin imports were ever mapped to in-repo files. On /tmp/repos/kotlin-datetime (223 .kt files, package kotlinx.datetime) every file came back with an empty internal_dependencies list, making every file simultaneously a leaf and a root. Fix adds package-aware indexing (reads `package <name>` from each file) plus a kotlin import resolver that handles wildcards (`import com.foo.*`), static-member imports, and a stdlib filter for `kotlin.*`, `kotlinx.coroutines.*`, `kotlinx.serialization.*`, etc.",
+  "files_changed": [
+    "crates/tldr-core/src/analysis/deps.rs",
+    "crates/tldr-cli/tests/kotlin_deps_wiring_v1.rs"
+  ],
+  "test_file": "crates/tldr-cli/tests/kotlin_deps_wiring_v1.rs",
+  "tests": [
+    {
+      "name": "kotlin_deps_has_non_zero_modules",
+      "asserts": "tldr deps /tmp/repos/kotlin-datetime produces > 0 total internal edges",
+      "pre_fix": "FAIL (0 edges across 223 files)",
+      "post_fix": "PASS (317 edges)"
+    },
+    {
+      "name": "kotlin_deps_resolves_internal_imports",
+      "asserts": "at least one *.kt -> *.kt edge exists in the resolved graph",
+      "pre_fix": "FAIL (no internal edges)",
+      "post_fix": "PASS"
+    },
+    {
+      "name": "python_deps_still_works",
+      "asserts": "non-regression: flask deps still aggregates >= 50 internal edges",
+      "pre_fix": "PASS (183 edges)",
+      "post_fix": "PASS (still 183 edges)"
+    }
+  ],
+  "pre_fix_snapshot": {
+    "command": "target/release/tldr deps /tmp/repos/kotlin-datetime",
+    "path": "/tmp/v042_pre_VAL-KT-DEPS.json",
+    "files": 223,
+    "total_internal_edges": 0,
+    "files_with_at_least_one_dep": 0
+  },
+  "post_fix_snapshot": {
+    "command": "target/release/tldr deps /tmp/repos/kotlin-datetime",
+    "path": "/tmp/v042_post_VAL-KT-DEPS.json",
+    "files": 223,
+    "total_internal_edges": 317,
+    "files_with_at_least_one_dep": 160,
+    "sample_edge": {
+      "from": "core/common/src/DateTimePeriod.kt",
+      "to": "core/common/src/serializers/DateTimePeriodSerializers.kt"
+    }
+  },
+  "fix_components": [
+    "read_kotlin_package(file_path): scans first 4KB of each kotlin file for `package <qualified.name>` declaration, skips block comments and file-level annotations",
+    "index_kotlin_module: now accepts the parsed package and registers the file under <package>.<simple_name> (canonical FQN), <package> (wildcard target), simple name, and the path-derived FQN as a fallback",
+    "resolve_kotlin_import: handles wildcards, direct lookup, static-member imports (strip last 1-2 components), and bare simple-name fallback",
+    "is_kotlin_stdlib: filters kotlin.*, java.*, javax.*, and known separately-published kotlinx.* artifacts (coroutines, serialization, io, atomicfu, collections.immutable). Intentionally does NOT filter `kotlinx.datetime` or other roots that may BE the project."
+  ],
+  "scope_guardrails": {
+    "minimal_complete_in_v042": "package-aware indexing covers same-package, cross-package, and wildcard imports. No new abstraction; pattern mirrors Java resolver.",
+    "deferred_to_v043": "Aliased imports (`import foo.Bar as Baz`) only affect symbol-name resolution in `tldr explain`/`tldr references`, not file-level dependency edges. Not in scope here."
+  },
+  "smoke": {
+    "tldr_core_lib": "4767 passed, 0 failed, 342 ignored",
+    "deps_unit_tests": "79 passed, 0 failed (analysis::deps_tests)",
+    "kotlin_deps_wiring_v1": "3 passed, 0 failed",
+    "kotlin_related_cli_tests": "all kotlin tests still pass (definition, context, specs, imports, todo, expression, etc.)",
+    "preexisting_failures_unaffected": "Pre-existing failures in cli_tests/test_structure_json_output, php specs, scala importers, ts taint, etc. are unrelated to deps.rs and unchanged by this fix"
+  },
+  "dogfood_evidence": [
+    "/tmp/v042_W-H_core_deps_struct.json — pre-fix structure dump of deps.rs",
+    "/tmp/v042_pre_VAL-KT-DEPS.json — pre-fix kotlin-datetime deps (0 edges)",
+    "/tmp/v042_pre_VAL-KT-DEPS_imports.json — pre-fix imports for Instant.kt (parser works fine)",
+    "/tmp/v042_post_VAL-KT-DEPS.json — post-fix kotlin-datetime deps (317 edges)"
+  ]
+}

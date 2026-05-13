@@ -1074,7 +1074,10 @@ fn index_module_for_language(
         Language::Go => index_go_module(index, file_path, relative, go_module_path),
         Language::Rust => index_rust_module(index, file_path, relative),
         Language::Java => index_java_module(index, file_path, relative),
-        Language::Kotlin => index_kotlin_module(index, file_path, relative),
+        Language::Kotlin => {
+            let package = read_kotlin_package(file_path);
+            index_kotlin_module(index, file_path, relative, package.as_deref());
+        }
         Language::C | Language::Cpp => index_c_cpp_module(index, file_path, relative),
         Language::Ruby => index_ruby_module(index, file_path, relative),
         Language::CSharp => index_csharp_module(index, file_path, relative),
@@ -1293,7 +1296,32 @@ fn index_java_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, rel
     }
 }
 
-fn index_kotlin_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, relative: &Path) {
+/// Index a Kotlin source file for `tldr deps` import resolution.
+///
+/// (kotlin-deps-wiring-v1 / VAL-KT-DEPS) Kotlin's package declarations
+/// are decoupled from the on-disk directory layout — `core/common/src/Instant.kt`
+/// can declare `package kotlinx.datetime`. The Java-style "infer the FQN from
+/// the path" heuristic therefore registers files under names that no real
+/// kotlin import will ever spell. Pre-fix, that meant
+/// `tldr deps /tmp/repos/kotlin-datetime` produced zero internal edges
+/// across 223 files.
+///
+/// Post-fix, when the caller can pass in the file's actual
+/// `package <qualified.name>` declaration we register the file under:
+///   - `<package>.<simple-name>` — what `import com.foo.bar.Simple` looks up
+///   - `<package>` — used as the wildcard target (`import com.foo.bar.*`)
+///     resolution scan in [`resolve_kotlin_import`]
+///   - the bare simple name (last-resort matching for top-level files)
+///
+/// We still keep the path-derived qualified name as a fallback for the
+/// (rare) case where the project actually does follow `src/main/kotlin/foo/Bar.kt`
+/// without an overriding `package`.
+fn index_kotlin_module(
+    index: &mut HashMap<String, PathBuf>,
+    file_path: &Path,
+    relative: &Path,
+    package: Option<&str>,
+) {
     let fp = file_path.to_path_buf();
     let stem_path = relative.with_extension("");
     let path_str = stem_path.to_string_lossy();
@@ -1315,12 +1343,134 @@ fn index_kotlin_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, r
         index.insert(qualified_name, fp.clone());
     }
 
-    if let Some(class_name) = relative.file_stem() {
-        let name_str = class_name.to_string_lossy();
-        if !name_str.is_empty() {
-            index.insert(name_str.to_string(), fp.clone());
+    let simple = relative
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if !simple.is_empty() {
+        // Bare simple name. Use entry/or_insert so the first-seen file wins
+        // (avoids overwriting on duplicate basenames across modules).
+        index.entry(simple.clone()).or_insert_with(|| fp.clone());
+    }
+
+    if let Some(pkg) = package {
+        let pkg = pkg.trim();
+        if !pkg.is_empty() {
+            // Canonical FQN — what `import <pkg>.<simple>` will look up.
+            if !simple.is_empty() {
+                let fqn = format!("{}.{}", pkg, simple);
+                index.insert(fqn, fp.clone());
+            }
+            // Package itself — used by the wildcard import scan
+            // (`import <pkg>.*`) so we don't have to walk every key.
+            // First file in a package wins (deterministic).
+            index.entry(pkg.to_string()).or_insert_with(|| fp.clone());
         }
     }
+}
+
+/// Read the `package <qualified.name>` declaration from a Kotlin source file.
+///
+/// (kotlin-deps-wiring-v1) Kotlin packages are independent of directory
+/// layout, so we have to read the declaration directly. We scan only the
+/// first ~64 lines and bail at the first `class`/`fun`/`object` token,
+/// which is enough for any well-formed Kotlin file (the `package` line
+/// must precede all declarations).
+///
+/// Returns `None` for files with no package declaration (top-level
+/// scripts, `build.gradle.kts`, etc.).
+fn read_kotlin_package(file_path: &Path) -> Option<String> {
+    // Cap the read at 4KB — package always lives near the top, and we
+    // do not want to slurp megabyte generated files (e.g. `zoneInfos.kt`).
+    let bytes = match std::fs::read(file_path) {
+        Ok(b) => b,
+        Err(_) => return None,
+    };
+    let head = if bytes.len() > 4096 {
+        &bytes[..4096]
+    } else {
+        &bytes[..]
+    };
+    let text = std::str::from_utf8(head).ok()?;
+
+    // Strip /* ... */ block comments by walking byte-by-byte. Kotlin
+    // headers commonly begin with a copyright block comment, so this is
+    // the easiest way to skip them without misreading `package` from
+    // inside the comment.
+    let mut cleaned = String::with_capacity(text.len());
+    {
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        let mut in_block = false;
+        while i < bytes.len() {
+            if in_block {
+                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    in_block = false;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                in_block = true;
+                i += 2;
+            } else {
+                cleaned.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+    }
+
+    for raw_line in cleaned.lines() {
+        let mut line = raw_line.trim();
+        // Strip line comment
+        if let Some(pos) = line.find("//") {
+            line = line[..pos].trim();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        // Skip file-level annotations (`@file:JvmName(...)`, etc.)
+        if line.starts_with('@') {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("package") {
+            // Must be followed by whitespace, not e.g. `packageX`.
+            let rest = match rest.chars().next() {
+                Some(c) if c.is_whitespace() => rest.trim_start(),
+                _ => continue,
+            };
+            // Drop trailing semicolon / inline comment crumbs, then keep
+            // only the qualified-id chars to be defensive.
+            let pkg: String = rest
+                .trim_end_matches(';')
+                .trim()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '.' || *c == '_')
+                .collect();
+            if !pkg.is_empty() {
+                return Some(pkg);
+            }
+            return None;
+        }
+
+        // Package can only appear before any import or declaration.
+        // If we see one of these without having seen `package`, abort.
+        if line.starts_with("import")
+            || line.starts_with("class ")
+            || line.starts_with("fun ")
+            || line.starts_with("object ")
+            || line.starts_with("interface ")
+            || line.starts_with("typealias ")
+            || line.starts_with("enum ")
+            || line.starts_with("val ")
+            || line.starts_with("var ")
+        {
+            return None;
+        }
+    }
+    None
 }
 
 fn index_c_cpp_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, relative: &Path) {
@@ -1531,6 +1681,7 @@ fn resolve_import(
         Language::Go => resolve_go_import(module, index),
         Language::Rust => resolve_rust_import(module, index),
         Language::Java => resolve_java_import(module, root, current_file, index),
+        Language::Kotlin => resolve_kotlin_import(module, index),
         Language::C | Language::Cpp => resolve_c_cpp_import(import, root, current_file, index),
         Language::Ruby => resolve_ruby_import(import, root, current_file, index),
         Language::CSharp => resolve_csharp_import(import, root, current_file, index),
@@ -1865,6 +2016,131 @@ pub fn is_java_stdlib(module_name: &str) -> bool {
         || module_name.starts_with("com.sun.")
         || module_name.starts_with("org.w3c.")
         || module_name.starts_with("org.xml.")
+}
+
+// =============================================================================
+// Kotlin import resolution
+// =============================================================================
+
+/// Resolve a Kotlin `import <qualified.name>` to a file path inside the project.
+///
+/// (kotlin-deps-wiring-v1 / VAL-KT-DEPS) Kotlin's resolution rules mirror Java's
+/// in that imports are qualified package names, but two differences make the
+/// Java resolver insufficient out of the box:
+///
+///   * Kotlin packages are decoupled from directory layout — see
+///     [`index_kotlin_module`]. We rely on the package-aware index
+///     populated there, plus a wildcard scan for `import foo.bar.*`.
+///   * Kotlin stdlib lives under `kotlin.*` and `kotlinx.coroutines.*` —
+///     these must be filtered out so they don't pollute the external
+///     dependency tally.
+fn resolve_kotlin_import(
+    module: &str,
+    index: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    if is_kotlin_stdlib(module) {
+        return None;
+    }
+
+    // Wildcard: `import com.foo.bar.*` — return any file whose qualified
+    // name starts with `com.foo.bar.`.
+    if let Some(prefix) = module.strip_suffix(".*").or_else(|| module.strip_suffix("*")) {
+        // Try the bare package key first (registered by index_kotlin_module).
+        let prefix = prefix.trim_end_matches('.');
+        if !prefix.is_empty() {
+            if let Some(path) = index.get(prefix) {
+                return Some(path.clone());
+            }
+            // Scan for any registered FQN inside this package.
+            for (key, path) in index {
+                if key.starts_with(prefix)
+                    && key.len() > prefix.len()
+                    && key.as_bytes()[prefix.len()] == b'.'
+                {
+                    let remainder = &key[prefix.len() + 1..];
+                    if !remainder.contains('.') {
+                        return Some(path.clone());
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    // Direct lookup of the full qualified name.
+    if let Some(path) = index.get(module) {
+        return Some(path.clone());
+    }
+
+    // Static / nested imports such as `kotlin.time.Duration.Companion.seconds`
+    // or `com.foo.bar.Outer.Companion.factory` — strip the trailing component
+    // and retry, repeating once more for member-of-companion cases.
+    if let Some(dot) = module.rfind('.') {
+        let parent = &module[..dot];
+        if let Some(path) = index.get(parent) {
+            return Some(path.clone());
+        }
+        if let Some(dot2) = parent.rfind('.') {
+            let grandparent = &parent[..dot2];
+            if let Some(path) = index.get(grandparent) {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    // Last-resort: bare simple name (matches `index_kotlin_module`'s
+    // simple-name entry).
+    if let Some(dot) = module.rfind('.') {
+        let simple = &module[dot + 1..];
+        if !simple.is_empty() {
+            if let Some(path) = index.get(simple) {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a Kotlin import resolves to the Kotlin/Java standard library.
+///
+/// Returns `true` for the Kotlin runtime (`kotlin.*`), JetBrains coroutines
+/// / serialization / etc. shipped as separate artifacts but which the
+/// resolver should still treat as external (`kotlinx.coroutines.*`,
+/// `kotlinx.serialization.*`, `kotlinx.io.*`), and the host JVM/JDK packages
+/// that kotlin-jvm code routinely imports (`java.*`, `javax.*`). Project
+/// code under any other `kotlinx.*` namespace (e.g. `kotlinx.datetime` —
+/// which is the corpus we test against in `kotlin_deps_wiring_v1`) is NOT
+/// considered stdlib and must be resolved normally.
+pub fn is_kotlin_stdlib(module_name: &str) -> bool {
+    if is_java_stdlib(module_name) {
+        return true;
+    }
+    if module_name == "kotlin" || module_name.starts_with("kotlin.") {
+        return true;
+    }
+    // Subset of `kotlinx.*` artifacts shipped as separate Kotlin
+    // libraries rather than user project code. We intentionally exclude
+    // `kotlinx.datetime` and any other namespace that is regularly the
+    // ROOT of a project (we'd otherwise resolve nothing for the
+    // kotlin-datetime corpus).
+    const KOTLINX_STDLIB_BASES: &[&str] = &[
+        "kotlinx.coroutines",
+        "kotlinx.serialization",
+        "kotlinx.io",
+        "kotlinx.atomicfu",
+        "kotlinx.collections.immutable",
+    ];
+    for base in KOTLINX_STDLIB_BASES {
+        if module_name == *base {
+            return true;
+        }
+        let with_dot = format!("{}.", base);
+        if module_name.starts_with(&with_dot) {
+            return true;
+        }
+    }
+    false
 }
 
 // =============================================================================
