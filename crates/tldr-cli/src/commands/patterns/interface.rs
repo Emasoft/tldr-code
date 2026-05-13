@@ -149,7 +149,15 @@ fn method_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::TypeScript | Language::JavaScript => {
             &["method_definition", "public_field_definition"]
         }
-        Language::C | Language::Cpp => &["function_definition"],
+        // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE):
+        // include `declaration` and `field_declaration` so member-function
+        // *declarations* in header files (e.g. `int Parse(const char* xml);`)
+        // surface as methods, not just inline `function_definition` bodies.
+        // Non-function declarations (fields, typedefs) are filtered out by
+        // `is_cpp_member_function_declaration` inside collect_methods_from_body.
+        Language::C | Language::Cpp => {
+            &["function_definition", "field_declaration", "declaration"]
+        }
         Language::Ruby => &["method", "singleton_method"],
         Language::CSharp => &["method_declaration", "constructor_declaration"],
         Language::Scala => &["function_definition", "def_definition"],
@@ -292,6 +300,23 @@ fn is_node_public(node: Node, source: &[u8], lang: Language) -> bool {
 
 /// Get the name of a definition node based on language.
 fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option<String> {
+    // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE): when
+    // tree-sitter-cpp misparses `class TINYXML2_LIB Foo { ... };` as a
+    // function_definition wrapping a `class_specifier` whose `name` field
+    // points at the export-macro identifier (`TINYXML2_LIB`, `MYLIB_EXPORT`,
+    // …), the canonical `child_by_field_name("name")` lookup below would
+    // surface the MACRO as the class name. Detect the misparse shape
+    // (class_specifier with no body field, parent is function_definition,
+    // followed by an `identifier` sibling) and return the corrected real
+    // class name instead. See BUG-CPP-P20-02 / tinyxml2.h regression.
+    if matches!(lang, Language::Cpp)
+        && matches!(node.kind(), "class_specifier" | "struct_specifier")
+    {
+        if let Some(corrected) = extract_cpp_macro_misparsed_class_name(node, source) {
+            return Some(corrected);
+        }
+    }
+
     // First try the common "name" field
     if let Some(name_node) = node.child_by_field_name("name") {
         return Some(node_text(name_node, source).to_string());
@@ -485,6 +510,137 @@ fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option
     }
 
     None
+}
+
+/// cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE):
+/// Detect the export-macro misparse shape and return the real class name.
+///
+/// tree-sitter-cpp parses `class TINYXML2_LIB Foo { ... };` as:
+///   function_definition
+///     class_specifier (name=type_identifier "TINYXML2_LIB", no body field)
+///     identifier "Foo"             <-- the REAL class name
+///     [ERROR : public Base]?       <-- base-clause hint (optional)
+///     compound_statement { ... }   <-- the REAL class body
+///
+/// Returns `Some(real_name)` only when the class_specifier:
+///   1. has no `body` field of its own (would have been `field_declaration_list`),
+///   2. has a `function_definition` parent, AND
+///   3. an `identifier` sibling appears after it inside that parent.
+///
+/// Otherwise returns `None` so callers fall back to the canonical name field.
+fn extract_cpp_macro_misparsed_class_name(
+    class_node: Node,
+    source: &[u8],
+) -> Option<String> {
+    // Real class declarations have a field_declaration_list body. If a body
+    // is present, this is NOT the macro-misparse shape.
+    if class_node.child_by_field_name("body").is_some() {
+        return None;
+    }
+    // Defense-in-depth: also reject if the class_specifier has a
+    // field_declaration_list anywhere among its direct children (some
+    // grammar versions may not expose it via the "body" field name).
+    let mut self_cursor = class_node.walk();
+    for child in class_node.children(&mut self_cursor) {
+        if child.kind() == "field_declaration_list" {
+            return None;
+        }
+    }
+
+    // Look up to a function_definition parent — that's the misparse wrapper.
+    let parent = class_node.parent()?;
+    if parent.kind() != "function_definition" {
+        return None;
+    }
+
+    // Find the class_specifier's position among parent's children, then
+    // scan forward for the first `identifier` (the real class name).
+    let mut pcursor = parent.walk();
+    let mut saw_class_specifier = false;
+    for sib in parent.children(&mut pcursor) {
+        if !saw_class_specifier {
+            if sib.id() == class_node.id() {
+                saw_class_specifier = true;
+            }
+            continue;
+        }
+        // After the class_specifier, the next bare `identifier` is the
+        // real class name. Skip ERROR / compound_statement wrappers.
+        if sib.kind() == "identifier" {
+            let text = node_text(sib, source).to_string();
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+/// cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): return the
+/// `compound_statement` sibling that holds the real class body when
+/// `class_specifier` is the macro-misparse shape. Returns `None` for the
+/// canonical (well-parsed) shape so callers fall back to
+/// `field_declaration_list`.
+fn extract_cpp_macro_misparsed_class_body<'a>(class_node: Node<'a>) -> Option<Node<'a>> {
+    if class_node.child_by_field_name("body").is_some() {
+        return None;
+    }
+    let parent = class_node.parent()?;
+    if parent.kind() != "function_definition" {
+        return None;
+    }
+    let mut pcursor = parent.walk();
+    let mut saw_class_specifier = false;
+    for sib in parent.children(&mut pcursor) {
+        if !saw_class_specifier {
+            if sib.id() == class_node.id() {
+                saw_class_specifier = true;
+            }
+            continue;
+        }
+        if sib.kind() == "compound_statement" {
+            return Some(sib);
+        }
+    }
+    None
+}
+
+/// cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): true iff this
+/// `function_definition` is actually a macro-prefixed class declaration
+/// (e.g. `class TINYXML2_LIB Foo { ... };`) that tree-sitter-cpp misparsed.
+/// Used by the deep walker so the misparsed wrapper is not emitted as a
+/// top-level function (the inner class_specifier produces the class entry
+/// instead).
+fn is_cpp_macro_misparsed_class_wrapper(func_def: Node) -> bool {
+    if func_def.kind() != "function_definition" {
+        return false;
+    }
+    let mut cursor = func_def.walk();
+    for child in func_def.children(&mut cursor) {
+        if matches!(child.kind(), "class_specifier" | "struct_specifier") {
+            if child.child_by_field_name("body").is_some() {
+                continue;
+            }
+            // No own body — confirm there's a compound_statement sibling
+            // so the misparse shape is unambiguous (otherwise the
+            // class_specifier could be a forward declaration nested in
+            // an unrelated function signature).
+            let mut sib_cursor = func_def.walk();
+            let mut saw = false;
+            for sib in func_def.children(&mut sib_cursor) {
+                if !saw {
+                    if sib.id() == child.id() {
+                        saw = true;
+                    }
+                    continue;
+                }
+                if sib.kind() == "compound_statement" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Extract name from a C/C++ declarator (which may be nested).
@@ -1361,7 +1517,10 @@ fn find_body_node<'a>(class_node: Node<'a>, lang: Language) -> Option<Node<'a>> 
                     return Some(child);
                 }
             }
-            None
+            // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): macro-misparsed
+            // class bodies live on the `compound_statement` sibling of the
+            // class_specifier inside the wrapping function_definition.
+            extract_cpp_macro_misparsed_class_body(class_node)
         }
         Language::Ruby => {
             // Ruby class body is inside a body_statement child
@@ -1392,6 +1551,40 @@ fn find_body_node<'a>(class_node: Node<'a>, lang: Language) -> Option<Node<'a>> 
     }
 }
 
+/// cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): true iff this
+/// `declaration`/`field_declaration` node wraps a member-function
+/// declaration (declarator chain reaches a `function_declarator`). Field
+/// and typedef declarations are rejected so non-method members don't get
+/// mis-counted in `methods[]`.
+fn is_cpp_member_function_declaration(node: Node) -> bool {
+    let kind = node.kind();
+    if kind != "declaration" && kind != "field_declaration" {
+        return false;
+    }
+    // Walk the `declarator` field chain, peeling pointer_declarator /
+    // reference_declarator wrappers, until we either hit a
+    // `function_declarator` (yes) or a leaf identifier (no).
+    let mut current = node.child_by_field_name("declarator");
+    let mut hops = 0usize;
+    while let Some(decl) = current {
+        if hops > 6 {
+            return false;
+        }
+        match decl.kind() {
+            "function_declarator" => return true,
+            "pointer_declarator"
+            | "reference_declarator"
+            | "init_declarator"
+            | "parenthesized_declarator" => {
+                current = decl.child_by_field_name("declarator");
+            }
+            _ => return false,
+        }
+        hops += 1;
+    }
+    false
+}
+
 /// Collect methods from a class body node.
 fn collect_methods_from_body(
     body: Node,
@@ -1407,8 +1600,47 @@ fn collect_methods_from_body(
     for child in body.children(&mut cursor) {
         let kind = child.kind();
 
+        // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): in a macro-misparsed
+        // class body (`compound_statement`), tree-sitter-cpp nests
+        // declarations under a `labeled_statement` whose label is the
+        // access-specifier keyword (`public:` / `private:` / `protected:`).
+        // Recurse so the inner method declarations still surface.
+        if matches!(lang, Language::C | Language::Cpp) && kind == "labeled_statement" {
+            // Heuristic: only treat as access-specifier wrapper when the
+            // label is one of the cpp visibility keywords; otherwise it's
+            // a real labeled_statement (goto target) and should be skipped.
+            let label_text = child
+                .child(0)
+                .map(|c| node_text(c, source))
+                .unwrap_or("");
+            if matches!(label_text, "public" | "private" | "protected") {
+                collect_methods_from_body(
+                    child,
+                    source,
+                    lang,
+                    method_kinds,
+                    methods,
+                    private_count,
+                );
+            }
+            continue;
+        }
+
         if method_kinds.contains(&kind) {
+            // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): `declaration` /
+            // `field_declaration` nodes match both member functions AND
+            // non-method members (fields, typedefs). Filter so only
+            // function declarations become methods.
+            if matches!(lang, Language::C | Language::Cpp)
+                && matches!(kind, "declaration" | "field_declaration")
+                && !is_cpp_member_function_declaration(child)
+            {
+                continue;
+            }
             let method_name = get_node_name(child, source, lang).unwrap_or_default();
+            if method_name.is_empty() {
+                continue;
+            }
             if is_method_public(&method_name, child, source, lang) {
                 methods.push(extract_method_info(child, source, lang));
             } else {
@@ -1735,6 +1967,17 @@ fn collect_top_level_definitions(
         merge_rust_impl_entries(&mut classes);
     }
 
+    // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE):
+    // collapse duplicate cpp class entries that arise when a forward
+    // declaration (`class XMLDocument;` at file top, methods=[]) and the
+    // real definition (`class TINYXML2_LIB XMLDocument { ... };` later,
+    // methods populated) both surface. Keep the entry with the richer
+    // methods/bases and drop the other. Without this pass, `tldr interface
+    // tinyxml2.h` would emit two XMLDocument entries.
+    if matches!(lang, Language::Cpp) {
+        dedupe_cpp_class_entries(&mut classes);
+    }
+
     // language-specific-bugs-v1 (P14.AGG14-17): for Java (and the same
     // class-only languages where every public function lives inside a
     // class and the top-level `functions[]` would otherwise always be
@@ -1897,6 +2140,89 @@ fn merge_rust_impl_entries(classes: &mut Vec<ClassInfo>) {
     let _ = name_counts;
 }
 
+/// cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE):
+/// collapse cpp class entries that share a name. Forward declarations
+/// (`class Foo;`) and real definitions (`class TINYXML2_LIB Foo { ... };`)
+/// both produce a `ClassInfo` for `Foo`; we keep the one with non-empty
+/// methods and drop the other. If both are empty (multiple forward decls)
+/// the first occurrence wins. Bases/methods are unioned into the surviving
+/// entry to preserve any info from the dropped duplicate.
+fn dedupe_cpp_class_entries(classes: &mut Vec<ClassInfo>) {
+    use std::collections::HashMap;
+
+    if classes.len() <= 1 {
+        return;
+    }
+
+    // First pass: pick a canonical index per name — prefer the entry with
+    // the most methods, tie-break by lowest line number for stability.
+    let mut canonical_for: HashMap<String, usize> = HashMap::new();
+    for (i, c) in classes.iter().enumerate() {
+        if c.name.is_empty() {
+            continue;
+        }
+        match canonical_for.get(&c.name).copied() {
+            None => {
+                canonical_for.insert(c.name.clone(), i);
+            }
+            Some(prev) => {
+                let prev_methods = classes[prev].methods.len();
+                let cur_methods = c.methods.len();
+                let take_current = cur_methods > prev_methods
+                    || (cur_methods == prev_methods && c.lineno < classes[prev].lineno);
+                if take_current {
+                    canonical_for.insert(c.name.clone(), i);
+                }
+            }
+        }
+    }
+
+    // Second pass: union methods/bases from each non-canonical duplicate
+    // into the canonical entry, then mark for removal.
+    let mut to_remove: Vec<usize> = Vec::new();
+    let mut transfers: Vec<(usize, usize)> = Vec::new(); // (from, to)
+    for (i, c) in classes.iter().enumerate() {
+        if c.name.is_empty() {
+            continue;
+        }
+        if let Some(&canonical) = canonical_for.get(&c.name) {
+            if canonical != i {
+                transfers.push((i, canonical));
+                to_remove.push(i);
+            }
+        }
+    }
+    for (from, to) in transfers {
+        // Take methods/bases out of `from` (it's about to be removed).
+        let from_methods = std::mem::take(&mut classes[from].methods);
+        let from_bases = std::mem::take(&mut classes[from].bases);
+        let from_private = classes[from].private_method_count;
+        let target = &mut classes[to];
+        for m in from_methods {
+            let already = target
+                .methods
+                .iter()
+                .any(|e| e.name == m.name && e.signature == m.signature);
+            if !already {
+                target.methods.push(m);
+            }
+        }
+        for b in from_bases {
+            if !target.bases.contains(&b) {
+                target.bases.push(b);
+            }
+        }
+        target.private_method_count =
+            target.private_method_count.saturating_add(from_private);
+    }
+    // Remove in reverse so indices stay valid.
+    to_remove.sort_unstable();
+    to_remove.dedup();
+    for idx in to_remove.into_iter().rev() {
+        classes.remove(idx);
+    }
+}
+
 /// Strip generic / lifetime parameters from a Rust type name.
 /// `Vec<T>` -> `Vec`, `Foo<'a>` -> `Foo`, `Bar` -> `Bar`.
 fn strip_generics(name: &str) -> String {
@@ -1958,6 +2284,31 @@ fn deep_collect(
             // Still recurse into the body — nested classes that are themselves
             // public should also surface (mirrors tree-walk behaviour of
             // `tldr extract` for cpp / csharp).
+            deep_collect(
+                child,
+                source,
+                lang,
+                func_kinds,
+                class_kinds,
+                functions,
+                classes,
+                depth + 1,
+            );
+            continue;
+        }
+        // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE):
+        // suppress the synthetic `function_definition` wrapper that
+        // tree-sitter-cpp emits around `class TINYXML2_LIB Foo { ... };`.
+        // The inner `class_specifier` already produced the (corrected)
+        // class entry above, so adding this wrapper to `functions[]` would
+        // surface a phantom function (e.g. `StrPair` at line 133 with
+        // signature `": class TINYXML2_LIB"`). We still recurse into the
+        // wrapper because the misparsed body (`compound_statement`) may
+        // itself contain nested macro-prefixed classes worth surfacing.
+        if matches!(lang, Language::Cpp)
+            && kind == "function_definition"
+            && is_cpp_macro_misparsed_class_wrapper(child)
+        {
             deep_collect(
                 child,
                 source,
