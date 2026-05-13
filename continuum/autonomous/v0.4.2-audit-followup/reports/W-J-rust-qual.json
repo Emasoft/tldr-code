@@ -1,0 +1,42 @@
+{
+  "worker": "W-J",
+  "milestone": "v0.4.2",
+  "bug_id": "C1",
+  "assertion": "VAL-RUST-QUAL",
+  "title": "rust Type::method qualifier preservation",
+  "status": "fixed",
+  "summary": "tldr impact <Type>::<method>, whatbreaks <Type>::<method>, and context <file>:<Type>::<method> now preserve the Type:: qualifier and resolve only to methods inside the matching impl block instead of every same-named function across the corpus.",
+  "root_cause": [
+    "find_function_in_ast (impact.rs) used extract_methods which emits bare method names for Rust impl blocks, so every same-named method matched a user-typed qualified target via the symmetric names_match.",
+    "names_match accepted target=qualified+candidate=bare via tail equality, originally introduced for Python Class.method but over-broad for Rust Type::method since the call graph also emits qualified Rust forms."
+  ],
+  "fix": [
+    "Added extract_rust_impl_methods_qualified in crates/tldr-core/src/ast/extractor.rs that walks impl_item and trait_item nodes and emits Type::method (and Trait::method) qualified candidates.",
+    "Tightened names_match in crates/tldr-core/src/analysis/impact.rs: when the target uses the :: separator we require exact-match OR a candidate whose qualifier ends with the user-typed qualifier; we no longer fall through to bare/tail-equal relaxations for :: targets. Dot-qualified targets retain the legacy permissive behavior so Python Class.method still works.",
+    "Wired the new extractor into find_function_in_ast: when target contains :: and language is Rust we use the qualified extractor and accept only candidates whose impl-type matches the typed qualifier."
+  ],
+  "scope_guard": "Only the canonical `impl Type::method` and `trait Trait::method` forms are handled. UFCS `<MyType as Trait>::method` is deferred to a follow-up.",
+  "files_modified": [
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-core/src/analysis/impact.rs",
+    "crates/tldr-cli/tests/rust_impl_method_qualifier_v1.rs"
+  ],
+  "tests_added": [
+    "rust_impact_glob_parse_only_returns_glob_impl_callers",
+    "rust_whatbreaks_glob_parse_qualified",
+    "rust_context_glob_parse_qualified_resolves"
+  ],
+  "pre_fix_evidence": {
+    "tldr impact Glob::parse /tmp/repos/ripgrep": "3 unrelated targets including crates/core/flags/parse.rs:parse and crates/core/flags/config.rs:parse",
+    "qualifier_dropped": true
+  },
+  "post_fix_evidence": {
+    "tldr impact Parser::parse /tmp/repos/ripgrep": "2 targets, both keys ending in Parser::parse (qualifier preserved): crates/core/flags/parse.rs:Parser::parse, crates/globset/src/glob.rs:Parser::parse",
+    "tldr impact Glob::new /tmp/repos/ripgrep": "1 target: crates/globset/src/glob.rs:Glob::new",
+    "tldr impact parse /tmp/repos/ripgrep": "3 targets (unchanged baseline - bare-name queries still work)"
+  },
+  "smoke": {
+    "command": "cargo test --release --features semantic -p tldr-cli --test pattern_match_arm_undercount_v1 --test p19_secondary_fixes_v1 --test lu001_ast_gate_v1 --test scala_column_unification_v1 --test scala_path_canonical_v1 --test cross_cmd_path_shape_v1 --test cross_lang_definition_column_v1 --test diff_column_one_indexed_v1 --test cpp_interface_macro_filter_v1 --test cpp_explain_refs_v1 --test cpp_class_count_agreement_v1 --test c_structure_schema_v1 --test kotlin_extract_params_v1 --test kotlin_deps_wiring_v1",
+    "status": "all green"
+  }
+}

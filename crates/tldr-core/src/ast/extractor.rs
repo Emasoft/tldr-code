@@ -644,6 +644,122 @@ fn extract_rust_impl_methods(node: &Node, source: &str, methods: &mut Vec<String
     }
 }
 
+/// rust-impl-qualifier-v1 (VAL-RUST-QUAL): emit `Type::method` qualified
+/// names for every method defined inside a Rust `impl <Type> { ... }` or
+/// `impl <Trait> for <Type> { ... }` block, plus `Trait::method` for
+/// methods declared inside `trait <Trait> { ... }` bodies.
+///
+/// This is the qualifier-aware counterpart to [`extract_rust_impl_methods`]
+/// which only emits bare method names. Used by the impact / whatbreaks
+/// AST-fallback path (`find_function_in_ast`) so a user-typed
+/// `Glob::parse` resolves only to the `parse` method that actually lives
+/// inside `impl Glob { ... }` — pre-fix the bare-name extraction matched
+/// every same-named `parse` across the corpus regardless of impl type.
+///
+/// Scope: handles the canonical
+///   * `impl <Type>` → `Type::method`
+///   * `impl <Trait> for <Type>` → `Type::method` (the type, not the trait)
+///   * `impl<T> <Type><...>` (generic type) → `Type::method`
+///   * `impl some::module::Type` (scoped type) → `Type::method`
+///   * `trait <Trait>` → `Trait::method`
+///
+/// The fully-qualified disambiguator form `<MyType as Trait>::method` is
+/// deferred — those would need separate UFCS handling.
+pub fn extract_rust_impl_methods_qualified(
+    tree: &Tree,
+    source: &str,
+    out: &mut Vec<String>,
+) {
+    fn walk(node: &Node, source: &str, out: &mut Vec<String>) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "impl_item" {
+                let type_name = rust_impl_type_name(&child, source);
+                if let Some(body) = child.child_by_field_name("body") {
+                    let mut body_cursor = body.walk();
+                    for item in body.children(&mut body_cursor) {
+                        if item.kind() == "function_item" {
+                            if let Some(name_node) = item.child_by_field_name("name") {
+                                let method = get_node_text(&name_node, source);
+                                if let Some(ref ty) = type_name {
+                                    out.push(format!("{ty}::{method}"));
+                                } else {
+                                    // Couldn't resolve the impl type — emit bare so
+                                    // the candidate doesn't disappear entirely.
+                                    out.push(method);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if child.kind() == "trait_item" {
+                let trait_name = child
+                    .child_by_field_name("name")
+                    .map(|n| get_node_text(&n, source));
+                let mut trait_cursor = child.walk();
+                for trait_child in child.children(&mut trait_cursor) {
+                    if trait_child.kind() == "declaration_list" {
+                        let mut body_cursor = trait_child.walk();
+                        for item in trait_child.children(&mut body_cursor) {
+                            if item.kind() == "function_item"
+                                || item.kind() == "function_signature_item"
+                            {
+                                if let Some(name_node) =
+                                    item.child_by_field_name("name")
+                                {
+                                    let method = get_node_text(&name_node, source);
+                                    if let Some(ref tr) = trait_name {
+                                        out.push(format!("{tr}::{method}"));
+                                    } else {
+                                        out.push(method);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            walk(&child, source, out);
+        }
+    }
+
+    walk(&tree.root_node(), source, out);
+}
+
+/// Extract the target type name from a Rust `impl_item` node.
+///
+/// Handles:
+///   * `impl Foo { ... }` -> "Foo"
+///   * `impl Trait for Foo { ... }` -> "Foo" (the type, not the trait)
+///   * `impl<T> Foo<T> { ... }` -> "Foo" (strips generic params)
+///   * `impl some::module::Type { ... }` -> "Type" (last segment)
+///
+/// Mirrors the private `get_impl_type_name` helper in
+/// `crate::ast::extract` — duplicated here to keep this extractor
+/// self-contained.
+fn rust_impl_type_name(impl_node: &Node, source: &str) -> Option<String> {
+    let type_node = impl_node.child_by_field_name("type")?;
+
+    match type_node.kind() {
+        "type_identifier" => Some(get_node_text(&type_node, source)),
+        "generic_type" => type_node
+            .child_by_field_name("type")
+            .map(|n| get_node_text(&n, source)),
+        "scoped_type_identifier" => type_node
+            .child_by_field_name("name")
+            .map(|n| get_node_text(&n, source)),
+        _ => {
+            let text = get_node_text(&type_node, source);
+            let name = text.split('<').next().unwrap_or(&text).trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        }
+    }
+}
+
 // =============================================================================
 // Java extraction
 // =============================================================================

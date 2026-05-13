@@ -18,7 +18,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::ast::extractor::{extract_functions, extract_methods};
+use crate::ast::extractor::{
+    extract_functions, extract_methods, extract_rust_impl_methods_qualified,
+};
 use crate::ast::parser::parse_file;
 use crate::error::TldrError;
 use crate::fs::tree::{collect_files, get_file_tree};
@@ -90,6 +92,38 @@ pub fn names_match(candidate: &str, target: &str) -> bool {
     // `target`, which would re-introduce false matches.
     let target_has_qualifier = target.contains('.') || target.contains("::");
     if target_has_qualifier {
+        // rust-impl-qualifier-v1 (VAL-RUST-QUAL): when the target uses
+        // the `::` separator (canonically Rust/C++/Scala), we MUST NOT
+        // fall back to bare-name or tail-only matching — that turns
+        // `Glob::parse` into a sloppy match against every same-named
+        // `parse` across the corpus regardless of impl type. Limit the
+        // permissive `target_qualified → candidate_bare` directions to
+        // the `.`-qualifier shape (Python `Class.method`, Ruby, etc.)
+        // where they were originally introduced (P5.BUG-N3).
+        if target.contains("::") {
+            // For `::`-qualified targets, accept ONLY an exact match
+            // (handled above) OR a candidate whose qualified form ends
+            // with the user-typed qualifier (handles
+            // `mod::Type::method` vs user-typed `Type::method`).
+            //
+            // Concretely we require:
+            //   * candidate's leaf matches target's leaf, AND
+            //   * candidate's qualifier ends with target's qualifier
+            //
+            // This is the strict "qualifier preserved" rule the audit
+            // (VAL-RUST-QUAL) calls for.
+            if let (Some((cand_qual, cand_leaf)), Some((tgt_qual, tgt_leaf))) =
+                (candidate.rsplit_once("::"), target.rsplit_once("::"))
+            {
+                if cand_leaf == tgt_leaf
+                    && (cand_qual == tgt_qual
+                        || cand_qual.ends_with(&format!("::{tgt_qual}")))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
         let target_tail = last_segment(target);
         if candidate == target_tail {
             return true;
@@ -679,16 +713,75 @@ fn find_function_in_ast(
         let functions = extract_functions(&tree, &source, language);
         let methods = extract_methods(&tree, &source, language);
 
-        for func_name in functions.iter().chain(methods.iter()) {
-            // cross-command-consistency-v3 (P5.BUG-N3): use the symmetric
-            // matcher so AST-extracted bare names (e.g. `run`) reconcile
-            // against user-typed qualified names (e.g. `Flask.run`). Bare
-            // method names are how `extract_methods` reports class members
-            // for most languages, so the previous one-direction match
-            // returned `None` for every `Class.method` query and produced
-            // the user-visible `Function not found` regression.
-            if names_match(func_name, target_func) {
-                found.push((func_name.clone(), file_path.clone()));
+        // rust-impl-qualifier-v1 (VAL-RUST-QUAL): when the user-typed
+        // target carries a `Type::method` qualifier AND the file is
+        // Rust, augment the candidate set with qualified `Type::method`
+        // names extracted from `impl <Type> { ... }` / `trait <Trait>`
+        // blocks. The bare-name list still flows through
+        // `names_match`, but we then filter to ONLY accept candidates
+        // whose impl-type matches the user-typed qualifier — so
+        // `Glob::parse` no longer matches a `parse` defined inside an
+        // unrelated `impl Config { ... }` or in the top-level
+        // `flags/parse.rs` module.
+        let rust_target_qualifier: Option<&str> = if matches!(language, Language::Rust)
+            && target_func.contains("::")
+        {
+            target_func.rsplit_once("::").map(|(ty, _)| ty)
+        } else {
+            None
+        };
+
+        let qualified_methods: Vec<String> = if rust_target_qualifier.is_some() {
+            let mut q = Vec::new();
+            extract_rust_impl_methods_qualified(&tree, &source, &mut q);
+            q
+        } else {
+            Vec::new()
+        };
+
+        if let Some(qualifier) = rust_target_qualifier {
+            // Strict qualified path: a candidate is accepted ONLY if its
+            // emitted qualified form ends with the user-typed qualifier
+            // (handles `some::module::Type::method` too) and the leaf
+            // method matches the user-typed leaf.
+            let target_leaf = target_func.rsplit("::").next().unwrap_or(target_func);
+            for qual in &qualified_methods {
+                // Split `Type::method` once from the right.
+                let Some((cand_qual, cand_method)) = qual.rsplit_once("::") else {
+                    continue;
+                };
+                if cand_method != target_leaf {
+                    continue;
+                }
+                // Accept when the candidate qualifier equals the user
+                // qualifier OR the candidate qualifier ends with
+                // `::<user_qualifier>` (so module-scoped impls still
+                // resolve when the user typed just the type name).
+                let qualifier_matches = cand_qual == qualifier
+                    || cand_qual.ends_with(&format!("::{qualifier}"));
+                if qualifier_matches {
+                    // Emit the qualified form so downstream surfaces
+                    // (impact/whatbreaks/context) preserve `Type::method`
+                    // in the resolved key + function name.
+                    found.push((qual.clone(), file_path.clone()));
+                }
+            }
+            // IMPORTANT: do not fall through to the lenient bare-name
+            // matcher when the user explicitly typed a Rust qualifier.
+            // The whole point of this fix is that `Glob::parse` must NOT
+            // match unrelated bare `parse` definitions.
+        } else {
+            for func_name in functions.iter().chain(methods.iter()) {
+                // cross-command-consistency-v3 (P5.BUG-N3): use the symmetric
+                // matcher so AST-extracted bare names (e.g. `run`) reconcile
+                // against user-typed qualified names (e.g. `Flask.run`). Bare
+                // method names are how `extract_methods` reports class members
+                // for most languages, so the previous one-direction match
+                // returned `None` for every `Class.method` query and produced
+                // the user-visible `Function not found` regression.
+                if names_match(func_name, target_func) {
+                    found.push((func_name.clone(), file_path.clone()));
+                }
             }
         }
     }
