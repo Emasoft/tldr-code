@@ -3501,22 +3501,34 @@ fn match_definition(
             // symbol name on that source line gives `definition` a
             // 1-indexed column instead of the default 0. Without this
             // every cpp/rust/scala/swift definition reported column=0.
-            let col = locate_symbol_column(file, f.line, symbol);
-            let loc = match col {
-                Some(c) => Location::with_column(file.display().to_string(), f.line, c),
-                None => Location::new(file.display().to_string(), f.line),
+            //
+            // cross-lang-definition-column-v1 (v0.4.2 bug-A1-A2-A4):
+            // `locate_symbol_line_column` additionally scans a small
+            // forward window when the symbol is not present on the
+            // `FuncDef`-reported line. tree-sitter-java's
+            // `method_declaration` and tree-sitter-kotlin's
+            // `function_declaration` start at the leading annotation
+            // line; same for Scala `@deprecated`-decorated methods. The
+            // scan recovers the actual header line and 1-indexed column.
+            let (line_out, col_out) = locate_symbol_line_column(file, f.line, symbol);
+            let loc = match col_out {
+                Some(c) => Location::with_column(file.display().to_string(), line_out, c),
+                None => Location::new(file.display().to_string(), line_out),
             };
             return Some((kind, loc));
         }
     }
     for c in classes {
         if c.name == symbol {
-            let col = locate_symbol_column(file, c.line, symbol);
-            let loc = match col {
+            // cross-lang-definition-column-v1 (v0.4.2 bug-A1-A2-A4):
+            // mirror the FuncDef path — annotation-decorated class
+            // declarations would otherwise emit column=0.
+            let (line_out, col_out) = locate_symbol_line_column(file, c.line, symbol);
+            let loc = match col_out {
                 Some(col_v) => {
-                    Location::with_column(file.display().to_string(), c.line, col_v)
+                    Location::with_column(file.display().to_string(), line_out, col_v)
                 }
-                None => Location::new(file.display().to_string(), c.line),
+                None => Location::new(file.display().to_string(), line_out),
             };
             return Some((SymbolKind::Class, loc));
         }
@@ -3529,15 +3541,112 @@ fn match_definition(
 /// not appear on that line. Used to populate the `column` field of
 /// `definition` results when the underlying `FuncDef`/`ClassDef` only
 /// carries the line.
+#[cfg(test)]
 fn locate_symbol_column(file: &Path, line: u32, symbol: &str) -> Option<u32> {
-    let content = std::fs::read_to_string(file).ok()?;
-    let target_line = line.saturating_sub(1) as usize;
-    let line_text = content.lines().nth(target_line)?;
-    let byte_offset = line_text.find(symbol)?;
-    // Convert byte offset to 1-indexed column (UTF-8 aware: count chars
-    // up to byte_offset).
-    let col_chars = line_text[..byte_offset].chars().count();
-    Some(col_chars as u32 + 1)
+    let (out_line, col) = locate_symbol_line_column(file, line, symbol);
+    if out_line == line {
+        col
+    } else {
+        // Backward-compatible: legacy helper only returned a column when
+        // the symbol was on the reported line. Forward-scan matches go
+        // through `locate_symbol_line_column` directly.
+        None
+    }
+}
+
+/// Locate the 1-indexed `(line, column)` of `symbol` near
+/// `start_line` (1-indexed) of `file`. When the symbol is present on
+/// `start_line`, returns `(start_line, Some(col))` exactly like the
+/// previous `locate_symbol_column` behavior. When it is not (e.g. the
+/// `FuncDef` line points at a leading annotation in
+/// java/kotlin/scala), scans up to `MAX_FORWARD` lines ahead and
+/// returns the first line that contains the symbol as a whole word
+/// (bordered by non-identifier characters). Returns
+/// `(start_line, None)` if the file cannot be read or no occurrence is
+/// found within the window.
+///
+/// The forward scan is intentionally narrow: real annotation-decorated
+/// declarations almost always have the header within 1–3 lines of the
+/// first annotation, even for multi-line `@Foo(\n  ...,\n)` modifiers.
+/// `MAX_FORWARD = 16` accommodates very verbose annotations while
+/// staying tight enough to avoid spuriously matching the symbol in a
+/// later unrelated declaration.
+///
+/// The word-boundary check (`is_identifier_continuation` on the bytes
+/// immediately before and after the match) prevents a substring match
+/// such as `parse` inside `parseFully` from being mistaken for the
+/// real declaration.
+fn locate_symbol_line_column(file: &Path, start_line: u32, symbol: &str) -> (u32, Option<u32>) {
+    const MAX_FORWARD: usize = 16;
+    let Ok(content) = std::fs::read_to_string(file) else {
+        return (start_line, None);
+    };
+    let target_idx = start_line.saturating_sub(1) as usize;
+    let lines: Vec<&str> = content.lines().collect();
+    if target_idx >= lines.len() {
+        return (start_line, None);
+    }
+
+    // First try the reported line. Use a word-bounded match so a
+    // substring (e.g. `parse` inside `parseFully`) is not selected.
+    if let Some(col) = find_word_bounded(lines[target_idx], symbol) {
+        return (start_line, Some(col));
+    }
+
+    // Forward scan for annotation-decorated declarations
+    // (java `@GetMapping`, kotlin `@Deprecated`, scala `@deprecated`).
+    let end_idx = std::cmp::min(target_idx + 1 + MAX_FORWARD, lines.len());
+    for idx in (target_idx + 1)..end_idx {
+        if let Some(col) = find_word_bounded(lines[idx], symbol) {
+            let line_out = (idx as u32).saturating_add(1);
+            return (line_out, Some(col));
+        }
+    }
+
+    (start_line, None)
+}
+
+/// Find the first whole-word occurrence of `symbol` in `line_text` and
+/// return its 1-indexed character column. Whole-word means the bytes
+/// immediately before and after the match are not identifier
+/// continuation characters (ASCII alphanumerics or `_`). Returns
+/// `None` if no whole-word match exists.
+fn find_word_bounded(line_text: &str, symbol: &str) -> Option<u32> {
+    if symbol.is_empty() {
+        return None;
+    }
+    let bytes = line_text.as_bytes();
+    let sym_bytes = symbol.as_bytes();
+    let mut search_start = 0usize;
+    while search_start <= bytes.len().saturating_sub(sym_bytes.len()) {
+        let remainder = &line_text[search_start..];
+        let Some(rel_offset) = remainder.find(symbol) else {
+            return None;
+        };
+        let byte_offset = search_start + rel_offset;
+        let before_ok = byte_offset == 0
+            || !is_identifier_continuation(bytes[byte_offset.saturating_sub(1)]);
+        let after_idx = byte_offset + sym_bytes.len();
+        let after_ok =
+            after_idx >= bytes.len() || !is_identifier_continuation(bytes[after_idx]);
+        if before_ok && after_ok {
+            // 1-indexed character column (UTF-8 aware).
+            let col_chars = line_text[..byte_offset].chars().count();
+            return Some(col_chars as u32 + 1);
+        }
+        // Skip past this occurrence and keep searching.
+        search_start = byte_offset + 1;
+    }
+    None
+}
+
+/// ASCII identifier continuation: `[A-Za-z0-9_]`. Conservative for the
+/// 18 TLDR-supported languages — every one of them uses ASCII
+/// identifier characters in their lexers (Unicode identifiers are
+/// permitted in some languages but the boundary check still holds
+/// because a non-ASCII byte is never `[A-Za-z0-9_]`).
+fn is_identifier_continuation(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// Recursively search the AST for a definition
