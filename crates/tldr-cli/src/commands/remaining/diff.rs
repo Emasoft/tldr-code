@@ -773,7 +773,9 @@ fn extract_ocaml_value_spec(node: Node, source: &[u8]) -> Option<ExtractedNode> 
 
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
-    let column = node.start_position().column as u32;
+    // 1-indexed column to agree with `references` / `definition` /
+    // `api-check` / `structure`. See diff-column-one-indexed-v1.
+    let column = node.start_position().column as u32 + 1;
     let body = node_text(node, source).to_string();
 
     Some(ExtractedNode::new(
@@ -805,7 +807,8 @@ fn extract_function_node(
 
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
-    let column = node.start_position().column as u32;
+    // 1-indexed column (diff-column-one-indexed-v1).
+    let column = node.start_position().column as u32 + 1;
     let body = node_text(node, source).to_string();
 
     let mut extracted =
@@ -856,7 +859,8 @@ fn extract_class_node(node: Node, source: &[u8], lang: Language) -> Option<Extra
             if !name.is_empty() {
                 let line = node.start_position().row as u32 + 1;
                 let end_line = node.end_position().row as u32 + 1;
-                let column = node.start_position().column as u32;
+                // 1-indexed column (diff-column-one-indexed-v1).
+                let column = node.start_position().column as u32 + 1;
                 let body = node_text(node, source).to_string();
                 return Some(ExtractedNode::new(
                     name,
@@ -873,7 +877,8 @@ fn extract_class_node(node: Node, source: &[u8], lang: Language) -> Option<Extra
 
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
-    let column = node.start_position().column as u32;
+    // 1-indexed column (diff-column-one-indexed-v1).
+    let column = node.start_position().column as u32 + 1;
     let body = node_text(node, source).to_string();
 
     Some(ExtractedNode::new(
@@ -2637,7 +2642,8 @@ fn associate_go_receiver_methods(
 
         let line = child.start_position().row as u32 + 1;
         let end_line = child.end_position().row as u32 + 1;
-        let column = child.start_position().column as u32;
+        // 1-indexed column (diff-column-one-indexed-v1).
+        let column = child.start_position().column as u32 + 1;
         let body = node_text(child, source).to_string();
 
         let extracted =
@@ -2767,7 +2773,8 @@ fn build_class_node(
 
     let line = node.start_position().row as u32 + 1;
     let end_line = node.end_position().row as u32 + 1;
-    let column = node.start_position().column as u32;
+    // 1-indexed column (diff-column-one-indexed-v1).
+    let column = node.start_position().column as u32 + 1;
     let body = node_text(node, source).to_string();
     let normalized_body = normalize_body(&body);
 
@@ -2847,7 +2854,8 @@ fn extract_class_members(
 
                 let line = child.start_position().row as u32 + 1;
                 let end_line = child.end_position().row as u32 + 1;
-                let column = child.start_position().column as u32;
+                // 1-indexed column (diff-column-one-indexed-v1).
+                let column = child.start_position().column as u32 + 1;
                 let body = node_text(child, source).to_string();
 
                 let extracted =
@@ -2878,7 +2886,8 @@ fn extract_field_from_statement(node: Node, source: &[u8], _lang: Language) -> O
                 if !name.is_empty() && !name.contains('.') {
                     // Skip `self.x = ...` (those are instance vars, not class fields)
                     let line = node.start_position().row as u32 + 1;
-                    let column = node.start_position().column as u32;
+                    // 1-indexed column (diff-column-one-indexed-v1).
+                    let column = node.start_position().column as u32 + 1;
                     let body = node_text(node, source).to_string();
                     let normalized_body = body.trim().to_string();
 
