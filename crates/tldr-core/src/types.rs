@@ -1419,6 +1419,18 @@ pub struct FunctionInfo {
     /// Decorator or annotation names applied to this function
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decorators: Vec<String>,
+    /// Visibility modifier as captured from the AST (e.g. `"public"`,
+    /// `"private"`, `"protected"`, `"internal"`, `"fileprivate"`,
+    /// `"open"`). `None` means the language has no explicit modifier
+    /// on this declaration (e.g. Java package-private, Kotlin default
+    /// `public`, or a language where visibility is name-based).
+    ///
+    /// is-public-visibility-v1 (v0.4.2 M-007): populated by per-language
+    /// extractors that inspect AST modifier tokens. Downstream consumers
+    /// (`dead::collect_all_functions`, `change_impact::infer_public_visibility`)
+    /// prefer this explicit signal over name-only heuristics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     /// Line number where this function is defined (1-indexed).
     ///
     /// schema-cleanup-v1 BUG-23: deserialized from `line`
@@ -1456,6 +1468,9 @@ impl Serialize for FunctionInfo {
         if !self.decorators.is_empty() {
             count += 1;
         }
+        if self.visibility.is_some() {
+            count += 1;
+        }
         let mut s = serializer.serialize_struct("FunctionInfo", count)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("params", &self.params)?;
@@ -1469,6 +1484,9 @@ impl Serialize for FunctionInfo {
         s.serialize_field("is_async", &self.is_async)?;
         if !self.decorators.is_empty() {
             s.serialize_field("decorators", &self.decorators)?;
+        }
+        if let Some(vis) = &self.visibility {
+            s.serialize_field("visibility", vis)?;
         }
         s.serialize_field("line", &self.line_number)?;
         s.serialize_field("line_end", &self.line_end)?;

@@ -296,6 +296,7 @@ fn cli_module_info_text_does_not_panic_on_emoji_function_docstring() {
             is_method: false,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         }],

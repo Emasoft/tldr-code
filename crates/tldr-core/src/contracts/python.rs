@@ -927,6 +927,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec!["property".to_string()],
+            visibility: None,
             line_number: 10,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::Property);
@@ -942,6 +943,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec!["staticmethod".to_string()],
+            visibility: None,
             line_number: 10,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::StaticMethod);
@@ -957,6 +959,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec!["classmethod".to_string()],
+            visibility: None,
             line_number: 10,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::ClassMethod);
@@ -972,6 +975,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 10,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::Method);

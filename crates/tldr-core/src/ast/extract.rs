@@ -528,6 +528,7 @@ fn extract_python_function_info(node: &Node, source: &str, is_method: bool) -> F
         is_method,
         is_async,
         decorators: Vec::new(), // Set by caller for decorated functions
+        visibility: None,
         line_number,
         line_end,
     }
@@ -2020,12 +2021,19 @@ fn extract_ts_assignment_function(
         return;
     }
 
-    // Resolve the symbol name from the LHS.
+    // Resolve the symbol name from the LHS, and capture whether the
+    // assignment shape is a member-export pattern (which we treat as
+    // public for is-public-visibility-v1 M-007).
+    let mut is_member_export = false;
     let name = match left.kind() {
         "identifier" => get_node_text(&left, source),
         "member_expression" => {
             // For `app.use` use property "use"; for `Foo.prototype.bar`
-            // also resolves to "bar" (the trailing property).
+            // also resolves to "bar" (the trailing property). Any
+            // member-expression LHS (`obj.x = function () {}`, including
+            // `exports.foo = ...` and `module.exports = ...`) signals
+            // an externally-visible binding.
+            is_member_export = true;
             match left.child_by_field_name("property") {
                 Some(p) if p.kind() == "property_identifier" || p.kind() == "identifier" => {
                     get_node_text(&p, source)
@@ -2053,6 +2061,15 @@ fn extract_ts_assignment_function(
     let line_number = assignment.start_position().row as u32 + 1;
     let line_end = assignment.end_position().row as u32 + 1;
 
+    // is-public-visibility-v1 (v0.4.2 M-007): member-export shape
+    // (`app.foo = function () {}`, `exports.bar = function () {}`,
+    // `module.exports = function () {}`) is treated as public.
+    let visibility = if is_member_export {
+        Some("public".to_string())
+    } else {
+        None
+    };
+
     // Walk up through expression_statement / parenthesized_expression to
     // find a leading JSDoc comment.
     let docstring_anchor = assignment
@@ -2069,6 +2086,7 @@ fn extract_ts_assignment_function(
         is_method: false,
         is_async,
         decorators: Vec::new(),
+        visibility,
         line_number,
         line_end,
     });
@@ -2100,6 +2118,23 @@ fn is_js_identifier_shape(s: &str) -> bool {
         }
     }
     true
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): JavaScript convention-based
+/// visibility for a plain `function` declaration. Leading underscore =
+/// private; otherwise unset (we leave `None` rather than asserting
+/// `public` because JS has no language-level visibility for plain
+/// functions and a top-level declaration may or may not be exported
+/// — that determination requires whole-module export analysis).
+fn js_name_visibility(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    if name.starts_with('_') {
+        Some("private".to_string())
+    } else {
+        None
+    }
 }
 
 /// (js-extract-function-expressions-v1) Extract a function from an object
@@ -2170,6 +2205,7 @@ fn extract_ts_pair_function(pair: &Node, source: &str, functions: &mut Vec<Funct
         is_method: false,
         is_async,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     });
@@ -2221,6 +2257,7 @@ fn extract_ts_variable_functions(node: &Node, source: &str, functions: &mut Vec<
                         is_method: false,
                         is_async,
                         decorators: Vec::new(),
+                        visibility: None,
                         line_number,
                         line_end,
                     });
@@ -2276,6 +2313,13 @@ fn extract_ts_function_info(node: &Node, source: &str, is_method: bool) -> Funct
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
 
+    // is-public-visibility-v1 (v0.4.2 M-007): JavaScript has no
+    // syntactic access modifier on plain `function` declarations.
+    // Convention: identifiers leading with `_` are treated as private.
+    // TypeScript class methods support `public`/`private`/`protected`
+    // accessibility modifiers (see TS-specific class-body handling).
+    let visibility = js_name_visibility(&name);
+
     FunctionInfo {
         name,
         params,
@@ -2284,6 +2328,7 @@ fn extract_ts_function_info(node: &Node, source: &str, is_method: bool) -> Funct
         is_method,
         is_async,
         decorators: Vec::new(),
+        visibility,
         line_number,
         line_end,
     }
@@ -2545,6 +2590,13 @@ fn extract_go_function_info(node: &Node, source: &str) -> FunctionInfo {
     let line_end = node.end_position().row as u32 + 1;
     let docstring = extract_go_docstring(node, source);
 
+    // is-public-visibility-v1 (v0.4.2 M-007): Go uses idiomatic case-as-
+    // visibility. An uppercase first letter exports the identifier from
+    // the package; lowercase keeps it package-private. We materialize
+    // the convention into an explicit `visibility` field so that
+    // downstream consumers do not have to re-derive it from the name.
+    let visibility = go_name_visibility(&name);
+
     FunctionInfo {
         name,
         params,
@@ -2553,6 +2605,7 @@ fn extract_go_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method,
         is_async: false,
         decorators: Vec::new(),
+        visibility,
         line_number,
         line_end,
     }
@@ -2783,6 +2836,7 @@ fn extract_go_interface_methods_recursive(
             }
 
             if !name.is_empty() {
+                let visibility = go_name_visibility(&name);
                 methods.push(FunctionInfo {
                     name,
                     params,
@@ -2791,6 +2845,7 @@ fn extract_go_interface_methods_recursive(
                     is_method: true,
                     is_async: false,
                     decorators: Vec::new(),
+                    visibility,
                     line_number,
                     line_end,
                 });
@@ -2798,6 +2853,19 @@ fn extract_go_interface_methods_recursive(
         } else {
             extract_go_interface_methods_recursive(&child, source, methods);
         }
+    }
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): Go uses case-as-visibility.
+/// Returns `Some("public")` for names starting with an uppercase ASCII
+/// letter, `Some("private")` for names starting with anything else, and
+/// `None` for empty names.
+fn go_name_visibility(name: &str) -> Option<String> {
+    let first = name.chars().next()?;
+    if first.is_ascii_uppercase() {
+        Some("public".to_string())
+    } else {
+        Some("private".to_string())
     }
 }
 
@@ -2965,6 +3033,7 @@ fn extract_rust_function_info(node: &Node, source: &str, is_method: bool) -> Fun
         is_method,
         is_async,
         decorators,
+        visibility: None,
         line_number,
         line_end,
     }
@@ -3234,6 +3303,7 @@ fn extract_methods_from_trait_body(trait_node: &Node, source: &str) -> Vec<Funct
                             is_method: true,
                             is_async,
                             decorators: Vec::new(),
+                            visibility: None,
                             line_number,
                             line_end,
                         });
@@ -3415,6 +3485,14 @@ fn extract_java_function_info(node: &Node, source: &str) -> FunctionInfo {
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
 
+    // is-public-visibility-v1 (v0.4.2 M-007): Java method_declaration
+    // nodes carry their access modifiers as a `modifiers` named child
+    // (or as `public` / `private` / `protected` direct keyword
+    // children, depending on tree-sitter-java grammar). Package-private
+    // declarations have no modifier at all; we surface `None` in that
+    // case rather than fabricating a value.
+    let visibility = extract_java_visibility(node, source);
+
     FunctionInfo {
         name,
         params,
@@ -3423,9 +3501,49 @@ fn extract_java_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method: true,
         is_async: false,
         decorators: Vec::new(),
+        visibility,
         line_number,
         line_end,
     }
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): scan the `modifiers` child of
+/// a Java method/constructor declaration for one of the access keywords.
+/// Returns `None` for package-private (no modifier) declarations.
+fn extract_java_visibility(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifiers" {
+            let mut mcursor = child.walk();
+            for m in child.children(&mut mcursor) {
+                match m.kind() {
+                    "public" => return Some("public".to_string()),
+                    "private" => return Some("private".to_string()),
+                    "protected" => return Some("protected".to_string()),
+                    _ => {
+                        // Some grammars expose modifiers as raw text inside
+                        // a generic node; fall back to the keyword string.
+                        let t = get_node_text(&m, source);
+                        match t.as_str() {
+                            "public" => return Some("public".to_string()),
+                            "private" => return Some("private".to_string()),
+                            "protected" => return Some("protected".to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        // Older / partial grammars may place the keyword directly under
+        // the declaration node rather than nested in `modifiers`.
+        match child.kind() {
+            "public" => return Some("public".to_string()),
+            "private" => return Some("private".to_string()),
+            "protected" => return Some("protected".to_string()),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn extract_java_params(node: &Node, source: &str) -> Vec<String> {
@@ -3747,6 +3865,7 @@ fn extract_lua_assignment_functions(node: &Node, source: &str, functions: &mut V
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     });
@@ -3797,6 +3916,7 @@ fn extract_lua_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     }
@@ -3951,6 +4071,7 @@ fn extract_luau_assignment_functions(node: &Node, source: &str, functions: &mut 
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     });
@@ -3976,6 +4097,7 @@ fn extract_luau_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     }
@@ -4087,6 +4209,13 @@ fn extract_swift_function_info(node: &Node, source: &str, is_method: bool) -> Fu
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
 
+    // is-public-visibility-v1 (v0.4.2 M-007): Swift allows
+    // `public`/`open`/`internal`/`fileprivate`/`private` as
+    // visibility_modifier children. The Swift default is `internal`,
+    // but we keep `None` for unspecified declarations so consumers can
+    // distinguish "explicit internal" from "default" if they wish.
+    let visibility = extract_swift_visibility(node, source);
+
     FunctionInfo {
         name,
         params,
@@ -4095,9 +4224,52 @@ fn extract_swift_function_info(node: &Node, source: &str, is_method: bool) -> Fu
         is_method,
         is_async,
         decorators: Vec::new(),
+        visibility,
         line_number,
         line_end,
     }
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): Swift access modifiers.
+/// `tree-sitter-swift` exposes these as either a `visibility_modifier`
+/// named child or as the raw keyword inline before the `func` token.
+fn extract_swift_visibility(node: &Node, source: &str) -> Option<String> {
+    const KEYWORDS: &[&str] = &["public", "open", "internal", "fileprivate", "private"];
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "visibility_modifier" || child.kind() == "modifiers" {
+            let mut mcursor = child.walk();
+            for m in child.children(&mut mcursor) {
+                let raw = get_node_text(&m, source);
+                let raw = raw.trim();
+                if KEYWORDS.contains(&raw) {
+                    return Some(raw.to_string());
+                }
+                if m.kind() == "visibility_modifier" {
+                    // Nested visibility_modifier — text is the keyword.
+                    let nested = get_node_text(&m, source);
+                    let nested = nested.trim();
+                    if KEYWORDS.contains(&nested) {
+                        return Some(nested.to_string());
+                    }
+                }
+            }
+            // The `visibility_modifier` node itself may carry the keyword as text.
+            let raw = get_node_text(&child, source);
+            let raw = raw.trim();
+            if KEYWORDS.contains(&raw) {
+                return Some(raw.to_string());
+            }
+        }
+        // Some grammars place the keyword as a direct sibling token.
+        let txt = get_node_text(&child, source);
+        let txt = txt.trim();
+        if KEYWORDS.contains(&txt) {
+            return Some(txt.to_string());
+        }
+    }
+    None
 }
 
 fn extract_swift_params(node: &Node, source: &str) -> Vec<String> {
@@ -4416,6 +4588,7 @@ fn extract_ocaml_function_info(binding: &Node, definition: &Node, source: &str) 
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     }
@@ -4890,6 +5063,7 @@ fn extract_c_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     }
@@ -5154,6 +5328,7 @@ fn extract_cpp_function_info(node: &Node, source: &str, is_method: bool) -> Func
         is_method,
         is_async: false,
         decorators,
+        visibility: None,
         line_number,
         line_end,
     }
@@ -5314,6 +5489,7 @@ fn extract_ruby_function_info(node: &Node, source: &str, is_method: bool) -> Fun
         is_method,
         is_async: false,
         decorators,
+        visibility: None,
         line_number,
         line_end,
     }
@@ -5633,6 +5809,7 @@ fn extract_php_function_info(node: &Node, source: &str, is_method: bool) -> Func
         is_method,
         is_async: false,
         decorators,
+        visibility: None,
         line_number,
         line_end,
     }
@@ -5948,6 +6125,13 @@ fn extract_csharp_function_info(node: &Node, source: &str) -> FunctionInfo {
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
 
+    // is-public-visibility-v1 (v0.4.2 M-007): C# uses `modifier` children
+    // on method/constructor/property nodes for access keywords. We pick
+    // the most-restrictive keyword in declaration order; combined
+    // modifiers (e.g. `protected internal`, `private protected`) keep
+    // the first keyword seen so callers receive a determinist string.
+    let visibility = extract_csharp_visibility(node, source);
+
     FunctionInfo {
         name,
         params,
@@ -5956,9 +6140,30 @@ fn extract_csharp_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method: true, // C# methods are always inside classes/structs
         is_async,
         decorators,
+        visibility,
         line_number,
         line_end,
     }
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): scan `modifier` children for a
+/// C# access keyword. The tree-sitter-c-sharp grammar wraps each modifier
+/// token (including `public`/`private`/`protected`/`internal`) in a
+/// `modifier` named child whose text is the keyword.
+fn extract_csharp_visibility(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifier" {
+            let t = get_node_text(&child, source);
+            match t.as_str() {
+                "public" | "private" | "protected" | "internal" => {
+                    return Some(t);
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 fn extract_csharp_params(node: &Node, source: &str) -> Vec<String> {
@@ -6211,6 +6416,13 @@ fn extract_kotlin_function_info(node: &Node, source: &str, is_method: bool) -> F
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
 
+    // is-public-visibility-v1 (v0.4.2 M-007): Kotlin nests its access
+    // keyword under `modifiers > visibility_modifier`. The Kotlin spec
+    // defaults declarations to `public` when no modifier is present, so
+    // we leave `None` for those cases and let downstream consumers
+    // treat `None` as public.
+    let visibility = extract_kotlin_visibility(node, source);
+
     FunctionInfo {
         name,
         params,
@@ -6219,9 +6431,39 @@ fn extract_kotlin_function_info(node: &Node, source: &str, is_method: bool) -> F
         is_method,
         is_async,
         decorators,
+        visibility,
         line_number,
         line_end,
     }
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): scan `modifiers >
+/// visibility_modifier` for a Kotlin access keyword. The text of the
+/// modifier node IS the keyword. We accept `public`, `private`,
+/// `protected`, `internal`.
+fn extract_kotlin_visibility(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifiers" {
+            let mut mcursor = child.walk();
+            for m in child.children(&mut mcursor) {
+                if m.kind() == "visibility_modifier" {
+                    let t = get_node_text(&m, source);
+                    let t = t.trim();
+                    if matches!(t, "public" | "private" | "protected" | "internal") {
+                        return Some(t.to_string());
+                    }
+                }
+                // Some grammars expose the keyword directly under `modifiers`.
+                let raw = get_node_text(&m, source);
+                let raw = raw.trim();
+                if matches!(raw, "public" | "private" | "protected" | "internal") {
+                    return Some(raw.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn extract_kotlin_params(node: &Node, source: &str) -> Vec<String> {
@@ -6587,6 +6829,7 @@ fn extract_scala_function_info(node: &Node, source: &str, is_method: bool) -> Fu
         is_method,
         is_async: false, // Scala handles async via Futures, not a keyword
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     }
@@ -6996,6 +7239,7 @@ fn extract_elixir_function_info(node: &Node, source: &str) -> FunctionInfo {
         is_method: false,
         is_async: false,
         decorators: Vec::new(),
+        visibility: None,
         line_number,
         line_end,
     }

@@ -1097,6 +1097,7 @@ def helper(n):
             is_method: false,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         };
@@ -1115,6 +1116,7 @@ def helper(n):
             is_method: false,
             is_async: true,
             decorators: vec![],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         };

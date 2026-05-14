@@ -953,7 +953,14 @@ fn enrich_affected_functions_from_ast(
         let mut lookup: HashMap<String, (u32, bool, Vec<String>, bool)> = HashMap::new();
         let language = module_info.language;
         for func in &module_info.functions {
-            let is_public = infer_public_visibility(&func.name, language, &func.decorators);
+            // is-public-visibility-v1 (v0.4.2 M-007): honor an explicit
+            // AST visibility keyword when the extractor populated one.
+            let is_public = explicit_visibility_or_fallback(
+                func.visibility.as_deref(),
+                &func.name,
+                language,
+                &func.decorators,
+            );
             lookup.insert(
                 func.name.clone(),
                 (func.line_number, is_public, func.decorators.clone(), false),
@@ -974,8 +981,12 @@ fn enrich_affected_functions_from_ast(
                 .any(|d| d.contains("interface") || d.contains("abstract"));
             for method in &class.methods {
                 let qualified = format!("{}.{}", class.name, method.name);
-                let is_public =
-                    infer_public_visibility(&method.name, language, &method.decorators);
+                let is_public = explicit_visibility_or_fallback(
+                    method.visibility.as_deref(),
+                    &method.name,
+                    language,
+                    &method.decorators,
+                );
                 lookup.insert(
                     qualified,
                     (
@@ -1019,6 +1030,22 @@ fn enrich_affected_functions_from_ast(
             }
         }
     }
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): Prefer an explicit AST
+/// visibility keyword (`Some("public")` / `Some("private")` / …) when
+/// one was populated by the per-language extractor; otherwise fall
+/// back to the legacy name-based heuristic.
+fn explicit_visibility_or_fallback(
+    explicit: Option<&str>,
+    name: &str,
+    language: Language,
+    decorators: &[String],
+) -> bool {
+    if let Some(kw) = explicit {
+        return matches!(kw, "public" | "open" | "internal");
+    }
+    infer_public_visibility(name, language, decorators)
 }
 
 /// Conservative visibility inference shared between the AST enrichment

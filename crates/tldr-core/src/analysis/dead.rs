@@ -469,7 +469,13 @@ pub fn collect_all_functions(
 
         // Add top-level functions
         for func in &info.functions {
-            let is_public = infer_visibility_from_name(
+            // is-public-visibility-v1 (v0.4.2 M-007): prefer explicit AST
+            // visibility when the per-language extractor populated it
+            // (csharp/java/kotlin/swift/go/js). Fall back to the legacy
+            // name-based heuristic only when `visibility` is `None`
+            // (e.g. Java package-private, Kotlin default-public).
+            let is_public = explicit_or_inferred_visibility(
+                func.visibility.as_deref(),
                 &func.name,
                 language,
                 !func.decorators.is_empty(),
@@ -501,7 +507,10 @@ pub fn collect_all_functions(
 
             for method in &class.methods {
                 let full_name = format!("{}.{}", class.name, method.name);
-                let is_public = infer_visibility_from_name(
+                // is-public-visibility-v1 (v0.4.2 M-007): same preference
+                // ordering as top-level functions.
+                let is_public = explicit_or_inferred_visibility(
+                    method.visibility.as_deref(),
                     &method.name,
                     language,
                     !method.decorators.is_empty(),
@@ -588,6 +597,36 @@ fn has_test_decorator(decorators: &[String]) -> bool {
             || lower.contains("cfg(test")
             || lower.contains("cfg_attr(test")
     })
+}
+
+/// is-public-visibility-v1 (v0.4.2 M-007): combine an explicit AST
+/// visibility keyword (when present) with the legacy name-based
+/// heuristic. The explicit signal wins; the heuristic is only used as
+/// a fallback for languages or declarations that lacked a syntactic
+/// access modifier.
+///
+/// Returns `true` if the function is publicly visible from outside its
+/// defining module / file. Mapping of explicit keywords:
+///   - `"public"` / `"open"`         → public
+///   - `"private"` / `"fileprivate"` → not public
+///   - `"protected"`                 → not public (visible to subclass
+///                                     only — treated as non-public
+///                                     for dead-code reachability)
+///   - `"internal"`                  → public-within-module
+///                                     (treated as public, since
+///                                     within-module callers count
+///                                     for dead-code analysis)
+fn explicit_or_inferred_visibility(
+    explicit: Option<&str>,
+    name: &str,
+    language: crate::types::Language,
+    has_decorator: bool,
+    decorators: &[String],
+) -> bool {
+    if let Some(kw) = explicit {
+        return matches!(kw, "public" | "open" | "internal");
+    }
+    infer_visibility_from_name(name, language, has_decorator, decorators)
 }
 
 /// Infer visibility from function name based on language conventions.
@@ -1868,6 +1907,7 @@ mod tests {
                     is_method: false,
                     is_async: false,
                     decorators: vec![],
+                    visibility: None,
                     line_number: 42,
                     line_end: 42,
                 }],
@@ -1905,6 +1945,7 @@ mod tests {
                     is_method: false,
                     is_async: false,
                     decorators: vec![],
+                    visibility: None,
                     line_number: 10,
                     line_end: 10,
                 }],
@@ -2182,6 +2223,7 @@ mod tests {
                         is_method: true,
                         is_async: false,
                         decorators: vec![],
+                        visibility: None,
                         line_number: 5,
                         line_end: 5,
                     }],
@@ -2462,6 +2504,7 @@ mod tests {
                         is_method: false,
                         is_async: false,
                         decorators: vec![],
+                        visibility: None,
                         line_number: 5,
                         line_end: 5,
                     },
@@ -2473,6 +2516,7 @@ mod tests {
                         is_method: false,
                         is_async: true,
                         decorators: vec![],
+                        visibility: None,
                         line_number: 20,
                         line_end: 20,
                     },
@@ -2485,6 +2529,7 @@ mod tests {
                         is_method: false,
                         is_async: false,
                         decorators: vec![],
+                        visibility: None,
                         line_number: 30,
                         line_end: 30,
                     },

@@ -468,6 +468,7 @@ fn test_function_info_creation() {
         is_method: false,
         is_async: true,
         decorators: vec!["@staticmethod".to_string()],
+        visibility: None,
         line_number: 42,
         line_end: 42,
     };
@@ -1679,6 +1680,7 @@ fn test_full_serde_roundtrip_complex_types() {
         is_method: false,
         is_async: true,
         decorators: vec![],
+        visibility: None,
         line_number: 42,
         line_end: 42,
     };

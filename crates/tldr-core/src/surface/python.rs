@@ -1277,6 +1277,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec!["property".to_string()],
+            visibility: None,
             line_number: 10,
             line_end: 10,
         };
@@ -1293,6 +1294,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec!["staticmethod".to_string()],
+            visibility: None,
             line_number: 10,
             line_end: 10,
         };
@@ -1309,6 +1311,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec!["classmethod".to_string()],
+            visibility: None,
             line_number: 10,
             line_end: 10,
         };
@@ -1325,6 +1328,7 @@ mod tests {
             is_method: true,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 10,
             line_end: 10,
         };

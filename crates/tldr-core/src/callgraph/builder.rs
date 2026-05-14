@@ -200,6 +200,7 @@ mod tests {
             is_method: false,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         };
@@ -213,6 +214,7 @@ mod tests {
             is_method: false,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         };
@@ -226,6 +228,7 @@ mod tests {
             is_method: false,
             is_async: false,
             decorators: vec!["app.route(\"/user\")".to_string()],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         };
@@ -239,6 +242,7 @@ mod tests {
             is_method: false,
             is_async: false,
             decorators: vec![],
+            visibility: None,
             line_number: 1,
             line_end: 1,
         };
