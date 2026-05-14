@@ -1322,6 +1322,52 @@ fn collect_structure_nodes(
 ) {
     let kind = node.kind();
 
+    // search-emitter-v1 (M-027): tree-sitter-elixir wraps `def`/`defp`/
+    // `defmacro` in a generic `call` node — they are NOT distinct node
+    // kinds. Detect them by peeking the first child's text and emit a
+    // structure entry for the call. Mirrors
+    // `extract::extract_elixir_functions_detailed`.
+    if matches!(language, Language::Elixir) && kind == "call" {
+        if let Some(first) = node.child(0) {
+            let head = &source[first.start_byte()..first.end_byte()];
+            if matches!(head, "def" | "defp" | "defmacro") {
+                if let Some(name) = elixir_call_def_name(node, source) {
+                    let line_start = node.start_position().row as u32 + 1;
+                    let line_end = node.end_position().row as u32 + 1;
+                    let signature = extract_definition_signature(node, source);
+                    let preview = extract_code_preview(node, source, &signature, 5);
+                    // Elixir `def`s live inside `defmodule` blocks — call
+                    // them "method" if lexically nested, "function" otherwise.
+                    let kind_str = if is_inside_class_node(node, language) {
+                        "method"
+                    } else {
+                        "function"
+                    };
+                    entries.push(StructureEntry {
+                        name,
+                        kind: kind_str.to_string(),
+                        line_start,
+                        line_end,
+                        signature,
+                        preview,
+                    });
+                }
+                // Fall through to recurse — Elixir `def` bodies don't
+                // contain nested defs at top level, but module nodes do.
+            } else if head == "defmodule" {
+                // Recurse into defmodule's do_block to find member defs.
+                // Don't emit a "module" structure entry for the module
+                // itself — it would shadow the per-function entries.
+            }
+        }
+        // Recurse into children regardless.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_structure_nodes(child, source, language, entries);
+        }
+        return;
+    }
+
     let (is_func, is_class) = classify_node(kind, language);
 
     if is_func || is_class {
@@ -1340,8 +1386,13 @@ fn collect_structure_nodes(
                     _ => "class",
                 }
             } else {
+                // search-emitter-v1 (M-027): Go `method_declaration` carries
+                // a receiver but is NOT lexically nested inside a struct —
+                // classify it as "method" regardless of class scope.
+                let is_go_method_with_receiver = matches!(language, Language::Go)
+                    && kind == "method_declaration";
                 // Check if inside a class => method
-                if is_inside_class_node(node) {
+                if is_go_method_with_receiver || is_inside_class_node(node, language) {
                     "method"
                 } else {
                     "function"
@@ -1370,6 +1421,13 @@ fn collect_structure_nodes(
 }
 
 /// Classify a tree-sitter node kind as function-like or class-like.
+///
+/// search-emitter-v1 (M-027): broadened to cover OCaml, Ruby, Swift init,
+/// Java/C# constructors, TS abstract/interface method signatures, Kotlin
+/// companion objects, Elixir `def`/`defp`/`defmacro`, Lua functions, PHP
+/// method_declaration, Scala def, etc. — so that the per-result `kind`
+/// field is canonical across all supported languages instead of falling
+/// back to file-level "module" entries with the filename as `name`.
 fn classify_node(kind: &str, _language: Language) -> (bool, bool) {
     let is_func = matches!(
         kind,
@@ -1377,41 +1435,83 @@ fn classify_node(kind: &str, _language: Language) -> (bool, bool) {
             | "function_declaration"
             | "function_item"     // Rust
             | "method_definition"
-            | "method_declaration"
+            | "method_signature"           // TS: interface methods (VAL-001)
+            | "abstract_method_signature"  // TS: abstract class method (VAL-001)
+            | "method_declaration"         // Go w/ receiver, PHP, Java, C#
+            | "method"                     // Ruby
+            | "singleton_method"           // Ruby class methods
             | "arrow_function"
             | "function_expression"
             | "function"           // JS/TS
             | "func_literal"       // Go
             | "function_type"
+            | "value_definition"   // OCaml top-level let binding
+            | "init_declaration"   // Swift init (VAL-002)
+            | "constructor_declaration" // Java / C# constructor (VAL-003)
+            | "def"                // Elixir Module.def
+            | "defp"               // Elixir private
+            | "defmacro"           // Elixir macro
+            | "function_definition_statement" // Lua function
+            | "local_function"     // Lua local function
     );
 
     let is_class = matches!(
         kind,
         "class_definition"
             | "class_declaration"
-            | "struct_item"        // Rust
-            | "struct_definition"  // C/C++
-            | "struct_specifier"   // C
-            | "type_spec"          // Go struct
+            | "abstract_class_declaration"  // TS (VAL-001)
+            | "class_specifier"             // C++
+            | "class"                       // Ruby
+            | "struct_item"                 // Rust
+            | "struct_definition"           // C/C++
+            | "struct_specifier"            // C
+            | "enum_item"                   // Rust
+            | "trait_item"                  // Rust
+            | "type_spec"                   // Go struct
             | "interface_declaration"
+            | "type_definition"             // OCaml type definition
+            | "module_definition"           // OCaml module definition
+            | "companion_object"            // Kotlin companion object
+            | "object_declaration"          // Kotlin object
     );
 
     (is_func, is_class)
 }
 
 /// Extract the name from a function/class definition node.
+///
+/// search-emitter-v1 (M-027): added per-language fallbacks for nodes that
+/// don't expose a `name` field — OCaml `value_definition` -> `let_binding`
+/// pattern, Swift `init_declaration` (literal "init"), Java/C# constructor
+/// (first identifier child), Kotlin `companion_object` (literal "Companion").
 fn get_definition_name(
     node: tree_sitter::Node,
     source: &str,
     _language: Language,
 ) -> Option<String> {
+    // Swift `init_declaration` has no `name` field — emit the literal token.
+    if node.kind() == "init_declaration" {
+        return Some("init".to_string());
+    }
+
     // Most languages use a "name" field
     if let Some(name_node) = node.child_by_field_name("name") {
         let text = name_node.utf8_text(source.as_bytes()).ok()?;
         return Some(text.to_string());
     }
 
-    // For Rust function_item, also check "name" (already handled above)
+    // Java/C# constructor_declaration may not expose a `name` field — find
+    // the first identifier child.
+    if node.kind() == "constructor_declaration" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                let text = child.utf8_text(source.as_bytes()).ok()?;
+                return Some(text.to_string());
+            }
+        }
+    }
+
     // For arrow functions assigned to variables, check parent
     if node.kind() == "arrow_function" || node.kind() == "function_expression" {
         if let Some(parent) = node.parent() {
@@ -1424,18 +1524,132 @@ fn get_definition_name(
         }
     }
 
+    // OCaml: value_definition contains a let_binding child with a "pattern"
+    // field. Skip anonymous bindings (`let () = ...`, `let _ = ...`).
+    if node.kind() == "value_definition" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "let_binding" {
+                if let Some(pattern_node) = child.child_by_field_name("pattern") {
+                    let text = pattern_node.utf8_text(source.as_bytes()).ok()?;
+                    if text != "()" && text != "_" && !text.is_empty() {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    // Kotlin: companion_object has no identifier child.
+    if node.kind() == "companion_object" {
+        return Some("Companion".to_string());
+    }
+
     None
 }
 
+/// Extract the function name from an Elixir `def`/`defp`/`defmacro` call node.
+///
+/// Tree-sitter-elixir AST shape for `def foo(args) do ... end`:
+///
+/// ```text
+/// (call
+///   (identifier "def")
+///   (arguments
+///     (call
+///       (identifier "foo")          ; function name
+///       (arguments ...)              ; params
+///     )
+///     (do_block ...)
+///   )
+/// )
+/// ```
+///
+/// For zero-arg `def foo do ... end` the inner node is `identifier "foo"`
+/// directly. For guard-clause `def foo(x) when x > 0 do ... end` the inner
+/// node is a `binary_operator` wrapping the function clause.
+///
+/// search-emitter-v1 (M-027). Mirrors
+/// `extract::extract_elixir_function_info`.
+fn elixir_call_def_name(node: tree_sitter::Node, source: &str) -> Option<String> {
+    // node.child(0) is the def/defp/defmacro identifier; node.child(1) is
+    // the `arguments` node (or sometimes a direct call).
+    let args = node.child(1)?;
+    let target = if args.kind() == "arguments" {
+        args.child(0)?
+    } else {
+        args
+    };
+
+    match target.kind() {
+        "identifier" => {
+            let text = source[target.start_byte()..target.end_byte()].to_string();
+            Some(text)
+        }
+        "call" => {
+            // First child of the inner call is the function name identifier.
+            let fname = target.child(0)?;
+            if fname.kind() == "identifier" {
+                let text = source[fname.start_byte()..fname.end_byte()].to_string();
+                Some(text)
+            } else {
+                None
+            }
+        }
+        "binary_operator" => {
+            // `def foo(x) when x > 0 do ... end` — drill into the LHS call.
+            let mut cursor = target.walk();
+            for child in target.children(&mut cursor) {
+                if child.kind() == "call" {
+                    if let Some(fname) = child.child(0) {
+                        if fname.kind() == "identifier" {
+                            let text =
+                                source[fname.start_byte()..fname.end_byte()].to_string();
+                            return Some(text);
+                        }
+                    }
+                }
+                if child.kind() == "identifier" {
+                    let text = source[child.start_byte()..child.end_byte()].to_string();
+                    return Some(text);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Check if a node is inside a class/struct body.
-fn is_inside_class_node(node: tree_sitter::Node) -> bool {
+///
+/// search-emitter-v1 (M-027): broadened to recognise additional class-scope
+/// node kinds across languages — Ruby class, Kotlin companion/object,
+/// TS abstract class / interface declarations, C++ class_specifier, Rust
+/// trait_item. `module` is also a Ruby class-scope kind but is the root
+/// node in Python; callers must pass the `language` to disambiguate.
+fn is_inside_class_node(node: tree_sitter::Node, language: Language) -> bool {
+    let module_is_class = !matches!(language, Language::Python);
     let mut current = node.parent();
     while let Some(parent) = current {
         let kind = parent.kind();
         if matches!(
             kind,
-            "class_definition" | "class_declaration" | "class_body" | "impl_item" | "struct_item"
-        ) {
+            "class_definition"
+                | "class_declaration"
+                | "abstract_class_declaration"  // TS
+                | "class_body"
+                | "class_specifier"             // C++
+                | "class"                       // Ruby
+                | "impl_item"
+                | "struct_item"
+                | "trait_item"
+                | "interface_declaration"
+                | "interface_body"
+                | "companion_object"            // Kotlin
+                | "object_declaration"          // Kotlin
+        ) || (kind == "module" && module_is_class)
+        {
             return true;
         }
         current = parent.parent();
@@ -1444,29 +1658,26 @@ fn is_inside_class_node(node: tree_sitter::Node) -> bool {
 }
 
 /// Extract the actual definition signature from a tree-sitter node,
-/// skipping doc comments (///, //!, /** */) that tree-sitter includes
-/// as children of function/struct/class nodes.
+/// skipping doc comments (///, //!, /** */) and attribute/decorator/annotation
+/// children that tree-sitter includes before the actual definition.
+///
+/// search-emitter-v1 (M-027): expanded the set of node kinds that count as
+/// "preamble noise" so the signature is the real definition line:
+///   - `attribute_list` — PHP `#[Attribute]`
+///   - `modifiers` — Swift `@inlinable`, Kotlin/Scala annotations bundles
+///   - `annotation` — Java / Kotlin `@JvmStatic`, `@Override`, etc.
+///   - `@doc`/`@moduledoc` lines for Elixir (handled in text fallback)
 fn extract_definition_signature(node: tree_sitter::Node, source: &str) -> String {
-    // Strategy: find the first child node that isn't a comment or attribute,
-    // then use its start position as the beginning of the actual definition.
+    // Strategy: find the first child node that isn't a comment, attribute,
+    // decorator, annotation, or modifier bundle.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let ckind = child.kind();
-        // Skip doc comments and attributes/decorators
-        if ckind == "line_comment"
-            || ckind == "block_comment"
-            || ckind == "comment"
-            || ckind == "attribute_item"    // Rust #[...]
-            || ckind == "attribute"         // Rust #[...]
-            || ckind == "decorator"         // Python @decorator
-            || ckind == "decorator_list"
-        // Python
-        {
+        if is_signature_preamble_kind(ckind) {
             continue;
         }
-        // Found the first non-comment child — extract its line as signature
+        // Found the first non-preamble child — extract its line as signature
         let start_byte = child.start_byte();
-        // Build the signature from this child's start to end of line
         let line_from_start = &source[start_byte..];
         let sig = line_from_start
             .lines()
@@ -1474,28 +1685,22 @@ fn extract_definition_signature(node: tree_sitter::Node, source: &str) -> String
             .unwrap_or("")
             .trim()
             .to_string();
-        if !sig.is_empty() {
+        if !sig.is_empty() && !looks_like_attribute_line(&sig) {
             return sig;
         }
     }
 
-    // Fallback: if no non-comment children found, find the first non-comment line
-    // in the node's text (handles cases where tree-sitter grammar doesn't separate comments)
+    // Fallback: scan node text line-by-line, skipping comments/attrs/annotations.
     let node_text = &source[node.start_byte()..node.end_byte()];
     for line in node_text.lines() {
         let trimmed = line.trim();
-        if !trimmed.is_empty()
-            && !trimmed.starts_with("///")
-            && !trimmed.starts_with("//!")
-            && !trimmed.starts_with("//")
-            && !trimmed.starts_with("/*")
-            && !trimmed.starts_with("*")
-            && !trimmed.starts_with("#[")
-            && !trimmed.starts_with("@")
-            && !trimmed.starts_with("#")
-        {
-            return trimmed.to_string();
+        if trimmed.is_empty() {
+            continue;
         }
+        if looks_like_attribute_line(trimmed) {
+            continue;
+        }
+        return trimmed.to_string();
     }
 
     // Last resort: use the first line
@@ -1505,6 +1710,69 @@ fn extract_definition_signature(node: tree_sitter::Node, source: &str) -> String
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+/// Is this tree-sitter child node kind a "preamble" item that should be
+/// skipped when extracting the signature line?
+///
+/// search-emitter-v1 (M-027).
+fn is_signature_preamble_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "line_comment"
+            | "block_comment"
+            | "comment"
+            | "attribute_item"    // Rust #[...]
+            | "attribute"         // Rust / Swift attribute node
+            | "attribute_list"    // PHP #[Attribute]
+            | "modifiers"         // Swift / Kotlin / Scala / Java modifier bundle
+            | "modifier"          // single modifier node (some grammars)
+            | "annotation"        // Java / Kotlin @Annotation
+            | "marker_annotation" // Java
+            | "decorator"         // Python @decorator
+            | "decorator_list"    // Python
+    )
+}
+
+/// Does this textual line look like an attribute/decorator/annotation/doc-tag
+/// rather than the real definition signature? Used as a final guard when
+/// tree-sitter doesn't split the preamble into a separate child node.
+///
+/// search-emitter-v1 (M-027).
+fn looks_like_attribute_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    if t.starts_with("///")
+        || t.starts_with("//!")
+        || t.starts_with("//")
+        || t.starts_with("/*")
+        || t.starts_with("*")
+    {
+        return true;
+    }
+    // PHP / Rust attribute syntax
+    if t.starts_with("#[") {
+        return true;
+    }
+    // Python / Java / Kotlin / Swift / Elixir annotation/decorator/attribute
+    // (e.g. `@inlinable`, `@JvmStatic`, `@override`, `@doc`, `@moduledoc`)
+    if let Some(rest) = t.strip_prefix('@') {
+        if rest
+            .chars()
+            .next()
+            .map(|c| c.is_alphabetic() || c == '_')
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    // Bare `#` shebang or shell-style comment line.
+    if t.starts_with('#') && !t.starts_with("#[") {
+        return true;
+    }
+    false
 }
 
 /// Extract a short code preview from a tree-sitter node.
