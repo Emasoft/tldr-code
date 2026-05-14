@@ -210,13 +210,17 @@ pub fn run_dead_stores(
     // Find dead stores using DFG-based analysis
     let dead_stores_ssa = find_dead_stores_dfg(&dfg.refs, &cfg)?;
 
-    // Optionally run live-vars comparison
+    // Optionally run live-vars comparison.
+    //
+    // When `--compare` is not specified, emit empty defaults (not null) — the
+    // live-vars sub-analysis is simply unwired. Full per-lang live-variable
+    // analysis is design-parked (M-014 / v0.4.2).
     let (dead_stores_live_vars, live_vars_count) = if compare {
         let live_vars_dead = find_dead_stores_live_vars(&source, function, language)?;
         let count = live_vars_dead.len() as u32;
-        (Some(live_vars_dead), Some(count))
+        (live_vars_dead, count)
     } else {
-        (None, None)
+        (Vec::new(), 0)
     };
 
     Ok(DeadStoresReport {
@@ -226,6 +230,7 @@ pub fn run_dead_stores(
         count: dead_stores_ssa.len() as u32,
         dead_stores_live_vars,
         live_vars_count,
+        compared: compare,
     })
 }
 
@@ -613,8 +618,9 @@ fn format_dead_stores_text(report: &DeadStoresReport) -> String {
         }
     }
 
-    // Comparison results if present
-    if let Some(live_vars_dead) = &report.dead_stores_live_vars {
+    // Comparison results if --compare was requested
+    if report.compared {
+        let live_vars_dead = &report.dead_stores_live_vars;
         output.push('\n');
         output.push_str("Live-Variables Comparison:\n");
         output.push_str(&"-".repeat(40));
@@ -622,7 +628,7 @@ fn format_dead_stores_text(report: &DeadStoresReport) -> String {
         output.push_str(&format!("  SSA-based: {} dead stores\n", report.count));
         output.push_str(&format!(
             "  Live-vars: {} dead stores\n",
-            report.live_vars_count.unwrap_or(0)
+            report.live_vars_count
         ));
 
         if !live_vars_dead.is_empty() {
@@ -657,8 +663,9 @@ mod tests {
             file: PathBuf::from("test.py"),
             dead_stores_ssa: vec![],
             count: 0,
-            dead_stores_live_vars: None,
-            live_vars_count: None,
+            dead_stores_live_vars: Vec::new(),
+            live_vars_count: 0,
+            compared: false,
         };
 
         let text = format_dead_stores_text(&report);
@@ -687,8 +694,9 @@ mod tests {
                 },
             ],
             count: 2,
-            dead_stores_live_vars: None,
-            live_vars_count: None,
+            dead_stores_live_vars: Vec::new(),
+            live_vars_count: 0,
+            compared: false,
         };
 
         let text = format_dead_stores_text(&report);
@@ -711,14 +719,15 @@ mod tests {
                 is_phi: false,
             }],
             count: 1,
-            dead_stores_live_vars: Some(vec![DeadStore {
+            dead_stores_live_vars: vec![DeadStore {
                 variable: "a".to_string(),
                 ssa_name: "a_lv".to_string(),
                 line: 3,
                 block_id: 0,
                 is_phi: false,
-            }]),
-            live_vars_count: Some(1),
+            }],
+            live_vars_count: 1,
+            compared: true,
         };
 
         let text = format_dead_stores_text(&report);

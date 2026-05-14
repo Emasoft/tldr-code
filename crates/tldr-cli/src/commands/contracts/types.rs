@@ -902,11 +902,24 @@ pub struct DeadStoresReport {
     /// Count of dead stores
     pub count: u32,
 
-    /// Optional: dead stores via live-vars analysis (if --compare flag used)
-    pub dead_stores_live_vars: Option<Vec<DeadStore>>,
+    /// Dead stores via live-vars sub-analysis.
+    ///
+    /// Emitted as `[]` when `--compare` is not specified (sub-analysis unwired).
+    /// Per-lang live-vars implementation is parked as design (M-014 / v0.4.2).
+    #[serde(default)]
+    pub dead_stores_live_vars: Vec<DeadStore>,
 
-    /// Optional: count from live-vars analysis
-    pub live_vars_count: Option<u32>,
+    /// Count from live-vars sub-analysis.
+    ///
+    /// Emitted as `0` when `--compare` is not specified (sub-analysis unwired).
+    #[serde(default)]
+    pub live_vars_count: u32,
+
+    /// Whether the live-vars comparison sub-analysis was requested
+    /// (drives whether the comparison block is rendered in text output).
+    /// Not serialised — purely a runtime flag.
+    #[serde(skip)]
+    pub compared: bool,
 }
 
 /// Status of a sub-analysis in verify command.

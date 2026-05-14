@@ -769,9 +769,13 @@ pub struct DeadStoresReport {
     pub file: PathBuf,
     pub dead_stores_ssa: Vec<DeadStore>,
     pub count: u32,
-    /// Only present if --compare flag used
-    pub dead_stores_live_vars: Option<Vec<serde_json::Value>>,
-    pub live_vars_count: Option<u32>,
+    /// Empty `[]` unless `--compare` is passed (live-vars sub-analysis unwired
+    /// for most languages — full per-lang impl design-parked, M-014 v0.4.2).
+    #[serde(default)]
+    pub dead_stores_live_vars: Vec<serde_json::Value>,
+    /// `0` unless `--compare` is passed.
+    #[serde(default)]
+    pub live_vars_count: u32,
 }
 ```
 
