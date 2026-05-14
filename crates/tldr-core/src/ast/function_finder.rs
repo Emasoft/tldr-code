@@ -104,8 +104,21 @@ pub fn find_function_node<'a>(
     // class body), and finally fall back to the bare last segment so a
     // call like `XMLDocument::Parse` still resolves to the out-of-class
     // `void XMLDocument::Parse(...)` definition.
+    //
+    // rust-per-fn-qualified-name-v1 (v0.4.2 cluster M-013): extend the
+    // same `::`-qualified-name handling to Rust so the 9 per-function
+    // commands (`reaching-defs`, `available`, `dead-stores`, `slice`,
+    // `taint`, `resources`, `complexity`, `explain`, `references`)
+    // accept `Type::method` and `mod::Type::method` forms. Call-graph
+    // commands like `tldr impact Type::method` already accept this via
+    // `analysis::impact::names_match`; this closes the asymmetry at the
+    // per-function dispatcher entry. For Rust we resolve the class
+    // scope to the LAST TWO segments (`Type::method`), which handles
+    // both `Type::method` (1 segment of qualifier) and module-prefixed
+    // `mod::Type::method` shapes. `find_class_node` for Rust descends
+    // into `impl_item` nodes whose type_identifier matches.
     if function_name.contains("::")
-        && matches!(language, Language::C | Language::Cpp)
+        && matches!(language, Language::C | Language::Cpp | Language::Rust)
     {
         // Try the full qualified form first — handles the (rare) case
         // where the extractor returned the qualified text verbatim.
@@ -122,18 +135,39 @@ pub fn find_function_node<'a>(
         // `XMLText::ParseDeep`. Walk the file's `function_definition`
         // nodes and match by full qualified-identifier text BEFORE
         // falling back to the bare-name search. This disambiguates the
-        // 7 ParseDeep overloads in tinyxml2.cpp.
-        if let Some(found) =
-            find_cpp_qualified_function_definition(root, function_name, source)
-        {
-            return Some(found);
+        // 7 ParseDeep overloads in tinyxml2.cpp. (C/C++ only — Rust
+        // grammars expose method names as plain `identifier` children
+        // of `function_item` nested inside the `impl_item` body, not as
+        // qualified declarators.)
+        if matches!(language, Language::C | Language::Cpp) {
+            if let Some(found) =
+                find_cpp_qualified_function_definition(root, function_name, source)
+            {
+                return Some(found);
+            }
         }
 
         let parts: Vec<&str> = function_name.split("::").collect();
         if parts.len() >= 2 {
-            // class scope resolution: e.g. XMLDocument::Parse
-            let class_name = parts[0];
-            let remainder = parts[1..].join("::");
+            // Class scope resolution.
+            //
+            // For C/C++ we keep the legacy behavior: the LEFTMOST
+            // segment is the class (covers `XMLDocument::Parse`; deeper
+            // shapes like `outer_ns::Inner::method` are unusual in C++).
+            //
+            // For Rust we pick the LAST TWO segments as `Type::method`
+            // so module prefixes (`mod::Type::method`) are stripped.
+            // This matches what users expect when copy/pasting a
+            // qualified name from rust-analyzer / cargo docs and
+            // mirrors how `analysis::impact::names_match` handles the
+            // case in the call-graph layer (it accepts a candidate
+            // whose qualifier ends-with the user-typed qualifier).
+            let n = parts.len();
+            let (class_name, remainder) = if matches!(language, Language::Rust) {
+                (parts[n - 2], parts[n - 1].to_string())
+            } else {
+                (parts[0], parts[1..].join("::"))
+            };
             if let Some(class_node) = find_class_node(root, class_name, language, source) {
                 let scope = class_node
                     .child_by_field_name("body")
@@ -150,6 +184,10 @@ pub fn find_function_node<'a>(
             // appears as `function_definition` with declarator
             // `qualified_identifier`, and our extractor returns the
             // rightmost identifier (`Parse`) for both lookup and storage.
+            // For Rust this also covers the case where the named
+            // `impl Type` block could not be located (e.g. trait default
+            // methods, generic impls whose type_identifier is shaped
+            // differently).
             let last = *parts.last().unwrap();
             return find_function_node_in_subtree(root, last, language, source);
         }
@@ -458,6 +496,42 @@ fn find_function_node_in_subtree<'a>(
     None
 }
 
+/// rust-per-fn-qualified-name-v1 (v0.4.2 cluster M-013): Produce the
+/// fallback bare-name to try when a user-supplied qualified function
+/// name fails to resolve at a per-function-command dispatcher that
+/// implements its OWN function lookup (and therefore cannot share
+/// [`find_function_node`]'s class-scope resolver directly).
+///
+/// Returns `None` when the input is already bare or when `language`
+/// does not use the `::` qualifier for method paths. Returns
+/// `Some(bare)` for the rightmost segment after `::` otherwise.
+///
+/// Concretely:
+/// - `("ParserPool::parse", Rust)` -> `Some("parse")`
+/// - `("mod::ParserPool::parse", Rust)` -> `Some("parse")`
+/// - `("parse", Rust)` -> `None`
+/// - `("ParserPool.parse", Rust)` -> `None`  (dot form already handled
+///   by the per-language class-scope branch in `find_function_node`)
+/// - `("Foo::bar", Python)` -> `None`  (not the canonical qualifier)
+///
+/// Callers should attempt the user-typed qualified name FIRST and only
+/// fall back to this bare-name when the qualified lookup yields `None`.
+/// This mirrors how `analysis::impact::names_match` accepts both
+/// directions of qualification at the call-graph layer.
+pub fn qualified_name_fallback_bare(function_name: &str, language: Language) -> Option<String> {
+    // `::` is the canonical method-path separator in Rust, C and C++.
+    // We deliberately do NOT include Python/JS/etc — those use `.` and
+    // their dispatchers route through `find_function_node` which
+    // already handles dot-qualified names via `find_class_node`.
+    if !matches!(language, Language::Rust | Language::C | Language::Cpp) {
+        return None;
+    }
+    if !function_name.contains("::") {
+        return None;
+    }
+    function_name.rsplit("::").next().map(str::to_string)
+}
+
 /// halstead-per-function-v1 (v0.4.2 cluster M-026): Find a function node
 /// by BOTH name AND start line.
 ///
@@ -551,6 +625,191 @@ fn elixir_call_has_do_block(node: Node) -> bool {
         }
     }
     false
+}
+
+/// elixir-per-clause-dfg-cfg-v1 (v0.4.2 cluster M-031): metadata about a
+/// single Elixir `def NAME/ARITY` clause discovered in the AST.
+///
+/// Multi-clause `def` definitions are routinely used in canonical Elixir
+/// libraries (Plug, Ecto, Phoenix). For example,
+/// `Plug.Conn.send_resp` has 5 clauses across 2 arities. Per-function
+/// DFG/CFG/metrics commands need to surface every clause separately —
+/// not just the first body-bearing one — so that the 9 DFG/CFG commands
+/// (`reaching-defs`, `available`, `dead-stores`, `slice`, `taint`,
+/// `resources`, `complexity`, `explain`, `references`) emit distinct
+/// per-clause analysis instead of collapsing to clause-1.
+#[derive(Debug, Clone)]
+pub struct ElixirDefClause {
+    /// 1-based start line of the `def NAME(...)` call node.
+    pub start_line: u32,
+    /// 1-based end line of the clause (inclusive). Tracks the full
+    /// `def ... do ... end` span; for bodyless heads it tracks the
+    /// signature line only.
+    pub end_line: u32,
+    /// Arity of this clause (number of argument patterns). A
+    /// bodyless head like `def send_resp(conn)` has arity 1; the
+    /// 3-arg clause `def send_resp(%Conn{}, status, body)` has
+    /// arity 3.
+    pub arity: usize,
+    /// True if this clause has a `do_block` (a real body). Bodyless
+    /// heads return false and are typically used to attach `@spec`
+    /// typespecs.
+    pub has_body: bool,
+}
+
+/// elixir-per-clause-dfg-cfg-v1 (v0.4.2 cluster M-031): iterate over
+/// every Elixir `def`/`defp` clause matching `function_name` and return
+/// a vector of [`ElixirDefClause`] descriptors keyed by `(start_line,
+/// arity)`.
+///
+/// This is the multi-clause counterpart to [`find_function_node`] which
+/// returns only one node per call. It walks the whole AST (no scope
+/// pruning) collecting every `def NAME(...)` clause whose extracted
+/// name matches `function_name`.
+///
+/// Returns an empty vector for non-Elixir trees or if no clause
+/// matches. Bodyless heads (`def send_resp(conn)`) are included with
+/// `has_body=false` so callers can distinguish them and decide whether
+/// to skip body-level analysis.
+///
+/// The result is sorted by `start_line` ascending so callers can emit
+/// stable per-clause output.
+pub fn find_elixir_def_clauses(
+    root: Node<'_>,
+    function_name: &str,
+    source: &str,
+) -> Vec<ElixirDefClause> {
+    let mut out: Vec<ElixirDefClause> = Vec::new();
+    let mut stack: Vec<Node<'_>> = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call" {
+            if let Some(name) = get_function_name(node, Language::Elixir, source) {
+                if name == function_name {
+                    let start_line = node.start_position().row as u32 + 1;
+                    let end_line = node.end_position().row as u32 + 1;
+                    let has_body = elixir_call_has_do_block(node);
+                    let arity = elixir_def_clause_arity(node, source);
+                    out.push(ElixirDefClause {
+                        start_line,
+                        end_line,
+                        arity,
+                        has_body,
+                    });
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+
+    // Sort by start_line ascending for stable per-clause output.
+    out.sort_by_key(|c| c.start_line);
+    // De-duplicate exact (start_line, arity) tuples — the AST walk
+    // can revisit the same node when nested under `defmodule` and the
+    // tree-sitter grammar emits nested `call` nodes for the same def
+    // surface form. Two clauses at the same line with the same arity
+    // are the same logical clause.
+    out.dedup_by(|a, b| a.start_line == b.start_line && a.arity == b.arity);
+    out
+}
+
+/// elixir-per-clause-dfg-cfg-v1 (M-031): compute the arity of an Elixir
+/// `def NAME(...)` clause by inspecting the `call` node's argument
+/// structure. Returns 0 if the structure does not match a recognised
+/// clause head shape.
+///
+/// Recognised shapes (mirrors `get_function_name`'s Elixir branch):
+///   - `def func_name` (bare identifier, no args) -> arity 0
+///   - `def func_name(a, b)` -> arity 2
+///   - `def func_name(a) when guard` (binary_operator wrapper) -> arity 1
+fn elixir_def_clause_arity(node: Node, source: &str) -> usize {
+    // node is the outer `call` for `def`. Its child(1) is the args
+    // wrapper which contains the inner `call` representing the function
+    // clause head (with its own arguments) — possibly wrapped in a
+    // `binary_operator` for guard clauses.
+    let Some(args) = node.child(1) else {
+        return 0;
+    };
+
+    // Drill to the inner `call` node representing the clause head.
+    let inner_call = find_elixir_clause_head_call(args, source);
+
+    match inner_call {
+        Some(head) => {
+            // The head's child(1) (if present) is its arguments wrapper.
+            // If the clause has no args (`def func_name`) there's no
+            // second child; return 0.
+            let Some(head_args) = head.child(1) else {
+                return 0;
+            };
+            count_elixir_clause_arguments(head_args)
+        }
+        None => {
+            // `args` is a bare identifier (`def func_name`, no parens, no args).
+            if args.kind() == "identifier" {
+                0
+            } else {
+                0
+            }
+        }
+    }
+}
+
+fn find_elixir_clause_head_call<'a>(args: Node<'a>, source: &str) -> Option<Node<'a>> {
+    // Direct `call` child.
+    if args.kind() == "call" {
+        return Some(args);
+    }
+    // `arguments` wrapper containing a `call` or a `binary_operator`
+    // (for guard clauses).
+    let mut cursor = args.walk();
+    for child in args.children(&mut cursor) {
+        if child.kind() == "call" {
+            return Some(child);
+        }
+        if child.kind() == "binary_operator" {
+            // `when` guard: descend into LHS.
+            let mut bin = child.walk();
+            for bin_child in child.children(&mut bin) {
+                if bin_child.kind() == "call" {
+                    return Some(bin_child);
+                }
+            }
+        }
+        // Suppress unused-var warning for `source`; reserved for
+        // future shape detection if grammar ever splits.
+        let _ = source;
+    }
+    None
+}
+
+fn count_elixir_clause_arguments(head_args: Node) -> usize {
+    // The head's args may be:
+    //   - `arguments`: count its direct comma-separated argument children
+    //   - `tuple`/other: treat as single arg
+    // tree-sitter-elixir emits `arguments` with one child per pattern
+    // (separated by `,` tokens which are anonymous).
+    if head_args.kind() == "arguments" {
+        let mut cursor = head_args.walk();
+        let mut n = 0usize;
+        for child in head_args.children(&mut cursor) {
+            // Skip punctuation/anonymous tokens — count only named
+            // (positional) argument nodes.
+            if child.is_named() {
+                n += 1;
+            }
+        }
+        return n;
+    }
+    // Fallback: a single non-`arguments` head_args node represents one
+    // pattern (e.g. `def foo(x)` where the grammar emits a single
+    // identifier child rather than an `arguments` wrapper).
+    1
 }
 
 /// Get the node kinds that represent functions in each language

@@ -142,6 +142,42 @@ impl ReferencesArgs {
         // Run analysis
         let mut report = find_references(&self.symbol, &self.path, &options)?;
 
+        // rust-per-fn-qualified-name-v1 (v0.4.2 cluster M-013): when the
+        // user searches for a Rust `Type::method` qualifier, the
+        // text-search candidate pass inside `find_references` looks for
+        // the literal `Type::method` token — which never appears at
+        // call sites in Rust (callers write `ParserPool::parse(&pool)`
+        // through a value path, not the qualified text). The
+        // call-graph commands accept this shape via
+        // `analysis::impact::names_match`. Apply the same canonical
+        // normaliser exposed by `qualified_name_fallback_bare`: if the
+        // qualified lookup returned nothing AND the symbol is a Rust
+        // qualified name, re-run with the bare last segment so the
+        // definition and all references surface.
+        if report.total_references == 0 && report.definitions.is_empty() {
+            let resolved_lang_for_fallback = cli_lang
+                .or_else(|| Language::from_directory(&self.path));
+            if let Some(lang) = resolved_lang_for_fallback {
+                if let Some(bare) =
+                    tldr_core::ast::function_finder::qualified_name_fallback_bare(
+                        &self.symbol,
+                        lang,
+                    )
+                {
+                    let fallback = find_references(&bare, &self.path, &options)?;
+                    if !fallback.definitions.is_empty() || fallback.total_references > 0 {
+                        report = fallback;
+                        // Preserve the user-typed symbol in the output
+                        // so downstream tools / displays see what the
+                        // user asked for. The internal lookup used the
+                        // bare segment; the report contract carries the
+                        // user-typed name.
+                        report.symbol = self.symbol.clone();
+                    }
+                }
+            }
+        }
+
         // sibling-resolver-gaps-v1 (P14.AGG14-13): when the user
         // searches for `m.reset` in a Lua project, the call-graph
         // resolves the qualified `m.<method>` form but

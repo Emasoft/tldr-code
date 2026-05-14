@@ -3794,9 +3794,25 @@ pub fn run(args: ResourcesArgs, global_format: GlobalOutputFormat) -> anyhow::Re
     let mut all_use_after_closes = Vec::new();
 
     if let Some(ref func_name) = args.function {
-        // Analyze specific function
-        if let Some(func_node) = find_function_node_multilang(&tree, func_name, source_bytes, lang)
-        {
+        // Analyze specific function.
+        //
+        // rust-per-fn-qualified-name-v1 (v0.4.2 cluster M-013): the
+        // resources command uses its own ad-hoc `find_function_node_multilang`
+        // resolver (it predates `tldr_core::ast::function_finder::find_function_node`)
+        // and that local resolver does NOT understand Rust `Type::method`
+        // qualified names. The call-graph commands already accept this
+        // shape; rather than duplicate the class-scope resolver here we
+        // fall back to the bare last segment when the qualified form
+        // fails — sharing the same canonical normaliser exposed by
+        // `qualified_name_fallback_bare`.
+        let func_node = find_function_node_multilang(&tree, func_name, source_bytes, lang)
+            .or_else(|| {
+                tldr_core::ast::function_finder::qualified_name_fallback_bare(func_name, lang)
+                    .and_then(|bare| {
+                        find_function_node_multilang(&tree, &bare, source_bytes, lang)
+                    })
+            });
+        if let Some(func_node) = func_node {
             let (resources, leaks, double_closes, use_after_closes) =
                 analyze_function_with_lang(func_node, source_bytes, &args, lang);
             all_resources = resources;
