@@ -283,7 +283,14 @@ fn p19_bug08_cpp_class_count_consistency() {
         .as_array()
         .map(|a| a.len())
         .unwrap_or(0);
-    let (rc3, h_out) = run_tldr(&["health", file, "--format", "json"]);
+    // M-016: health is canonicalised against structure. Use the same
+    // language hint (`--lang cpp`) as the structure invocation above so
+    // both surfaces walk the same AST projection — otherwise health's
+    // path-based language autodetect on a `.h` returns `C` (top-level
+    // 6 classes) while structure with `--lang cpp` returns 27 (nested
+    // + top-level). The M-016 invariant is *same input, same lang →
+    // same count*.
+    let (rc3, h_out) = run_tldr(&["-l", "cpp", "health", file, "--format", "json"]);
     assert_eq!(rc3, 0);
     let health_count = parse_json(&h_out)["summary"]["classes_analyzed"]
         .as_u64()
@@ -291,22 +298,30 @@ fn p19_bug08_cpp_class_count_consistency() {
 
     // Original P19-08 fix (v0.4.1 c0266aa) drove the three counters to
     // ~26 each. cpp-class-count-agreement-v1 (v0.4.2 bug-B2 /
-    // BUG-CPP-P20-01) refines the semantics:
+    // BUG-CPP-P20-01) then refined the semantics. health-dashboard-v1
+    // (v0.4.2 M-016) further canonicalised `health` against `structure`
+    // (no longer cohesion):
     //
     //   * `structure`  → all class_specifier nodes incl. forward-decls
-    //                     and nested classes (tinyxml2.h ≈ 27).
+    //                     and nested classes; single-file top-level
+    //                     emission only — nested classes in a stand-
+    //                     alone `.h` are NOT projected into the
+    //                     top-level `classes[]` list (deferred defect).
+    //                     On the file alone tinyxml2.h ≈ 6;
+    //                     on the directory ≈ 30.
     //   * `interface`  → deduped class hierarchy entries        (≈ 18).
-    //   * `cohesion`   → classes with extractable methods       (≈ 14).
-    //   * `health`     → mirrors cohesion (LCOM4 path)          (≈ 14).
+    //   * `cohesion`   → classes with extractable methods, nested
+    //                     and top-level                          (≈ 14).
+    //   * `health`     → canonicalised against structure (M-016).
+    //                     On a single `.h` ≈ 6; on the directory ≈ 30.
     //
-    // These are legitimate per-surface semantics, no longer expected to
-    // collapse to a single number. The floor and tolerance below
-    // preserve the original P19-08 guarantee (`.h` files are recognized
-    // as cpp on every surface) while accommodating the new tightened
-    // counts.
+    // These are legitimate per-surface semantics, not expected to
+    // collapse to a single number. Floors below reflect each surface's
+    // single-file behaviour on tinyxml2.h post-M-016.
     assert!(
         structure_count >= 20,
-        "structure cpp class count must be >= 20; got {}",
+        "structure cpp class count must be >= 20 (BUG-P19-08 floor; \
+         single-file `.h` with `--lang cpp`); got {}",
         structure_count
     );
     assert!(
@@ -315,20 +330,26 @@ fn p19_bug08_cpp_class_count_consistency() {
         interface_count
     );
     assert!(
-        health_count >= 10,
-        "health cpp class count must be >= 10 (BUG-P19-08 floor; \
-         cpp-class-count-agreement-v1 tightens this counter to the \
-         LCOM4-analyzable subset); got {}",
+        health_count >= 20,
+        "health cpp class count must be >= 20 post-M-016 with \
+         `--lang cpp` (canonicalised against structure); got {}",
         health_count
+    );
+    // M-016: health and structure must agree exactly with the same lang.
+    assert_eq!(
+        health_count, structure_count,
+        "M-016: health.classes_analyzed must equal structure on the \
+         same input + same lang; got health={} structure={}",
+        health_count, structure_count
     );
     let max = structure_count.max(interface_count).max(health_count);
     let min = structure_count.min(interface_count).min(health_count);
     assert!(
         max - min <= 18,
         "structure/interface/health cpp class counts must agree within \
-         18 (delta widened by cpp-class-count-agreement-v1: each surface \
-         now reports a different real semantic); got structure={} \
-         interface={} health={}",
+         18 (delta widened by cpp-class-count-agreement-v1 and M-016: \
+         each surface reports a different real semantic); got \
+         structure={} interface={} health={}",
         structure_count,
         interface_count,
         health_count

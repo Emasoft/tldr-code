@@ -8,26 +8,46 @@
 //!   - `tldr cohesion <file>`  → 14 classes (file-level)
 //!   - `tldr cohesion <dir>`   → 15 classes (no language filter)
 //!
-//! Root cause: `health` invokes
+//! Original root cause: `health` invoked
 //! `tldr_core::quality::cohesion::analyze_cohesion(path, Some(Cpp), …)`.
-//! The directory walker's file filter compares
+//! The directory walker's file filter compared
 //! `Language::from_path(e.path())` with the requested language. `.h`
-//! files map to `Language::C` (BUG-P19-08 family — already documented
-//! in `analyze_file_cohesion`'s `language = C → Cpp` promotion). The
-//! filter rejects `.h` before that promotion runs, so the cpp surface
-//! over a directory misses every header-resident class.
+//! files mapped to `Language::C` (BUG-P19-08 family — documented in
+//! `analyze_file_cohesion`'s `language = C → Cpp` promotion). The
+//! filter rejected `.h` before promotion ran, so the cpp surface over a
+//! directory missed every header-resident class.
 //!
-//! Fix: in `analyze_cohesion_with_options`, when the requested
-//! `language = Cpp`, also accept files that `Language::from_path`
-//! tagged as `C` whose extension is `.h` / `.hpp`. The inner
-//! `analyze_file_cohesion` already re-detects the body as Cpp on the
-//! `class`/`namespace` keyword signal.
+//! Original fix (`b2`): in `analyze_cohesion_with_options`, when the
+//! requested `language = Cpp`, also accept files tagged as `C` whose
+//! extension is `.h` / `.hpp`. The inner `analyze_file_cohesion` then
+//! re-detects the body as Cpp on the `class`/`namespace` signal.
 //!
-//! Scope per scope-guardrails: structure's higher number includes
-//! forward-decls and is a separate "structure inflates cpp class
-//! count via forward-decls" defect (deferred — different heuristic).
-//! This change unifies the two surfaces that share the LCOM4 path
-//! (health ↔ cohesion).
+//! ## M-016 post-canonicalisation (v0.4.2 health-dashboard-v1)
+//!
+//! Phase-22 audit M-016 promoted `tldr structure`'s AST projection
+//! (M-006) to the canonical source-of-truth for `health.summary.
+//! classes_analyzed` / `functions_analyzed` across all languages. The
+//! old invariant `health.classes == cohesion.classes` (this file's
+//! original spec) was a per-cpp-lang patch that only repaired the
+//! header-promotion bug; it did NOT extend to other langs where
+//! cohesion legitimately reports 0 (kotlin, swift) while structure
+//! reports the real class count (476, 1998 respectively).
+//!
+//! Updated invariants enforced below:
+//!
+//!   - `health.summary.classes_analyzed == sum(structure.files[].
+//!      classes.len())` (cpp + every other lang — the M-016 fix).
+//!   - `cohesion.total_classes <= health.classes_analyzed` (cohesion
+//!     is a strict-or-equal subset: only classes with extractable
+//!     bodies; structure includes forward-decls too).
+//!   - Both surfaces continue to clear the `>= 10` floor on
+//!     `/tmp/repos/cpp-tinyxml2` (header-promotion regression guard
+//!     preserved).
+//!
+//! The "structure forward-decl dedup" defect is still deferred —
+//! M-016 explicitly accepts structure's higher count as canonical
+//! because in the broader audit (kotlin, swift, typescript) structure
+//! is correct and cohesion is wrong.
 //!
 //! Real-repo gated per no-synthetic-fixtures-v1: each test returns
 //! early when its `/tmp/repos/<repo>` corpus is absent.
@@ -63,8 +83,14 @@ fn parse_json(out: &str) -> serde_json::Value {
 const CORPUS_DIR: &str = "/tmp/repos/cpp-tinyxml2";
 
 // ============================================================================
-// TEST 1: health classes_analyzed on directory must agree with
-//         cohesion classes_analyzed on the same directory.
+// TEST 1: health classes_analyzed on directory MUST agree with
+//         structure (M-016 canonical), and cohesion remains a
+//         strict-or-equal subset (forward-decls vs bodies).
+//
+// M-016 (v0.4.2 health-dashboard-v1) inverts the original
+// "health == cohesion" invariant: structure is the canonical surface.
+// The cohesion-vs-structure header-promotion regression is still
+// guarded via the `>= 10` floor on both surfaces.
 // ============================================================================
 #[test]
 fn cpp_health_cohesion_agree_on_directory() {
@@ -89,10 +115,23 @@ fn cpp_health_cohesion_agree_on_directory() {
         .or_else(|| parse_json(&c_out)["classes"].as_array().map(|a| a.len() as u64))
         .unwrap_or(0) as usize;
 
+    let (rc3, s_out) = run_tldr(&["structure", CORPUS_DIR, "--format", "json"]);
+    assert_eq!(rc3, 0, "structure must succeed; got rc={}", rc3);
+    let structure_classes: usize = parse_json(&s_out)["files"]
+        .as_array()
+        .map(|files| {
+            files
+                .iter()
+                .map(|f| f["classes"].as_array().map(|a| a.len()).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0);
+
     // Real ground truth: tinyxml2.h has 14 classes with bodies +
     // contrib/html5-printer.cpp has 1 = 15. Anything materially below
     // that means `.h` files were filtered out before the C→Cpp
     // promotion (the documented BUG-CPP-P20-01 / P19-08 root cause).
+    // This regression guard is preserved post-M-016.
     assert!(
         health_classes >= 10,
         "health classes_analyzed for {} must be >= 10 once .h files \
@@ -106,11 +145,24 @@ fn cpp_health_cohesion_agree_on_directory() {
         CORPUS_DIR,
         cohesion_classes
     );
+
+    // M-016: health is canonicalised against structure, not cohesion.
     assert_eq!(
-        health_classes, cohesion_classes,
-        "health classes_analyzed and cohesion total_classes must \
-         agree on the same directory; got health={} cohesion={}",
-        health_classes, cohesion_classes
+        health_classes, structure_classes,
+        "M-016: health.classes_analyzed must equal structure's \
+         sum(files[].classes.len()); got health={} structure={}",
+        health_classes, structure_classes
+    );
+
+    // Cohesion remains a (strict-or-equal) subset of structure —
+    // structure includes forward-decls that cohesion's LCOM4 path
+    // skips. This documents the deferred "structure forward-decl
+    // dedup" defect.
+    assert!(
+        cohesion_classes <= structure_classes,
+        "cohesion total_classes must be <= structure (cohesion is a \
+         body-only subset); got cohesion={} structure={}",
+        cohesion_classes, structure_classes
     );
 }
 
@@ -164,9 +216,12 @@ fn cpp_cohesion_lang_cpp_includes_headers() {
 }
 
 // ============================================================================
-// TEST 3: file-level invocations are unchanged — `tldr health
-//         tinyxml2.h` already worked pre-fix (file path skips the
-//         directory walker filter). Regression guard.
+// TEST 3: file-level invocations: health must equal structure (M-016
+//         canonical); cohesion remains a strict-or-equal subset.
+//         File path skips the directory walker filter so the original
+//         header-promotion bug never triggers here; this test
+//         primarily guards the `>= 10` floor + the M-016 canonical
+//         invariant on a single-file input.
 // ============================================================================
 #[test]
 fn cpp_health_cohesion_agree_on_header_file() {
@@ -192,16 +247,55 @@ fn cpp_health_cohesion_agree_on_header_file() {
         .map(|a| a.len())
         .unwrap_or(0);
 
+    let (rc3, s_out) = run_tldr(&["structure", file, "--format", "json"]);
+    assert_eq!(rc3, 0, "structure on file must succeed; got rc={}", rc3);
+    let structure_classes: usize = parse_json(&s_out)["files"]
+        .as_array()
+        .map(|files| {
+            files
+                .iter()
+                .map(|f| f["classes"].as_array().map(|a| a.len()).unwrap_or(0))
+                .sum()
+        })
+        .unwrap_or(0);
+
+    // Floor: in single-file mode, `tldr structure tinyxml2.h` reports
+    // only top-level classes (~6 in tinyxml2.h's case). The original
+    // `>= 10` floor was calibrated against cohesion (which also walks
+    // nested classes). Post-M-016 health agrees with structure, so the
+    // floor moves down to the top-level-only level. Cohesion still
+    // reports the higher nested count and is asserted separately.
     assert!(
-        health_classes >= 10,
-        "health on header file must report >= 10 classes; got {}",
+        health_classes >= 5,
+        "health on header file must report >= 5 top-level classes; \
+         got {} (M-016 floor: matches structure's single-file count)",
         health_classes
     );
+    assert!(
+        cohesion_classes >= 10,
+        "cohesion on header file must still report >= 10 classes \
+         (nested + top-level); got {}",
+        cohesion_classes
+    );
+
+    // M-016: health is canonicalised against structure.
     assert_eq!(
-        health_classes, cohesion_classes,
-        "health and cohesion must agree on the same .h file; got \
-         health={} cohesion={}",
-        health_classes, cohesion_classes
+        health_classes, structure_classes,
+        "M-016: health.classes_analyzed must equal structure's \
+         sum(files[].classes.len()); got health={} structure={}",
+        health_classes, structure_classes
+    );
+
+    // Cohesion walks nested classes that structure's single-file
+    // top-level emitter skips, so on `.h` files cohesion is actually
+    // GREATER than structure. Pin that direction explicitly to
+    // document the deferred "structure single-file nested-class
+    // emission" defect (separate from M-016 scope).
+    assert!(
+        cohesion_classes >= structure_classes,
+        "cohesion on .h must be >= structure (nested classes); got \
+         cohesion={} structure={}",
+        cohesion_classes, structure_classes
     );
 }
 

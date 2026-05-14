@@ -33,9 +33,10 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ast::extract::extract_file;
+use crate::ast::extractor::get_code_structure;
 use crate::callgraph::build_project_call_graph;
 use crate::error::TldrError;
-use crate::types::{Language, ModuleInfo};
+use crate::types::{IgnoreSpec, Language, ModuleInfo};
 use crate::TldrResult;
 
 use super::cohesion::{analyze_cohesion, CohesionReport};
@@ -317,6 +318,24 @@ pub struct HealthSummary {
     // Similarity metrics (full mode only)
     /// Number of similar function pairs detected
     pub similar_pairs: usize,
+
+    /// Overall health score 0-100 (higher = better).
+    ///
+    /// health-dashboard-v1 (v0.4.2 M-016): aggregated quality indicator
+    /// derived from a weighted average of three normalised buckets:
+    ///   * 33% complexity (penalised by `avg_cyclomatic` vs preset
+    ///     threshold). avg_cc <= threshold/2 ⇒ 100; avg_cc >= 2*threshold ⇒ 0.
+    ///   * 33% dead-code (penalised by `dead_percentage`).
+    ///     dead% == 0 ⇒ 100; dead% >= 25 ⇒ 0.
+    ///   * 34% smells/hotspots (penalised by `hotspot_count /
+    ///     functions_analyzed`). ratio == 0 ⇒ 100; ratio >= 0.25 ⇒ 0.
+    /// Each bucket gracefully degrades to a neutral 50 when its
+    /// underlying sub-analyzer didn't produce data (skipped or failed).
+    ///
+    /// Skipped if `functions_analyzed == 0` and no other signal is
+    /// available (`None`) — we don't synthesise a score on empty input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<u8>,
 }
 
 impl HealthSummary {
@@ -844,6 +863,19 @@ pub fn run_health(
     // `collect_module_infos` / `vuln`'s `files_scanned`.
     summary.files_analyzed = count_source_files(path, detected_language);
 
+    // health-dashboard-v1 (v0.4.2 M-016): canonicalize class/function
+    // counters against `tldr structure` (the AST projection from M-006).
+    // The cohesion sub-analyzer reports only classes that participate
+    // in cohesion analysis (0 for many languages); the complexity
+    // sub-analyzer counts only functions whose CFG was built. Both
+    // disagreed with structure in the Phase-22 audit.
+    canonicalize_counters_from_structure(&mut summary, path, detected_language);
+
+    // health-dashboard-v1 (v0.4.2 M-016): compute the aggregated
+    // 0-100 health score. Done AFTER canonicalisation so the smells
+    // ratio uses the corrected `functions_analyzed`.
+    summary.score = compute_health_score(&summary, options.complexity_threshold);
+
     report.summary = summary;
 
     // Step 6: Record total elapsed time (T28: use as_secs_f64)
@@ -1086,6 +1118,134 @@ fn aggregate_summary(sub_results: &IndexMap<String, SubAnalysisResult>) -> Healt
     }
 
     summary
+}
+
+/// Canonicalize `classes_analyzed` and `functions_analyzed` against the
+/// `tldr structure` AST projection (M-006).
+///
+/// health-dashboard-v1 (v0.4.2 M-016): the cohesion sub-analyzer reports
+/// only classes that participate in cohesion analysis (typically zero
+/// for languages where it isn't implemented or for codebases without
+/// detectable class-internal coupling). The complexity sub-analyzer
+/// counts only functions whose CFG was successfully built. Both
+/// counters disagreed wildly with `tldr structure`:
+///   - kotlin-datetime: structure 476 classes, health-via-cohesion 0
+///   - swift-collections: structure 1998 classes, health-via-cohesion 0
+///   - ts-dom-gen: structure 0 classes, health-via-cohesion 1
+///
+/// Canonicalise both counters against the AST projection that
+/// downstream tooling (and M-006's `files[].functions` schema) treats
+/// as the source of truth: sum of `files[].classes.len()` and sum of
+/// `files[].definitions[kind=="function"].len()` across the corpus.
+///
+/// On failure (e.g. unsupported language for `get_code_structure`),
+/// leaves the existing counters in place rather than panicking.
+fn canonicalize_counters_from_structure(
+    summary: &mut HealthSummary,
+    path: &Path,
+    language: Language,
+) {
+    let structure = match get_code_structure(path, language, 0, Some(&IgnoreSpec::default())) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let classes_total: usize = structure.files.iter().map(|f| f.classes.len()).sum();
+    let functions_total: usize = structure
+        .files
+        .iter()
+        .map(|f| {
+            f.definitions
+                .iter()
+                .filter(|d| d.kind == "function")
+                .count()
+        })
+        .sum();
+
+    summary.classes_analyzed = classes_total;
+    summary.functions_analyzed = functions_total;
+}
+
+/// Compute the overall health score (0-100).
+///
+/// health-dashboard-v1 (v0.4.2 M-016): weighted average of three
+/// normalised buckets:
+///   * 33% complexity
+///   * 33% dead-code
+///   * 34% smells/hotspots
+///
+/// Each bucket reports a 0-100 sub-score (100 = best, 0 = worst).
+/// When the underlying signal is missing (sub-analyzer failed/skipped
+/// or no functions in the corpus), the bucket degrades to a neutral
+/// 50 so it doesn't dominate the final result.
+///
+/// Returns `None` when `functions_analyzed == 0` AND `classes_analyzed
+/// == 0` (genuinely empty corpus — no signal to score).
+fn compute_health_score(
+    summary: &HealthSummary,
+    complexity_threshold: usize,
+) -> Option<u8> {
+    if summary.functions_analyzed == 0 && summary.classes_analyzed == 0 {
+        return None;
+    }
+
+    // ----- Complexity bucket -----
+    // avg_cyclomatic at/below threshold/2 ⇒ 100; at/above 2*threshold ⇒ 0.
+    let complexity_score = match summary.avg_cyclomatic {
+        Some(avg) => {
+            let t = complexity_threshold.max(1) as f64;
+            let low = t / 2.0;
+            let high = t * 2.0;
+            if avg <= low {
+                100.0
+            } else if avg >= high {
+                0.0
+            } else {
+                // Linear interpolation: at low ⇒ 100, at high ⇒ 0.
+                100.0 * (1.0 - (avg - low) / (high - low))
+            }
+        }
+        None => 50.0,
+    };
+
+    // ----- Dead-code bucket -----
+    // dead% == 0 ⇒ 100; dead% >= 25 ⇒ 0.
+    let dead_score = match summary.dead_percentage {
+        Some(pct) => {
+            if pct <= 0.0 {
+                100.0
+            } else if pct >= 25.0 {
+                0.0
+            } else {
+                100.0 * (1.0 - pct / 25.0)
+            }
+        }
+        None => 50.0,
+    };
+
+    // ----- Smells/hotspots bucket -----
+    // ratio = hotspot_count / functions_analyzed.
+    // ratio == 0 ⇒ 100; ratio >= 0.25 ⇒ 0.
+    let smells_score = if summary.functions_analyzed > 0 {
+        let ratio =
+            summary.hotspot_count as f64 / summary.functions_analyzed as f64;
+        if ratio <= 0.0 {
+            100.0
+        } else if ratio >= 0.25 {
+            0.0
+        } else {
+            100.0 * (1.0 - ratio / 0.25)
+        }
+    } else {
+        50.0
+    };
+
+    // Weighted average: 33 / 33 / 34 (sums to 100).
+    let weighted = (complexity_score * 33.0 + dead_score * 33.0 + smells_score * 34.0) / 100.0;
+
+    // Clamp + round to u8.
+    let clamped = weighted.clamp(0.0, 100.0);
+    Some(clamped.round() as u8)
 }
 
 // =============================================================================
