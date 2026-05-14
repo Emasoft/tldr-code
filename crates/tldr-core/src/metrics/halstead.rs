@@ -29,7 +29,9 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use crate::ast::extract::extract_file;
-use crate::ast::function_finder::find_function_node;
+use crate::ast::function_finder::{
+    find_function_node, find_function_node_by_name_and_line,
+};
 use crate::ast::parser::{parse, parse_file};
 use crate::metrics::types::HalsteadInfo;
 use crate::types::Language;
@@ -228,9 +230,25 @@ pub fn analyze_halstead(
             }
         }
 
-        // Find the function node in the tree
-        if let Some(func_node) =
-            find_function_node(tree.root_node(), &func_info.name, lang, &source)
+        // halstead-per-function-v1 (v0.4.2 cluster M-026): resolve each
+        // FunctionInfo to its *own* AST node by matching name AND line.
+        // `find_function_node(name, ...)` alone returns the first
+        // matching node — broadcasting one body's metrics across every
+        // overload/clause that shares the name (kotlin `plus`/`minus`,
+        // elixir multi-clause `send_resp`). Fall back to the bare-name
+        // lookup only when the line-aware resolver doesn't find a match
+        // (e.g. JS/TS arrow functions whose extracted line points to
+        // the enclosing variable_declarator rather than the
+        // arrow_function itself).
+        let func_node_opt = find_function_node_by_name_and_line(
+            tree.root_node(),
+            &func_info.name,
+            func_info.line_number,
+            lang,
+            &source,
+        )
+        .or_else(|| find_function_node(tree.root_node(), &func_info.name, lang, &source));
+        if let Some(func_node) = func_node_opt
         {
             let (metrics, operators_set, operands_set) =
                 calculate_function_halstead(func_node, &source, lang);
@@ -289,8 +307,20 @@ pub fn analyze_halstead(
                 }
             }
 
-            if let Some(func_node) =
+            // halstead-per-function-v1 (v0.4.2 cluster M-026): per-method
+            // line-aware resolution to avoid the same broadcast bug for
+            // class methods. See note above the module-level loop.
+            let method_node_opt = find_function_node_by_name_and_line(
+                tree.root_node(),
+                &method.name,
+                method.line_number,
+                lang,
+                &source,
+            )
+            .or_else(|| {
                 find_function_node(tree.root_node(), &method.name, lang, &source)
+            });
+            if let Some(func_node) = method_node_opt
             {
                 let (metrics, operators_set, operands_set) =
                     calculate_function_halstead(func_node, &source, lang);

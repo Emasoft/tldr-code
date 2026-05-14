@@ -458,6 +458,87 @@ fn find_function_node_in_subtree<'a>(
     None
 }
 
+/// halstead-per-function-v1 (v0.4.2 cluster M-026): Find a function node
+/// by BOTH name AND start line.
+///
+/// `find_function_node` returns the first function matching `name`, which
+/// is correct for unique-name lookups but **wrong** when iterating over
+/// per-function metrics where overloads or multi-clause definitions
+/// share a name (Kotlin operator overloads `plus`/`minus`, Elixir
+/// multi-clause `send_resp`, C++ `Foo::Parse` overloads, etc.). Reusing
+/// the same first-matching node for every row causes the broadcast bug:
+/// all rows emit identical metrics.
+///
+/// This helper walks the AST and returns the function node whose
+/// 1-based start line equals `target_line` AND whose extracted name
+/// (via [`get_function_name`]) equals `function_name`. Both must match so
+/// that overlapping bodies (e.g. nested closures starting on the same
+/// line) don't capture a wrong sibling.
+///
+/// For Lua/Luau dot-indexed assignments (`function M.foo()` or `M.foo =
+/// function() end`), the extractor stores the bare last segment (`foo`)
+/// as the function name. We match the short form too.
+///
+/// Returns `None` if no function matches both name and line. Callers
+/// should fall back to [`find_function_node`] when this returns `None`.
+pub fn find_function_node_by_name_and_line<'a>(
+    root: Node<'a>,
+    function_name: &str,
+    target_line: u32,
+    language: Language,
+    source: &str,
+) -> Option<Node<'a>> {
+    let func_kinds = get_function_node_kinds(language);
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        if func_kinds.contains(&node.kind()) {
+            let node_line = node.start_position().row as u32 + 1;
+            if node_line == target_line {
+                if let Some(name) = get_function_name(node, language, source) {
+                    let stripped = name.strip_prefix('#').unwrap_or(&name);
+                    let short = name.rsplit('.').next().unwrap_or(&name);
+                    if stripped == function_name
+                        || name == function_name
+                        || short == function_name
+                    {
+                        return Some(node);
+                    }
+                }
+            }
+        }
+
+        // halstead-per-function-v1: also walk JS/TS variable/assignment
+        // patterns (arrow functions, assigned function expressions) and
+        // Lua/Luau dot-indexed assignments. The inner function body's
+        // start line is what `extract_file` records, so we descend and
+        // check the *body* node's start line.
+        if matches!(language, Language::TypeScript | Language::JavaScript)
+            && matches!(
+                node.kind(),
+                "lexical_declaration"
+                    | "variable_declaration"
+                    | "assignment_expression"
+                    | "pair"
+            )
+        {
+            let mut cur = node.walk();
+            for child in node.children(&mut cur) {
+                stack.push(child);
+            }
+            continue;
+        }
+
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+
+    None
+}
+
 /// elixir-multiclause-and-mix-v1: return true if an Elixir `def`/`defp`
 /// call node has a `do_block` child — i.e. has a real body. Bodyless
 /// heads like `def send_resp(conn)` (used to attach `@spec` typespecs)
