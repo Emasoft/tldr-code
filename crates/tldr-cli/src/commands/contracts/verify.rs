@@ -102,15 +102,22 @@ impl VerifyArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
-        // Validate path exists
-        let canonical_path = if self.path.exists() {
-            std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone())
-        } else {
+        // Validate path exists. Canonicalisation is used ONLY for the
+        // up-front existence probe; verify-aggregator-path-shape-fix-v1
+        // (v0.4.2 hotfix for M-011) keeps the user-input shape on the
+        // walked path so emitted file paths (top-level `path`, plus
+        // every `ContractsReport.file` embedded in `sub_results.contracts.data`)
+        // round-trip the user's input verbatim. Walking the canonical form
+        // on macOS resolves `/tmp/...` -> `/private/tmp/...` and leaks the
+        // resolved shape via the contracts sub-runner. The W-C
+        // cross-cmd-path-shape-v1 invariant requires no `/private/tmp/`
+        // anywhere in the response.
+        if !self.path.exists() {
             return Err(ContractsError::FileNotFound {
                 path: self.path.clone(),
             }
             .into());
-        };
+        }
 
         writer.progress(&format!(
             "Running verification on {}...",
@@ -126,20 +133,25 @@ impl VerifyArgs {
             }
         });
 
-        // Run verification
+        // Run verification on the user-input path (NOT the canonical form).
+        // The internal walker (`walk_project` / `ProjectWalker`) honours
+        // `follow_links(false)` so passing `/tmp/repos/...` preserves the
+        // user shape on every emitted `DirEntry::path()`. Each
+        // `ContractsReport.file` is then a child of the user-input root
+        // and the W-C path-shape contract is satisfied without an
+        // additional post-walk rewrite.
         let mut report = run_verify(
-            &canonical_path,
+            &self.path,
             language,
             self.quick,
             self.detail.as_deref(),
         )?;
 
         // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): re-assert user input
-        // shape on the top-level `path` field. `run_verify` stores the
-        // canonical path on macOS (`/private/tmp/...`), which leaks
-        // here even though it never appears in the user's input.
-        // Per the M3 pattern (5f6009e): canonicalise for internal
-        // filter/match only, echo user input verbatim in output.
+        // shape on the top-level `path` field. Defensive: in the unlikely
+        // event a future refactor re-introduces canonicalisation in
+        // `run_verify`, this line still guarantees the top-level field
+        // echoes user input.
         report.path = self.path.clone();
 
         // Output based on format
