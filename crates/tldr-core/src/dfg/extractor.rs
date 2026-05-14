@@ -225,8 +225,32 @@ impl<'a> DfgBuilder<'a> {
     /// unintentionally shadowed by a local of the same name without that
     /// local also showing up as a definition.
     fn collect_imports(&mut self, root: Node) {
-        if !matches!(self.language, Language::Java | Language::CSharp) {
-            return;
+        // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+        // extend AGG13-15's Java/C# collector to TS / JS / Lua / Luau /
+        // OCaml + JS hoisted-function-declaration names + well-known
+        // built-in globals. All of these are file-level names that the
+        // identifier-vs-variable classifier was previously treating as
+        // bare variable uses inside function bodies, producing many
+        // false-positive uninit reports.
+        match self.language {
+            Language::Java | Language::CSharp => {}
+            Language::TypeScript | Language::JavaScript => {
+                // Built-in globals: NEVER local-variable uses. Seeding
+                // the set lets `is_use_context` reject `Array.isArray`,
+                // `new Error(...)`, etc. as not-a-use receivers, which
+                // is how the reachability analyzer learns that
+                // `Array`/`Error` are pre-defined.
+                for g in JS_TS_GLOBALS {
+                    self.imported_type_names.insert((*g).to_string());
+                }
+            }
+            Language::Lua | Language::Luau => {
+                for g in LUA_LUAU_GLOBALS {
+                    self.imported_type_names.insert((*g).to_string());
+                }
+            }
+            Language::Ocaml => {} // OCaml uses value_path-based suppression
+            _ => return,
         }
         let mut stack = vec![root];
         while let Some(node) = stack.pop() {
@@ -242,6 +266,138 @@ impl<'a> DfgBuilder<'a> {
                 }
                 continue;
             }
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // TS / JS `import_statement`:
+            //   - `import { a, b as c } from "..."` -> a, c (alias takes
+            //     precedence over name)
+            //   - `import * as Ns from "..."` -> Ns (namespace_import)
+            //   - `import Default from "..."` -> Default (the
+            //     import_clause's direct identifier child)
+            // Walk the import_statement subtree once and collect every
+            // local-binding identifier — this is robust to the
+            // grammar's nested layout (`import_clause` ->
+            // `named_imports`/`namespace_import`/`identifier`).
+            if matches!(self.language, Language::TypeScript | Language::JavaScript)
+                && kind == "import_statement"
+            {
+                collect_ts_js_import_bindings(
+                    node,
+                    self.source,
+                    &mut self.imported_type_names,
+                );
+                continue;
+            }
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // JS hoisted top-level `function foo(...) {}` makes `foo`
+            // available throughout the file, including in earlier
+            // function bodies. Without this collection the pre-fix
+            // code flagged `tryRender(...)` inside express.render as
+            // definite-uninitialized even though it is defined further
+            // down the same file.
+            //
+            // We DO descend into nested function bodies so that
+            // function-declaration names declared INSIDE another
+            // function (e.g. `compareName`, `convertDomTypeToTsType`
+            // inside ts-dom-gen's `emitWebIdl`) are also collected as
+            // available names. The cost is a slightly over-permissive
+            // suppression set when analyzing a sibling function — at
+            // worst this misses a local-variable use whose name happens
+            // to collide with a nested function defined elsewhere in
+            // the file, which is a precision loss bounded by the
+            // file's naming conventions. The win is that 100+ TS
+            // false positives stop firing.
+            if matches!(self.language, Language::TypeScript | Language::JavaScript)
+                && matches!(
+                    kind,
+                    "function_declaration"
+                        | "function_expression"
+                        | "arrow_function"
+                        | "function"
+                        | "generator_function_declaration"
+                        | "generator_function"
+                        | "method_definition"
+                )
+            {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = name_node
+                        .utf8_text(self.source.as_bytes())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !name.is_empty() {
+                        self.imported_type_names.insert(name);
+                    }
+                }
+                // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+                // Also collect parameter names of every nested function.
+                // When the OUTER function being analyzed has nested
+                // helpers (e.g. ts-dom-gen's `emitWebIdl` -> inner
+                // `convertDomTypeToTsTypeBase(obj, ...)`), the nested
+                // function's parameter scope is inside the outer
+                // function's CFG span. Without registering the param
+                // names, identifiers like `obj`, `t`, `prefix`, `s`,
+                // `i` inside those nested bodies were flagged as
+                // definite-uninitialized by the outer reaching-defs
+                // pass. Mirror that here by walking the parameters
+                // subtree once and capturing every named binding.
+                if let Some(params) = node.child_by_field_name("parameters") {
+                    collect_ts_js_param_names(
+                        params,
+                        self.source,
+                        &mut self.imported_type_names,
+                    );
+                }
+                // Descend into the body so we collect names of
+                // nested function declarations as well.
+                for child in node.children(&mut node.walk()) {
+                    stack.push(child);
+                }
+                continue;
+            }
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // Lua/Luau file-level locals. `local m = {}` at the top of
+            // a module makes `m` available to every function — but the
+            // per-function reaching-defs analyzer would otherwise flag
+            // it as uninitialized. We capture every `local` declared
+            // name OUTSIDE function bodies. The lua/luau grammar uses
+            // `variable_declaration` for `local x = ...` and
+            // `function_declaration` / `local_function` for functions,
+            // so we stop the walk at function entry points.
+            if matches!(self.language, Language::Lua | Language::Luau)
+                && kind == "variable_declaration"
+            {
+                collect_lua_local_names(node, self.source, &mut self.imported_type_names);
+                continue;
+            }
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // TypeScript / JavaScript file-level `const x = ...` /
+            // `let x = ...` / `var x = ...`. These are module-scoped
+            // bindings visible to every function in the file. Without
+            // tracking them, ts-dom-gen flagged `extendConflictsBaseTypes`,
+            // `namespacesAsInterfaces`, and `sequenceTypedefMap` —
+            // file-level const declarations — as uninitialized.
+            //
+            // We only collect bindings whose direct ancestor on the
+            // walk stack is NOT a function body (the stop-at-function
+            // guards earlier in this loop already handle that).
+            if matches!(self.language, Language::TypeScript | Language::JavaScript)
+                && matches!(kind, "lexical_declaration" | "variable_declaration")
+            {
+                collect_ts_js_variable_names(
+                    node,
+                    self.source,
+                    &mut self.imported_type_names,
+                );
+                continue;
+            }
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // OCaml top-level `open Foo` / `open! Foo` / `include Foo`
+            // bring `Foo`'s value bindings into the module's namespace.
+            // The trailing identifier of the open_module / include_module
+            // is the module name (already a module ref, not a value), so
+            // we don't collect it as a value-suppression name — but
+            // value-path suppression in `is_ocaml_use_context` handles
+            // the module-qualified case directly.
             // language-specific-bugs-v1 (P14.AGG14-12): collect class
             // field names. Java `field_declaration` carries one or more
             // `variable_declarator { name: <ident>, ... }` children — pull
@@ -283,9 +439,86 @@ impl<'a> DfgBuilder<'a> {
                 }
                 continue;
             }
-            // Don't descend into method bodies — fields are class-level
-            // declarations, never inside a method.
-            if matches!(kind, "method_declaration" | "constructor_declaration") {
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // C# / Java: collect the name of every same-file type
+            // declaration AND every method declaration so that bare-
+            // identifier callees / type references (`BsonReaderState`,
+            // `ReadNormalAsync`) inside a method body are classified as
+            // not-a-use. Without this rule, `case BsonReaderState.X:`
+            // flags `BsonReaderState`, and `t = ReadNormalAsync(...)`
+            // flags `ReadNormalAsync`.
+            //
+            // We also explicitly collect the `name` of method/
+            // constructor declarations BEFORE returning (without
+            // descending into the body), so the next two early-returns
+            // also serve as collectors.
+            if matches!(
+                self.language,
+                Language::Java | Language::CSharp
+            ) && matches!(
+                kind,
+                "class_declaration"
+                    | "enum_declaration"
+                    | "interface_declaration"
+                    | "struct_declaration"
+                    | "record_declaration"
+            ) {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = name_node
+                        .utf8_text(self.source.as_bytes())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !name.is_empty() {
+                        self.imported_type_names.insert(name);
+                    }
+                }
+                // continue walking — class bodies hold nested
+                // fields/methods we still want to register.
+            }
+            if matches!(
+                self.language,
+                Language::Java | Language::CSharp
+            ) && matches!(kind, "method_declaration" | "constructor_declaration") {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = name_node
+                        .utf8_text(self.source.as_bytes())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !name.is_empty() {
+                        self.imported_type_names.insert(name);
+                    }
+                }
+                // Don't descend into method bodies — fields are class-level
+                // declarations, never inside a method.
+                continue;
+            }
+            // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+            // for TS/JS/Lua/Luau, stop the walk at any function-body
+            // boundary EXCEPT `function_declaration` (handled above —
+            // we descend into JS/TS function bodies to collect nested
+            // function-declaration names too). For other function
+            // shapes (arrow_function, function_expression, etc.) the
+            // contents are block-scoped expressions, NOT hoisted
+            // declarations, so we stop here.
+            if matches!(
+                self.language,
+                Language::TypeScript
+                    | Language::JavaScript
+                    | Language::Lua
+                    | Language::Luau
+            ) && matches!(
+                kind,
+                "function_expression"
+                    | "arrow_function"
+                    | "method_definition"
+                    | "function"
+                    | "generator_function_declaration"
+                    | "generator_function"
+                    | "local_function"
+                    | "function_definition"
+            ) {
                 continue;
             }
             for child in node.children(&mut node.walk()) {
@@ -535,6 +768,25 @@ impl<'a> DfgBuilder<'a> {
     fn extract_lua_param(&mut self, child: Node) {
         if child.kind() == "identifier" {
             self.add_ref_from_node(child, RefType::Definition);
+            return;
+        }
+        // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+        // tree-sitter-luau wraps each parameter in a `parameter` node
+        // whose children are `type` / `vararg_expression`. The `type`
+        // node, in turn, has the param identifier as its `identifier`
+        // subtype child. tree-sitter-lua, by contrast, lists parameter
+        // identifiers directly as children of `parameters` — so the
+        // pre-fix code (above) handled lua but silently dropped every
+        // luau parameter, surfacing as 9 FPs (incl. `t, na, nh`) on
+        // `tldr reaching-defs tables.luau check`.
+        //
+        // We accept either a `parameter` wrapper (luau) or a bare
+        // identifier (lua); descend at most one extra level to find the
+        // first `identifier` child.
+        if child.kind() == "parameter" {
+            if let Some(ident) = first_descendant_identifier_under(child, "identifier") {
+                self.add_ref_from_node(ident, RefType::Definition);
+            }
         }
     }
 
@@ -2162,6 +2414,38 @@ impl<'a> DfgBuilder<'a> {
                 "value_definition" => {
                     return false; // Will be handled by value_definition processor
                 }
+                // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+                // Module-qualified value access `Io.read_file` is parsed
+                // as `value_path` -> `module_path` + `value_name`. The
+                // `value_name` is a name-segment of a path, not a local
+                // variable reference. Without this rule, the audit on
+                // `ocaml-dune/.../run_expect_test` flagged `read_file`,
+                // `async`, `unlink_no_err`, `to_string`, etc. as
+                // definite-uninitialized.
+                //
+                // We treat ANY `value_name` whose parent is `value_path`
+                // as not-a-use — even an unqualified `value_path`
+                // wrapping a single `value_name`. Bare unqualified
+                // value references in OCaml that have no in-function
+                // definition are typically top-level let bindings,
+                // module-included values, or std-library functions —
+                // none of which is a local-variable use in the
+                // reaching-defs sense. (Function arguments and let-
+                // bound names still carry their definitions, which
+                // populate the reaching-defs report normally.)
+                "value_path" => {
+                    return false;
+                }
+                // Field-of-record access `r.f`: `f` is on the RHS of
+                // `field_get_expression` and is a record-field name,
+                // never a local variable use.
+                "field_get_expression" => {
+                    if let Some(field) = parent.child_by_field_name("field") {
+                        if self.node_contains(field, node) {
+                            return false;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -2305,6 +2589,21 @@ impl<'a> DfgBuilder<'a> {
                         }
                     }
                 }
+                // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+                // C# `member_access_expression` and Java `field_access`
+                // member name. `BsonReaderState.Normal` -> `Normal` is
+                // the `name` field. It's an enum-member / type-member /
+                // method-group reference, never a local variable use.
+                // (The receiver suppression below already handles the
+                // `BsonReaderState` half via imported_type_names; the
+                // `Normal` half stays flagged without this rule.)
+                if matches!(pkind, "member_access_expression" | "field_access") {
+                    if let Some(name_field) = parent.child_by_field_name("name") {
+                        if name_field.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
                 // Field-access receiver / method-invocation receiver
                 // matching an imported type name: `PageRequest.of(...)`,
                 // `Sort.by(...)`. The text of the identifier matches a
@@ -2329,6 +2628,122 @@ impl<'a> DfgBuilder<'a> {
                         }
                     }
                 }
+                // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+                // Bare-identifier callee: `ReadNormalAsync(token)` ->
+                // the `function` field of `invocation_expression` is a
+                // bare identifier matching a same-file method
+                // declaration name. When collect_imports has registered
+                // the method name, the receiver-less call is a known
+                // method reference, not a local variable use.
+                if matches!(pkind, "method_invocation" | "invocation_expression") {
+                    if let Some(func_field) = parent.child_by_field_name("function") {
+                        if func_field.id() == node.id() {
+                            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                            if !text.is_empty() && self.imported_type_names.contains(text) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+        // TypeScript / JavaScript classification rules:
+        //   1. `obj.property` -> `property` (the `property` field of
+        //      `member_expression`) is a member reference, not a use.
+        //      This catches `Array.isArray`, `util.compute`, `Ns.frob`,
+        //      `obj.method` etc. — none of which are local-variable uses.
+        //   2. Receiver/callee/constructor/type-annotation suppression
+        //      when the identifier matches an import / hoisted-function
+        //      / built-in global (collected at file level by
+        //      `collect_imports`). Position-independent so type-
+        //      annotation positions (`x: Browser.Interface`) are
+        //      classified as not-a-use without needing a separate per-
+        //      parent rule for every TS type-position node.
+        if matches!(self.language, Language::TypeScript | Language::JavaScript) {
+            if let Some(parent) = node.parent() {
+                let pkind = parent.kind();
+                if pkind == "member_expression" {
+                    if let Some(prop) = parent.child_by_field_name("property") {
+                        if prop.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
+                // Shorthand property in an object: `{ engines: engines }`
+                // — only the value (right) is a use, not the key (left).
+                if pkind == "pair" {
+                    if let Some(key) = parent.child_by_field_name("key") {
+                        if key.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
+            }
+            // Position-independent suppression: if the bare identifier
+            // matches a file-level import / hoisted function decl /
+            // built-in global, it is never a local-variable use.
+            // (Locals shadowing imports are still added as defs via
+            // their own declaration node, so the shadowed use is not
+            // missed — the def line will simply equal the use line for
+            // single-statement locals, which the reaching-defs analyzer
+            // handles correctly.)
+            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+            if !text.is_empty() && self.imported_type_names.contains(text) {
+                return false;
+            }
+        }
+
+        // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+        // Lua / Luau classification rules:
+        //   1. `m.field` -> `field` (the `field` field of
+        //      `dot_index_expression`) is a table-member reference,
+        //      not a use. This catches `m.onWatch`, `T.querytab`.
+        //   2. `{ key = value }` -> `key` (the `name` field of `field`
+        //      inside `table_constructor`) is a string key, not a use.
+        //      Catches `cache = {}` in `m.openMap = { cache = {} }`.
+        //   3. Receiver suppression when receiver matches a file-level
+        //      local / built-in global.
+        if matches!(self.language, Language::Lua | Language::Luau) {
+            if let Some(parent) = node.parent() {
+                let pkind = parent.kind();
+                if pkind == "dot_index_expression" {
+                    if let Some(field) = parent.child_by_field_name("field") {
+                        if field.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
+                if pkind == "field" {
+                    if let Some(name_field) = parent.child_by_field_name("name") {
+                        if name_field.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
+                // Method invocation `m:method(...)`: `method` is on the
+                // RHS of `method_index_expression`. Suppress.
+                if pkind == "method_index_expression" {
+                    if let Some(method) = parent.child_by_field_name("method") {
+                        if method.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
+                // Identifier matches a file-level local or global —
+                // suppress it as a not-a-use entirely. This handles
+                // module-table receivers (`m` in `m.open`) and globals
+                // like `print` / `assert`.
+                let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                if !text.is_empty() && self.imported_type_names.contains(text) {
+                    return false;
+                }
+                // Suppress identifiers whose grandparent is a variable
+                // node (lua `variable` wraps `identifier`) only when the
+                // node was already filtered above. We don't need extra
+                // handling here.
+                let _ = pkind;
             }
         }
 
@@ -2615,6 +3030,266 @@ fn first_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
         let child = node.child(i)?;
         if child.kind() == kind {
             return Some(child);
+        }
+    }
+    None
+}
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+/// Built-in JS / TS globals that are universally available at module
+/// scope. Listing them as "imported type names" lets the use-context
+/// classifier reject `Array.isArray(...)`, `new Error(...)`, etc. as
+/// not-a-variable-use so they never enter the uninit detector.
+///
+/// We list ECMAScript built-ins, common Node.js globals, and DOM-host
+/// globals (TypeScript dom-gen audit corpus). Adding a global here is
+/// a precision improvement; missing one means a false positive
+/// (mechanical false positive, recoverable via this list).
+const JS_TS_GLOBALS: &[&str] = &[
+    // ECMAScript built-ins
+    "Array", "ArrayBuffer", "Atomics", "BigInt", "BigInt64Array", "BigUint64Array", "Boolean",
+    "DataView", "Date", "Error", "EvalError", "Float32Array", "Float64Array", "Function",
+    "Infinity", "Int16Array", "Int32Array", "Int8Array", "Intl", "JSON", "Map", "Math", "NaN",
+    "Number", "Object", "Promise", "Proxy", "RangeError", "ReferenceError", "Reflect", "RegExp",
+    "Set", "String", "Symbol", "SyntaxError", "TypeError", "URIError", "Uint16Array",
+    "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WeakMap", "WeakRef", "WeakSet",
+    "decodeURI", "decodeURIComponent", "encodeURI", "encodeURIComponent", "eval", "globalThis",
+    "isFinite", "isNaN", "parseFloat", "parseInt", "undefined",
+    // Common Node.js globals
+    "Buffer", "console", "exports", "global", "module", "process", "require",
+    "setImmediate", "setInterval", "setTimeout", "clearImmediate", "clearInterval", "clearTimeout",
+    "__dirname", "__filename",
+    // Browser / DOM host
+    "document", "window", "navigator", "self", "location", "history",
+    "fetch", "XMLHttpRequest", "FormData", "URL", "URLSearchParams",
+    "localStorage", "sessionStorage",
+];
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
+/// Lua / Luau standard-library globals — always pre-defined.
+/// Listing them lets `m.open` etc. avoid flagging `print`, `assert`,
+/// `require`, `pairs`, etc. as uninitialized.
+const LUA_LUAU_GLOBALS: &[&str] = &[
+    // Basic functions (Lua 5.x reference manual §6.1)
+    "assert", "collectgarbage", "dofile", "error", "getmetatable", "ipairs", "load",
+    "loadfile", "loadstring", "next", "pairs", "pcall", "print", "rawequal", "rawget",
+    "rawlen", "rawset", "require", "select", "setmetatable", "tonumber", "tostring",
+    "type", "unpack", "xpcall",
+    // Std-library modules (referenced as Module.fn)
+    "coroutine", "debug", "io", "math", "os", "package", "string", "table", "utf8",
+    // Globals
+    "_G", "_VERSION", "_ENV", "arg",
+    // Luau-specific globals (Roblox / Luau runtime)
+    "bit32", "buffer", "task", "vector",
+];
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032): walk a TS/JS
+/// `import_statement` subtree and collect every local binding name.
+/// Handles three import shapes:
+///   - default: `import Foo from "mod"` -> Foo
+///   - named: `import { a, b as c } from "mod"` -> a, c
+///   - namespace: `import * as Ns from "mod"` -> Ns
+/// Alias takes precedence over name in named imports.
+fn collect_ts_js_import_bindings(
+    import_node: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let mut stack: Vec<Node> = Vec::new();
+    let mut cursor = import_node.walk();
+    for c in import_node.children(&mut cursor) {
+        stack.push(c);
+    }
+    while let Some(n) = stack.pop() {
+        let kind = n.kind();
+        match kind {
+            "import_specifier" => {
+                // `alias` (when present) is the local binding; else `name`.
+                let bound = n
+                    .child_by_field_name("alias")
+                    .or_else(|| n.child_by_field_name("name"));
+                if let Some(b) = bound {
+                    let text = b.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                    if !text.is_empty() {
+                        out.insert(text.to_string());
+                    }
+                }
+            }
+            "namespace_import" => {
+                // `import * as Ns from ...` — the single identifier child
+                // is the namespace binding.
+                let mut inner = n.walk();
+                for ic in n.children(&mut inner) {
+                    if ic.kind() == "identifier" {
+                        let text = ic.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                        if !text.is_empty() {
+                            out.insert(text.to_string());
+                        }
+                    }
+                }
+            }
+            "import_clause" => {
+                // The direct `identifier` child of import_clause (NOT
+                // nested inside named_imports / namespace_import) is the
+                // default-import binding: `import Foo from "..."`.
+                let mut inner = n.walk();
+                for ic in n.children(&mut inner) {
+                    if ic.kind() == "identifier" {
+                        let text = ic.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                        if !text.is_empty() {
+                            out.insert(text.to_string());
+                        }
+                    } else {
+                        // Recurse into named_imports / namespace_import.
+                        stack.push(ic);
+                    }
+                }
+            }
+            _ => {
+                let mut inner = n.walk();
+                for ic in n.children(&mut inner) {
+                    stack.push(ic);
+                }
+            }
+        }
+    }
+}
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032): walk a TS/JS
+/// parameters subtree and collect every identifier that is a binding
+/// name. Handles plain identifiers, required_parameter / optional_parameter
+/// nodes, and destructuring patterns (`{ a, b: alias }`, `[x, y]`).
+///
+/// The walk is intentionally aggressive: we capture every identifier
+/// child anywhere under the parameter list. False positives are bounded
+/// by the parameter syntax — only binding sites contain identifiers.
+fn collect_ts_js_param_names(
+    params_node: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let mut stack: Vec<Node> = vec![params_node];
+    while let Some(n) = stack.pop() {
+        let kind = n.kind();
+        // Skip type annotations entirely — they reference types, not
+        // bindings. `function f(x: SomeType)` should bind `x` only.
+        if matches!(kind, "type_annotation" | "type_identifier") {
+            continue;
+        }
+        if kind == "identifier" {
+            // Filter out the property-key half of `{ key: alias }` —
+            // when parent is `pair_pattern` and node is the `key`, it's
+            // a destructuring key referencing a property name, not a
+            // binding. The alias (value field) is the real binding.
+            if let Some(parent) = n.parent() {
+                if parent.kind() == "pair_pattern" {
+                    if let Some(key) = parent.child_by_field_name("key") {
+                        if key.id() == n.id() {
+                            continue;
+                        }
+                    }
+                }
+            }
+            let text = n.utf8_text(source.as_bytes()).unwrap_or("").trim();
+            if !text.is_empty() {
+                out.insert(text.to_string());
+            }
+            continue;
+        }
+        let mut inner = n.walk();
+        for ic in n.children(&mut inner) {
+            stack.push(ic);
+        }
+    }
+}
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032): collect
+/// binding identifier names from a TS/JS `lexical_declaration` or
+/// `variable_declaration` subtree. The grammar layout is
+///   lexical_declaration
+///     variable_declarator
+///       name: identifier | destructuring_pattern
+///       value: ...
+/// We only capture the `name` field of each `variable_declarator` to
+/// avoid pulling in identifiers from the initializer expression.
+fn collect_ts_js_variable_names(
+    decl_node: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let mut cursor = decl_node.walk();
+    for declarator in decl_node.children(&mut cursor) {
+        if declarator.kind() != "variable_declarator" {
+            continue;
+        }
+        if let Some(name) = declarator.child_by_field_name("name") {
+            if name.kind() == "identifier" {
+                let text = name.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                if !text.is_empty() {
+                    out.insert(text.to_string());
+                }
+            } else {
+                // Destructuring pattern: collect every identifier
+                // child of the pattern subtree.
+                collect_ts_js_param_names(name, source, out);
+            }
+        }
+    }
+}
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032): collect
+/// identifier names defined by a top-level `variable_declaration`
+/// (the lua/luau `local x = ...` form). The grammar layout is
+///   variable_declaration
+///     [variable_list | assignment_statement]
+///       (assignment_statement.variable_list)
+///         identifier+
+/// We walk the subtree looking for identifiers that appear in a
+/// `variable_list` context — those are the local-binding names.
+fn collect_lua_local_names(
+    decl_node: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let mut stack: Vec<Node> = vec![decl_node];
+    while let Some(n) = stack.pop() {
+        let kind = n.kind();
+        if kind == "variable_list" {
+            let mut inner = n.walk();
+            for ic in n.children(&mut inner) {
+                if ic.kind() == "identifier" {
+                    let text = ic.utf8_text(source.as_bytes()).unwrap_or("").trim();
+                    if !text.is_empty() {
+                        out.insert(text.to_string());
+                    }
+                }
+            }
+            continue;
+        }
+        let mut inner = n.walk();
+        for ic in n.children(&mut inner) {
+            stack.push(ic);
+        }
+    }
+}
+
+/// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032): depth-first
+/// search under `node` (skipping `node` itself) for the first descendant
+/// whose `kind()` equals `kind`. Used by `extract_lua_param` to peel a
+/// tree-sitter-luau `parameter` -> `type` -> `identifier` chain.
+fn first_descendant_identifier_under<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut stack = Vec::new();
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        stack.push(c);
+    }
+    while let Some(n) = stack.pop() {
+        if n.kind() == kind {
+            return Some(n);
+        }
+        let mut inner = n.walk();
+        for c in n.children(&mut inner) {
+            stack.push(c);
         }
     }
     None
