@@ -1406,8 +1406,9 @@ pub fn extract_expressions_from_refs(
     let mut refs_by_line: HashMap<(BlockId, u32), Vec<&VarRef>> = HashMap::new();
 
     for var_ref in &dfg.refs {
-        // Find which block this ref belongs to
-        let block_id = find_block_for_line(cfg, var_ref.line);
+        // Find which block this ref belongs to.
+        // CLUSTER-M-009: strict — never snap to nearest block.
+        let block_id = find_block_for_line_strict(cfg, var_ref.line);
         if let Some(bid) = block_id {
             refs_by_line
                 .entry((bid, var_ref.line))
@@ -1521,6 +1522,13 @@ pub fn extract_expressions_from_refs_with_source(
         for (line_num, line_text) in lines.iter().enumerate() {
             let line = (line_num + 1) as u32; // 1-indexed
 
+            // CLUSTER-M-009: skip lines outside the function's CFG span
+            // before doing any parsing work — prevents sibling-function
+            // expression leakage when the file has multiple functions.
+            if !line_within_cfg_span(cfg, line) {
+                continue;
+            }
+
             // Try to parse expression from line
             if let Some((left, op, right)) = parse_expression_from_line(line_text) {
                 // Validate that the operands appear in the DFG
@@ -1536,8 +1544,8 @@ pub fn extract_expressions_from_refs_with_source(
                     let operands = vec![left.clone(), right.clone()];
                     let expr = Expression::new(text, operands, line as usize);
 
-                    // Find block for this line
-                    if let Some(block_id) = find_block_for_line(cfg, line) {
+                    // CLUSTER-M-009: strict block lookup
+                    if let Some(block_id) = find_block_for_line_strict(cfg, line) {
                         // Add to all_exprs
                         all_exprs.insert(expr.clone());
 
@@ -1557,7 +1565,8 @@ pub fn extract_expressions_from_refs_with_source(
         // Build kill sets from definitions in DFG
         for var_ref in &dfg.refs {
             if matches!(var_ref.ref_type, RefType::Definition | RefType::Update) {
-                if let Some(block_id) = find_block_for_line(cfg, var_ref.line) {
+                // CLUSTER-M-009: strict block lookup for kill set, too.
+                if let Some(block_id) = find_block_for_line_strict(cfg, var_ref.line) {
                     if let Some(block_expr) = block_info.get_mut(&block_id) {
                         block_expr.kill.insert(var_ref.name.clone());
                     }
@@ -1592,6 +1601,37 @@ fn find_block_for_line(cfg: &CfgInfo, line: u32) -> Option<BlockId> {
             dist_start.min(dist_end)
         })
         .map(|b| b.id)
+}
+
+/// Strict variant of `find_block_for_line`: returns `Some(block_id)` ONLY
+/// when `line` lies within `[block.lines.0, block.lines.1]` of an actual
+/// CFG block. No nearest-block fallback.
+///
+/// This is the cluster-M-009 fix surface. The expression-collection step
+/// must use this variant to avoid pulling expressions from sibling
+/// functions in the same source file (whose lines would otherwise be
+/// silently snapped to the nearest block of the target function's CFG).
+fn find_block_for_line_strict(cfg: &CfgInfo, line: u32) -> Option<BlockId> {
+    for block in &cfg.blocks {
+        if block.lines.0 <= line && line <= block.lines.1 {
+            return Some(block.id);
+        }
+    }
+    None
+}
+
+/// Check whether `line` is within the function-CFG's overall line span.
+/// Used to short-circuit per-line work before the cheaper strict lookup.
+///
+/// Returns `false` when the CFG has no blocks (defensive — the caller's
+/// extraction loops should produce nothing in that case).
+fn line_within_cfg_span(cfg: &CfgInfo, line: u32) -> bool {
+    if cfg.blocks.is_empty() {
+        return false;
+    }
+    let min_line = cfg.blocks.iter().map(|b| b.lines.0).min().unwrap_or(0);
+    let max_line = cfg.blocks.iter().map(|b| b.lines.1).max().unwrap_or(0);
+    line >= min_line && line <= max_line
 }
 
 /// Infer operator from use patterns when source code is not available.
@@ -1702,6 +1742,16 @@ pub fn extract_expressions_full_with_lang(
         for (line_num, line_text) in lines.iter().enumerate() {
             let line = (line_num + 1) as u32; // 1-indexed
 
+            // CLUSTER-M-009 fix (available-scope-filter-v1): skip lines
+            // that fall outside the target function's CFG line span.
+            // Without this guard, expressions from sibling functions
+            // in the same source file leak into the analysis because
+            // the legacy `find_block_for_line` snaps any line to the
+            // nearest block — see `find_block_for_line_strict` below.
+            if !line_within_cfg_span(cfg, line) {
+                continue;
+            }
+
             // M3: skip lines that are entirely inside a comment or
             // string-literal AST node — the textual parser cannot
             // distinguish prose from code.
@@ -1722,7 +1772,12 @@ pub fn extract_expressions_full_with_lang(
                     let operands = vec![left.clone(), right.clone()];
                     let expr = Expression::new(text, operands, line as usize);
 
-                    if let Some(block_id) = find_block_for_line(cfg, line) {
+                    // CLUSTER-M-009: use strict block lookup so we never
+                    // snap an out-of-function line onto a target-function
+                    // block. The outer span guard above already filters
+                    // most non-matching lines; this is the second safety
+                    // net for the gap between span and per-block coverage.
+                    if let Some(block_id) = find_block_for_line_strict(cfg, line) {
                         result.all_exprs.insert(expr.clone());
                         result.expr_instances.push(expr.clone());
                         result
@@ -1739,7 +1794,8 @@ pub fn extract_expressions_full_with_lang(
                 // If so, collect it as an uncertain finding
                 if let Some(uncertain) = detect_uncertain_expression(line_text, line as usize) {
                     // Only include if this line is within the function's CFG range
-                    if find_block_for_line(cfg, line).is_some() {
+                    // (CLUSTER-M-009: strict — no nearest-block fallback)
+                    if find_block_for_line_strict(cfg, line).is_some() {
                         result.uncertain_exprs.push(uncertain);
                     }
                 }
@@ -1750,7 +1806,9 @@ pub fn extract_expressions_full_with_lang(
         let mut refs_by_line: HashMap<(BlockId, u32), Vec<&VarRef>> = HashMap::new();
 
         for var_ref in &dfg.refs {
-            if let Some(bid) = find_block_for_line(cfg, var_ref.line) {
+            // CLUSTER-M-009: strict — only accept refs whose line falls
+            // inside an actual CFG block, never the nearest-block fallback.
+            if let Some(bid) = find_block_for_line_strict(cfg, var_ref.line) {
                 refs_by_line
                     .entry((bid, var_ref.line))
                     .or_default()
@@ -1810,6 +1868,15 @@ pub fn extract_expressions_full_with_lang(
         for (text, _op, left, right, line) in ast_exprs {
             let line_u32 = line as u32;
 
+            // CLUSTER-M-009: span guard — the AST extractor receives a
+            // [min_line, max_line] range, but children of the parser's
+            // root can still report node positions just outside that
+            // window (e.g. trailing newline tokens). Drop anything that
+            // doesn't fall within the function's CFG span.
+            if !line_within_cfg_span(cfg, line_u32) {
+                continue;
+            }
+
             // Check if this expression was already found by text-based extraction
             let already_found = result
                 .all_exprs
@@ -1823,7 +1890,8 @@ pub fn extract_expressions_full_with_lang(
             let operands = vec![left.clone(), right.clone()];
             let expr = Expression::new(text.clone(), operands, line);
 
-            if let Some(block_id) = find_block_for_line(cfg, line_u32) {
+            // CLUSTER-M-009: strict block lookup, never snap to nearest.
+            if let Some(block_id) = find_block_for_line_strict(cfg, line_u32) {
                 result.all_exprs.insert(expr.clone());
                 result.expr_instances.push(expr.clone());
                 result
