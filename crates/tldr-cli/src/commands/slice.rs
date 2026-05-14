@@ -13,6 +13,7 @@ use tldr_core::ast::function_finder::find_function_bounds_from_path_or_source;
 use tldr_core::{get_slice_rich, Language, SliceDirection};
 
 use crate::commands::daemon_router::{params_with_file_function_line, try_daemon_route};
+use crate::commands::elixir_per_clause;
 use crate::output::{OutputFormat, OutputWriter};
 
 /// Compute program slice from a line
@@ -326,12 +327,97 @@ impl SliceArgs {
             explanation,
         };
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): for Elixir
+        // multi-clause `def`, emit `per_clauses` alongside the legacy
+        // single-clause slice. Each per-clause slice is computed on a
+        // synthetic single-clause sub-source. The criterion line is
+        // clamped per-clause to the clause's start_line if the
+        // user-supplied criterion falls outside the clause body.
+        let per_clause_array: Option<Vec<serde_json::Value>> = if writer.is_text() {
+            None
+        } else {
+            let user_line = self.line;
+            elixir_per_clause::for_each_body_bearing_clause(
+                &self.file,
+                &self.function,
+                language,
+                |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                    let line_for_clause = if user_line >= clause.start_line
+                        && user_line <= clause.end_line
+                    {
+                        user_line
+                    } else {
+                        // Pick a sensible default line inside the clause
+                        // body (start_line + 1 if available, else
+                        // start_line). The synthetic source preserves
+                        // original line numbering.
+                        clause.start_line.saturating_add(1).min(clause.end_line)
+                    };
+                    let rich_sub = get_slice_rich(
+                        tmp_path.to_str().unwrap_or_default(),
+                        &self.function,
+                        line_for_clause,
+                        direction,
+                        self.variable.as_deref(),
+                        language,
+                    )?;
+                    let sub_lines: Vec<u32> = rich_sub.nodes.iter().map(|n| n.line).collect();
+                    let sub_slice_lines: Vec<SliceLine> = rich_sub
+                        .nodes
+                        .iter()
+                        .map(|n| SliceLine {
+                            line: n.line,
+                            code: n.code.clone(),
+                            definitions: n.definitions.clone(),
+                            uses: n.uses.clone(),
+                            dep_type: n.dep_type.clone(),
+                            dep_label: n.dep_label.clone(),
+                        })
+                        .collect();
+                    let sub_edges: Vec<SliceEdgeOutput> = rich_sub
+                        .edges
+                        .iter()
+                        .map(|e| SliceEdgeOutput {
+                            from_line: e.from_line,
+                            to_line: e.to_line,
+                            dep_type: e.dep_type.clone(),
+                            label: e.label.clone(),
+                        })
+                        .collect();
+                    let sub_output = SliceOutput {
+                        file: self.file.clone(),
+                        function: self.function.clone(),
+                        criterion_line: line_for_clause,
+                        direction: direction_str.to_string(),
+                        variable: self.variable.clone(),
+                        line_count: sub_lines.len(),
+                        lines: sub_lines,
+                        slice_lines: sub_slice_lines,
+                        edges: sub_edges,
+                        explanation: None,
+                    };
+                    let v = serde_json::to_value(&sub_output)?;
+                    Ok(elixir_per_clause::per_clause_entry_value(clause, v))
+                },
+            )?
+        };
+
         // Output based on format
         if writer.is_text() {
             let text = format_rich_text(&output, data_count, ctrl_count);
             writer.write_text(&text)?;
         } else {
-            writer.write(&output)?;
+            let value = serde_json::to_value(&output)?;
+            let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+            // Mirror writer.write() formatting for JSON formats.
+            match format {
+                OutputFormat::Compact => {
+                    writer.write_text(&serde_json::to_string(&merged)?)?;
+                }
+                _ => {
+                    writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
+                }
+            }
         }
 
         Ok(())

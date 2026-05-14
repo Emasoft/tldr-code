@@ -56,6 +56,10 @@ pub mod semantic;
 #[cfg(feature = "semantic")]
 pub mod similar;
 
+// elixir-per-clause-dfg-cfg-v1 (v0.4.2 cluster M-031):
+// per-clause iteration helper for Elixir multi-clause `def` definitions.
+pub mod elixir_per_clause;
+
 // Daemon subsystem (Phase 1: types and error)
 pub mod daemon;
 

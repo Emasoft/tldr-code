@@ -2706,12 +2706,85 @@ impl ExplainArgs {
         // user-input prefix produces a homogeneous shape (M3 pattern).
         restore_explain_path_shape(&mut report, &self.file);
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): build a
+        // per-clause summary for Elixir multi-clause `def` definitions.
+        // Each clause runs a sub-analysis (CFG + complexity + cognitive)
+        // on a synthetic single-clause sub-source. We attach the array
+        // as a top-level `per_clauses` field on the explain JSON.
+        let per_clause_array: Option<Vec<serde_json::Value>> = if writer.is_text() {
+            None
+        } else {
+            let lookup_name_outer = self
+                .function
+                .rsplit("::")
+                .next()
+                .unwrap_or(&self.function)
+                .rsplit('.')
+                .next()
+                .unwrap_or(&self.function)
+                .to_string();
+            let lookup_name = lookup_name_outer.clone();
+            crate::commands::elixir_per_clause::for_each_body_bearing_clause(
+                &self.file,
+                &lookup_name_outer,
+                language,
+                move |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                    let mut entry = serde_json::Map::new();
+                    if let Ok(cfg) = tldr_core::get_cfg_context(
+                        tmp_path.to_str().unwrap_or_default(),
+                        &lookup_name,
+                        language,
+                    ) {
+                        entry.insert(
+                            "num_blocks".to_string(),
+                            serde_json::Value::from(cfg.blocks.len()),
+                        );
+                        entry.insert(
+                            "num_edges".to_string(),
+                            serde_json::Value::from(cfg.edges.len()),
+                        );
+                        entry.insert(
+                            "cyclomatic".to_string(),
+                            serde_json::Value::from(cfg.cyclomatic_complexity),
+                        );
+                    }
+                    if let Ok(c) = tldr_core::calculate_complexity(
+                        tmp_path.to_str().unwrap_or_default(),
+                        &lookup_name,
+                        language,
+                    ) {
+                        entry.insert(
+                            "cognitive".to_string(),
+                            serde_json::Value::from(c.cognitive),
+                        );
+                        entry.insert(
+                            "lines_of_code".to_string(),
+                            serde_json::Value::from(c.lines_of_code),
+                        );
+                        entry.insert(
+                            "max_nesting".to_string(),
+                            serde_json::Value::from(c.max_nesting),
+                        );
+                    }
+                    Ok(crate::commands::elixir_per_clause::per_clause_entry_value(
+                        clause,
+                        serde_json::Value::Object(entry),
+                    ))
+                },
+            )?
+        };
+
         // Output based on format
         if writer.is_text() {
             let text = format_explain_text(&report);
             writer.write_text(&text)?;
         } else {
-            writer.write(&report)?;
+            let value = serde_json::to_value(&report)?;
+            let merged = crate::commands::elixir_per_clause::merge_per_clauses(
+                value,
+                per_clause_array,
+            );
+            writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
         }
 
         // Write to output file if specified

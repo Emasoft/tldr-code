@@ -16,6 +16,7 @@ use tldr_core::dfg::{
 };
 use tldr_core::{get_cfg_context, get_dfg_context, Language};
 
+use crate::commands::elixir_per_clause;
 use crate::output::OutputFormat;
 
 /// Analyze reaching definitions for a function
@@ -126,6 +127,40 @@ impl ReachingDefsArgs {
             }
         };
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): emit `per_clauses`
+        // alongside the legacy report when Elixir multi-clause is
+        // detected. Each clause gets its own reaching-defs report from a
+        // synthetic single-clause sub-source.
+        let per_clause_array: Option<Vec<serde_json::Value>> =
+            if matches!(format, OutputFormat::Text) {
+                None
+            } else {
+                elixir_per_clause::for_each_body_bearing_clause(
+                    &self.file,
+                    &self.function,
+                    language,
+                    |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                        let sub_cfg = get_cfg_context(
+                            tmp_path.to_str().unwrap_or_default(),
+                            &self.function,
+                            language,
+                        )?;
+                        let sub_dfg = get_dfg_context(
+                            tmp_path.to_str().unwrap_or_default(),
+                            &self.function,
+                            language,
+                        )?;
+                        let sub_report =
+                            build_reaching_defs_report(&sub_cfg, &sub_dfg.refs, tmp_path.clone());
+                        let json = format_reaching_defs_json(&sub_report).map_err(|e| {
+                            anyhow::anyhow!("JSON serialization failed: {}", e)
+                        })?;
+                        let v: serde_json::Value = serde_json::from_str(&json)?;
+                        Ok(elixir_per_clause::per_clause_entry_value(clause, v))
+                    },
+                )?
+            };
+
         // Output based on format
         match format {
             OutputFormat::Text => {
@@ -135,19 +170,28 @@ impl ReachingDefsArgs {
             OutputFormat::Json | OutputFormat::Compact => {
                 let json = format_reaching_defs_json(&report)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let value: serde_json::Value = serde_json::from_str(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                let out = if matches!(format, OutputFormat::Compact) {
+                    serde_json::to_string(&merged)?
+                } else {
+                    serde_json::to_string_pretty(&merged)?
+                };
+                writer.write_text(&out)?;
             }
             OutputFormat::Dot => {
-                // DOT not supported for reaching defs, fall back to JSON
                 let json = format_reaching_defs_json(&report)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let value: serde_json::Value = serde_json::from_str(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
             }
             OutputFormat::Sarif => {
-                // SARIF not supported, fall back to JSON
                 let json = format_reaching_defs_json(&report)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let value: serde_json::Value = serde_json::from_str(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
             }
         }
 

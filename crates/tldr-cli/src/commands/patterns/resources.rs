@@ -3892,10 +3892,84 @@ pub fn run(args: ResourcesArgs, global_format: GlobalOutputFormat) -> anyhow::Re
     // Output: global -f flag takes priority over hidden --output-format
     let use_text = matches!(global_format, GlobalOutputFormat::Text)
         || matches!(args.output_format, OutputFormat::Text);
+
+    // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): emit per-clause
+    // resources analysis for Elixir multi-clause defs when a function
+    // is targeted. Each clause runs on a synthetic single-clause
+    // sub-source. The legacy top-level report stays populated (it
+    // mirrors the first body-bearing clause via the M-E1 selector).
+    let per_clause_array: Option<Vec<serde_json::Value>> = if use_text {
+        None
+    } else if let Some(ref func_name) = args.function {
+        let function_name_outer = func_name.clone();
+        let function_name = func_name.clone();
+        let parent_args = args.clone();
+        crate::commands::elixir_per_clause::for_each_body_bearing_clause(
+            &args.file,
+            &function_name_outer,
+            lang,
+            move |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                let sub_source = read_file_safe(tmp_path)?;
+                let sub_bytes = sub_source.as_bytes();
+                let mut sub_parser = get_parser_for_language(lang)?;
+                let sub_tree =
+                    sub_parser
+                        .parse(&sub_source, None)
+                        .ok_or_else(|| PatternsError::ParseError {
+                            file: tmp_path.clone(),
+                            message: format!("Failed to parse synthetic {} clause", lang.as_str()),
+                        })?;
+                let sub_func_node =
+                    find_function_node_multilang(&sub_tree, &function_name, sub_bytes, lang)
+                        .or_else(|| {
+                            tldr_core::ast::function_finder::qualified_name_fallback_bare(
+                                &function_name,
+                                lang,
+                            )
+                            .and_then(|bare| {
+                                find_function_node_multilang(&sub_tree, &bare, sub_bytes, lang)
+                            })
+                        });
+                let (sub_resources, sub_leaks, sub_double_closes, sub_use_after_closes) =
+                    if let Some(node) = sub_func_node {
+                        analyze_function_with_lang(node, sub_bytes, &parent_args, lang)
+                    } else {
+                        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+                    };
+                let sub_summary = ResourceSummary {
+                    resources_detected: sub_resources.len() as u32,
+                    leaks_found: sub_leaks.len() as u32,
+                    double_closes_found: sub_double_closes.len() as u32,
+                    use_after_closes_found: sub_use_after_closes.len() as u32,
+                };
+                let sub_report = ResourceReport {
+                    file: parent_args.file.to_string_lossy().to_string(),
+                    language: lang.as_str().to_string(),
+                    function: Some(function_name.clone()),
+                    resources: sub_resources,
+                    leaks: sub_leaks,
+                    double_closes: sub_double_closes,
+                    use_after_closes: sub_use_after_closes,
+                    suggestions: Vec::new(),
+                    constraints: Vec::new(),
+                    summary: sub_summary,
+                    analysis_time_ms: 0,
+                };
+                let v = serde_json::to_value(&sub_report)?;
+                Ok(crate::commands::elixir_per_clause::per_clause_entry_value(clause, v))
+            },
+        )?
+    } else {
+        None
+    };
+
     let output = if use_text {
         format_resources_text(&report)
     } else {
-        serde_json::to_string_pretty(&report)?
+        let value = serde_json::to_value(&report)?;
+        let merged =
+            crate::commands::elixir_per_clause::merge_per_clauses(value, per_clause_array);
+        serde_json::to_string_pretty(&merged)?
     };
 
     println!("{}", output);

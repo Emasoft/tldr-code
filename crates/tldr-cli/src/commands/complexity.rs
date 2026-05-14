@@ -12,6 +12,7 @@ use tldr_core::types::ComplexityMetrics;
 use tldr_core::{calculate_complexity, detect_or_parse_language, validate_file_path, Language};
 
 use crate::commands::daemon_router::{params_with_file_function, try_daemon_route};
+use crate::commands::elixir_per_clause;
 use crate::output::{format_complexity_text, OutputFormat, OutputWriter};
 
 /// Calculate complexity metrics for a function
@@ -71,9 +72,71 @@ impl ComplexityArgs {
             language,
         )?;
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): for Elixir
+        // multi-clause `def NAME`, iterate every body-bearing clause and
+        // emit a `per_clauses: [...]` array. The legacy top-level
+        // metrics stay populated with the first-body-bearing-clause's
+        // result (M-E1 selector) for backwards compatibility.
+        let per_clauses = elixir_per_clause::for_each_body_bearing_clause(
+            &validated_path,
+            &self.function,
+            language,
+            |tmp_path, _clause, _offset| -> anyhow::Result<ComplexityMetrics> {
+                Ok(calculate_complexity(
+                    tmp_path.to_str().unwrap_or_default(),
+                    &self.function,
+                    language,
+                )?)
+            },
+        )?;
+
         // Output based on format
         if writer.is_text() {
             writer.write_text(&format_complexity_text(&result))?;
+            return Ok(());
+        }
+        if let Some(per_clauses) = per_clauses {
+            let clauses = elixir_per_clause::list_body_bearing_clauses(
+                &validated_path,
+                &self.function,
+                language,
+            )
+            .unwrap_or_default();
+            #[derive(serde::Serialize)]
+            struct PerClauseEntry {
+                start_line: u32,
+                end_line: u32,
+                arity: usize,
+                has_body: bool,
+                cyclomatic: u32,
+                cognitive: u32,
+                max_nesting: u32,
+                lines_of_code: u32,
+            }
+            let entries: Vec<PerClauseEntry> = clauses
+                .iter()
+                .zip(per_clauses.iter())
+                .map(|(c, m)| PerClauseEntry {
+                    start_line: c.start_line,
+                    end_line: c.end_line,
+                    arity: c.arity,
+                    has_body: c.has_body,
+                    cyclomatic: m.cyclomatic,
+                    cognitive: m.cognitive,
+                    max_nesting: m.max_nesting,
+                    lines_of_code: m.lines_of_code,
+                })
+                .collect();
+            #[derive(serde::Serialize)]
+            struct ComplexityWithPerClauses<'a> {
+                #[serde(flatten)]
+                inner: &'a ComplexityMetrics,
+                per_clauses: Vec<PerClauseEntry>,
+            }
+            writer.write(&ComplexityWithPerClauses {
+                inner: &result,
+                per_clauses: entries,
+            })?;
         } else {
             writer.write(&result)?;
         }

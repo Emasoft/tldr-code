@@ -27,6 +27,7 @@ use colored::Colorize;
 use tldr_core::ast::ParserPool;
 use tldr_core::{compute_taint_with_tree, get_cfg_context, get_dfg_context, Language, TaintInfo};
 
+use crate::commands::elixir_per_clause;
 use crate::output::OutputFormat;
 
 /// Analyze taint flows in a function to detect security vulnerabilities
@@ -135,6 +136,71 @@ impl TaintArgs {
             ssa.as_ref(),
         )?;
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): emit per-clause
+        // taint analysis for Elixir multi-clause defs.
+        let per_clause_array: Option<Vec<serde_json::Value>> =
+            if matches!(format, OutputFormat::Text) {
+                None
+            } else {
+                let function_name = self.function.clone();
+                elixir_per_clause::for_each_body_bearing_clause(
+                    &self.file,
+                    &self.function,
+                    language,
+                    move |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                        let sub_source = std::fs::read_to_string(tmp_path)?;
+                        let sub_cfg = get_cfg_context(
+                            tmp_path.to_str().unwrap_or_default(),
+                            &function_name,
+                            language,
+                        )?;
+                        let sub_dfg = get_dfg_context(
+                            tmp_path.to_str().unwrap_or_default(),
+                            &function_name,
+                            language,
+                        )?;
+                        let (fns, fne) = if sub_cfg.blocks.is_empty() {
+                            (1u32, sub_source.lines().count() as u32)
+                        } else {
+                            let s = sub_cfg.blocks.iter().map(|b| b.lines.0).min().unwrap_or(1);
+                            let e = sub_cfg
+                                .blocks
+                                .iter()
+                                .map(|b| b.lines.1)
+                                .max()
+                                .unwrap_or(sub_source.lines().count() as u32);
+                            (s, e)
+                        };
+                        let sub_statements: HashMap<u32, String> = sub_source
+                            .lines()
+                            .enumerate()
+                            .filter(|(i, _)| {
+                                let ln = (i + 1) as u32;
+                                ln >= fns && ln <= fne
+                            })
+                            .map(|(i, line)| ((i + 1) as u32, line.to_string()))
+                            .collect();
+                        let sub_pool = ParserPool::new();
+                        let sub_tree = sub_pool.parse(&sub_source, language).ok();
+                        let sub_ssa = tldr_core::ssa::construct::construct_minimal_ssa(
+                            &sub_cfg, &sub_dfg,
+                        )
+                        .ok();
+                        let sub_result = compute_taint_with_tree(
+                            &sub_cfg,
+                            &sub_dfg.refs,
+                            &sub_statements,
+                            sub_tree.as_ref(),
+                            Some(sub_source.as_bytes()),
+                            language,
+                            sub_ssa.as_ref(),
+                        )?;
+                        let v = serde_json::to_value(&sub_result)?;
+                        Ok(elixir_per_clause::per_clause_entry_value(clause, v))
+                    },
+                )?
+            };
+
         // Output based on format
         match format {
             OutputFormat::Text => {
@@ -142,21 +208,21 @@ impl TaintArgs {
                 writer.write_text(&text)?;
             }
             OutputFormat::Json | OutputFormat::Compact => {
-                let json = serde_json::to_string_pretty(&result)
+                let value = serde_json::to_value(&result)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                let out = if matches!(format, OutputFormat::Compact) {
+                    serde_json::to_string(&merged)?
+                } else {
+                    serde_json::to_string_pretty(&merged)?
+                };
+                writer.write_text(&out)?;
             }
-            OutputFormat::Dot => {
-                // DOT not supported for taint analysis, fall back to JSON
-                let json = serde_json::to_string_pretty(&result)
+            OutputFormat::Dot | OutputFormat::Sarif => {
+                let value = serde_json::to_value(&result)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
-            }
-            OutputFormat::Sarif => {
-                // SARIF not supported, fall back to JSON
-                let json = serde_json::to_string_pretty(&result)
-                    .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
             }
         }
 

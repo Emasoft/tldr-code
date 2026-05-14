@@ -27,6 +27,7 @@ use clap::Args;
 use tldr_core::dataflow::{compute_available_exprs_with_source_and_lang, AvailableExprsInfo};
 use tldr_core::{get_cfg_context, get_dfg_context, Language};
 
+use crate::commands::elixir_per_clause;
 use crate::output::OutputFormat;
 
 /// Analyze available expressions for CSE detection
@@ -130,26 +131,67 @@ impl AvailableArgs {
             return self.handle_killed_by_query(&result, expr, &writer);
         }
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): for multi-clause
+        // Elixir `def`, emit a `per_clauses` array alongside the legacy
+        // single-clause result. Each entry runs the same analyzer
+        // against a synthetic single-clause sub-source.
+        let per_clause_array: Option<Vec<serde_json::Value>> = if matches!(format, OutputFormat::Json | OutputFormat::Compact) {
+            elixir_per_clause::for_each_body_bearing_clause(
+                &self.file,
+                &self.function,
+                language,
+                |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                    let sub_source = std::fs::read_to_string(tmp_path)?;
+                    let sub_lines: Vec<String> =
+                        sub_source.lines().map(|s| s.to_string()).collect();
+                    let sub_cfg = get_cfg_context(
+                        tmp_path.to_str().unwrap_or_default(),
+                        &self.function,
+                        language,
+                    )?;
+                    let sub_dfg = get_dfg_context(
+                        tmp_path.to_str().unwrap_or_default(),
+                        &self.function,
+                        language,
+                    )?;
+                    let mut sub_result = compute_available_exprs_with_source_and_lang(
+                        &sub_cfg,
+                        &sub_dfg,
+                        &sub_lines,
+                        Some(language),
+                    )?;
+                    sub_result.function = Some(self.function.clone());
+                    let v = serde_json::to_value(&sub_result)?;
+                    Ok(elixir_per_clause::per_clause_entry_value(clause, v))
+                },
+            )?
+        } else {
+            None
+        };
+
         // Default: output full result
         match format {
             OutputFormat::Json => {
-                let json = serde_json::to_string_pretty(&result)
+                let value = serde_json::to_value(&result)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
             }
             OutputFormat::Text => {
                 let text = self.format_text_output(&result);
                 writer.write_text(&text)?;
             }
             OutputFormat::Compact => {
-                let json = serde_json::to_string(&result)
+                let value = serde_json::to_value(&result)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                writer.write_text(&serde_json::to_string(&merged)?)?;
             }
             _ => {
-                let json = serde_json::to_string_pretty(&result)
+                let value = serde_json::to_value(&result)
                     .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
-                writer.write_text(&json)?;
+                let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+                writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
             }
         }
 

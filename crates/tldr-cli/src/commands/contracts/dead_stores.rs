@@ -32,6 +32,7 @@ use tldr_core::ssa::{SsaFunction, SsaNameId};
 use tldr_core::types::RefType;
 use tldr_core::Language;
 
+use crate::commands::elixir_per_clause;
 use crate::output::{OutputFormat, OutputWriter};
 
 use super::error::{ContractsError, ContractsResult};
@@ -115,11 +116,33 @@ impl DeadStoresArgs {
         let use_text = matches!(self.output_format, ContractsOutputFormat::Text)
             || matches!(format, OutputFormat::Text);
 
+        // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): emit per-clause
+        // dead-stores for Elixir multi-clause defs in JSON outputs.
+        let per_clause_array: Option<Vec<serde_json::Value>> = if use_text {
+            None
+        } else {
+            let compare = self.compare;
+            let function_name = self.function.clone();
+            elixir_per_clause::for_each_body_bearing_clause(
+                &self.file,
+                &self.function,
+                language,
+                move |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
+                    let sub_report = run_dead_stores(tmp_path, &function_name, language, compare)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let v = serde_json::to_value(&sub_report)?;
+                    Ok(elixir_per_clause::per_clause_entry_value(clause, v))
+                },
+            )?
+        };
+
         if use_text {
             let text = format_dead_stores_text(&report);
             writer.write_text(&text)?;
         } else {
-            writer.write(&report)?;
+            let value = serde_json::to_value(&report)?;
+            let merged = elixir_per_clause::merge_per_clauses(value, per_clause_array);
+            writer.write_text(&serde_json::to_string_pretty(&merged)?)?;
         }
 
         Ok(())

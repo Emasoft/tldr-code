@@ -77,7 +77,19 @@ fn collect_expression_lines(v: &serde_json::Value) -> Vec<u64> {
                         out.push(l);
                     }
                 }
-                for (_, child) in map {
+                // elixir-per-clause-dfg-cfg-v1 (v0.4.2 M-031): the
+                // `per_clauses` array contains per-Elixir-clause sub-
+                // results that are LEGITIMATELY scoped to OTHER
+                // clauses of the same multi-clause function. The
+                // scope-filter regression guard (M-009) is asserted
+                // against the legacy top-level `all_exprs`, so skip
+                // descent into per_clauses to keep the cross-clause
+                // expression lines from tripping the same-clause leak
+                // check.
+                for (key, child) in map {
+                    if key == "per_clauses" {
+                        continue;
+                    }
                     walk(child, out, in_expr || is_expr);
                 }
             }
