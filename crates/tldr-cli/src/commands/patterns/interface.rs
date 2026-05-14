@@ -67,7 +67,12 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
             "method_definition",
             "arrow_function",
         ],
-        Language::C | Language::Cpp => &["function_definition"],
+        // interface-per-lang-v1 (v0.4.2 M-022): C headers expose public API
+        // as `declaration` nodes whose declarator is a `function_declarator`
+        // (function prototypes, e.g. `int foo(int x);` in sds.h). The
+        // walker filters non-function declarations via
+        // `is_c_function_prototype` so fields/typedefs do not surface.
+        Language::C | Language::Cpp => &["function_definition", "declaration"],
         Language::Ruby => &["method", "singleton_method"],
         Language::CSharp => &["method_declaration", "constructor_declaration"],
         Language::Scala => &["function_definition", "def_definition"],
@@ -164,6 +169,11 @@ fn method_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Php => &["method_declaration"],
         Language::Elixir => &["call"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        // interface-per-lang-v1 (v0.4.2 M-022): Kotlin/Swift class
+        // bodies hold methods as `function_declaration` nodes. Without
+        // this entry, every Kotlin class and every Swift class /
+        // extension reported `methods: []`.
+        Language::Kotlin | Language::Swift => &["function_declaration"],
         _ => &[],
     }
 }
@@ -201,13 +211,21 @@ fn is_public_for_lang(name: &str, lang: Language) -> bool {
     }
 }
 
-/// Check if a Rust node has `pub` visibility.
+/// Check if a Rust node has truly public visibility (`pub`).
+///
+/// interface-per-lang-v1 (v0.4.2 M-022): the legacy check returned true
+/// for any visibility_modifier text starting with `"pub"`, which also
+/// matched the restricted forms `pub(crate)`, `pub(super)`, and
+/// `pub(in crate::foo)`. Those items are not part of the crate's public
+/// API and must not surface in `tldr interface`. Only accept bare
+/// `"pub"` (no parenthesized scope) here.
 fn is_rust_pub(node: Node, source: &[u8]) -> bool {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "visibility_modifier" {
-                let text = node_text(child, source);
-                return text.starts_with("pub");
+                let text = node_text(child, source).trim();
+                // True public: exactly `pub` (no `pub(crate)` / `pub(super)` / `pub(in …)`).
+                return text == "pub";
             }
         }
     }
@@ -289,9 +307,35 @@ fn is_node_public(node: Node, source: &[u8], lang: Language) -> bool {
         }
         Language::Java | Language::CSharp => has_public_modifier(node, source),
         Language::C | Language::Cpp => !is_c_static(node, source),
+        // interface-per-lang-v1 (v0.4.2 M-022): scala default is public.
+        // Filter only when an explicit `private` / `protected`
+        // access_modifier appears inside a `modifiers` wrapper.
+        Language::Scala => !is_scala_non_public(node, source),
         // For other languages, default to public
         _ => true,
     }
+}
+
+/// interface-per-lang-v1 (v0.4.2 M-022): return true when a Scala
+/// definition carries an explicit `private` or `protected` access
+/// modifier. tree-sitter-scala emits these under a `modifiers >
+/// access_modifier` child whose text is the keyword.
+fn is_scala_non_public(node: Node, source: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifiers" {
+            let mut mc = child.walk();
+            for m in child.children(&mut mc) {
+                if m.kind() == "access_modifier" {
+                    let txt = node_text(m, source).trim();
+                    if txt == "private" || txt == "protected" {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 // =============================================================================
@@ -1220,7 +1264,20 @@ fn detect_async(func_node: Node, source: &[u8], lang: Language) -> bool {
             func_text.starts_with("async ")
         }
         Language::CSharp => {
-            // Check modifiers for "async"
+            // interface-per-lang-v1 (v0.4.2 M-022): tree-sitter-c-sharp
+            // emits `modifier` nodes (singular, one per keyword) as
+            // direct children of `method_declaration`, not under a
+            // `modifiers` field. The legacy `child_by_field_name`
+            // lookup therefore always returned None and every method
+            // reported `is_async:false`.
+            let mut cursor = func_node.walk();
+            for child in func_node.children(&mut cursor) {
+                if child.kind() == "modifier" && node_text(child, source) == "async" {
+                    return true;
+                }
+            }
+            // Defense-in-depth: also accept the legacy `modifiers` field
+            // shape for grammar versions that may wrap them.
             if let Some(modifiers) = func_node.child_by_field_name("modifiers") {
                 return node_text(modifiers, source).contains("async");
             }
@@ -1669,6 +1726,9 @@ fn is_method_public(name: &str, node: Node, source: &[u8], lang: Language) -> bo
         Language::Rust => is_rust_pub(node, source),
         Language::Go => name.chars().next().is_some_and(|c| c.is_uppercase()),
         Language::Java | Language::CSharp => has_public_modifier(node, source),
+        // interface-per-lang-v1 (v0.4.2 M-022): exclude scala `private`
+        // / `protected` methods from the public method list.
+        Language::Scala => !is_scala_non_public(node, source),
         _ => true,
     }
 }
@@ -1796,6 +1856,128 @@ pub fn extract_interface(path: &Path, source: &str) -> PatternsResult<InterfaceI
     extract_interface_with_lang(path, source, lang)
 }
 
+/// interface-per-lang-v1 (v0.4.2 M-022): parse a `.mli` file using
+/// tree-sitter-ocaml's dedicated `LANGUAGE_OCAML_INTERFACE` grammar and
+/// emit `val name : type` declarations as public functions. The
+/// implementation grammar (`LANGUAGE_OCAML`) cannot represent these
+/// declarations, so without this routing every `.mli` reported
+/// `functions:[]`.
+fn extract_ocaml_mli_interface(path: &Path, source: &str) -> PatternsResult<InterfaceInfo> {
+    use tree_sitter::Parser;
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_ocaml::LANGUAGE_OCAML_INTERFACE.into())
+        .map_err(|e| {
+            PatternsError::parse_error(
+                path,
+                format!("Failed to load OCaml interface grammar: {}", e),
+            )
+        })?;
+    let tree = parser.parse(source, None).ok_or_else(|| {
+        PatternsError::parse_error(path, "OCaml interface parser returned no tree".to_string())
+    })?;
+    let root = tree.root_node();
+    let source_bytes = source.as_bytes();
+
+    let mut functions: Vec<FunctionInfo> = Vec::new();
+    let mut classes: Vec<ClassInfo> = Vec::new();
+
+    walk_ocaml_mli(root, source_bytes, &mut functions, &mut classes);
+
+    let mut names: Vec<String> = functions
+        .iter()
+        .map(|f| f.name.clone())
+        .chain(classes.iter().map(|c| c.name.clone()))
+        .collect();
+    names.sort();
+    names.dedup();
+
+    Ok(InterfaceInfo {
+        file: path.display().to_string(),
+        all_exports: names,
+        functions,
+        classes,
+    })
+}
+
+/// Walk an OCaml `.mli` AST collecting `value_specification` (val decl)
+/// and `type_definition` / `module_type_definition` nodes.
+fn walk_ocaml_mli(
+    node: Node,
+    source: &[u8],
+    functions: &mut Vec<FunctionInfo>,
+    classes: &mut Vec<ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        match kind {
+            "value_specification" => {
+                // children: `val` `value_name` `:` <type_expr>
+                let mut name: Option<String> = None;
+                let mut type_text: Option<String> = None;
+                let mut name_cursor = child.walk();
+                for sub in child.children(&mut name_cursor) {
+                    match sub.kind() {
+                        "value_name" => {
+                            name = Some(node_text(sub, source).trim().to_string());
+                        }
+                        "val" | ":" => {}
+                        _ => {
+                            if name.is_some() && type_text.is_none() {
+                                type_text =
+                                    Some(node_text(sub, source).trim().to_string());
+                            }
+                        }
+                    }
+                }
+                if let Some(n) = name {
+                    let lineno = child.start_position().row as u32 + 1;
+                    let signature = type_text
+                        .map(|t| format!(": {}", t))
+                        .unwrap_or_default();
+                    functions.push(FunctionInfo {
+                        name: n,
+                        signature,
+                        docstring: None,
+                        lineno,
+                        is_async: false,
+                    });
+                }
+            }
+            "type_definition" => {
+                // Surface as a class entry for parity with the .ml path.
+                let lineno = child.start_position().row as u32 + 1;
+                let mut tcursor = child.walk();
+                for sub in child.children(&mut tcursor) {
+                    if sub.kind() == "type_binding" {
+                        let mut bcursor = sub.walk();
+                        for b in sub.children(&mut bcursor) {
+                            if matches!(b.kind(), "type_constructor" | "type_constructor_path") {
+                                let name = node_text(b, source).trim().to_string();
+                                if !name.is_empty() {
+                                    classes.push(ClassInfo {
+                                        name,
+                                        lineno,
+                                        bases: Vec::new(),
+                                        methods: Vec::new(),
+                                        private_method_count: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Recurse into nested module-types / signature bodies.
+                walk_ocaml_mli(child, source, functions, classes);
+            }
+        }
+    }
+}
+
 /// Extract the public interface from a source file with an explicit language.
 pub fn extract_interface_with_lang(
     path: &Path,
@@ -1803,6 +1985,21 @@ pub fn extract_interface_with_lang(
     lang: Language,
 ) -> PatternsResult<InterfaceInfo> {
     let source_bytes = source.as_bytes();
+
+    // interface-per-lang-v1 (v0.4.2 M-022): `.mli` interface files use a
+    // dedicated tree-sitter-ocaml grammar (`LANGUAGE_OCAML_INTERFACE`).
+    // The standard OCaml grammar mis-parses `val name : type` because
+    // that form is only legal in `.mli`. Route `.mli` to the dedicated
+    // grammar before falling back to ParserPool.
+    let is_ocaml_interface = lang == Language::Ocaml
+        && path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.eq_ignore_ascii_case("mli"))
+            .unwrap_or(false);
+    if is_ocaml_interface {
+        return extract_ocaml_mli_interface(path, source);
+    }
 
     // Parse with ParserPool (multi-language)
     let pool = ParserPool::new();
@@ -1911,6 +2108,297 @@ fn needs_deep_walk(lang: Language) -> bool {
     )
 }
 
+/// interface-per-lang-v1 (v0.4.2 M-022): scan a JS/TS file for top-level
+/// member-export forms that pre-class JavaScript modules used to declare
+/// public API:
+///
+/// * `Foo.prototype.bar = function (...) { ... }`     -> method `bar` on `Foo`
+/// * `Foo.prototype.bar = (...) => { ... }`           -> method `bar` on `Foo`
+/// * `exports.X = function (...) { ... }`             -> top-level function `X`
+/// * `module.exports.X = function (...) { ... }`      -> top-level function `X`
+///
+/// The walker scans direct children of the file root for
+/// `expression_statement > assignment_expression`. Without this, Express
+/// `app.render`, `app.handle`, etc. were invisible to `tldr interface`.
+fn collect_js_member_exports(
+    root: Node,
+    source: &[u8],
+    lang: Language,
+    functions: &mut Vec<FunctionInfo>,
+    classes: &mut Vec<ClassInfo>,
+) {
+    use std::collections::HashSet;
+    let mut existing_funcs: HashSet<(String, u32)> = HashSet::new();
+    for f in functions.iter() {
+        existing_funcs.insert((f.name.clone(), f.lineno));
+    }
+
+    // First pass: collect identifiers that alias `module.exports` /
+    // `exports`. Express's `lib/application.js` does
+    // `var app = exports = module.exports = {};` — every subsequent
+    // `app.X = function …` is part of the public API but would
+    // otherwise be invisible because `app` is just an identifier.
+    let module_export_aliases = collect_js_module_export_aliases(root, source);
+
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        // `expression_statement` wraps a single assignment_expression in JS.
+        if child.kind() != "expression_statement" {
+            continue;
+        }
+        let assign = match child.child(0) {
+            Some(c) if c.kind() == "assignment_expression" => c,
+            _ => continue,
+        };
+        let lhs = match assign.child_by_field_name("left") {
+            Some(n) => n,
+            None => continue,
+        };
+        let rhs = match assign.child_by_field_name("right") {
+            Some(n) => n,
+            None => continue,
+        };
+        if !is_js_function_value(rhs) {
+            continue;
+        }
+        // Inspect the LHS member expression. We accept either:
+        //   - <ident>.prototype.<name>         -> attach to class <ident>
+        //   - exports.<name>                   -> top-level function
+        //   - module.exports.<name>            -> top-level function
+        //   - module.exports = <function>      -> ignored (default export)
+        let resolved = resolve_js_export_lhs(lhs, source, &module_export_aliases);
+        let lineno = assign.start_position().row as u32 + 1;
+        let signature = extract_js_member_signature(rhs, source);
+        let is_async = is_js_function_async(rhs, source);
+        match resolved {
+            Some(JsExportTarget::Prototype { class_name, member }) => {
+                if !is_public_name(&member) {
+                    continue;
+                }
+                let class_entry = classes
+                    .iter_mut()
+                    .find(|c| c.name == class_name);
+                let method = MethodInfo {
+                    name: member.clone(),
+                    signature: signature.clone(),
+                    is_async,
+                };
+                if let Some(entry) = class_entry {
+                    // Avoid duplicating an existing method record.
+                    let already = entry
+                        .methods
+                        .iter()
+                        .any(|m| m.name == method.name);
+                    if !already {
+                        entry.methods.push(method);
+                    }
+                } else {
+                    // No class entry exists yet — synthesize one so the
+                    // method is reachable. The lineno of the class entry
+                    // points at the first prototype assignment.
+                    classes.push(ClassInfo {
+                        name: class_name.clone(),
+                        lineno,
+                        bases: Vec::new(),
+                        methods: vec![method],
+                        private_method_count: 0,
+                    });
+                }
+            }
+            Some(JsExportTarget::ModuleExport { name }) => {
+                if !is_public_name(&name) {
+                    continue;
+                }
+                let key = (name.clone(), lineno);
+                if existing_funcs.contains(&key) {
+                    continue;
+                }
+                existing_funcs.insert(key);
+                functions.push(FunctionInfo {
+                    name,
+                    signature,
+                    docstring: None,
+                    lineno,
+                    is_async,
+                });
+            }
+            None => {}
+        }
+    }
+    let _ = lang;
+}
+
+/// Resolved target of a JS member-export assignment LHS.
+enum JsExportTarget {
+    /// `Class.prototype.method = ...`
+    Prototype { class_name: String, member: String },
+    /// `exports.X = ...` or `module.exports.X = ...`
+    ModuleExport { name: String },
+}
+
+/// Parse `Foo.prototype.bar`, `exports.bar`, `module.exports.bar`, or
+/// `<alias>.bar` (where `<alias>` is a known `module.exports` alias)
+/// from the LHS of an assignment. Returns `None` for any other shape.
+fn resolve_js_export_lhs(
+    lhs: Node,
+    source: &[u8],
+    module_export_aliases: &std::collections::HashSet<String>,
+) -> Option<JsExportTarget> {
+    if lhs.kind() != "member_expression" {
+        return None;
+    }
+    // The terminal property name is the `property` child.
+    let prop = lhs.child_by_field_name("property")?;
+    let prop_name = node_text(prop, source).to_string();
+    let object = lhs.child_by_field_name("object")?;
+
+    // Case 1: <ident>.prototype.<name>
+    if object.kind() == "member_expression" {
+        if let (Some(inner_obj), Some(inner_prop)) = (
+            object.child_by_field_name("object"),
+            object.child_by_field_name("property"),
+        ) {
+            let inner_prop_text = node_text(inner_prop, source);
+            if inner_prop_text == "prototype" && inner_obj.kind() == "identifier" {
+                return Some(JsExportTarget::Prototype {
+                    class_name: node_text(inner_obj, source).to_string(),
+                    member: prop_name,
+                });
+            }
+            // module.exports.<name>
+            if inner_obj.kind() == "identifier"
+                && node_text(inner_obj, source) == "module"
+                && inner_prop_text == "exports"
+            {
+                return Some(JsExportTarget::ModuleExport { name: prop_name });
+            }
+        }
+    }
+    // Case 2: exports.<name>
+    if object.kind() == "identifier" && node_text(object, source) == "exports" {
+        return Some(JsExportTarget::ModuleExport { name: prop_name });
+    }
+    // Case 3: <alias>.<name>, where <alias> was bound to
+    // `module.exports` (e.g. `var app = exports = module.exports = {};`
+    // in express's application.js).
+    if object.kind() == "identifier" {
+        let ident = node_text(object, source);
+        if module_export_aliases.contains(ident) {
+            return Some(JsExportTarget::ModuleExport { name: prop_name });
+        }
+    }
+    None
+}
+
+/// interface-per-lang-v1 (v0.4.2 M-022): scan the program root for
+/// `var X = exports = module.exports = ...` (or `let`/`const`) and
+/// return the set of identifier names bound to `module.exports`.
+fn collect_js_module_export_aliases(
+    root: Node,
+    source: &[u8],
+) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        let kind = child.kind();
+        if !matches!(kind, "lexical_declaration" | "variable_declaration") {
+            continue;
+        }
+        let mut ic = child.walk();
+        for decl in child.children(&mut ic) {
+            if decl.kind() != "variable_declarator" {
+                continue;
+            }
+            let name_node = match decl.child_by_field_name("name") {
+                Some(n) => n,
+                None => continue,
+            };
+            let value = match decl.child_by_field_name("value") {
+                Some(v) => v,
+                None => continue,
+            };
+            if name_node.kind() != "identifier" {
+                continue;
+            }
+            // The value can be `exports = module.exports = {}` (a
+            // chained assignment_expression), or directly
+            // `module.exports`. Walk the chain looking for either form.
+            if js_value_is_module_exports_chain(value, source) {
+                aliases.insert(node_text(name_node, source).to_string());
+            }
+        }
+    }
+    aliases
+}
+
+/// Returns true when the expression is `module.exports`, `exports`, or
+/// an assignment chain that includes either (the typical idiom
+/// `exports = module.exports = {}`).
+fn js_value_is_module_exports_chain(node: Node, source: &[u8]) -> bool {
+    match node.kind() {
+        "member_expression" => {
+            // module.exports
+            let obj = node.child_by_field_name("object");
+            let prop = node.child_by_field_name("property");
+            if let (Some(o), Some(p)) = (obj, prop) {
+                if o.kind() == "identifier"
+                    && node_text(o, source) == "module"
+                    && node_text(p, source) == "exports"
+                {
+                    return true;
+                }
+            }
+            false
+        }
+        "identifier" => node_text(node, source) == "exports",
+        "assignment_expression" => {
+            // Walk both sides of the chain.
+            let l = node.child_by_field_name("left");
+            let r = node.child_by_field_name("right");
+            if let Some(l) = l {
+                if js_value_is_module_exports_chain(l, source) {
+                    return true;
+                }
+            }
+            if let Some(r) = r {
+                if js_value_is_module_exports_chain(r, source) {
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn is_js_function_value(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function" | "generator_function"
+    )
+}
+
+fn is_js_function_async(node: Node, source: &[u8]) -> bool {
+    let text = node_text(node, source);
+    text.starts_with("async ") || text.starts_with("async(")
+}
+
+fn extract_js_member_signature(rhs: Node, source: &[u8]) -> String {
+    // Both function_expression and arrow_function carry a `parameters`
+    // field (formal_parameters). Fall back to scanning children for
+    // formal_parameters / parenthesized parameter list.
+    if let Some(params) = rhs.child_by_field_name("parameters") {
+        return node_text(params, source).to_string();
+    }
+    let mut cursor = rhs.walk();
+    for child in rhs.children(&mut cursor) {
+        if child.kind() == "formal_parameters" {
+            return node_text(child, source).to_string();
+        }
+    }
+    String::new()
+}
+
 /// Collect top-level function and class definitions from the AST root.
 ///
 /// Recurses one level into language-appropriate container nodes (PHP
@@ -1990,6 +2478,16 @@ fn collect_top_level_definitions(
     // entry first).
     if matches!(lang, Language::Java | Language::Kotlin) {
         flatten_class_methods_to_functions(&classes, &mut functions);
+    }
+
+    // interface-per-lang-v1 (v0.4.2 M-022): javascript prototype
+    // assignments (`Foo.prototype.bar = function () {}`) and
+    // module-export forms (`exports.create = function () {}`,
+    // `module.exports.foo = function () {}`) are how pre-ES6 modules
+    // (Express, much of node's core) declare their public API. Without
+    // this pass they were invisible to `tldr interface`.
+    if matches!(lang, Language::JavaScript | Language::TypeScript) {
+        collect_js_member_exports(root, source, lang, &mut functions, &mut classes);
     }
 
     (functions, classes)
@@ -2325,6 +2823,27 @@ fn deep_collect(
             && !is_inside_class_ancestor(child, class_kinds)
             && is_node_public(child, source, lang)
         {
+            // interface-per-lang-v1 (v0.4.2 M-022): C / C++ also list
+            // `declaration` under `func_kinds` so function prototypes
+            // (e.g. `int foo(int);` in a `.h`) surface. Non-function
+            // declarations (typedefs, struct fields, externs) must be
+            // filtered here so they do not contaminate `functions[]`.
+            if matches!(lang, Language::C | Language::Cpp)
+                && kind == "declaration"
+                && !is_cpp_member_function_declaration(child)
+            {
+                deep_collect(
+                    child,
+                    source,
+                    lang,
+                    func_kinds,
+                    class_kinds,
+                    functions,
+                    classes,
+                    depth + 1,
+                );
+                continue;
+            }
             functions.push(extract_function_info(child, source, lang));
         }
         deep_collect(
