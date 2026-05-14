@@ -1,40 +1,44 @@
-//! c-structure-functions-schema-v1 (v0.4.2 bug-B1 / VAL-C-STRUCT)
+//! c-structure-functions-schema-v1 (v0.4.2 bug-B1 / VAL-C-STRUCT,
+//! updated for structure-functions-projection-v1 / v0.4.2 M-006)
 //!
-//! The v0.4.2 audit raised VAL-C-STRUCT claiming `tldr structure` for C
-//! "reports `.files[].functions == []` (empty array) while putting all
-//! 46 C functions under `.files[].definitions[]` with `kind: "function"`"
-//! and asserted that "other langs (rust, python, java) populate
-//! `.files[].functions` properly".
+//! ## History
 //!
-//! Investigation (W-I) found the assertion is factually incorrect:
+//! 1. v0.4.2 bug-B1 (VAL-C-STRUCT): the original audit reported that
+//!    `tldr structure` for C had `.files[].functions == []` while other
+//!    languages populated it. Investigation (W-I, commit 6f4be31)
+//!    showed the field was ABSENT from JSON for every language per
+//!    `schema-cleanup-v1` BUG-13 (commit 3e9b159) — `Vec<String>`
+//!    fields `functions`/`methods` were `#[serde(skip_serializing)]`.
+//!    The canonical functions surface was
+//!    `files[].definitions[] | select(.kind == "function")`.
 //!
-//! 1. Per `schema-cleanup-v1` BUG-13 (commit 3e9b159, May 2026) the
-//!    `FileStructure::functions: Vec<String>` and
-//!    `FileStructure::methods: Vec<String>` fields are intentionally
-//!    `#[serde(skip_serializing)]` for ALL languages — they were
-//!    redundant with `definitions[]` (which carries name + kind +
-//!    line_start + line_end + signature) and `method_infos[]`.
+//! 2. v0.4.2 M-006 (Phase-22 cross-lang audit, ~9 langs: c, csharp,
+//!    elixir, go, java, javascript, lua, luau, ocaml, typescript):
+//!    re-evaluated W-I's choice. Downstream tooling/consumers across
+//!    9 langs expect `.files[].functions[]` to be present. The
+//!    `structure-functions-projection-v1` fix re-introduces the
+//!    `functions[]` key — but as a **projection of
+//!    `definitions[].filter(kind == "function")`**, not as the legacy
+//!    redundant `Vec<String>` array. Each entry has the same shape
+//!    as `DefinitionInfo` (name, kind, line_start, line_end,
+//!    signature), so consumers reading `.files[].functions[].name`
+//!    get the canonical function set without re-filtering
+//!    `definitions[]`.
 //!
-//! 2. Therefore the `functions` key is ABSENT from `tldr structure`
-//!    JSON output for every language (Rust, Python, Java, C, C++,
-//!    Go, Ruby, Scala, Kotlin, PHP, Swift, C#, Elixir, Lua, OCaml,
-//!    Luau, TypeScript/JavaScript) — not "empty for C, populated for
-//!    others" as the audit claimed.
+//!    BUG-13's actual invariant — that `functions: [String]` (legacy
+//!    bare-string array) must never appear — is preserved: the
+//!    projection contains objects, never strings. The `methods:
+//!    [String]` legacy field remains `skip_serializing` (canonical
+//!    surface for methods is still `method_infos`).
 //!
-//! 3. The canonical source of "functions defined in this file" in
-//!    `tldr structure` JSON is
-//!    `files[].definitions[] | select(.kind == "function")`. For C
-//!    on `/tmp/repos/c-sds/sds.c`, this yields the same 45 function
-//!    names that `tldr extract <file>` emits in its top-level
-//!    `functions[]` array — i.e. parity with extract is ALREADY
-//!    achieved through the canonical schema, just not via the
-//!    deprecated `files[].functions` key.
+//! ## What this file asserts (post-M-006)
 //!
-//! This test file is a regression guard against accidentally
-//! re-introducing the redundant `files[].functions` string array
-//! (which would regress BUG-13) AND against C-specific extraction
-//! regressions (it pins the kind="function" count from
-//! `definitions[]` to agree with `tldr extract`).
+//! - `files[].functions` IS now present in JSON output for C and Rust.
+//! - Its entries are objects matching the `DefinitionInfo` shape.
+//! - The function-name set still agrees with `tldr extract`'s
+//!   `functions[].name`.
+//! - The `definitions[].filter(kind=function)` query still returns
+//!   the same function set, so the schema is self-consistent.
 //!
 //! Real-repo gated per no-synthetic-fixtures-v1: each test returns
 //! early when its `/tmp/repos/<repo>` corpus is absent.
@@ -88,20 +92,37 @@ fn c_structure_files_functions_populated() {
     assert_eq!(rc, 0, "structure must succeed; got rc={}", rc);
     let v = parse_json(&out);
 
-    // BUG-13 invariant: the deprecated `files[].functions` string array
-    // is NOT emitted as a JSON key. The canonical functions surface is
-    // `files[].definitions[] | kind == "function"`.
+    // structure-functions-projection-v1 (M-006): files[].functions
+    // is now PRESENT and projects from definitions[].kind == "function".
+    // Each entry must be an OBJECT (DefinitionInfo shape), never a bare
+    // string — that preserves the original BUG-13 intent.
     let file0 = v
         .pointer("/files/0")
         .unwrap_or_else(|| panic!("structure: missing files[0]; got {v}"));
+    let fns = file0
+        .get("functions")
+        .and_then(|f| f.as_array())
+        .unwrap_or_else(|| {
+            panic!(
+                "M-006 regression: files[0].functions key must be \
+                 present (projection from definitions[kind=function]). Got: {file0}"
+            )
+        });
     assert!(
-        file0.get("functions").is_none(),
-        "BUG-13 regression: files[0].functions should be \
-         skip_serialized; presence of the key would re-introduce a \
-         redundant string array. Got: {file0}"
+        !fns.is_empty(),
+        "M-006: C structure must populate ≥1 entry in files[0].functions for sds.c"
     );
+    for fe in fns {
+        assert!(
+            fe.is_object(),
+            "BUG-13 + M-006: functions[] entry must be an object \
+             (DefinitionInfo shape), not a bare string. Got: {fe}"
+        );
+    }
 
-    // Definitions are populated (≥1 function-kind entry).
+    // Definitions are populated (≥1 function-kind entry); the schema
+    // remains self-consistent — functions[] is a projection of
+    // definitions[].filter(kind=="function").
     let defs = file0
         .get("definitions")
         .and_then(|d| d.as_array())
@@ -114,6 +135,14 @@ fn c_structure_files_functions_populated() {
         fn_count > 0,
         "VAL-C-STRUCT: C structure must populate ≥1 \
          function-kind definition for sds.c. Got fn_count=0; defs={defs:?}"
+    );
+    assert_eq!(
+        fns.len(),
+        fn_count,
+        "M-006: functions[] length ({}) must equal \
+         definitions[kind=function] length ({}) — projection identity",
+        fns.len(),
+        fn_count
     );
 }
 
@@ -263,12 +292,13 @@ fn c_structure_functions_match_extract() {
 }
 
 // ============================================================================
-// TEST 4 (non-reg): Rust structure on ripgrep also follows the BUG-13
-//                   schema — `files[].functions` is absent from JSON,
-//                   `definitions[]` is populated. Documents that the
-//                   audit's claim "other langs (rust) populate
-//                   files[].functions properly" was incorrect: the
-//                   schema is uniform across languages.
+// TEST 4 (post-M-006): Rust structure on ripgrep follows the
+//                       structure-functions-projection-v1 schema —
+//                       `files[].functions` IS present in JSON output
+//                       (as a projection of definitions[kind=function])
+//                       and `definitions[]` is populated with the same
+//                       function set. The schema is uniform across
+//                       languages.
 // ============================================================================
 #[test]
 fn rust_structure_files_functions_still_populated() {
@@ -296,8 +326,10 @@ fn rust_structure_files_functions_still_populated() {
     assert!(!files.is_empty(), "ripgrep has rust source files");
 
     // For at least one rust file (the one with the most function-kind
-    // definitions), confirm:
-    //   - `functions` key absent (BUG-13 schema)
+    // definitions), confirm post-M-006 schema:
+    //   - `functions` key PRESENT (M-006 projection)
+    //   - functions[] count == definitions[kind=function] count
+    //   - functions[] entries are objects, not strings (BUG-13 spirit)
     //   - `definitions[]` populated with ≥1 kind=="function" entry
     //
     // We pick the file with the most function-kind defs because some
@@ -319,10 +351,29 @@ fn rust_structure_files_functions_still_populated() {
     let best_file =
         best_file.unwrap_or_else(|| panic!("no rust file with kind=function defs in ripgrep"));
 
-    assert!(
-        best_file.get("functions").is_none(),
-        "BUG-13 schema (rust): files[].functions should be \
-         skip_serialized for rust just like C. Got: {best_file}"
+    let fns = best_file
+        .get("functions")
+        .and_then(|f| f.as_array())
+        .unwrap_or_else(|| {
+            panic!(
+                "M-006 regression (rust): files[].functions must be \
+                 present. Got: {best_file}"
+            )
+        });
+    for fe in fns {
+        assert!(
+            fe.is_object(),
+            "BUG-13 + M-006 (rust): functions[] entry must be an \
+             object (DefinitionInfo shape), not a bare string. Got: {fe}"
+        );
+    }
+    assert_eq!(
+        fns.len(),
+        best_fn_count,
+        "M-006 (rust): functions[] length ({}) must equal \
+         definitions[kind=function] length ({}) — projection identity",
+        fns.len(),
+        best_fn_count
     );
     assert!(
         best_fn_count >= 1,

@@ -1262,18 +1262,44 @@ pub struct DefinitionInfo {
 }
 
 /// Structure of a single file
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Serialization (manual impl below):
+///
+/// - `path`                — file path
+/// - `functions: []`       — structure-functions-projection-v1 (M-006):
+///   projection of `definitions[]` filtered to `kind == "function"`.
+///   Always emitted (possibly `[]`) across all languages. Entries carry
+///   the same shape as `DefinitionInfo` (`name`, `kind`, `line_start`,
+///   `line_end`, `signature`) so consumers reading
+///   `.files[].functions[]` get the canonical function set without
+///   re-filtering `definitions[]`. Supersedes schema-cleanup-v1
+///   BUG-13's decision to omit the field: Phase-22 cross-lang audit
+///   established that downstream tooling expects `functions[]` to be
+///   present, and projecting from `definitions[]` avoids data
+///   duplication.
+/// - `classes`             — class/struct names
+/// - `method_infos`        — method objects (always emitted; replaces
+///                            the deprecated `methods: [String]` —
+///                            BUG-13 stays in effect for `methods`).
+/// - `imports`             — import statements
+/// - `definitions`         — canonical AST definitions list (name, kind,
+///                            line_start, line_end, signature). Always
+///                            emitted (possibly `[]`).
+///
+/// The legacy `functions: Vec<String>` and `methods: Vec<String>`
+/// in-memory fields are kept for internal consumers but never appear
+/// in JSON output. The JSON `functions[]` key is the projection
+/// described above, not the legacy string array.
+#[derive(Debug, Clone, Deserialize)]
 pub struct FileStructure {
     /// Path to the source file
     pub path: PathBuf,
     /// Names of top-level functions defined in this file.
     ///
-    /// schema-cleanup-v1 BUG-13: kept on the in-memory struct for
-    /// internal consumers but `#[serde(skip_serializing)]` so JSON
-    /// output never carries this redundant string list. New consumers
-    /// should read `definitions[]` (which carries name + line ranges +
-    /// signatures + kind).
-    #[serde(skip_serializing)]
+    /// Internal-only; not emitted in JSON. The JSON `functions[]`
+    /// field is computed by the manual `Serialize` impl below as a
+    /// projection of `definitions[].filter(kind == "function")` —
+    /// see structure-functions-projection-v1 (v0.4.2 M-006).
     #[serde(default)]
     pub functions: Vec<String>,
     /// Names of classes or structs defined in this file
@@ -1286,10 +1312,8 @@ pub struct FileStructure {
     /// `method_infos` (or `definitions`, which already carries line ranges
     /// + signatures).
     ///
-    /// schema-cleanup-v1 BUG-13: now `#[serde(skip_serializing)]` —
-    /// JSON output emits `method_infos` (objects) and `definitions`
-    /// instead. Internal consumers may still build/read this field.
-    #[serde(skip_serializing)]
+    /// schema-cleanup-v1 BUG-13: not emitted in JSON output — consumers
+    /// must use `method_infos` (objects) or `definitions` instead.
     #[serde(default)]
     pub methods: Vec<String>,
     /// Detailed method information that distinguishes overloads by line
@@ -1318,6 +1342,47 @@ pub struct FileStructure {
     /// canonical empty value.
     #[serde(default)]
     pub definitions: Vec<DefinitionInfo>,
+}
+
+// structure-functions-projection-v1 (v0.4.2 M-006):
+// Manual `Serialize` impl that emits `functions[]` as a projection of
+// `definitions[].filter(kind == "function")` while preserving every
+// other field and maintaining the BUG-13 invariants (no redundant
+// `methods: [String]` array, no legacy `functions: [String]` array).
+//
+// This is the schema-parity fix for the Phase-22 M-006 cluster: 9
+// languages (c, csharp, elixir, go, java, javascript, lua, luau,
+// ocaml, typescript) had consumers reading `.files[].functions` and
+// receiving `undefined`. The projection re-establishes the
+// conventional shape without duplicating extraction logic.
+impl Serialize for FileStructure {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        // Build the projected functions[] from definitions[]. Borrow,
+        // don't clone — `DefinitionInfo` already implements `Serialize`,
+        // and the inner `&DefinitionInfo` reference serializes the
+        // same way (serde forwards through references).
+        let projected_functions: Vec<&DefinitionInfo> = self
+            .definitions
+            .iter()
+            .filter(|d| d.kind == "function")
+            .collect();
+
+        // 6 fields: path, functions (projection), classes, method_infos,
+        //           imports, definitions.
+        let mut s = serializer.serialize_struct("FileStructure", 6)?;
+        s.serialize_field("path", &self.path)?;
+        s.serialize_field("functions", &projected_functions)?;
+        s.serialize_field("classes", &self.classes)?;
+        s.serialize_field("method_infos", &self.method_infos)?;
+        s.serialize_field("imports", &self.imports)?;
+        s.serialize_field("definitions", &self.definitions)?;
+        s.end()
+    }
 }
 
 /// Method information that preserves overload distinguishability.

@@ -261,11 +261,37 @@ fn bug13_structure_no_redundant_string_arrays() {
         .keys()
         .map(|s| s.as_str())
         .collect();
-    // schema-cleanup-v1: legacy string arrays must NOT appear in JSON.
-    assert!(
-        !keys.contains(&"functions"),
-        "BUG-13 regression: structure JSON still has 'functions' (strings); expected only 'definitions' (objects). keys: {keys:?}"
-    );
+    // structure-functions-projection-v1 (v0.4.2 M-006): the `functions`
+    // key was re-introduced — but NOT as a redundant string array. It
+    // is now a projection of `definitions[].filter(kind=="function")`,
+    // i.e. an array of objects with the same shape as `DefinitionInfo`.
+    // BUG-13's actual invariant — no `functions: [String]` payload —
+    // is enforced below: any entry under `functions[]` must be a
+    // JSON object (or the array must be empty), never a bare string.
+    if let Some(funcs) = f0.get("functions").and_then(|x| x.as_array()) {
+        for fe in funcs {
+            assert!(
+                fe.is_object(),
+                "BUG-13 + M-006 regression: structure JSON 'functions' \
+                 entries must be objects (DefinitionInfo shape), not \
+                 bare strings. Got: {fe}"
+            );
+            let inner_keys: Vec<&str> = fe
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|s| s.as_str())
+                .collect();
+            assert!(
+                inner_keys.contains(&"name") && inner_keys.contains(&"kind"),
+                "M-006: functions[] entry missing canonical fields; \
+                 expected at least name + kind. keys: {inner_keys:?}"
+            );
+        }
+    }
+    // BUG-13 invariant that REMAINS in effect: the legacy
+    // `methods: [String]` array must not appear; `method_infos` is the
+    // canonical method surface.
     assert!(
         !keys.contains(&"methods"),
         "BUG-13 regression: structure JSON still has 'methods' (strings); expected only 'method_infos' (objects). keys: {keys:?}"
