@@ -408,7 +408,24 @@ fn extract_function_chunks(
     let root = tree.root_node();
     let mut functions = Vec::new();
 
-    // Extract functions based on language
+    // Extract functions based on language.
+    //
+    // semantic-chunker-per-lang-v1 (v0.4.2 M-017 + M-018): the original
+    // chunker only registered Python / TS / JS / Rust / Go / Java with
+    // a per-language splitter; every other supported language fell
+    // through to the whole-file fallback (function_name=null), which
+    // meant 1000-line C / Kotlin / Swift / OCaml / Elixir source files
+    // ended up as a single chunk dominated by their copyright header.
+    //
+    // The fix: route C, Cpp, Kotlin, Swift, PHP, Lua, Luau, OCaml,
+    // Elixir, Scala, CSharp, and Ruby through a generic AST splitter
+    // that classifies tree-sitter node kinds using the same
+    // function/method-like predicate that `search/enriched.rs` uses
+    // for the `kind` field, and resolves the function name via the
+    // same per-language fallbacks (Swift `init` literal, Java/C#
+    // constructor first-identifier, OCaml `value_definition`
+    // let_binding pattern, Kotlin `companion_object` literal,
+    // C/C++ declarator chain).
     match language {
         Language::Python => extract_python_all_functions(&root, source, &mut functions),
         Language::TypeScript | Language::JavaScript => {
@@ -417,7 +434,27 @@ fn extract_function_chunks(
         Language::Rust => extract_rust_all_functions(&root, source, &mut functions),
         Language::Go => extract_go_all_functions(&root, source, &mut functions),
         Language::Java => extract_java_all_functions(&root, source, &mut functions),
-        _ => {}
+        // Generic AST splitter — used for every language the chunker
+        // historically failed to handle. The walker recurses through
+        // the whole tree, picks up any node kind that classifies as
+        // function-like (per `is_chunkable_function_kind`), and
+        // resolves a name via `chunker_function_name`. It also
+        // descends into class/struct/interface/module bodies so we
+        // get methods as their own chunks.
+        Language::C
+        | Language::Cpp
+        | Language::Kotlin
+        | Language::Swift
+        | Language::Php
+        | Language::Lua
+        | Language::Luau
+        | Language::Ocaml
+        | Language::Elixir
+        | Language::Scala
+        | Language::CSharp
+        | Language::Ruby => {
+            extract_generic_all_functions(&root, source, language, &mut functions)
+        }
     }
 
     // Convert to CodeChunks
@@ -880,6 +917,408 @@ fn get_lambda_name(node: &Node, source: &str) -> Option<String> {
                 return Some(get_node_text(&name, source));
             }
         }
+    }
+    None
+}
+
+// =============================================================================
+// Generic Function Extraction (semantic-chunker-per-lang-v1, M-017)
+// =============================================================================
+
+/// Classify a tree-sitter node kind as a chunkable function-like
+/// definition. Mirrors `search/enriched.rs::classify_node` and
+/// `ast/extractor.rs::classify_definition_node` so the chunker
+/// recognises the same set of function shapes the rest of the
+/// codebase already canonicalises.
+fn is_chunkable_function_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_definition"
+            | "function_declaration"
+            | "function_item"     // Rust (also handled in extract_rust_all_functions)
+            | "method_definition"
+            | "method_declaration"
+            | "method"            // Ruby
+            | "singleton_method"  // Ruby class methods
+            | "constructor_declaration" // Java / C# / Kotlin / TS
+            | "init_declaration"  // Swift init()
+            | "value_definition"  // OCaml top-level let binding
+            | "local_function"    // Lua / Luau
+            | "function_definition_statement" // Lua (some grammars)
+    )
+}
+
+/// Classify a tree-sitter node kind as a class-like container we
+/// should descend INTO when looking for methods. Mirrors
+/// `classify_node` again.
+fn is_chunkable_class_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_definition"
+            | "class_declaration"
+            | "abstract_class_declaration"
+            | "class_specifier"   // C++
+            | "class"             // Ruby
+            | "module"            // Ruby
+            | "struct_item"       // Rust
+            | "struct_definition" // C/C++
+            | "struct_specifier"  // C
+            | "interface_declaration"
+            | "trait_declaration" // PHP
+            | "enum_item"         // Rust
+            | "enum_declaration"  // Swift/Java/Kotlin/C#
+            | "extension_declaration" // Swift
+            | "protocol_declaration"  // Swift
+            | "trait_item"        // Rust
+            | "type_definition"   // OCaml
+            | "module_definition" // OCaml
+            | "object_declaration" // Kotlin object
+            | "companion_object"  // Kotlin
+            | "trait_definition"  // Scala
+    )
+}
+
+/// Resolve a function name from a tree-sitter node using the same
+/// per-language fallbacks search/enriched.rs::get_definition_name and
+/// ast/extractor.rs::get_definition_node_name implement.
+fn chunker_function_name(node: &Node, source: &str, language: Language) -> Option<String> {
+    let kind = node.kind();
+
+    // Swift init() — literal token, no `name` field.
+    if kind == "init_declaration" {
+        return Some("init".to_string());
+    }
+
+    // Kotlin companion_object — no identifier child.
+    if kind == "companion_object" {
+        return Some("Companion".to_string());
+    }
+
+    // Elixir: def/defp/defmacro show up as `call` nodes with an
+    // identifier "def" child; the function name is the head of the
+    // arguments. We handle Elixir explicitly in the walker (see
+    // collect_elixir_call), but if we ever encounter a `call` node
+    // here, drop through.
+
+    // Most languages: a `name` field on the function node.
+    if let Some(name_node) = node.child_by_field_name("name") {
+        if let Ok(text) = name_node.utf8_text(source.as_bytes()) {
+            return Some(text.to_string());
+        }
+    }
+
+    // Java/C# constructor — first identifier child.
+    if kind == "constructor_declaration" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "identifier" {
+                if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                    return Some(text.to_string());
+                }
+            }
+        }
+    }
+
+    // C / C++ function_definition: name lives inside the `declarator`
+    // field, possibly wrapped in pointer/reference declarators.
+    if kind == "function_definition" {
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(name) = chunker_declarator_name(&declarator, source) {
+                return Some(name);
+            }
+        }
+    }
+
+    // OCaml value_definition → let_binding[pattern].
+    if kind == "value_definition" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "let_binding" {
+                if let Some(pattern) = child.child_by_field_name("pattern") {
+                    if let Ok(text) = pattern.utf8_text(source.as_bytes()) {
+                        if text != "()" && text != "_" && !text.is_empty() {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    // Lua function_declaration: the `name` field may be a
+    // dot_index_expression (`Table.method`) or method_index_expression
+    // (`Table:method`). Mirror extract_lua_function_name.
+    if language == Language::Lua || language == Language::Luau {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "dot_index_expression" | "method_index_expression" => {
+                    if let Some(field) = child.child_by_field_name("field") {
+                        if let Ok(text) = field.utf8_text(source.as_bytes()) {
+                            return Some(text.to_string());
+                        }
+                    }
+                    // fallback: last identifier child
+                    let mut inner = child.walk();
+                    let mut last = None;
+                    for ic in child.children(&mut inner) {
+                        if ic.kind() == "identifier" {
+                            if let Ok(text) = ic.utf8_text(source.as_bytes()) {
+                                last = Some(text.to_string());
+                            }
+                        }
+                    }
+                    if last.is_some() {
+                        return last;
+                    }
+                }
+                "identifier" => {
+                    if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                        if text != "function" && text != "local" && text != "end" {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    None
+}
+
+/// Walk a C/C++ declarator chain to the inner identifier.
+fn chunker_declarator_name(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "destructor_name" | "operator_name" => {
+            Some(get_node_text(node, source))
+        }
+        "function_declarator"
+        | "pointer_declarator"
+        | "reference_declarator"
+        | "parenthesized_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                chunker_declarator_name(&inner, source)
+            } else {
+                // Fall back to first identifier-like child
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(name) = chunker_declarator_name(&child, source) {
+                        return Some(name);
+                    }
+                }
+                None
+            }
+        }
+        "qualified_identifier" | "scoped_identifier" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                return Some(get_node_text(&name, source));
+            }
+            Some(get_node_text(node, source))
+        }
+        _ => {
+            // Try children
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(name) = chunker_declarator_name(&child, source) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Find the enclosing class/struct/interface name, mirroring
+/// `get_enclosing_class_name` but using the broader
+/// `is_chunkable_class_kind` predicate so we cover Swift extensions,
+/// Kotlin objects, PHP traits, etc.
+fn chunker_enclosing_class_name(node: &Node, source: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if is_chunkable_class_kind(parent.kind()) {
+            if let Some(name_node) = parent.child_by_field_name("name") {
+                return Some(get_node_text(&name_node, source));
+            }
+            // C++ class_specifier may not always expose the name as a
+            // field — fall back to the first type_identifier child.
+            let mut inner = parent.walk();
+            for child in parent.children(&mut inner) {
+                if matches!(
+                    child.kind(),
+                    "type_identifier" | "identifier" | "constant"
+                ) {
+                    return Some(get_node_text(&child, source));
+                }
+            }
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// Extract Elixir def/defp/defmacro function name from a `call` node.
+/// Mirrors `search/enriched.rs::elixir_call_def_name`.
+fn elixir_chunker_def_name(node: &Node, source: &str) -> Option<String> {
+    // node.child(0) is the def/defp identifier; node.child(1) is the
+    // `arguments` node.
+    let head = node.child(0)?;
+    if head.kind() != "identifier" {
+        return None;
+    }
+    let head_text = get_node_text(&head, source);
+    if head_text != "def" && head_text != "defp" && head_text != "defmacro" {
+        return None;
+    }
+
+    let args = node.child(1)?;
+    let target = if args.kind() == "arguments" {
+        args.child(0)?
+    } else {
+        args
+    };
+
+    match target.kind() {
+        "identifier" => Some(get_node_text(&target, source)),
+        "call" => {
+            let fname = target.child(0)?;
+            if fname.kind() == "identifier" {
+                Some(get_node_text(&fname, source))
+            } else {
+                None
+            }
+        }
+        "binary_operator" => {
+            // `def foo(x) when x > 0 do ... end` — drill into LHS.
+            let mut cursor = target.walk();
+            for child in target.children(&mut cursor) {
+                if child.kind() == "call" {
+                    if let Some(fname) = child.child(0) {
+                        if fname.kind() == "identifier" {
+                            return Some(get_node_text(&fname, source));
+                        }
+                    }
+                }
+                if child.kind() == "identifier" {
+                    return Some(get_node_text(&child, source));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Generic AST-based function-boundary splitter. Walks the whole tree
+/// once, emitting one ExtractedFunction per function/method-like node.
+/// Used for every language the chunker didn't previously handle
+/// (M-017): C, Cpp, Kotlin, Swift, PHP, Lua, Luau, OCaml, Elixir,
+/// Scala, CSharp, Ruby.
+fn extract_generic_all_functions(
+    node: &Node,
+    source: &str,
+    language: Language,
+    functions: &mut Vec<ExtractedFunction>,
+) {
+    let kind = node.kind();
+
+    // Elixir def/defp/defmacro are macro calls — handle them
+    // explicitly before the generic kind check.
+    if language == Language::Elixir && kind == "call" {
+        if let Some(name) = elixir_chunker_def_name(node, source) {
+            let (line_start, line_end) = get_line_range(node);
+            let content = get_node_text(node, source);
+            // Module name (defmodule MyMod do ... end) is the
+            // enclosing class-like name. For Elixir we walk parents
+            // looking for `call` nodes whose head is `defmodule`.
+            let class_name = elixir_chunker_enclosing_module(node, source);
+            functions.push(ExtractedFunction {
+                name,
+                class_name,
+                line_start,
+                line_end,
+                content,
+            });
+            // Don't recurse INTO this call's body — function names
+            // defined inside another function are rare in Elixir and
+            // would double-count.
+            return;
+        }
+    }
+
+    // Generic function-like nodes.
+    if is_chunkable_function_kind(kind) {
+        // OCaml value_definition without parameters is NOT a function
+        // (it's a value binding). Skip those.
+        if kind == "value_definition" && !ocaml_value_def_is_function(node) {
+            // fall through to recurse
+        } else if let Some(name) = chunker_function_name(node, source, language) {
+            let (line_start, line_end) = get_line_range(node);
+            let content = get_node_text(node, source);
+            let class_name = chunker_enclosing_class_name(node, source);
+            functions.push(ExtractedFunction {
+                name,
+                class_name,
+                line_start,
+                line_end,
+                content,
+            });
+            // For function nodes that may contain nested functions
+            // (closures, locals), continue walking the body. The
+            // recursion below picks them up — no early return so we
+            // catch nested defs.
+        }
+    }
+
+    // Recurse into all children. Class/struct/interface/module bodies
+    // are descended into too — that's how we pick up methods.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        extract_generic_all_functions(&child, source, language, functions);
+    }
+}
+
+/// Return true when an OCaml `value_definition` has a `parameter`
+/// child, i.e. it's a function definition rather than a plain value
+/// binding (`let x = 5`). Mirrors
+/// `ast/extractor.rs::ocaml_binding_has_params_simple`.
+fn ocaml_value_def_is_function(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "let_binding" {
+            let mut inner = child.walk();
+            for ic in child.children(&mut inner) {
+                if ic.kind() == "parameter" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Find the enclosing Elixir module name. Elixir modules are macro
+/// calls: `defmodule MyMod do ... end` parses as a `call` node whose
+/// first child is identifier "defmodule" and whose arguments child
+/// contains the alias.
+fn elixir_chunker_enclosing_module(node: &Node, source: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "call" {
+            let head = parent.child(0)?;
+            if head.kind() == "identifier" {
+                let head_text = get_node_text(&head, source);
+                if head_text == "defmodule" {
+                    let args = parent.child(1)?;
+                    if let Some(first) = args.child(0) {
+                        let text = get_node_text(&first, source);
+                        return Some(text);
+                    }
+                }
+            }
+        }
+        current = parent.parent();
     }
     None
 }
