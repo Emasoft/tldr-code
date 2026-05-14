@@ -505,7 +505,7 @@ mod imports_tests {
 
         // THEN: is_from should be true for 'from' imports
         let imports = imports.unwrap();
-        let from_import = imports.iter().find(|i| i.is_from);
+        let from_import = imports.iter().find(|i| i.is_from.unwrap_or(false));
         assert!(from_import.is_some());
         assert!(!from_import.unwrap().names.is_empty());
     }

@@ -905,8 +905,13 @@ mod import_tests {
             "Should find 'from typing import'"
         );
 
-        // Check for from imports
-        let from_imports: Vec<_> = imports.iter().filter(|i| i.is_from).collect();
+        // Check for from imports.
+        // imports-is-from-schema-v1 (v0.4.2 M-021): is_from is Option<bool>;
+        // unwrap_or(false) since None means "no from-style binding".
+        let from_imports: Vec<_> = imports
+            .iter()
+            .filter(|i| i.is_from.unwrap_or(false))
+            .collect();
         assert!(
             from_imports.len() >= 2,
             "Should have at least 2 from imports"
@@ -1522,7 +1527,7 @@ fn main() {
         let import = ImportInfo {
             module: "crate::utils".to_string(),
             names: vec!["helper".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let from_file = std::path::Path::new("/project/src/main.rs");

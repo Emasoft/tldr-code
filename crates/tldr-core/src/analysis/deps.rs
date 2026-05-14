@@ -2621,19 +2621,18 @@ pub fn is_kotlin_stdlib(module_name: &str) -> bool {
 /// - `#include "file.h"` (local) -> search index by filename and relative path
 /// - `#include <header.h>` (system) -> return None (external/stdlib)
 ///
-/// The `is_from` field on `ImportInfo` distinguishes system (`true`) from local
-/// (`false`) includes, matching the extractor convention in `ast/imports.rs`.
+/// imports-is-from-schema-v1 (v0.4.2 M-021): C/C++ extractors no longer
+/// encode the system-vs-local distinction via the misnamed `is_from` field
+/// — the field is now omitted (`None`) for C/C++ imports. The resolver
+/// falls through to a plain index lookup; system headers (`stdio.h`,
+/// `iostream`) won't exist in the project file index, so they naturally
+/// return `None` without an explicit branch.
 fn resolve_c_cpp_import(
     import: &ImportInfo,
     _root: &Path,
     _current_file: &Path,
     index: &HashMap<String, PathBuf>,
 ) -> Option<PathBuf> {
-    // System includes (#include <header>) are external -- do not resolve
-    if import.is_from {
-        return None;
-    }
-
     let module = &import.module;
 
     // Direct index lookup (handles both "utils.h" and "net/socket.h")
@@ -4047,7 +4046,7 @@ mod tests {
         let import = ImportInfo {
             module: "utils.h".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: None,
             alias: None,
         };
         let result = resolve_c_cpp_import(
@@ -4066,7 +4065,7 @@ mod tests {
         let import = ImportInfo {
             module: "stdio.h".to_string(),
             names: Vec::new(),
-            is_from: true,
+            is_from: None,
             alias: None,
         };
         let result = resolve_c_cpp_import(
@@ -4093,7 +4092,7 @@ mod tests {
         let import = ImportInfo {
             module: "net/socket.h".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: None,
             alias: None,
         };
         let result = resolve_c_cpp_import(
@@ -4140,7 +4139,7 @@ mod tests {
         let import = ImportInfo {
             module: "devise/models".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: None,
             alias: None,
         };
         let result = resolve_ruby_import(
@@ -4164,7 +4163,7 @@ mod tests {
         let import = ImportInfo {
             module: "utils".to_string(),
             names: Vec::new(),
-            is_from: true,
+            is_from: None,
             alias: None,
         };
         let result = resolve_ruby_import(
@@ -4209,7 +4208,7 @@ mod tests {
         let import = ImportInfo {
             module: "MyApp.Models".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_csharp_import(
@@ -4227,7 +4226,7 @@ mod tests {
         let import = ImportInfo {
             module: "System.Collections.Generic".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_csharp_import(
@@ -4271,7 +4270,7 @@ mod tests {
         let import = ImportInfo {
             module: "cats.Functor".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_scala_import(
@@ -4298,7 +4297,7 @@ mod tests {
         let import = ImportInfo {
             module: "myapp.models".to_string(),
             names: vec!["*".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let result = resolve_scala_import(
@@ -4316,7 +4315,7 @@ mod tests {
         let import = ImportInfo {
             module: "scala.util.Try".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_scala_import(
@@ -4340,7 +4339,7 @@ mod tests {
         let import = ImportInfo {
             module: "utils.h".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_import(
@@ -4364,7 +4363,7 @@ mod tests {
         let import = ImportInfo {
             module: "widget.hpp".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_import(
@@ -4385,7 +4384,7 @@ mod tests {
         let import = ImportInfo {
             module: "utils".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_import(
@@ -4409,7 +4408,7 @@ mod tests {
         let import = ImportInfo {
             module: "MyApp.Models".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_import(
@@ -4433,7 +4432,7 @@ mod tests {
         let import = ImportInfo {
             module: "cats.Functor".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let result = resolve_import(

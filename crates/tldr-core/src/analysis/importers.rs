@@ -76,9 +76,14 @@ fn find_import_in_file(
             let content = std::fs::read_to_string(file_path)?;
             let lines: Vec<&str> = content.lines().collect();
 
-            // Find the line containing this import
-            let (line_number, import_statement) =
-                find_import_line(&lines, &import.module, import.is_from, language);
+            // imports-is-from-schema-v1: is_from is Option<bool>; None means
+            // "no from-style distinction applies" (treated like Some(false)).
+            let (line_number, import_statement) = find_import_line(
+                &lines,
+                &import.module,
+                import.is_from.unwrap_or(false),
+                language,
+            );
 
             return Ok(Some(ImporterInfo {
                 file: file_path.to_path_buf(),
@@ -87,8 +92,9 @@ fn find_import_in_file(
             }));
         }
 
-        // Also check if target is one of the imported names
-        if import.is_from {
+        // Also check if target is one of the imported names.
+        // imports-is-from-schema-v1: treat None as false.
+        if import.is_from.unwrap_or(false) {
             // from X import target_module
             if import.names.iter().any(|n| n == target_module) {
                 let content = std::fs::read_to_string(file_path)?;

@@ -404,19 +404,19 @@ fn test_imports_text_groups_by_module() {
         ImportInfo {
             module: ".exceptions".into(),
             names: vec!["Abort".into(), "BadParameter".into()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         },
         ImportInfo {
             module: ".exceptions".into(),
             names: vec!["UsageError".into()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         },
         ImportInfo {
             module: ".core".into(),
             names: vec!["Command".into(), "Group".into()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         },
     ];
@@ -434,13 +434,13 @@ fn test_imports_text_bare_imports() {
         ImportInfo {
             module: "os".into(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         },
         ImportInfo {
             module: "sys".into(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         },
     ];
@@ -455,7 +455,7 @@ fn test_imports_text_aliased() {
     let imports = vec![ImportInfo {
         module: "typing".into(),
         names: vec![],
-        is_from: false,
+        is_from: Some(false),
         alias: Some("t".into()),
     }];
     let text = format_imports_text(&imports);
@@ -475,19 +475,19 @@ fn test_imports_text_mixed() {
         ImportInfo {
             module: ".utils".into(),
             names: vec!["echo".into(), "make_str".into()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         },
         ImportInfo {
             module: "os".into(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         },
         ImportInfo {
             module: "typing".into(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: Some("t".into()),
         },
     ];
@@ -1638,13 +1638,13 @@ fn make_module_info() -> ModuleInfo {
             ImportInfo {
                 module: "os".to_string(),
                 names: vec![],
-                is_from: false,
+                is_from: Some(false),
                 alias: None,
             },
             ImportInfo {
                 module: "typing".to_string(),
                 names: vec!["List".to_string(), "Optional".to_string()],
-                is_from: true,
+                is_from: Some(true),
                 alias: None,
             },
         ],

@@ -429,7 +429,7 @@ pub fn format_imports_text(imports: &[tldr_core::types::ImportInfo]) -> String {
     let mut bare_imports: Vec<String> = Vec::new();
 
     for imp in imports {
-        if imp.is_from && !imp.names.is_empty() {
+        if imp.is_from.unwrap_or(false) && !imp.names.is_empty() {
             let names = from_groups.entry(&imp.module).or_default();
             for name in &imp.names {
                 names.push(name);

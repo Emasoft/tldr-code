@@ -433,13 +433,13 @@ fn test_import_info_creation() {
     let import = ImportInfo {
         module: "os".to_string(),
         names: vec!["path".to_string()],
-        is_from: true,
+        is_from: Some(true),
         alias: Some("p".to_string()),
     };
 
     assert_eq!(import.module, "os");
     assert_eq!(import.names, vec!["path"]);
-    assert!(import.is_from);
+    assert_eq!(import.is_from, Some(true));
     assert_eq!(import.alias, Some("p".to_string()));
 }
 
@@ -448,7 +448,7 @@ fn test_import_info_serde() {
     let import = ImportInfo {
         module: "os".to_string(),
         names: vec!["path".to_string()],
-        is_from: true,
+        is_from: Some(true),
         alias: None,
     };
 
@@ -1711,7 +1711,7 @@ fn test_skip_serializing_if_behavior() {
     let import = ImportInfo {
         module: "os".to_string(),
         names: vec![],  // Empty vec should be skipped
-        is_from: false, // Default should be skipped
+        is_from: Some(false), // Default should be skipped
         alias: None,    // None should be skipped
     };
 

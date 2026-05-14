@@ -1108,7 +1108,7 @@ mod tests {
         let import = ImportInfo {
             module: "services.user".to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
 
@@ -1134,7 +1134,7 @@ mod tests {
         let import = ImportInfo {
             module: ".utils".to_string(),
             names: Vec::new(),
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
 

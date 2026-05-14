@@ -186,7 +186,9 @@ impl ModuleResolver {
     pub fn resolve_function(&self, func_name: &str, imports: &[ImportInfo]) -> Option<PathBuf> {
         // Check if function is imported
         for import in imports {
-            if import.is_from {
+            // imports-is-from-schema-v1: is_from is Option<bool>;
+            // None ~ false (no from-style binding for this lang).
+            if import.is_from.unwrap_or(false) {
                 // Check direct name match: from X import callee
                 let is_direct_match = import.names.contains(&func_name.to_string());
 
@@ -212,7 +214,7 @@ impl ModuleResolver {
                 }
             }
             // Check for module.function pattern
-            if !import.is_from {
+            if !import.is_from.unwrap_or(false) {
                 let qualified_name = format!("{}.{}", import.module, func_name);
                 if self.function_index.contains_key(&qualified_name) {
                     if let Some(module_path) = self.module_index.get(&import.module) {
@@ -690,7 +692,7 @@ mod tests {
         let import = ImportInfo {
             module: "crate::utils".to_string(),
             names: vec!["helper".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let from_file = Path::new("/project/src/main.rs");
@@ -701,7 +703,7 @@ mod tests {
         let import = ImportInfo {
             module: "crate::foo::helpers".to_string(),
             names: vec!["do_stuff".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let resolved = resolver.resolve_import(&import, from_file);
@@ -723,7 +725,7 @@ mod tests {
         let import = ImportInfo {
             module: "super::sibling".to_string(),
             names: vec!["func".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let from_file = Path::new("/project/src/foo/bar.rs");
@@ -746,7 +748,7 @@ mod tests {
         let import = ImportInfo {
             module: "self::child".to_string(),
             names: vec!["func".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let from_file = Path::new("/project/src/foo/mod.rs");
@@ -762,7 +764,7 @@ mod tests {
         let import = ImportInfo {
             module: "std::collections".to_string(),
             names: vec!["HashMap".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let from_file = Path::new("/project/src/main.rs");
@@ -776,7 +778,7 @@ mod tests {
         let import = ImportInfo {
             module: "serde".to_string(),
             names: vec!["Serialize".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         };
         let resolved = resolver.resolve_import(&import, from_file);
@@ -830,7 +832,7 @@ mod tests {
         let import = ImportInfo {
             module: "com.example.utils.Helper".to_string(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
@@ -859,7 +861,7 @@ mod tests {
         let import = ImportInfo {
             module: "com.example.utils.*".to_string(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
@@ -882,7 +884,7 @@ mod tests {
         let import = ImportInfo {
             module: "com.example.MathUtil".to_string(),
             names: vec!["add".to_string()],
-            is_from: true, // static imports are like "from" imports
+            is_from: Some(true), // static imports are like "from" imports
             alias: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
@@ -898,7 +900,7 @@ mod tests {
         let import = ImportInfo {
             module: "java.util.List".to_string(),
             names: vec![],
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
@@ -946,7 +948,7 @@ mod tests {
         let imports = vec![ImportInfo {
             module: "helper".to_string(),
             names: vec!["process".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: Some("proc".to_string()),
         }];
 
@@ -973,7 +975,7 @@ mod tests {
         let imports = vec![ImportInfo {
             module: "helper".to_string(),
             names: vec!["do_work".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         }];
 

@@ -88,7 +88,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         imports.push(ImportInfo {
                             module,
                             names: Vec::new(),
-                            is_from: false,
+                            is_from: Some(false),
                             alias: None,
                         });
                     } else if import_child.kind() == "aliased_import" {
@@ -102,7 +102,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         imports.push(ImportInfo {
                             module,
                             names: Vec::new(),
-                            is_from: false,
+                            is_from: Some(false),
                             alias,
                         });
                     }
@@ -149,7 +149,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             imports.push(ImportInfo {
                                 module: "__future__".to_string(),
                                 names: vec![name],
-                                is_from: true,
+                                is_from: Some(true),
                                 alias,
                             });
                         }
@@ -160,7 +160,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     imports.push(ImportInfo {
                         module: "__future__".to_string(),
                         names,
-                        is_from: true,
+                        is_from: Some(true),
                         alias: None,
                     });
                 }
@@ -213,7 +213,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             imports.push(ImportInfo {
                                 module: module.clone(),
                                 names: vec![name],
-                                is_from: true,
+                                is_from: Some(true),
                                 alias,
                             });
                         }
@@ -229,7 +229,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     imports.push(ImportInfo {
                         module,
                         names,
-                        is_from: true,
+                        is_from: Some(true),
                         alias: None,
                     });
                 }
@@ -334,7 +334,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                 imports.push(ImportInfo {
                     module,
                     names,
-                    is_from: !is_default,
+                    is_from: Some(!is_default),
                     alias: None,
                 });
             }
@@ -345,7 +345,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                     imports.push(ImportInfo {
                         module,
                         names: Vec::new(),
-                        is_from: true,
+                        is_from: Some(true),
                         alias: None,
                     });
                 }
@@ -389,7 +389,7 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                             imports.push(ImportInfo {
                                 module,
                                 names: Vec::new(),
-                                is_from: false,
+                                is_from: Some(false),
                                 alias,
                             });
                         }
@@ -409,7 +409,7 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                     imports.push(ImportInfo {
                                         module,
                                         names: Vec::new(),
-                                        is_from: false,
+                                        is_from: Some(false),
                                         alias,
                                     });
                                 }
@@ -421,7 +421,7 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                             imports.push(ImportInfo {
                                 module,
                                 names: Vec::new(),
-                                is_from: false,
+                                is_from: Some(false),
                                 alias: None,
                             });
                         }
@@ -460,7 +460,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                     imports.push(ImportInfo {
                         module,
                         names,
-                        is_from: true,
+                        is_from: Some(true),
                         alias: None,
                     });
                 }
@@ -472,7 +472,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                     imports.push(ImportInfo {
                         module,
                         names: Vec::new(),
-                        is_from: false,
+                        is_from: Some(false),
                         alias: None,
                     });
                 }
@@ -487,7 +487,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                     imports.push(ImportInfo {
                         module,
                         names: Vec::new(),
-                        is_from: false,
+                        is_from: Some(false),
                         alias,
                     });
                 }
@@ -665,7 +665,7 @@ fn extract_java_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
             imports.push(ImportInfo {
                 module,
                 names: Vec::new(),
-                is_from: is_static,
+                is_from: Some(is_static),
                 alias: None,
             });
         } else {
@@ -707,13 +707,15 @@ fn extract_c_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Impo
                     _ => raw_text,
                 };
 
-                // is_from = true for system headers (<>), false for local headers ("")
-                let is_system = path_kind == "system_lib_string";
+                // imports-is-from-schema-v1 (v0.4.2 M-021): C #include
+                // directives no longer encode the system-vs-local
+                // distinction via the misnamed `is_from` field.
+                let _ = path_kind;
 
                 imports.push(ImportInfo {
                     module,
                     names: Vec::new(),
-                    is_from: is_system, // We use is_from to indicate system vs local
+                    is_from: None,
                     alias: None,
                 });
             }
@@ -754,12 +756,14 @@ fn extract_cpp_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
                     _ => raw_text,
                 };
 
-                let is_system = path_kind == "system_lib_string";
+                // imports-is-from-schema-v1: C++ omits is_from for the same
+                // reason as C — see extract_c_imports_recursive.
+                let _ = path_kind;
 
                 imports.push(ImportInfo {
                     module,
                     names: Vec::new(),
-                    is_from: is_system,
+                    is_from: None,
                     alias: None,
                 });
             }
@@ -823,14 +827,13 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
             match method_name.as_str() {
                 "require" => {
                     if !arg_value.is_empty() {
-                        // require 'gem' or require './path'
-                        // is_from = false for external gems, true for relative requires
-                        let is_relative =
-                            arg_value.starts_with("./") || arg_value.starts_with("../");
+                        // imports-is-from-schema-v1 (v0.4.2 M-021): Ruby omits
+                        // `is_from`; the relative-vs-absolute distinction is
+                        // recoverable from the module string (`./`/`../`).
                         imports.push(ImportInfo {
                             module: arg_value,
                             names: Vec::new(),
-                            is_from: is_relative, // is_from indicates relative path
+                            is_from: None,
                             alias: None,
                         });
                     }
@@ -841,7 +844,7 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         imports.push(ImportInfo {
                             module: arg_value,
                             names: Vec::new(),
-                            is_from: true, // is_from = true for require_relative (relative import)
+                            is_from: None, // is_from = true for require_relative (relative import)
                             alias: None,
                         });
                     }
@@ -935,7 +938,7 @@ fn extract_csharp_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     module,
                     names: Vec::new(),
                     // Use is_from to indicate static imports (similar to Java pattern)
-                    is_from: is_static || is_global,
+                    is_from: Some(is_static || is_global),
                     alias,
                 });
             }
@@ -1027,7 +1030,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                     imports.push(ImportInfo {
                         module: full_module,
                         names: Vec::new(),
-                        is_from: false,
+                        is_from: Some(false),
                         // alias is None if it's "_" (hide), otherwise the alias name
                         alias: if alias == "_" {
                             None
@@ -1041,7 +1044,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                 imports.push(ImportInfo {
                     module: base_path.clone(),
                     names: vec!["*".to_string()],
-                    is_from: true,
+                    is_from: Some(true),
                     alias: None,
                 });
             } else {
@@ -1055,7 +1058,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                 imports.push(ImportInfo {
                     module: full_module,
                     names: Vec::new(),
-                    is_from: false,
+                    is_from: Some(false),
                     alias: None,
                 });
             }
@@ -1066,7 +1069,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
         imports.push(ImportInfo {
             module: base_path,
             names: vec!["*".to_string()],
-            is_from: true,
+            is_from: Some(true),
             alias: None,
         });
     } else {
@@ -1074,7 +1077,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
         imports.push(ImportInfo {
             module: text.to_string(),
             names: Vec::new(),
-            is_from: false,
+            is_from: Some(false),
             alias: None,
         });
     }
@@ -1169,7 +1172,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         imports.push(ImportInfo {
                             module: module_name,
                             names: vec!["*".to_string()],
-                            is_from: true,
+                            is_from: Some(true),
                             alias: None,
                         });
                     }
@@ -1182,7 +1185,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         imports.push(ImportInfo {
                             module: module_name,
                             names: Vec::new(),
-                            is_from: false,
+                            is_from: Some(false),
                             alias: resolved_alias,
                         });
                     }
@@ -1192,7 +1195,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         imports.push(ImportInfo {
                             module: module_name,
                             names: Vec::new(),
-                            is_from: false,
+                            is_from: Some(false),
                             alias: None,
                         });
                     }
@@ -1202,7 +1205,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         imports.push(ImportInfo {
                             module: module_name,
                             names: vec!["*".to_string()],
-                            is_from: true,
+                            is_from: Some(true),
                             alias: None,
                         });
                     }
@@ -1247,7 +1250,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                     imports.push(ImportInfo {
                         module,
                         names: vec!["*".to_string()],
-                        is_from: true,
+                        is_from: Some(true),
                         alias: None,
                     });
                 }
@@ -1279,7 +1282,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                             imports.push(ImportInfo {
                                 module: target,
                                 names: Vec::new(),
-                                is_from: false,
+                                is_from: Some(false),
                                 alias: alias_name,
                             });
                         }
@@ -1295,7 +1298,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                     imports.push(ImportInfo {
                         module,
                         names: vec!["*".to_string()],
-                        is_from: true,
+                        is_from: Some(true),
                         alias: None,
                     });
                 }
@@ -1415,7 +1418,7 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
         Some(ImportInfo {
             module: module_name,
             names: Vec::new(),
-            is_from: false,
+            is_from: None,
             alias: None,
         })
     } else {
@@ -1536,7 +1539,7 @@ fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<Impo
                             imports.push(ImportInfo {
                                 module: full_module,
                                 names: Vec::new(),
-                                is_from: true, // use is similar to "from X import Y"
+                                is_from: Some(true), // use is similar to "from X import Y"
                                 alias,
                             });
                         }
@@ -1558,7 +1561,7 @@ fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<Impo
                 imports.push(ImportInfo {
                     module,
                     names: Vec::new(),
-                    is_from: true,
+                    is_from: Some(true),
                     alias,
                 });
             }
@@ -1661,7 +1664,7 @@ fn extract_php_require_include(node: &Node, source: &str) -> Option<ImportInfo> 
         names: Vec::new(),
         // Use is_from to distinguish require vs include
         // is_from = true for require (must exist), false for include (optional)
-        is_from: is_require,
+        is_from: Some(is_require),
         // Use alias to track _once variants - store "once" if applicable
         alias: if is_once {
             Some("once".to_string())
@@ -1741,7 +1744,7 @@ fn parse_cjs_require(node: &Node, source: &str) -> Option<ImportInfo> {
     Some(ImportInfo {
         module,
         names: Vec::new(),
-        is_from: true,
+        is_from: Some(true),
         alias: None,
     })
 }
@@ -1831,7 +1834,7 @@ fn parse_swift_import_text(raw: &str) -> Option<ImportInfo> {
     Some(ImportInfo {
         module,
         names: Vec::new(),
-        is_from: false,
+        is_from: None,
         alias: None,
     })
 }
@@ -1924,7 +1927,7 @@ fn parse_kotlin_import_text(raw: &str) -> Option<ImportInfo> {
         names: Vec::new(),
         // Treat wildcard imports as "from"-style (matches the convention used
         // for Java `static`/wildcard and Scala `_` selectors).
-        is_from: path_part.ends_with(".*") || path_part.ends_with("*"),
+        is_from: None,
         alias: alias_part.filter(|s| !s.is_empty()),
     })
 }
@@ -1961,10 +1964,8 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "stdio.h");
-        assert!(
-            imports[0].is_from,
-            "System headers should have is_from=true"
-        );
+        // imports-is-from-schema-v1: C omits is_from entirely.
+        assert_eq!(imports[0].is_from, None);
     }
 
     #[test]
@@ -1975,10 +1976,8 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "local.h");
-        assert!(
-            !imports[0].is_from,
-            "Local headers should have is_from=false"
-        );
+        // imports-is-from-schema-v1: C omits is_from entirely.
+        assert_eq!(imports[0].is_from, None);
     }
 
     #[test]
@@ -2023,7 +2022,7 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "os");
-        assert!(!imports[0].is_from);
+        assert_eq!(imports[0].is_from, Some(false));
     }
 
     #[test]
@@ -2034,7 +2033,7 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "typing");
-        assert!(imports[0].is_from);
+        assert_eq!(imports[0].is_from, Some(true));
         assert!(imports[0].names.contains(&"List".to_string()));
         assert!(imports[0].names.contains(&"Optional".to_string()));
     }
@@ -2082,10 +2081,8 @@ import "fmt"
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "json");
-        assert!(
-            !imports[0].is_from,
-            "External gem require should have is_from=false"
-        );
+        // imports-is-from-schema-v1: Ruby omits is_from entirely.
+        assert_eq!(imports[0].is_from, None);
     }
 
     #[test]
@@ -2096,10 +2093,8 @@ import "fmt"
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "./helper");
-        assert!(
-            imports[0].is_from,
-            "require_relative should have is_from=true"
-        );
+        // imports-is-from-schema-v1: Ruby omits is_from entirely.
+        assert_eq!(imports[0].is_from, None);
     }
 
     #[test]
@@ -2110,10 +2105,8 @@ import "fmt"
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "./lib/util");
-        assert!(
-            imports[0].is_from,
-            "Explicit relative require should have is_from=true"
-        );
+        // imports-is-from-schema-v1: Ruby omits is_from entirely.
+        assert_eq!(imports[0].is_from, None);
     }
 
     #[test]
@@ -2145,10 +2138,7 @@ require_relative './local_module'
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "Phoenix.Controller");
-        assert!(
-            imports[0].is_from,
-            "import should have is_from=true (imports all functions)"
-        );
+        assert_eq!(imports[0].is_from, Some(true));
     }
 
     #[test]
@@ -2192,10 +2182,7 @@ require_relative './local_module'
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "GenServer");
-        assert!(
-            imports[0].is_from,
-            "use should have is_from=true (imports macros)"
-        );
+        assert_eq!(imports[0].is_from, Some(true));
     }
 
     #[test]
@@ -2260,10 +2247,7 @@ end"#;
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "List");
-        assert!(
-            imports[0].is_from,
-            "open should have is_from=true (like import *)"
-        );
+        assert_eq!(imports[0].is_from, Some(true));
     }
 
     #[test]
@@ -2285,7 +2269,7 @@ end"#;
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "Set");
-        assert!(imports[0].is_from, "include should have is_from=true");
+        assert_eq!(imports[0].is_from, Some(true), "include should have is_from=Some(true)");
     }
 
     #[test]
@@ -2366,7 +2350,7 @@ end"#;
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "config.php");
-        assert!(imports[0].is_from, "require should have is_from=true");
+        assert_eq!(imports[0].is_from, Some(true), "require should have is_from=Some(true)");
     }
 
     #[test]

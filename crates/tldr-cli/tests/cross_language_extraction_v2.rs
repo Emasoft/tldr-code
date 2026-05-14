@@ -262,7 +262,13 @@ fn kotlin_imports_extracted() {
         modules
     );
 
-    // Wildcard import must produce an entry with module ending `.*` and is_from=true.
+    // Wildcard import must produce an entry with module ending `.*`.
+    //
+    // imports-is-from-schema-v1 (v0.4.2 M-021): the `is_from` field was
+    // previously repurposed to flag Kotlin wildcard imports. That signal
+    // was a Python-leakage — Kotlin has no `from`-import syntax. The
+    // field is now omitted entirely; the wildcard signal is recoverable
+    // from the `.*` suffix on the module string itself.
     let wildcard = imports
         .iter()
         .find(|i| {
@@ -272,10 +278,9 @@ fn kotlin_imports_extracted() {
                 .unwrap_or(false)
         })
         .expect("wildcard import present");
-    assert_eq!(
-        wildcard["is_from"].as_bool(),
-        Some(true),
-        "wildcard import should have is_from=true, got: {:?}",
+    assert!(
+        wildcard.get("is_from").is_none(),
+        "Kotlin imports should omit `is_from` (schema-v1); got: {:?}",
         wildcard
     );
 

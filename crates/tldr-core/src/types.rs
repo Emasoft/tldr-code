@@ -1418,9 +1418,20 @@ pub struct ImportInfo {
     /// Specific names imported from the module (e.g., `from X import a, b`)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub names: Vec<String>,
-    /// Whether this is a `from` import (e.g., `from module import name`)
-    #[serde(default)]
-    pub is_from: bool,
+    /// Whether this is a `from`-style import.
+    ///
+    /// `imports-is-from-schema-v1` (v0.4.2 M-021): converted from `bool` to
+    /// `Option<bool>` with `skip_serializing_if=Option::is_none`. The
+    /// `is_from` distinction was borrowed from Python; several language
+    /// adapters either set it uniformly (Lua, Swift — pure Python-leakage)
+    /// or repurposed it for an unrelated lang-specific signal (C
+    /// system-vs-local, Kotlin wildcard, Ruby relative-path) which is
+    /// misnamed and confusing. The field is now only set for languages
+    /// whose grammar has a genuine `from`-import / qualified-use
+    /// distinction; for C, C++, Kotlin, Lua, Ruby, Swift it is omitted
+    /// from JSON entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_from: Option<bool>,
     /// Import alias (e.g., `import X as Y`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
