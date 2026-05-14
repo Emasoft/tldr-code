@@ -1779,6 +1779,106 @@ fn callee_already_present(
     })
 }
 
+/// explain-callees-in-project-v1 (v0.4.2 M-019): when the per-file walker
+/// (`find_callees`) emits a placeholder `file: "<external>"` for a callee
+/// whose name we now know is in-project (via the project call graph
+/// edge's `dst_func`/`dst_file`), upgrade the existing entry's file in
+/// place rather than adding a duplicate. Returns `true` if any entry was
+/// upgraded — the caller should then `continue` rather than push a new
+/// row (which would create a Pattern-B bare+qualified duplicate of the
+/// kind cross-cutting-and-clear-fix-bugs-v1 addressed).
+///
+/// Matching rules:
+///   - Names match via `names_match` in either direction (per the
+///     existing `callee_already_present` convention; this handles the
+///     bare-vs-qualified `CleanPath` / `pkg.CleanPath` shape).
+///   - The existing entry's file is literally `"<external>"` (the
+///     placeholder marker). Entries with real files are NOT touched.
+fn upgrade_external_callee(
+    callees: &mut [CallInfo],
+    candidate_name: &str,
+    candidate_file: &str,
+) -> bool {
+    let mut upgraded = false;
+    for c in callees.iter_mut() {
+        if c.file != "<external>" {
+            continue;
+        }
+        if !names_match(&c.name, candidate_name) && !names_match(candidate_name, &c.name) {
+            continue;
+        }
+        // Promote the file to the real in-project path. The downstream
+        // `restore_explain_path_shape` pass will normalise this to the
+        // user-input shape uniformly across all emitted paths.
+        c.file = candidate_file.to_string();
+        upgraded = true;
+    }
+    upgraded
+}
+
+/// explain-callees-in-project-v1 (v0.4.2 M-019): final fallback pass for
+/// callees whose file is still the `<external>` placeholder after the
+/// edge-iteration above. Scans the entire project call graph for ANY
+/// edge whose `dst_func` matches the callee's name (bare or qualified).
+/// If a unique in-project file is found, the callee's `file` is
+/// upgraded in place.
+///
+/// Why a second pass: the edge-iteration above only fires when the
+/// graph contains an edge ROOTED at the function we're explaining
+/// (`src_func == function && src_file == file`). The call-graph V2
+/// resolver may MISS some call-sites — especially for cross-language
+/// shapes where the callsite is detected but the binding to the
+/// declaration isn't resolved. The declaration itself is still
+/// indexed (because some OTHER caller's edge points at it), and that
+/// `dst_file` is a reliable signal that the callee lives in-project.
+///
+/// We accept the resolution only when ALL matching edges agree on the
+/// same `dst_file` (or one of them lives in `file` itself — preferring
+/// same-file). Ambiguous resolution leaves `<external>` in place so
+/// the downstream path-shape pass doesn't fabricate an incorrect
+/// attribution.
+fn resolve_external_callees_via_graph(
+    callees: &mut [CallInfo],
+    graph: &tldr_core::types::ProjectCallGraph,
+    self_file: &std::path::Path,
+) {
+    use std::collections::HashSet;
+    for c in callees.iter_mut() {
+        if c.file != "<external>" {
+            continue;
+        }
+        // Collect every dst_file in the graph whose dst_func matches
+        // this callee name. Use a dedup set so multiple call sites to
+        // the same target don't bias the "ambiguous" check.
+        let mut dst_files: HashSet<std::path::PathBuf> = HashSet::new();
+        let mut prefer_self_file: Option<std::path::PathBuf> = None;
+        for edge in graph.edges() {
+            if !names_match(&edge.dst_func, &c.name) && !names_match(&c.name, &edge.dst_func) {
+                continue;
+            }
+            dst_files.insert(edge.dst_file.clone());
+            // If a matching edge's dst_file is the same as self_file,
+            // strongly prefer that — same-file definitions are the
+            // common case for the c47/cpp46 audit cells.
+            if paths_equivalent(&edge.dst_file, self_file) && prefer_self_file.is_none() {
+                prefer_self_file = Some(edge.dst_file.clone());
+            }
+        }
+        if let Some(p) = prefer_self_file {
+            c.file = p.display().to_string();
+            continue;
+        }
+        // Accept resolution only when there's a single unique
+        // dst_file (no ambiguity). The downstream path-shape pass
+        // will normalise it to the user-input shape.
+        if dst_files.len() == 1 {
+            if let Some(p) = dst_files.into_iter().next() {
+                c.file = p.display().to_string();
+            }
+        }
+    }
+}
+
 /// language-specific-bugs-v1 (P14.AGG14-16): given a caller file and the
 /// caller-function name + target-function name, scan the file's source
 /// looking for a call site to `target_function` inside the body of
@@ -2041,6 +2141,19 @@ fn enrich_with_project_graph(
         {
             continue;
         }
+        // explain-callees-in-project-v1 (v0.4.2 M-019): when an `<external>`
+        // placeholder already exists for this callee name, UPGRADE it
+        // in place rather than skipping the edge entirely. The per-file
+        // walker (`find_callees`) defaults to `<external>` whenever a
+        // callee name isn't recognized as a same-file local; the
+        // project-wide call graph reliably knows the real `dst_file`
+        // (`tldr calls`/`tldr impact` use the same source). Without
+        // this promotion, the audit observed `<external>` for callees
+        // that are obviously in-project (c47 sdsnewlen, go47 CleanPath,
+        // java47 getLastName, kotlin47 offsetIn, etc.).
+        if upgrade_external_callee(&mut report.callees, &dst_name, &dst_file) {
+            continue;
+        }
         if callee_already_present(&report.callees, &dst_name, &dst_file) {
             continue;
         }
@@ -2076,6 +2189,14 @@ fn enrich_with_project_graph(
             .callees
             .push(CallInfo::new(dst_name, dst_file, line));
     }
+
+    // explain-callees-in-project-v1 (v0.4.2 M-019): final fallback for
+    // any callee still flagged `<external>` after the edge-iteration
+    // above. The V2 call-graph resolver may miss the binding at THIS
+    // call site even when the declaration itself is indexed (via other
+    // call sites' edges). Scan the whole graph for `dst_func` matches
+    // and promote a unique resolution.
+    resolve_external_callees_via_graph(&mut report.callees, &graph, file);
 
     // sibling-resolver-gaps-v1 (P14.AGG14-14): the Swift call-graph
     // builder may attribute a callee's `dst_file` to a test file that
