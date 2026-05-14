@@ -27,6 +27,8 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::Args;
+use tldr_core::ast::extractor::extract_functions;
+use tldr_core::ast::ParserPool;
 use tldr_core::walker::walk_project;
 
 use tldr_core::Language;
@@ -255,15 +257,28 @@ pub fn run_verify(
 }
 
 /// Collect source files for analysis.
+///
+/// verify-aggregator-v1 (v0.4.2 M-011): previously hardcoded a tiny
+/// ext-map (`py/ts/rs/go/java`) and silently fell through to `"py"`
+/// for every other [`Language`] variant, so `tldr verify <dir>` on a
+/// C / C++ / Kotlin / Scala / Swift / OCaml / ... project walked the
+/// tree looking for `*.py` files and reported `files_analyzed: 0`.
+///
+/// Now delegates to [`Language::scan_extensions`] (the same widening
+/// list used by other directory-walking commands), which covers every
+/// supported language and includes the JS↔TS / C↔Cpp sibling families.
+/// The leading `.` in each canonical extension is stripped at the
+/// comparison site so `*.tsx`, `*.kt`, `*.scala`, `*.ml`, etc. all
+/// participate.
 fn collect_source_files(path: &Path, language: Language) -> ContractsResult<Vec<PathBuf>> {
-    let extension = match language {
-        Language::Python => "py",
-        Language::TypeScript | Language::JavaScript => "ts",
-        Language::Rust => "rs",
-        Language::Go => "go",
-        Language::Java => "java",
-        _ => "py", // Default to Python
-    };
+    // Language::scan_extensions returns canonical-prefixed extensions
+    // (".py", ".kt", ...) — strip the leading dot so we can compare
+    // against std::path::Path::extension() which yields the raw "py".
+    let exts: Vec<&str> = language
+        .scan_extensions()
+        .iter()
+        .map(|e| e.strip_prefix('.').unwrap_or(e))
+        .collect();
 
     let mut files = Vec::new();
 
@@ -274,8 +289,14 @@ fn collect_source_files(path: &Path, language: Language) -> ContractsResult<Vec<
             e.path().is_file()
                 && e.path()
                     .extension()
-                    .is_some_and(|ext| ext == extension)
-                // Skip test files for main analysis
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|ext| exts.iter().any(|e| *e == ext))
+                // Skip Python test files (`test_*.py`) for main
+                // analysis. The pytest layout pulls these into specs
+                // separately; other languages' test naming
+                // conventions (`*Test.java`, `*Tests.cs`,
+                // `*Spec.scala`) are handled by `find_test_dirs` /
+                // path-based detection rather than file-name prefix.
                 && !e.file_name().to_str().is_some_and(|n| n.starts_with("test_"))
         }) {
             files.push(entry.path().to_path_buf());
@@ -445,21 +466,30 @@ fn analyze_file_contracts(
 }
 
 /// Extract function names from source code.
-fn extract_function_names(source: &str, _language: Language) -> ContractsResult<Vec<String>> {
-    // Simple regex-based extraction for Python
-    let mut names = Vec::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("def ") {
-            if let Some(name_end) = trimmed.find('(') {
-                let name = &trimmed[4..name_end].trim();
-                if !name.is_empty() {
-                    names.push(name.to_string());
-                }
-            }
-        }
+///
+/// verify-aggregator-v1 (v0.4.2 M-011): previously a line-based regex
+/// matching only Python's `def NAME(` syntax, which silently returned
+/// an empty list for every other language. As a result `sweep_contracts`
+/// invoked `run_contracts` zero times on C / C++ / Kotlin / Scala /
+/// Swift / OCaml / Ruby / Rust / Go / Java / TS / JS files and the
+/// aggregator's `contracts.items_found` was always `0`.
+///
+/// Now parses the source with the shared [`ParserPool`] and delegates
+/// to [`tldr_core::ast::extractor::extract_functions`], which covers
+/// every supported language via tree-sitter. On parse failure we fall
+/// back to the empty list (matches the previous behaviour for
+/// malformed files — `analyze_file_contracts` records the error
+/// upstream when `run_contracts` itself fails on a function).
+fn extract_function_names(source: &str, language: Language) -> ContractsResult<Vec<String>> {
+    if source.trim().is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(names)
+    let pool = ParserPool::new();
+    let tree = match pool.parse(source, language) {
+        Ok(t) => t,
+        Err(_) => return Ok(Vec::new()),
+    };
+    Ok(extract_functions(&tree, source, language))
 }
 
 /// Sweep specs extraction from test directory.
