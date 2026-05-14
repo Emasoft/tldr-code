@@ -101,12 +101,21 @@ impl AvailableArgs {
         )?;
 
         // Compute available expressions (with AST-based extraction for multi-language support)
-        let result = compute_available_exprs_with_source_and_lang(
+        let mut result = compute_available_exprs_with_source_and_lang(
             &cfg,
             &dfg,
             &source_lines,
             Some(language),
         )?;
+
+        // Stamp the analyzed function name onto the result so the JSON
+        // output identifies which function the dataflow describes,
+        // independent of whether the scope filter yielded any
+        // expressions. Regression guard for cluster M-009: the strict
+        // CFG-span filter can legitimately produce zero `all_exprs` on
+        // functions whose body consists entirely of method calls; the
+        // `function` metadata must still be populated.
+        result.function = Some(self.function.clone());
 
         // Handle specific queries
         if let Some(ref expr) = self.check {
@@ -365,6 +374,7 @@ mod tests {
             line_to_block: HashMap::new(),
             uncertain_exprs: Vec::new(),
             confidence: Confidence::High,
+            function: None,
         }
     }
 

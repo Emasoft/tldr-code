@@ -434,6 +434,28 @@ pub struct AvailableExprsInfo {
     /// Computed based on the ratio of confirmed vs uncertain expressions.
     #[serde(default)]
     pub confidence: Confidence,
+
+    /// Name of the function this analysis was computed for.
+    ///
+    /// Populated by the CLI command (or other callers that know the
+    /// target function name) after `compute_available_exprs_*` returns,
+    /// so consumers can identify which function the dataflow result
+    /// describes — independent of whether the scope filter yielded any
+    /// expressions.
+    ///
+    /// Regression guard: prior to the v0.4.2 hotfix for cluster M-009,
+    /// no field on this struct identified the analyzed function, which
+    /// surfaced in audits as "function: null" in the JSON output even
+    /// when `available` was invoked with a valid function name. The
+    /// metadata about which function was analyzed must NOT depend on
+    /// whether any expressions matched the scope filter — see
+    /// `crates/tldr-cli/tests/rust_dataflow_v1.rs`
+    /// `rust_available_function_name_not_null`.
+    ///
+    /// Always serialized (including as JSON `null` when unset), so
+    /// consumers can rely on the key's presence and inspect its value.
+    #[serde(default)]
+    pub function: Option<String>,
 }
 
 /// Custom serializer for avail_in/avail_out maps.
@@ -498,6 +520,7 @@ impl AvailableExprsInfo {
             line_to_block: HashMap::new(),
             uncertain_exprs: Vec::new(),
             confidence: Confidence::default(),
+            function: None,
         }
     }
 
@@ -2109,6 +2132,7 @@ pub fn compute_available_exprs(
         line_to_block,
         uncertain_exprs: Vec::new(),
         confidence: Confidence::High,
+        function: None,
     })
 }
 
@@ -2283,6 +2307,7 @@ pub fn compute_available_exprs_with_source_and_lang(
         line_to_block,
         uncertain_exprs,
         confidence,
+        function: None,
     })
 }
 
