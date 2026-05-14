@@ -398,9 +398,59 @@ pub fn compute_chop(
         .copied()
         .collect();
 
-    // Convert to sorted vector
-    let mut lines: Vec<u32> = chop_lines.into_iter().collect();
+    // chop-forward-backward-intersect-v1 (v0.4.2 M-034): clip the chop
+    // result to the user-requested closed interval
+    // `[min(source, target), max(source, target)]`.
+    //
+    // # Why
+    //
+    // The raw PDG intersection over-approximates the chop in two ways:
+    //
+    // 1. **Function signature / closing-brace lines**: many language
+    //    backends attach the function signature line and the closing brace
+    //    to PDG nodes that participate in dataflow (parameter
+    //    "definitions" anchor to the signature line; the implicit return
+    //    anchors to the closing brace). These appear in both
+    //    forward(source) and backward(target) for *any* source/target
+    //    inside the function, so they survive intersection — but they are
+    //    NOT on the user's requested path.
+    //
+    // 2. **Accumulator-threaded functions**: in code like a large emitter
+    //    where `out = out + ...` is written on every line, forward(source)
+    //    and backward(target) each cover essentially the whole function,
+    //    so their intersection is also "everything" — far beyond the
+    //    user-requested interval. The user's intent when asking
+    //    `chop(source, target)` is to see the path *between* those lines,
+    //    not lines outside the interval that happen to share dependencies
+    //    via global accumulators.
+    //
+    // The clip preserves the canonical chop semantics inside the interval
+    // and drops only the artefacts outside it. Both `source_line` and
+    // `target_line` themselves are by construction inside the interval and
+    // are guaranteed to remain (they are PDG-reachable from themselves).
+    let interval_lo = source_line.min(target_line);
+    let interval_hi = source_line.max(target_line);
+    let mut lines: Vec<u32> = chop_lines
+        .into_iter()
+        .filter(|&l| l >= interval_lo && l <= interval_hi)
+        .collect();
+    // Ensure both endpoints are present when path_exists=true. The PDG
+    // intersection by construction contains both source_line (criterion of
+    // the forward slice) and target_line (criterion of the backward slice
+    // — since path_exists implies the target depends on the source), but
+    // the per-language PDG node-to-line mapping can occasionally omit one
+    // endpoint when the criterion line falls on a node-internal boundary
+    // (e.g. a brace, comment, or multi-line expression head/tail). Insert
+    // both endpoints unconditionally so callers can rely on
+    // `lines.contains(source_line) && lines.contains(target_line)`.
+    if !lines.contains(&source_line) {
+        lines.push(source_line);
+    }
+    if !lines.contains(&target_line) {
+        lines.push(target_line);
+    }
     lines.sort();
+    lines.dedup();
 
     let count = lines.len() as u32;
 
