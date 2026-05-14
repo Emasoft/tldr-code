@@ -17,6 +17,7 @@ use tldr_core::{
 
 use crate::commands::daemon_router::{params_with_func_depth, try_daemon_route};
 use crate::output::{format_impact_dot, format_impact_text, OutputFormat, OutputWriter};
+use crate::path_shape::PathShapeRewriter;
 use crate::path_validation::require_directory;
 
 /// Analyze impact of changing a function
@@ -140,6 +141,17 @@ impl ImpactArgs {
             });
         }
 
+        // path-shape-consistency-v1 (v0.4.2 M-008): the impact report
+        // joins data from TWO producers — `impact_analysis` walks the
+        // call graph (emits project-relative `router.go`) and
+        // `impact_analysis_with_ast_fallback` augments with AST-found
+        // definitions (emits absolute `/tmp/repos/.../router.go`). On
+        // macOS the canonical form may further leak `/private/tmp/`.
+        // The audit M-008 cluster requires every path in the response
+        // to share the user-input shape. Route every CallerTree.file
+        // through the centralized emission-boundary normalizer.
+        restore_impact_path_shape(&mut report, &self.path);
+
         // Output based on format
         if writer.is_text() {
             let text = format_impact_text(&report, self.type_aware);
@@ -153,5 +165,52 @@ impl ImpactArgs {
         }
 
         Ok(())
+    }
+}
+
+/// path-shape-consistency-v1 (v0.4.2 M-008): re-assert user-input path
+/// shape across every `CallerTree.file` (recursive) and every
+/// `targets` HashMap key (which contains `<file>:<func>` strings).
+///
+/// All rewrite logic lives in [`PathShapeRewriter`] — this function is a
+/// thin schema-aware wrapper that knows how to walk the `ImpactReport`
+/// tree. The same centralized rewriter is reused by every multi-producer
+/// emitter to guarantee response-wide shape uniformity.
+fn restore_impact_path_shape(report: &mut ImpactReport, user_root: &std::path::Path) {
+    let rewriter = PathShapeRewriter::new(user_root);
+
+    fn walk(tree: &mut tldr_core::types::CallerTree, rewriter: &PathShapeRewriter) {
+        if let Some(np) = rewriter.rewrite_pathbuf(&tree.file) {
+            tree.file = np;
+        }
+        for child in tree.callers.iter_mut() {
+            walk(child, rewriter);
+        }
+    }
+
+    // 1. Rewrite every CallerTree.file (recursive).
+    for tree in report.targets.values_mut() {
+        walk(tree, &rewriter);
+    }
+
+    // 2. Rewrite the HashMap keys. Keys are `<file>:<func>` strings;
+    //    when `<file>` is project-relative ("router.go") the absolute
+    //    user-input root must be prepended so the key shape matches
+    //    the value shape. Split on the LAST `:` to preserve any `:`
+    //    that legitimately appears in the file portion (rare but
+    //    possible on Windows; defensive).
+    let old_targets = std::mem::take(&mut report.targets);
+    for (key, tree) in old_targets {
+        let new_key = if let Some(colon_idx) = key.rfind(':') {
+            let (file_part, func_part) = key.split_at(colon_idx);
+            // func_part includes the leading ':'
+            match rewriter.rewrite(file_part) {
+                Some(new_file) => format!("{}{}", new_file, func_part),
+                None => key,
+            }
+        } else {
+            key
+        };
+        report.targets.insert(new_key, tree);
     }
 }
