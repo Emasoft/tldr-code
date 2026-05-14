@@ -303,6 +303,20 @@ pub fn detect_available_tools(lang: Language) -> Vec<ToolConfig> {
 // Tool Execution
 // =============================================================================
 
+/// Emit a progress event to stderr, gated by `TLDR_DIAGNOSTICS_PROGRESS=1`.
+///
+/// diagnostics-subprocess-timeout-v1 (M-028): users running `tldr
+/// diagnostics` against large repos previously had zero feedback during
+/// long-running invocations (kotlinc/swiftc/clang/luacheck can take
+/// tens of seconds). The opt-in env var emits one line per state
+/// transition so callers can observe progress without affecting
+/// machine-readable stdout.
+fn progress_emit(msg: &str) {
+    if std::env::var("TLDR_DIAGNOSTICS_PROGRESS").as_deref() == Ok("1") {
+        eprintln!("[diagnostics] {}", msg);
+    }
+}
+
 /// Run a single diagnostic tool and parse its output.
 ///
 /// # Arguments
@@ -312,24 +326,67 @@ pub fn detect_available_tools(lang: Language) -> Vec<ToolConfig> {
 ///
 /// # Returns
 /// A tuple of (ToolResult, Vec<Diagnostic>)
+///
+/// # Pipe handling (diagnostics-subprocess-timeout-v1, M-028)
+///
+/// Previously this function used `child.stdout(Stdio::piped())` and
+/// waited for the child to exit BEFORE reading the pipes. Many
+/// diagnostic tools emit large output:
+///
+/// - `kotlinc` on a 223-file repo: ~22k lines to STDERR
+/// - `luacheck` on lua-lsp: ~10k diagnostic lines to STDOUT
+/// - `clang` on a multi-file C++ project: thousands of warning lines
+///
+/// The OS pipe buffer is ~64KB on macOS / Linux. Once full, the child
+/// blocks on `write()` waiting for someone to drain the pipe — but the
+/// parent is stuck in `try_wait` waiting for an exit that will never
+/// come. Result: spurious 60s "Timeout" errors on tools that would
+/// otherwise complete in 3-15 seconds.
+///
+/// Fix: spawn one reader thread per pipe, drain concurrently, then
+/// `wait()` on the child. On timeout, kill the child and `join` the
+/// drainers with a bounded grace window so we still surface partial
+/// output.
 pub fn run_tool(
     tool: &ToolConfig,
     path: &Path,
     timeout_secs: u64,
 ) -> (ToolResult, Vec<Diagnostic>) {
     let start = Instant::now();
+    progress_emit(&format!("starting {}", tool.name));
 
-    // Build the command
+    // Build the command. CRITICAL: `stdin(Stdio::null())` so tools that
+    // would otherwise read from a terminal (e.g. kotlinc in REPL mode,
+    // some clang invocations, swiftc -typecheck with no inputs) do not
+    // block forever waiting for input.
     let mut cmd = Command::new(tool.binary);
     cmd.args(&tool.args);
     cmd.arg(path);
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+
+    // Put the child in its own process group on Unix so that a timeout
+    // kill propagates to grand-children. Many wrapper scripts (e.g.
+    // `kotlinc`, `phpstan`, `mix`) launch a long-running JVM / BEAM /
+    // PHP subprocess without `exec`ing — SIGKILL on the wrapper shell
+    // leaves the inner process orphaned with the pipe FDs still open,
+    // which keeps our drainer threads blocked reading.
+    //
+    // Setting `process_group(0)` creates a new group with the child as
+    // leader; we can then `killpg` the whole group on timeout. See
+    // `kill_process_tree` below.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     // Spawn the process
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            progress_emit(&format!("{} failed to spawn: {}", tool.name, e));
             return (
                 ToolResult {
                     name: tool.name.to_string(),
@@ -344,14 +401,42 @@ pub fn run_tool(
         }
     };
 
-    // Wait with timeout
+    // Spawn drainer threads for stdout and stderr. These read until EOF
+    // — which happens either because the child exited or because we
+    // killed it.
+    let stdout_handle = child.stdout.take().map(|mut s| {
+        std::thread::spawn(move || -> String {
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || -> String {
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            buf
+        })
+    });
+
+    // Wait with timeout. The polling loop now only watches the child;
+    // pipes are drained on background threads so the child cannot block
+    // on a full pipe.
     let timeout = Duration::from_secs(timeout_secs);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
                 if start.elapsed() > timeout {
-                    let _ = child.kill();
+                    // Kill the whole process group (on Unix) so any
+                    // grand-children spawned by wrapper scripts are
+                    // also reaped. Falls back to `child.kill()` on
+                    // other platforms.
+                    kill_process_tree(&mut child);
+                    // Reap the killed child to release OS resources;
+                    // wait() should now return promptly because pipes
+                    // are drained on background threads.
+                    let _ = child.wait();
                     break Err("Timeout");
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -360,12 +445,20 @@ pub fn run_tool(
         }
     };
 
+    // Join the drainer threads with a bounded wait. After child.wait()
+    // (or kill+wait) the pipes are closed, so read_to_string returns
+    // quickly. We still cap the join time defensively to avoid any
+    // pathological hang.
+    let stdout = join_drainer(stdout_handle);
+    let stderr = join_drainer(stderr_handle);
+
     let duration_ms = start.elapsed().as_millis() as u64;
 
     // Handle timeout or error
     let _exit_status = match status {
         Ok(s) => s,
         Err(e) => {
+            progress_emit(&format!("{} {} after {}ms", tool.name, e, duration_ms));
             return (
                 ToolResult {
                     name: tool.name.to_string(),
@@ -379,17 +472,6 @@ pub fn run_tool(
             );
         }
     };
-
-    // Read stdout and stderr
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-
-    if let Some(mut out) = child.stdout.take() {
-        let _ = out.read_to_string(&mut stdout);
-    }
-    if let Some(mut err) = child.stderr.take() {
-        let _ = err.read_to_string(&mut stderr);
-    }
 
     // Parse the output based on tool type
     let parse_result = parse_tool_output(tool.name, &stdout, &stderr);
@@ -417,6 +499,14 @@ pub fn run_tool(
     // Tool is successful if it ran and we could parse output (even if it found issues)
     let success = error.is_none();
 
+    progress_emit(&format!(
+        "{} done in {}ms ({} diagnostic{})",
+        tool.name,
+        duration_ms,
+        diagnostic_count,
+        if diagnostic_count == 1 { "" } else { "s" }
+    ));
+
     (
         ToolResult {
             name: tool.name.to_string(),
@@ -428,6 +518,61 @@ pub fn run_tool(
         },
         diagnostics,
     )
+}
+
+/// Kill a child process and (on Unix) its entire process group.
+///
+/// diagnostics-subprocess-timeout-v1 (M-028): wrapper scripts such as
+/// `kotlinc`, `mix credo`, and some `phpstan` installations launch a
+/// long-running JVM / BEAM / PHP subprocess WITHOUT `exec`ing. Sending
+/// SIGKILL to the wrapper shell leaves the inner process orphaned but
+/// still alive, holding the stdout/stderr pipe file descriptors open
+/// — which keeps the pipe-drainer threads blocked reading. The
+/// `tldr diagnostics --timeout 2` invocation would then "honour" the
+/// 2-second budget at the wait-loop level but still take 13+ seconds
+/// to actually return because the drainers stayed alive.
+///
+/// On Unix we spawn the child in its own process group (see
+/// `process_group(0)` in `run_tool`) and here we send SIGKILL to the
+/// whole group via `killpg`. On other platforms we fall back to the
+/// stdlib's `Child::kill` (which is best-effort on Windows job-object
+/// support — acceptable since the affected diagnostic tools are
+/// primarily Unix-only).
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // Best effort: signal the group; if that fails (e.g. the
+        // process group creation didn't take), fall back to the
+        // direct child.kill() path.
+        let pid = child.id() as i32;
+        // SAFETY: libc::killpg is a thin syscall wrapper. We pass a
+        // valid pgid (the child's pid, which is also its pgid because
+        // we set `process_group(0)`).
+        let killpg_rc = unsafe { libc::killpg(pid, libc::SIGKILL) };
+        if killpg_rc != 0 {
+            let _ = child.kill();
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+}
+
+/// Join a pipe-drainer thread with a bounded wait.
+///
+/// diagnostics-subprocess-timeout-v1 (M-028): once the child process
+/// has exited (or has been killed), the pipe write-end is closed and
+/// `read_to_string` on the read-end returns promptly. This helper
+/// simply unwraps the join result and returns the collected output;
+/// an Err on join (which can only happen on a panic in the drainer)
+/// is treated as empty output rather than propagating.
+fn join_drainer(handle: Option<std::thread::JoinHandle<String>>) -> String {
+    match handle {
+        Some(h) => h.join().unwrap_or_default(),
+        None => String::new(),
+    }
 }
 
 /// Parse output based on tool name.

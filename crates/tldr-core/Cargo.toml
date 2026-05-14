@@ -101,6 +101,12 @@ fs2 = { workspace = true }
 # M11 VAL-010: PATH lookup for git binary in change-impact resolver
 which = { workspace = true }
 
+# diagnostics-subprocess-timeout-v1 (M-028): killpg for process-group
+# termination so SIGKILL propagates to grand-children of wrapper
+# scripts (e.g. kotlinc -> java, mix -> beam.smp).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = []
 semantic = ["dep:fastembed"]
