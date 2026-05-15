@@ -883,6 +883,14 @@ pub fn run_contracts(
     let tree = parse_source(&source, language, file)?;
     let root = tree.root_node();
 
+    // contracts-type-printer-v1 (CLUSTER-M-046): OCaml `.mli` interface
+    // files have NO function bodies — only `val name : type` specifications.
+    // Handle them via a dedicated extractor that turns each arrow-separated
+    // segment of the type signature into a low-confidence pre/postcondition.
+    if language == Language::Ocaml && is_ocaml_interface_file(file) {
+        return extract_ocaml_interface_contracts(root, function, source.as_bytes(), file, limit);
+    }
+
     // Find the function in the AST
     let func_node =
         find_function_node(root, function, source.as_bytes(), &config).ok_or_else(|| {
@@ -950,6 +958,25 @@ pub fn run_contracts(
     // Extract loop invariants
     extract_invariants(func_node, source.as_bytes(), &mut invariants, 0, &config)?;
 
+    // contracts-type-printer-v1 (CLUSTER-M-046):
+    // - Elixir @spec ingestion. Walk siblings of the `def` call to find the
+    //   matching `@spec name(t1, t2) :: ret` and emit one precondition per
+    //   typed argument plus a return postcondition.
+    // - Swift `guard let X = Y else { return }` recognition: emit
+    //   `X != nil` precondition.
+    if language == Language::Elixir {
+        extract_elixir_at_spec(
+            func_node,
+            function,
+            source.as_bytes(),
+            &mut preconditions,
+            &mut postconditions,
+        );
+    }
+    if language == Language::Swift {
+        extract_swift_guard_let(func_node, source.as_bytes(), &mut preconditions, &config);
+    }
+
     // Deduplicate conditions
     preconditions = deduplicate_conditions(preconditions);
     postconditions = deduplicate_conditions(postconditions);
@@ -970,12 +997,21 @@ pub fn run_contracts(
 }
 
 /// Parse source code with the appropriate tree-sitter grammar.
+///
+/// contracts-type-printer-v1 (CLUSTER-M-046): `.mli` OCaml interface files
+/// need the dedicated `LANGUAGE_OCAML_INTERFACE` grammar — the implementation
+/// grammar (`LANGUAGE_OCAML`) doesn't recognise `val name : type`
+/// signatures, so contracts on `.mli` files would otherwise return an empty
+/// AST and "function not found".
 fn parse_source(source: &str, language: Language, file: &Path) -> ContractsResult<Tree> {
-    let ts_language =
+    let ts_language = if language == Language::Ocaml && is_ocaml_interface_file(file) {
+        tree_sitter_ocaml::LANGUAGE_OCAML_INTERFACE.into()
+    } else {
         ParserPool::get_ts_language(language).ok_or_else(|| ContractsError::ParseError {
             file: file.to_path_buf(),
             message: format!("No tree-sitter grammar for {:?}", language),
-        })?;
+        })?
+    };
 
     let mut parser = Parser::new();
     parser
@@ -991,6 +1027,187 @@ fn parse_source(source: &str, language: Language, file: &Path) -> ContractsResul
             file: file.to_path_buf(),
             message: "Parsing returned None".to_string(),
         })
+}
+
+/// Return true for OCaml interface (`.mli`) files. Used by [`parse_source`]
+/// to pick the dedicated interface grammar.
+fn is_ocaml_interface_file(file: &Path) -> bool {
+    file.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("mli"))
+        .unwrap_or(false)
+}
+
+/// contracts-type-printer-v1 (CLUSTER-M-046): extract pre/postconditions
+/// from an OCaml `.mli` interface file's `val name : type` signature.
+///
+/// The interface grammar parses each `val` declaration as a
+/// `value_specification` node whose direct children are the keyword
+/// `val`, a `value_name` (the identifier), `:`, and a type expression.
+/// We walk all `value_specification` nodes, match `value_name == function`,
+/// then split the type expression on top-level `->` to derive one
+/// precondition per parameter type and one postcondition per return type.
+///
+/// All emitted conditions are low-confidence because the signature only
+/// constrains the static type, not runtime values.
+fn extract_ocaml_interface_contracts(
+    root: Node,
+    function: &str,
+    source: &[u8],
+    file: &Path,
+    limit: usize,
+) -> ContractsResult<ContractsReport> {
+    let spec_node =
+        find_ocaml_value_specification(root, function, source).ok_or_else(|| {
+            ContractsError::FunctionNotFound {
+                function: function.to_string(),
+                file: file.to_path_buf(),
+            }
+        })?;
+
+    let line = spec_node.start_position().row as u32 + 1;
+    let type_text = ocaml_value_spec_type_text(spec_node, source).unwrap_or_default();
+    let parts = split_top_level_arrows(&type_text);
+
+    let mut preconditions: Vec<Condition> = Vec::new();
+    let mut postconditions: Vec<Condition> = Vec::new();
+
+    if parts.len() >= 2 {
+        // All but the last component are parameter types.
+        for (idx, ty) in parts[..parts.len() - 1].iter().enumerate() {
+            let ty = ty.trim();
+            if ty.is_empty() {
+                continue;
+            }
+            let name = format!("arg{}", idx + 1);
+            preconditions.push(Condition::low(
+                name.clone(),
+                format!("{}: {}", name, ty),
+                line,
+            ));
+        }
+        if let Some(ret) = parts.last() {
+            let ret = ret.trim();
+            if !ret.is_empty() && ret != "unit" {
+                postconditions.push(Condition::low(
+                    "return".to_string(),
+                    format!("return: {}", ret),
+                    line,
+                ));
+            }
+        }
+    } else if !type_text.trim().is_empty() {
+        // Zero-arrow signature — single value of some type. Treat the type as
+        // a return postcondition (e.g., `val pi : float`).
+        let ty = type_text.trim();
+        if ty != "unit" {
+            postconditions.push(Condition::low(
+                "return".to_string(),
+                format!("return: {}", ty),
+                line,
+            ));
+        }
+    }
+
+    preconditions.truncate(limit.min(MAX_CONDITIONS_PER_FUNCTION));
+    postconditions.truncate(limit.min(MAX_CONDITIONS_PER_FUNCTION));
+
+    Ok(ContractsReport {
+        function: function.to_string(),
+        file: file.to_path_buf(),
+        preconditions,
+        postconditions,
+        invariants: Vec::new(),
+    })
+}
+
+/// Walk a tree-sitter-ocaml interface tree for a `value_specification`
+/// whose `value_name` child matches the requested function.
+fn find_ocaml_value_specification<'a>(
+    root: Node<'a>,
+    function: &str,
+    source: &[u8],
+) -> Option<Node<'a>> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "value_specification" {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "value_name" {
+                    let name = get_node_text(child, source);
+                    if name.trim() == function {
+                        return Some(node);
+                    }
+                    break;
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        let kids: Vec<_> = node.children(&mut cursor).collect();
+        for kid in kids.into_iter().rev() {
+            stack.push(kid);
+        }
+    }
+    None
+}
+
+/// Extract the type-expression text from a `value_specification` node by
+/// concatenating every child after the `value_name`/`:` prefix.
+fn ocaml_value_spec_type_text<'a>(spec: Node<'a>, source: &'a [u8]) -> Option<String> {
+    let mut after_colon = false;
+    let mut buf = String::new();
+    let mut cursor = spec.walk();
+    for child in spec.children(&mut cursor) {
+        let kind = child.kind();
+        if kind == ":" {
+            after_colon = true;
+            continue;
+        }
+        if after_colon {
+            if !buf.is_empty() {
+                buf.push(' ');
+            }
+            buf.push_str(get_node_text(child, source));
+        }
+    }
+    if buf.is_empty() {
+        None
+    } else {
+        Some(buf)
+    }
+}
+
+/// Split a type string on top-level `->`, respecting bracket nesting.
+/// Used to break an OCaml/Elixir-spec type signature into params + return.
+fn split_top_level_arrows(s: &str) -> Vec<String> {
+    let mut depth: i32 = 0;
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            '-' if depth == 0 && i + 1 < chars.len() && chars[i + 1] == '>' => {
+                parts.push(current.trim().to_string());
+                current.clear();
+                i += 2;
+                continue;
+            }
+            _ => current.push(ch),
+        }
+        i += 1;
+    }
+    parts.push(current.trim().to_string());
+    parts
 }
 
 // =============================================================================
@@ -2315,6 +2532,24 @@ fn extract_type_annotation_preconditions(
     Ok(())
 }
 
+/// contracts-type-printer-v1 (CLUSTER-M-046): Scala
+/// `(implicit X: T, Y: U)` parameter groups carry an `implicit` keyword
+/// child. They represent compiler-resolved type-class evidence, not
+/// caller-supplied arguments, so they MUST NOT appear as preconditions on
+/// the function value.
+fn is_scala_implicit_parameter_group(node: Node) -> bool {
+    if node.kind() != "parameters" {
+        return false;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "implicit" {
+            return true;
+        }
+    }
+    false
+}
+
 /// Recursively extract typed parameter information.
 fn extract_typed_params_recursive(
     node: Node,
@@ -2323,6 +2558,9 @@ fn extract_typed_params_recursive(
     config: &LanguageConfig,
     line: u32,
 ) {
+    if is_scala_implicit_parameter_group(node) {
+        return;
+    }
     // verification-and-metrics-completeness-v1 (P12.AGG12-11): same
     // function-declarator skip as the untyped variant — the C/C++
     // `function_declarator` mixes the function-name identifier with the
@@ -2364,12 +2602,26 @@ fn extract_typed_params_recursive(
 
             if let (Some(name_node), Some(type_node)) = (name_node, type_node) {
                 let name = get_node_text(name_node, source);
-                let type_str = get_node_text(type_node, source);
+                let base_type = get_node_text(type_node, source);
 
                 // Skip self/cls/this
                 if name == "self" || name == "cls" || name == "this" {
                     continue;
                 }
+
+                // contracts-type-printer-v1 (CLUSTER-M-046): in C/C++ the
+                // `type` field only holds the base type (`char`); pointer
+                // qualifiers / `&` references live in the declarator chain
+                // (`pointer_declarator` / `reference_declarator`). Recover
+                // them from the param's `declarator` child so
+                // `const char *init` renders as `init: char *`, not
+                // `init: char`.
+                let qualifiers = collect_c_param_qualifiers(param);
+                let type_str = if qualifiers.is_empty() {
+                    base_type.to_string()
+                } else {
+                    format!("{} {}", base_type, qualifiers)
+                };
 
                 let constraint = if config.has_isinstance {
                     format!("isinstance({}, {})", name, type_str)
@@ -2385,6 +2637,290 @@ fn extract_typed_params_recursive(
             extract_typed_params_recursive(param, source, conditions, config, line);
         }
     }
+}
+
+/// contracts-type-printer-v1 (CLUSTER-M-046): walk a C/C++
+/// `parameter_declaration` node's declarator chain and collect the
+/// pointer / reference indirection markers (`*`, `**`, `&`).
+///
+/// tree-sitter-c parses `const char *init` as:
+///     parameter_declaration
+///       type_qualifier "const"
+///       primitive_type "char"          ← field "type"
+///       pointer_declarator             ← field "declarator"
+///         "*"
+///         identifier "init"
+///
+/// The `type` field strips the `*`, so the previous extractor rendered
+/// `init: char`. We descend through `pointer_declarator` /
+/// `reference_declarator` / `abstract_pointer_declarator` /
+/// `abstract_reference_declarator` (and their `parenthesized_declarator`
+/// wrappers) accumulating one marker per indirection level.
+fn collect_c_param_qualifiers(param: Node) -> String {
+    let declarator = match param.child_by_field_name("declarator") {
+        Some(d) => d,
+        None => return String::new(),
+    };
+    let mut marks = String::new();
+    collect_indirection_marks(declarator, &mut marks);
+    marks
+}
+
+fn collect_indirection_marks(node: Node, marks: &mut String) {
+    match node.kind() {
+        "pointer_declarator" | "abstract_pointer_declarator" => marks.push('*'),
+        "reference_declarator" | "abstract_reference_declarator" => marks.push('&'),
+        _ => {}
+    }
+    // Recurse into nested declarators (multi-level pointer / reference).
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "pointer_declarator"
+            | "abstract_pointer_declarator"
+            | "reference_declarator"
+            | "abstract_reference_declarator"
+            | "parenthesized_declarator"
+            | "array_declarator"
+            | "init_declarator" => collect_indirection_marks(child, marks),
+            _ => {}
+        }
+    }
+}
+
+/// contracts-type-printer-v1 (CLUSTER-M-046): consume an Elixir `@spec`
+/// attribute adjacent to the located function definition and emit typed
+/// preconditions + a typed return postcondition.
+///
+/// AST shape for `@spec name(t1, t2) :: ret`:
+/// ```text
+/// unary_operator
+///   @
+///   call
+///     identifier "spec"
+///     arguments
+///       binary_operator                       <- "::"
+///         call                                <- name + arg types
+///           identifier "name"
+///           arguments
+///             ( arg-type … )
+///         "::"
+///         <return-type-expr>
+/// ```
+///
+/// Conditions are tagged low-confidence to mirror the type-annotation
+/// emission used by other languages — the @spec is a type-level claim,
+/// not an executable check.
+///
+/// DESIGN-park: the alternative — treating @spec ONLY as a type hint that
+/// does NOT produce contract entries — is recorded in
+/// `/tmp/audit_phase22/design_judgement_parked.md`. The defensible default
+/// chosen here is the same one already used for typed parameters in
+/// Rust/Go/Java: a `@spec`-derived type becomes a low-confidence pre/post.
+fn extract_elixir_at_spec(
+    func_node: Node,
+    function: &str,
+    source: &[u8],
+    preconditions: &mut Vec<Condition>,
+    postconditions: &mut Vec<Condition>,
+) {
+    // The `@spec` is a sibling of the `def` call inside the surrounding
+    // do_block / source / module body. Walk previous siblings and look
+    // for the matching unary_operator pattern. We only consider the
+    // closest preceding @spec to avoid mixing unrelated specs.
+    let mut prev = func_node.prev_sibling();
+    while let Some(node) = prev {
+        if node.kind() == "unary_operator" {
+            if let Some((arg_types, return_type)) =
+                parse_elixir_spec_unary_operator(node, function, source)
+            {
+                let line = node.start_position().row as u32 + 1;
+                for (idx, ty) in arg_types.iter().enumerate() {
+                    let ty = ty.trim();
+                    if ty.is_empty() {
+                        continue;
+                    }
+                    let name = format!("arg{}", idx + 1);
+                    preconditions.push(Condition::low(
+                        name.clone(),
+                        format!("{}: {}", name, ty),
+                        line,
+                    ));
+                }
+                let ret = return_type.trim();
+                if !ret.is_empty() {
+                    postconditions.push(Condition::low(
+                        "return".to_string(),
+                        format!("return: {}", ret),
+                        line,
+                    ));
+                }
+                return;
+            }
+        }
+        prev = node.prev_sibling();
+    }
+}
+
+/// Attempt to parse a `unary_operator(@, call(spec, args))` Elixir @spec
+/// attribute as `(arg_types, return_type)`. Returns `None` unless the
+/// inner `call`'s name matches `function`.
+fn parse_elixir_spec_unary_operator<'a>(
+    unary: Node<'a>,
+    function: &str,
+    source: &'a [u8],
+) -> Option<(Vec<String>, String)> {
+    let mut cursor = unary.walk();
+    let mut inner_call: Option<Node<'a>> = None;
+    for child in unary.children(&mut cursor) {
+        if child.kind() == "call" {
+            inner_call = Some(child);
+            break;
+        }
+    }
+    let spec_call = inner_call?;
+    let target = spec_call.child_by_field_name("target")?;
+    if get_node_text(target, source) != "spec" {
+        return None;
+    }
+
+    // The spec call has an `arguments` child holding a `binary_operator` (::)
+    // whose LHS is the function-application `name(arg_t1, arg_t2)` and
+    // whose RHS is the return type.
+    let mut c2 = spec_call.walk();
+    let mut args_node: Option<Node> = None;
+    for child in spec_call.children(&mut c2) {
+        if child.kind() == "arguments" {
+            args_node = Some(child);
+            break;
+        }
+    }
+    let args = args_node?;
+    let bin = args.child(0)?;
+    if bin.kind() != "binary_operator" {
+        return None;
+    }
+    // Operator must be `::`. The `operator` field (when present) or the
+    // middle child holds the operator token.
+    let mut found_dcolon = false;
+    let mut cc = bin.walk();
+    for child in bin.children(&mut cc) {
+        if child.kind() == "::" {
+            found_dcolon = true;
+            break;
+        }
+    }
+    if !found_dcolon {
+        return None;
+    }
+    // LHS — the function-application that names the spec target.
+    let lhs = bin.child(0)?;
+    // RHS — return type (the LAST child after the `::`).
+    let rhs = bin.child(bin.child_count().saturating_sub(1))?;
+
+    // Extract function name + arg types from LHS.
+    let (name, arg_types) = match lhs.kind() {
+        "call" => {
+            let tgt = lhs.child_by_field_name("target")?;
+            let mut name = get_node_text(tgt, source).to_string();
+            let mut arg_types: Vec<String> = Vec::new();
+            // The `arguments` child carries the comma-separated arg types.
+            let mut lcur = lhs.walk();
+            for c in lhs.children(&mut lcur) {
+                if c.kind() == "arguments" {
+                    let mut ac = c.walk();
+                    for at in c.children(&mut ac) {
+                        let kind = at.kind();
+                        if kind == "(" || kind == ")" || kind == "," {
+                            continue;
+                        }
+                        let txt = get_node_text(at, source).trim().to_string();
+                        if !txt.is_empty() {
+                            arg_types.push(txt);
+                        }
+                    }
+                }
+            }
+            // Defensive: bare `name :: t` may parse the LHS as `identifier`,
+            // not `call`. Handled in the other arm.
+            let _ = &mut name;
+            (name, arg_types)
+        }
+        "identifier" => (get_node_text(lhs, source).to_string(), Vec::new()),
+        _ => return None,
+    };
+
+    if name != function {
+        return None;
+    }
+    Some((arg_types, get_node_text(rhs, source).trim().to_string()))
+}
+
+/// contracts-type-printer-v1 (CLUSTER-M-046): recognise Swift
+/// `guard let X = Y else { … }` optional-binding statements anywhere in
+/// the function body and emit a high-confidence `X != nil` precondition.
+///
+/// After the guard succeeds, `X` is unconditionally non-nil for the rest
+/// of the function — semantically equivalent to a precondition on the
+/// continuation.
+///
+/// tree-sitter-swift parses the binding as
+/// `guard_statement(guard, value_binding_pattern(let), simple_identifier
+/// "X", =, …, else, { … })` — i.e., the bound name is a direct
+/// `simple_identifier` sibling of the `value_binding_pattern`.
+fn extract_swift_guard_let(
+    func_node: Node,
+    source: &[u8],
+    preconditions: &mut Vec<Condition>,
+    _config: &LanguageConfig,
+) {
+    walk_swift_guard_let(func_node, source, preconditions, 0);
+}
+
+fn walk_swift_guard_let(
+    node: Node,
+    source: &[u8],
+    preconditions: &mut Vec<Condition>,
+    depth: usize,
+) {
+    if depth > MAX_AST_DEPTH {
+        return;
+    }
+    if node.kind() == "guard_statement" {
+        if let Some(name) = swift_guard_let_binding_name(node, source) {
+            let line = node.start_position().row as u32 + 1;
+            let constraint = format!("{} != nil", name);
+            preconditions.push(Condition::high(name, constraint, line));
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_swift_guard_let(child, source, preconditions, depth + 1);
+    }
+}
+
+/// Return the binding name of a Swift `guard let X = …` if the guard
+/// statement is an optional-binding form. Returns `None` for plain
+/// `guard <bool> else …` guards (handled by the existing
+/// `precondition_from_guard` path).
+fn swift_guard_let_binding_name(guard_stmt: Node, source: &[u8]) -> Option<String> {
+    let mut cursor = guard_stmt.walk();
+    let mut saw_value_binding = false;
+    for child in guard_stmt.children(&mut cursor) {
+        match child.kind() {
+            "value_binding_pattern" => {
+                saw_value_binding = true;
+            }
+            "simple_identifier" if saw_value_binding => {
+                let name = get_node_text(child, source).trim().to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Extract postcondition from return type annotation (multi-language).
@@ -2469,6 +3005,12 @@ fn extract_untyped_params_recursive(
     line: u32,
     existing_vars: &HashSet<String>,
 ) {
+    // contracts-type-printer-v1 (CLUSTER-M-046): skip Scala
+    // `(implicit ...)` parameter groups — see
+    // `is_scala_implicit_parameter_group` for the rationale.
+    if is_scala_implicit_parameter_group(node) {
+        return;
+    }
     // verification-and-metrics-completeness-v1 (P12.AGG12-11): when the
     // current node is a C/C++ `function_declarator`, only descend into
     // its `parameter_list` child. Otherwise the recursion sees the
