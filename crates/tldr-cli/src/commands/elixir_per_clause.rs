@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(off1, 0, "clause at line 2 must have zero offset");
         // The clause text should start at line 2 in the synthetic source.
         let syn1_lines: Vec<&str> = syn1.lines().collect();
-        assert!(syn1_lines[1].contains("defmodule M do") || syn1_lines[0].is_empty());
+        assert!(syn1_lines[0].contains("defmodule M do"), "line 0 of synthetic must be the defmodule header");
         // Find the clause line and verify it's at the expected position.
         let clause_line_idx = syn1_lines
             .iter()
