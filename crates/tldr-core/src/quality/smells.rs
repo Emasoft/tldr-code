@@ -101,6 +101,36 @@ impl std::fmt::Display for SmellType {
     }
 }
 
+impl SmellType {
+    /// cluster-misc-v1 (M-042): human-readable description for each smell type.
+    ///
+    /// Exposed as a public method so `SmellFinding`'s manual `Serialize` impl
+    /// can emit a top-level `description` field without storing a redundant
+    /// `String` in every instance.
+    pub fn description(&self) -> &'static str {
+        match self {
+            SmellType::GodClass => "Class with too many methods or lines of code (>20 methods or >500 LOC)",
+            SmellType::LongMethod => "Method with too many lines or too high cyclomatic complexity (>50 LOC or cyclomatic >10)",
+            SmellType::LongParameterList => "Function with too many parameters (>5)",
+            SmellType::FeatureEnvy => "Method uses another class's data more than its own",
+            SmellType::DataClumps => "Same group of data items appearing together in multiple places",
+            SmellType::LowCohesion => "Class with low cohesion (LCOM4 >= 2)",
+            SmellType::TightCoupling => "Modules with tight coupling (score >= 0.6)",
+            SmellType::DeadCode => "Unreachable function never called in the project",
+            SmellType::CodeClone => "Duplicate or near-duplicate code block",
+            SmellType::HighCognitiveComplexity => "Function with high cognitive complexity (>= 15)",
+            SmellType::DeepNesting => "Function with deep nesting depth (>= 5 levels)",
+            SmellType::DataClass => "Class with many fields but few or no methods (pure data bag)",
+            SmellType::LazyElement => "Class with only one method and zero or one fields (too trivial)",
+            SmellType::MessageChain => "Long chain of method calls creating high coupling to structure",
+            SmellType::PrimitiveObsession => "Function with many primitive-typed parameters instead of domain objects",
+            SmellType::MiddleMan => "Class where more than half of its methods just delegate to another class",
+            SmellType::RefusedBequest => "Subclass using less than a third of inherited methods",
+            SmellType::InappropriateIntimacy => "Two classes with bidirectional internal access to each other's details",
+        }
+    }
+}
+
 /// Threshold presets for smell detection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -239,8 +269,12 @@ impl Thresholds {
     }
 }
 
-/// A single code smell finding
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single code smell finding.
+///
+/// cluster-misc-v1 (M-042): `description` is emitted as a top-level field via
+/// a manual `Serialize` impl that calls `smell_type.description()` at
+/// serialization time. No extra storage field is needed.
+#[derive(Debug, Clone, Deserialize)]
 pub struct SmellFinding {
     /// Type of smell detected
     pub smell_type: SmellType,
@@ -255,8 +289,33 @@ pub struct SmellFinding {
     /// Severity level (1-3, higher is worse)
     pub severity: u8,
     /// Suggestion for fixing (only if requested)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+}
+
+// cluster-misc-v1 (M-042): manual Serialize that adds a top-level
+// `description` field derived from `smell_type.description()`.
+impl Serialize for SmellFinding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let field_count = if self.suggestion.is_some() { 8 } else { 7 };
+        let mut state = serializer.serialize_struct("SmellFinding", field_count)?;
+        state.serialize_field("smell_type", &self.smell_type)?;
+        state.serialize_field("file", &self.file)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("line", &self.line)?;
+        state.serialize_field("reason", &self.reason)?;
+        state.serialize_field("severity", &self.severity)?;
+        // Top-level description mirror (M-042).
+        state.serialize_field("description", self.smell_type.description())?;
+        if let Some(suggestion) = &self.suggestion {
+            state.serialize_field("suggestion", suggestion)?;
+        }
+        state.end()
+    }
 }
 
 /// Report from smell detection

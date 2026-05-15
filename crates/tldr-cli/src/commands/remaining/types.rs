@@ -1323,7 +1323,13 @@ pub struct APIRule {
 }
 
 /// A detected API misuse.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// cluster-misc-v1 (M-042): `description` is emitted as a top-level field
+/// in the JSON output (mirroring `rule.description`) so consumers can read
+/// `finding.description` without drilling into the nested `rule` object.
+/// The struct stores no extra field; the manual `Serialize` impl derives the
+/// value from `self.rule.description` at serialization time.
+#[derive(Debug, Clone, Deserialize)]
 pub struct MisuseFinding {
     /// File path
     pub file: String,
@@ -1342,6 +1348,30 @@ pub struct MisuseFinding {
     /// Code context
     #[serde(default)]
     pub code_context: String,
+}
+
+// cluster-misc-v1 (M-042): manual Serialize that mirrors `rule.description`
+// to a top-level `description` key so findings emitted by `tldr api-check`
+// expose the description without requiring callers to drill into `.rule`.
+impl serde::Serialize for MisuseFinding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("MisuseFinding", 9)?;
+        state.serialize_field("file", &self.file)?;
+        state.serialize_field("line", &self.line)?;
+        state.serialize_field("column", &self.column)?;
+        state.serialize_field("rule", &self.rule)?;
+        state.serialize_field("api_call", &self.api_call)?;
+        state.serialize_field("message", &self.message)?;
+        state.serialize_field("fix_suggestion", &self.fix_suggestion)?;
+        state.serialize_field("code_context", &self.code_context)?;
+        // Top-level mirror of rule.description (M-042).
+        state.serialize_field("description", &self.rule.description)?;
+        state.end()
+    }
 }
 
 /// API check summary.

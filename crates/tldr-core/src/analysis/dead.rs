@@ -128,6 +128,16 @@ pub fn dead_code_analysis(
             continue;
         }
 
+        // cluster-misc-v1 (M-044): C++ destructors are always invoked implicitly
+        // by the runtime when an object goes out of scope or is deleted. They must
+        // never be flagged as dead code. In the tree-sitter-cpp grammar, destructor
+        // names are emitted from `destructor_name` nodes, which always begin with
+        // `~`. No other supported language uses `~` as a function-name prefix, so
+        // this is a safe cross-language guard.
+        if bare_name.starts_with('~') {
+            continue;
+        }
+
         // Classify: public/exported but uncalled -> possibly dead (may be API surface)
         // Private/unenriched and uncalled -> definitely dead
         if func_ref.is_public {
@@ -259,6 +269,14 @@ pub fn dead_code_analysis_refcount(
 
         // Skip decorated/annotated functions (C8)
         if func_ref.has_decorator {
+            continue;
+        }
+
+        // cluster-misc-v1 (M-044): C++ destructors are implicitly invoked by
+        // the runtime and must not be reported as dead code. Destructor names
+        // always begin with `~` in the tree-sitter-cpp `destructor_name` node
+        // kind. No other supported language uses `~` as a function-name prefix.
+        if bare_name.starts_with('~') {
             continue;
         }
 
