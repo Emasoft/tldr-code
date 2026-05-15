@@ -190,10 +190,32 @@ pub fn get_slice_rich(
         .filter(|n| visited.contains(&n.id))
         .collect();
 
-    // Collect all lines covered by visited nodes, with their metadata
-    // Multiple nodes can cover the same line; we merge definitions/uses
+    // slice-per-line-uses-v1 (v0.4.2 M-033): Build per-line defs/uses from
+    // the DFG's line-anchored variable references rather than unioning the
+    // entire CFG block's def/use sets onto every line in the block's
+    // span. The pre-fix code (commented out below) treated each visited
+    // PdgNode as a single statement, but PDG nodes correspond to CFG
+    // *basic blocks* — multi-line spans that frequently bundle the
+    // function signature, comments, and 2-5 statements together. The
+    // result: every line inside a block emitted identical
+    // `definitions`/`uses` arrays — the function-aggregate broadcast
+    // observed in csharp/java/ocaml/swift at Phase-22 audit cells
+    // c14/c15.
+    //
+    // Algorithm:
+    //   1. Determine the set of slice lines: each line in any visited
+    //      PdgNode's `lines.0..=lines.1` span (preserves block-membership
+    //      semantics).
+    //   2. For each slice line `l`, gather the DFG `VarRef`s whose
+    //      `r.line == l`, partitioning into definitions/updates (defs)
+    //      and uses (uses). This makes each line's defs/uses reflect
+    //      the variable activity AT that exact source line.
+    //   3. Carry over `node_type` from the (first) visited PdgNode
+    //      covering line `l` for diagnostic continuity.
     let mut line_map: HashMap<u32, SliceNode> = HashMap::new();
 
+    // First pass: enumerate slice lines from visited PDG nodes,
+    // recording the representative node_type per line.
     for node in &visited_nodes {
         for l in node.lines.0..=node.lines.1 {
             if l == 0 {
@@ -204,7 +226,7 @@ pub fn get_slice_rich(
                 .map(|s| s.trim_end().to_string())
                 .unwrap_or_default();
 
-            let entry = line_map.entry(l).or_insert_with(|| SliceNode {
+            line_map.entry(l).or_insert_with(|| SliceNode {
                 line: l,
                 code,
                 node_type: node.node_type.clone(),
@@ -213,16 +235,26 @@ pub fn get_slice_rich(
                 dep_type: None,
                 dep_label: None,
             });
+        }
+    }
 
-            // Merge definitions and uses from multiple nodes covering same line
-            for d in &node.definitions {
-                if !entry.definitions.contains(d) {
-                    entry.definitions.push(d.clone());
+    // Second pass: populate per-line defs/uses from the DFG. The DFG's
+    // `refs` vector is line-anchored (each `VarRef` carries its own
+    // `line` and `ref_type`), so this is the canonical source for
+    // per-statement use-set computation — no string scanning, no
+    // AST re-walks, no per-lang fixups.
+    for r in &pdg.dfg.refs {
+        if let Some(entry) = line_map.get_mut(&r.line) {
+            match r.ref_type {
+                crate::types::RefType::Definition | crate::types::RefType::Update => {
+                    if !entry.definitions.contains(&r.name) {
+                        entry.definitions.push(r.name.clone());
+                    }
                 }
-            }
-            for u in &node.uses {
-                if !entry.uses.contains(u) {
-                    entry.uses.push(u.clone());
+                crate::types::RefType::Use => {
+                    if !entry.uses.contains(&r.name) {
+                        entry.uses.push(r.name.clone());
+                    }
                 }
             }
         }
