@@ -418,6 +418,14 @@ fn analyze_directory(
 
     let mut all_classes = Vec::new();
     let mut file_count = 0u32;
+    // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): non-python
+    // files are routed through the core analyzer at the *directory*
+    // granularity (rather than per-file) so the core's partial-class
+    // merge step — required for `partial class Foo` declarations that
+    // span multiple `.cs` files — actually runs. Python files keep
+    // the per-file walk so the CLI-specific `test_*.py` exclusion
+    // continues to apply.
+    let mut has_non_python = false;
 
     for entry in walk_project(dir) {
         // Check timeout
@@ -447,15 +455,79 @@ fn analyze_directory(
                 continue;
             }
 
-            // Analyze file, collecting errors but continuing
-            match analyze_single_file(path, args) {
-                Ok(report) => {
-                    all_classes.extend(report.classes);
+            let lang = Language::from_path(path);
+            if lang == Some(Language::Python) {
+                // Analyze file, collecting errors but continuing
+                match analyze_single_file(path, args) {
+                    Ok(report) => {
+                        all_classes.extend(report.classes);
+                    }
+                    Err(_) => {
+                        // Skip files with parse errors
+                        continue;
+                    }
                 }
-                Err(_) => {
-                    // Skip files with parse errors
-                    continue;
-                }
+            } else if lang.is_some() {
+                has_non_python = true;
+            }
+        }
+    }
+
+    if has_non_python {
+        // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): walk the
+        // *directory* through the core analyzer so cross-file partial-
+        // class merging runs. The core re-walks the directory itself
+        // and applies its own language detection per file; the python-
+        // specific test-file filter above does not need to reach here
+        // because the core path simply emits whatever it finds (and the
+        // duplicate-python work is benign — python entries come from
+        // the per-file walk above, and the core's per-language extractor
+        // dispatch for python re-runs the same algorithm).
+        match core_cohesion::analyze_cohesion(dir, None, 2) {
+            Ok(core_report) => {
+                let core_classes: Vec<ClassCohesion> = core_report
+                    .classes
+                    .into_iter()
+                    .filter(|c| {
+                        // Filter out python — the per-file walk above
+                        // already handled python with the CLI's
+                        // test-file exclusion. Re-including them here
+                        // would double-count.
+                        let p = Path::new(&c.file);
+                        Language::from_path(p) != Some(Language::Python)
+                    })
+                    .filter(|c| c.method_count >= args.min_methods as usize)
+                    .map(|c| ClassCohesion {
+                        class_name: c.name,
+                        file_path: c.file.display().to_string(),
+                        line: c.line as u32,
+                        lcom4: c.lcom4 as u32,
+                        method_count: c.method_count as u32,
+                        field_count: c.field_count as u32,
+                        verdict: match c.verdict {
+                            core_cohesion::CohesionVerdict::Cohesive => CohesionVerdict::Cohesive,
+                            core_cohesion::CohesionVerdict::SplitCandidate => {
+                                CohesionVerdict::SplitCandidate
+                            }
+                        },
+                        split_suggestion: c.split_suggestion,
+                        components: c
+                            .components
+                            .into_iter()
+                            .map(|comp| ComponentInfo {
+                                methods: comp.methods,
+                                fields: comp.fields,
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                all_classes.extend(core_classes);
+            }
+            Err(_) => {
+                // Graceful degradation: leave non-python results empty
+                // if the core walker fails wholesale (typically a
+                // permissions or fs error — `analyze_cohesion_with_
+                // options` already swallows per-file parse failures).
             }
         }
     }

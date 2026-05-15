@@ -227,10 +227,19 @@ struct MethodInfo {
 }
 
 /// Class information for LCOM4 calculation
+#[derive(Default)]
 struct ClassInfo {
     name: String,
     line: usize,
     methods: Vec<MethodInfo>,
+    /// cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): marks a class
+    /// declaration as `partial` (currently emitted only for the C#
+    /// `partial class Foo {}` form). When `true`, the directory walker
+    /// merges all `ClassInfo` entries with the same name across files
+    /// before computing LCOM4, so that fields/methods declared in
+    /// sibling source files are counted toward the same cohesion entry.
+    /// Default `false` for every other class extractor.
+    is_partial: bool,
 }
 
 // =============================================================================
@@ -337,14 +346,68 @@ pub fn analyze_cohesion_with_options(
             .collect()
     };
 
-    // Analyze each file and collect class cohesion data
+    // Analyze each file and collect class cohesion data.
+    //
+    // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): for languages
+    // with partial-class semantics (currently C# `partial class Foo`),
+    // we first extract per-method field-access sets at file scope and
+    // then *merge* entries with the same name across files before
+    // computing LCOM4. Languages with no partial-class semantics flow
+    // through the legacy per-file `analyze_file_cohesion` path.
     let mut all_classes: Vec<ClassCohesion> = Vec::new();
+    let mut partial_buckets: HashMap<String, PartialClassBucket> = HashMap::new();
 
     for file_path in &file_paths {
-        if let Ok(classes) = analyze_file_cohesion(file_path, &options) {
-            all_classes.extend(classes);
+        match extract_file_method_fields(file_path, &options) {
+            Ok(extractions) => {
+                for ext in extractions {
+                    if ext.is_partial {
+                        // Aggregate by class name across the dir walk.
+                        let bucket = partial_buckets
+                            .entry(ext.name.clone())
+                            .or_insert_with(|| PartialClassBucket {
+                                name: ext.name.clone(),
+                                first_file: ext.file_path.clone(),
+                                first_line: ext.line,
+                                methods: Vec::new(),
+                            });
+                        if ext.line < bucket.first_line
+                            || (ext.line == bucket.first_line
+                                && ext.file_path < bucket.first_file)
+                        {
+                            bucket.first_file = ext.file_path.clone();
+                            bucket.first_line = ext.line;
+                        }
+                        bucket.methods.extend(ext.methods);
+                    } else {
+                        // Non-partial: compute cohesion immediately as
+                        // before (within-file granularity).
+                        all_classes.push(cohesion_from_method_fields(
+                            &ext.name,
+                            &ext.file_path,
+                            ext.line,
+                            ext.methods,
+                            &options,
+                        ));
+                    }
+                }
+            }
+            Err(_) => {
+                // Graceful degradation: ignore parse failures, just
+                // like the legacy `analyze_file_cohesion` path.
+            }
         }
-        // Skip files that fail to parse (graceful degradation)
+    }
+
+    // Now compute LCOM4 for merged partial-class buckets.
+    for (_, bucket) in partial_buckets {
+        all_classes.push(cohesion_from_method_fields(
+            &bucket.name,
+            &bucket.first_file,
+            bucket.first_line,
+            bucket.methods,
+            &options,
+        ));
     }
 
     // Sort by LCOM4 descending (worst cohesion first)
@@ -384,6 +447,14 @@ pub fn analyze_cohesion_with_options(
 }
 
 /// Analyze cohesion for all classes in a single file
+///
+/// cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): the directory
+/// walk now goes through `extract_file_method_fields` +
+/// `cohesion_from_method_fields` so partial-class entries can be
+/// merged across files. This per-file helper remains live solely for
+/// the in-tree unit tests under `mod tests` that exercise the legacy
+/// data path directly.
+#[cfg(test)]
 fn analyze_file_cohesion(
     file_path: &Path,
     options: &CohesionOptions,
@@ -455,6 +526,252 @@ fn analyze_file_cohesion(
     Ok(results)
 }
 
+// =============================================================================
+// Cross-file aggregation (v0.4.2 M-030)
+// =============================================================================
+
+/// A method paired with the set of fields it accesses, extracted at
+/// file scope so it can be transported across the cross-file
+/// partial-class aggregator without needing to keep the file's source
+/// string alive.
+#[derive(Debug, Clone)]
+struct MethodFields {
+    name: String,
+    fields: HashSet<String>,
+}
+
+/// A single class extraction from a single file, with field-access
+/// sets precomputed per method. The `is_partial` flag selects between
+/// per-file cohesion (the legacy path) and cross-file aggregation
+/// (M-030).
+#[derive(Debug, Clone)]
+struct MethodFieldsExtraction {
+    name: String,
+    file_path: PathBuf,
+    line: usize,
+    is_partial: bool,
+    methods: Vec<MethodFields>,
+}
+
+/// Accumulator for one logical partial class across the dir walk.
+#[derive(Debug, Clone)]
+struct PartialClassBucket {
+    name: String,
+    first_file: PathBuf,
+    first_line: usize,
+    methods: Vec<MethodFields>,
+}
+
+/// Read+parse a file and extract per-method `(name, fields)` pairs for
+/// every class detected. This is the "data" form used by the M-030
+/// cross-file aggregator — it factors out the per-method field-access
+/// extraction so the union step at the bucket level is trivial.
+fn extract_file_method_fields(
+    file_path: &Path,
+    options: &CohesionOptions,
+) -> TldrResult<Vec<MethodFieldsExtraction>> {
+    let source = std::fs::read_to_string(file_path)?;
+    let mut language = Language::from_path(file_path).ok_or_else(|| {
+        TldrError::UnsupportedLanguage(
+            file_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        )
+    })?;
+    // Mirror the `analyze_file_cohesion` `.h → Cpp` promotion (P19-08).
+    if matches!(language, Language::C)
+        && file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("h") || e.eq_ignore_ascii_case("hpp"))
+            .unwrap_or(false)
+        && (source.contains("\nclass ")
+            || source.contains(" class ")
+            || source.contains("namespace "))
+    {
+        language = Language::Cpp;
+    }
+
+    let tree = parse(&source, language)?;
+    let root = tree.root_node();
+    let class_infos = extract_classes(root, &source, language);
+
+    let cpp_drop_methodless = matches!(language, Language::Cpp);
+    let mut out: Vec<MethodFieldsExtraction> = Vec::new();
+
+    for class_info in class_infos {
+        if cpp_drop_methodless && class_info.methods.is_empty() {
+            continue;
+        }
+        let methods: Vec<MethodFields> = class_info
+            .methods
+            .iter()
+            .filter(|m| options.include_dunder || !is_dunder_method(&m.name))
+            .map(|m| {
+                let method_source = &source[m.start_byte..m.end_byte];
+                let fields = extract_field_accesses(method_source, file_path);
+                MethodFields {
+                    name: m.name.clone(),
+                    fields,
+                }
+            })
+            .collect();
+        out.push(MethodFieldsExtraction {
+            name: class_info.name,
+            file_path: file_path.to_path_buf(),
+            line: class_info.line,
+            is_partial: class_info.is_partial,
+            methods,
+        });
+    }
+    Ok(out)
+}
+
+/// Compute the LCOM4 result for a class given its precomputed method
+/// `(name, fields)` set. Mirrors the algorithm in
+/// `compute_class_cohesion` but operates on data that has already been
+/// unioned across files (partial-class case) or that came from a
+/// single file (the non-partial path).
+fn cohesion_from_method_fields(
+    name: &str,
+    file_path: &Path,
+    line: usize,
+    methods: Vec<MethodFields>,
+    options: &CohesionOptions,
+) -> ClassCohesion {
+    let method_count = methods.len();
+
+    // Degenerate / singleton method handling identical to
+    // `compute_class_cohesion`.
+    if method_count == 0 {
+        return ClassCohesion {
+            name: name.to_string(),
+            file: file_path.to_path_buf(),
+            line,
+            method_count: 0,
+            field_count: 0,
+            lcom4: 0,
+            components: vec![],
+            verdict: CohesionVerdict::Cohesive,
+            split_suggestion: None,
+        };
+    }
+
+    if method_count == 1 {
+        let m = &methods[0];
+        let field_vec: Vec<String> = m.fields.iter().cloned().collect();
+        return ClassCohesion {
+            name: name.to_string(),
+            file: file_path.to_path_buf(),
+            line,
+            method_count: 1,
+            field_count: field_vec.len(),
+            lcom4: 1,
+            components: vec![ComponentInfo {
+                methods: vec![m.name.clone()],
+                fields: field_vec,
+            }],
+            verdict: CohesionVerdict::Cohesive,
+            split_suggestion: None,
+        };
+    }
+
+    let method_fields: Vec<&HashSet<String>> =
+        methods.iter().map(|m| &m.fields).collect();
+    let all_fields: HashSet<String> =
+        method_fields.iter().flat_map(|s| s.iter().cloned()).collect();
+    let field_count = all_fields.len();
+
+    if all_fields.is_empty() {
+        let lcom4 = method_count;
+        let components: Vec<ComponentInfo> = methods
+            .iter()
+            .map(|m| ComponentInfo {
+                methods: vec![m.name.clone()],
+                fields: vec![],
+            })
+            .collect();
+        let verdict = if lcom4 > options.low_cohesion_threshold {
+            CohesionVerdict::SplitCandidate
+        } else {
+            CohesionVerdict::Cohesive
+        };
+        let split_suggestion = if verdict == CohesionVerdict::SplitCandidate {
+            Some(format!(
+                "Class has {} disconnected methods with no shared state",
+                method_count
+            ))
+        } else {
+            None
+        };
+        return ClassCohesion {
+            name: name.to_string(),
+            file: file_path.to_path_buf(),
+            line,
+            method_count,
+            field_count: 0,
+            lcom4,
+            components,
+            verdict,
+            split_suggestion,
+        };
+    }
+
+    let mut uf = UnionFind::new(method_count);
+    for i in 0..method_count {
+        for j in (i + 1)..method_count {
+            if !method_fields[i].is_disjoint(method_fields[j]) {
+                uf.union(i, j);
+            }
+        }
+    }
+    let lcom4 = uf.count_components();
+    let component_ids = uf.get_components();
+    let mut component_map: HashMap<usize, (Vec<String>, HashSet<String>)> = HashMap::new();
+    for (i, &comp_id) in component_ids.iter().enumerate() {
+        let entry = component_map
+            .entry(comp_id)
+            .or_insert_with(|| (Vec::new(), HashSet::new()));
+        entry.0.push(methods[i].name.clone());
+        entry.1.extend(method_fields[i].iter().cloned());
+    }
+    let components: Vec<ComponentInfo> = component_map
+        .into_values()
+        .map(|(methods, fields)| ComponentInfo {
+            methods,
+            fields: fields.into_iter().collect(),
+        })
+        .collect();
+
+    let verdict = if lcom4 > options.low_cohesion_threshold {
+        CohesionVerdict::SplitCandidate
+    } else {
+        CohesionVerdict::Cohesive
+    };
+    let split_suggestion = if verdict == CohesionVerdict::SplitCandidate {
+        Some(format!(
+            "Consider splitting into {} classes based on {} disconnected method groups",
+            lcom4, lcom4
+        ))
+    } else {
+        None
+    };
+
+    ClassCohesion {
+        name: name.to_string(),
+        file: file_path.to_path_buf(),
+        line,
+        method_count,
+        field_count,
+        lcom4,
+        components,
+        verdict,
+        split_suggestion,
+    }
+}
+
 /// Extract classes from the AST based on language
 fn extract_classes(root: tree_sitter::Node, source: &str, language: Language) -> Vec<ClassInfo> {
     match language {
@@ -473,7 +790,497 @@ fn extract_classes(root: tree_sitter::Node, source: &str, language: Language) ->
         // header. Add cpp class extraction so the three pipelines agree
         // on the class count surface.
         Language::Cpp => extract_cpp_classes_cohesion(root, source),
+        // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): Phase-21
+        // regression — swift extension-only / class+extension files
+        // reported `classes:0`. Aggregate `class_declaration`
+        // (tree-sitter-swift uses the same node kind for `class`,
+        // `struct`, `enum`, `actor`, and `extension`) by extended-type
+        // name within the file.
+        Language::Swift => extract_swift_classes_cohesion(root, source),
+        // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): the kotlin
+        // class extractor was entirely absent, so every kotlin file
+        // reported `classes:0`. Use the same `class_declaration` /
+        // `object_declaration` shape as the structure/interface
+        // surfaces (M-022).
+        Language::Kotlin => extract_kotlin_classes_cohesion(root, source),
+        // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): detect
+        // setmetatable-style prototype OO (`local Point = {}; function
+        // Point:m()`) for lua/luau, which are the dominant idiomatic
+        // class forms in the language. No tree-sitter class node
+        // exists; we synthesise one per `local X = {}` whose name is
+        // referenced by `function X.m()` / `function X:m()` bindings.
+        Language::Lua | Language::Luau => extract_lua_classes_cohesion(root, source),
         _ => vec![], // Unsupported language
+    }
+}
+
+// =============================================================================
+// Swift Class Extraction (v0.4.2 M-030)
+// =============================================================================
+
+/// Extract swift classes/structs/enums/actors AND aggregate extension
+/// blocks by extended-type name (within-file).
+///
+/// `tree-sitter-swift` models `class Foo {}`, `struct Foo {}`,
+/// `enum Foo {}`, `actor Foo {}`, and `extension Foo {}` ALL as a
+/// `class_declaration` node — the discriminator lives in the leading
+/// declaration keyword (the first child). `.child_by_field_name("name")`
+/// returns:
+///   - for `class Foo {}` -> `type_identifier("Foo")`
+///   - for `extension Foo {}` -> `user_type/type_identifier("Foo")`
+/// so we read the name field directly. Method bodies live in a
+/// `class_body` child (whose children contain `function_declaration`
+/// nodes — the same shape the interface command uses post-M-022).
+///
+/// Aggregation policy: multiple `class_declaration` nodes that resolve
+/// to the same name (e.g. `class Shape {...}` + `extension Shape {...}`
+/// + `extension Shape {...}`) merge into a single `ClassInfo` whose
+/// `methods` list is the union of all of them. The reported `line`
+/// is the smallest start-line across the contributing nodes (the
+/// canonical declaration site).
+fn extract_swift_classes_cohesion(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
+    let mut by_name: std::collections::BTreeMap<String, ClassInfo> =
+        std::collections::BTreeMap::new();
+    extract_swift_classes_cohesion_recursive(root, source, &mut by_name);
+    by_name.into_values().collect()
+}
+
+fn extract_swift_classes_cohesion_recursive(
+    node: tree_sitter::Node,
+    source: &str,
+    classes: &mut std::collections::BTreeMap<String, ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "class_declaration" || child.kind() == "protocol_declaration" {
+            if let Some(info) = extract_swift_class_info(&child, source) {
+                let entry = classes
+                    .entry(info.name.clone())
+                    .or_insert_with(|| ClassInfo {
+                        name: info.name.clone(),
+                        line: info.line,
+                        methods: Vec::new(),
+                        is_partial: false,
+                    });
+                if info.line < entry.line {
+                    entry.line = info.line;
+                }
+                entry.methods.extend(info.methods);
+            }
+        }
+        // Recurse into children — swift classes/protocols/extensions
+        // may be nested inside namespace-like contexts.
+        extract_swift_classes_cohesion_recursive(child, source, classes);
+    }
+}
+
+fn extract_swift_class_info(node: &tree_sitter::Node, source: &str) -> Option<ClassInfo> {
+    // Pull the name via the tree-sitter `name` field. For
+    // `extension Foo`, the field still points to the extended type.
+    // Fallback: scan direct named children for the first
+    // `type_identifier` / `user_type` / `simple_identifier`.
+    let name = node
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()))
+        .or_else(|| swift_first_type_identifier(node, source))?;
+
+    if name.is_empty() {
+        return None;
+    }
+
+    let line = node.start_position().row + 1;
+    let mut methods = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "class_body" || child.kind() == "protocol_body" {
+            collect_swift_methods(&child, source, &mut methods);
+        }
+    }
+    Some(ClassInfo {
+        name,
+        line,
+        methods,
+        is_partial: false,
+    })
+}
+
+fn swift_first_type_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "type_identifier" | "simple_identifier" => {
+                if let Ok(t) = child.utf8_text(source.as_bytes()) {
+                    if !t.is_empty() {
+                        return Some(t.to_string());
+                    }
+                }
+            }
+            "user_type" => {
+                if let Some(found) = swift_first_type_identifier(&child, source) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn collect_swift_methods(
+    body: &tree_sitter::Node,
+    source: &str,
+    methods: &mut Vec<MethodInfo>,
+) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        // tree-sitter-swift emits `function_declaration` for both
+        // class methods and protocol method requirements. `init` is
+        // an `init_declaration`; intentionally excluded from LCOM4
+        // (constructor-exclusion policy is shared with TS/Java/CSharp).
+        if child.kind() == "function_declaration" {
+            let name = child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()))
+                .or_else(|| swift_first_simple_identifier(&child, source));
+            if let Some(n) = name {
+                if !n.is_empty() {
+                    methods.push(MethodInfo {
+                        name: n,
+                        start_byte: child.start_byte(),
+                        end_byte: child.end_byte(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+fn swift_first_simple_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "simple_identifier" {
+            if let Ok(t) = child.utf8_text(source.as_bytes()) {
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+// =============================================================================
+// Kotlin Class Extraction (v0.4.2 M-030)
+// =============================================================================
+
+/// Extract kotlin classes/objects with their methods.
+///
+/// Mirrors the shape used by the structure/interface surfaces (M-022):
+///   - `class_declaration` -> `class`, `interface`, `enum class`,
+///     `data class`, `sealed class`, …
+///   - `object_declaration` -> singleton `object Foo {}`
+/// Method bodies live in a `class_body` child; methods are
+/// `function_declaration` nodes (post-M-022).
+fn extract_kotlin_classes_cohesion(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
+    let mut classes = Vec::new();
+    extract_kotlin_classes_cohesion_recursive(root, source, &mut classes);
+    classes
+}
+
+fn extract_kotlin_classes_cohesion_recursive(
+    node: tree_sitter::Node,
+    source: &str,
+    classes: &mut Vec<ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "class_declaration"
+            || child.kind() == "object_declaration"
+            || child.kind() == "companion_object"
+        {
+            if let Some(info) = extract_kotlin_class_info(&child, source) {
+                classes.push(info);
+            }
+        }
+        // Recurse into children to discover nested classes.
+        extract_kotlin_classes_cohesion_recursive(child, source, classes);
+    }
+}
+
+fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<ClassInfo> {
+    // Tree-sitter-kotlin uses `type_identifier` for class names.
+    let name = node
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()))
+        .or_else(|| swift_first_type_identifier(node, source))?;
+
+    if name.is_empty() {
+        return None;
+    }
+
+    let line = node.start_position().row + 1;
+    let mut methods = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "class_body" {
+            collect_kotlin_methods(&child, source, &mut methods);
+        }
+    }
+    Some(ClassInfo {
+        name,
+        line,
+        methods,
+        is_partial: false,
+    })
+}
+
+fn collect_kotlin_methods(
+    body: &tree_sitter::Node,
+    source: &str,
+    methods: &mut Vec<MethodInfo>,
+) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "function_declaration" {
+            let name = child
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()))
+                .or_else(|| swift_first_simple_identifier(&child, source));
+            if let Some(n) = name {
+                if !n.is_empty() {
+                    methods.push(MethodInfo {
+                        name: n,
+                        start_byte: child.start_byte(),
+                        end_byte: child.end_byte(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Lua Class Extraction (v0.4.2 M-030)
+// =============================================================================
+
+/// Detect setmetatable-style prototype classes in lua/luau source.
+///
+/// The dominant lua OO idiom is:
+/// ```lua
+/// local Point = {}
+/// function Point.new(x, y) ... end
+/// function Point:distance(other) ... end
+/// function Point:translate(dx, dy) ... end
+/// ```
+/// The `Point` identifier is bound by a `local Point = {}` (an
+/// empty-table assignment) and then receives methods via dotted
+/// (`Point.new`) or colon-prefixed (`Point:distance`) `function`
+/// statements.
+///
+/// Heuristic:
+///   1. Collect all `local X = {}` bindings (variable_declaration
+///      whose RHS is an empty `table_constructor`).
+///   2. Walk `function_declaration` statements and look for nodes
+///      whose name is `Foo.bar` or `Foo:bar` (a dot_index_expression
+///      / method_index_expression). The bare identifier `Foo` is the
+///      class name; the trailing identifier is the method name.
+///   3. Emit a `ClassInfo` per `X` that owns >=1 method.
+///
+/// Body for cohesion field-extraction is the function's full byte
+/// span (`self.X` accesses are recognised by `extract_lua_self_field_access`).
+fn extract_lua_classes_cohesion(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
+    // 1. Find candidate class names from `local X = {}` bindings.
+    let mut candidates: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    collect_lua_empty_table_locals(root, source, &mut candidates);
+
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    // 2. Walk function statements and bucket by class name.
+    let mut by_name: std::collections::BTreeMap<String, ClassInfo> =
+        std::collections::BTreeMap::new();
+    collect_lua_table_methods(root, source, &candidates, &mut by_name);
+
+    // 3. Only emit entries that actually own methods.
+    by_name
+        .into_values()
+        .filter(|c| !c.methods.is_empty())
+        .collect()
+}
+
+fn collect_lua_empty_table_locals(
+    node: tree_sitter::Node,
+    source: &str,
+    names: &mut std::collections::BTreeSet<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        // tree-sitter-lua: `variable_declaration` wraps both `local
+        // X = ...` and bare `X = ...` statements; the LHS appears as
+        // `assignment_statement` -> `variable_list` and RHS as
+        // `expression_list`.
+        let kind = child.kind();
+        if kind == "variable_declaration"
+            || kind == "assignment_statement"
+            || kind == "local_declaration"
+        {
+            // Scan for an `expression_list` whose only entry is a
+            // `table_constructor`. Pair it with the identifier name
+            // on the LHS.
+            let mut name: Option<String> = None;
+            let mut has_empty_table = false;
+            let mut inner = child.walk();
+            for sub in child.children(&mut inner) {
+                match sub.kind() {
+                    "variable_list" | "identifier" | "name" => {
+                        if let Some(n) = lua_first_identifier(&sub, source) {
+                            name = Some(n);
+                        }
+                    }
+                    "expression_list" | "table_constructor" => {
+                        if lua_is_table_constructor(&sub) {
+                            has_empty_table = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let (Some(n), true) = (name, has_empty_table) {
+                names.insert(n);
+            }
+        }
+        collect_lua_empty_table_locals(child, source, names);
+    }
+}
+
+fn lua_first_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() == "identifier" || node.kind() == "name" {
+        if let Ok(t) = node.utf8_text(source.as_bytes()) {
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(n) = lua_first_identifier(&child, source) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn lua_is_table_constructor(node: &tree_sitter::Node) -> bool {
+    if node.kind() == "table_constructor" {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "table_constructor" {
+            return true;
+        }
+    }
+    false
+}
+
+fn collect_lua_table_methods(
+    node: tree_sitter::Node,
+    source: &str,
+    candidates: &std::collections::BTreeSet<String>,
+    classes: &mut std::collections::BTreeMap<String, ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        // tree-sitter-lua: `function_declaration` for `function X.m()
+        // ... end` AND `function X:m() ... end`. The function name
+        // is exposed via a child node which may be a
+        // `dot_index_expression`, `method_index_expression`, or plain
+        // `identifier`.
+        if kind == "function_declaration" || kind == "function_definition_statement" {
+            if let Some((class_name, method_name)) =
+                lua_extract_dotted_function_name(&child, source)
+            {
+                if candidates.contains(&class_name) {
+                    let entry = classes
+                        .entry(class_name.clone())
+                        .or_insert_with(|| ClassInfo {
+                            name: class_name.clone(),
+                            line: child.start_position().row + 1,
+                            methods: Vec::new(),
+                            is_partial: false,
+                        });
+                    if child.start_position().row + 1 < entry.line {
+                        entry.line = child.start_position().row + 1;
+                    }
+                    entry.methods.push(MethodInfo {
+                        name: method_name,
+                        start_byte: child.start_byte(),
+                        end_byte: child.end_byte(),
+                    });
+                }
+            }
+        }
+        collect_lua_table_methods(child, source, candidates, classes);
+    }
+}
+
+fn lua_extract_dotted_function_name(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<(String, String)> {
+    // Search direct children for a name node carrying the
+    // dotted/colon form. Tree-sitter-lua exposes either
+    // `dot_index_expression` (`X.m`), `method_index_expression`
+    // (`X:m`), or a `variable` containing one of these.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "dot_index_expression" | "method_index_expression" => {
+                return lua_split_dotted_name(&child, source);
+            }
+            "variable" | "name" | "function_name" | "field_expression" => {
+                if let Some(pair) = lua_split_dotted_name(&child, source) {
+                    return Some(pair);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn lua_split_dotted_name(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<(String, String)> {
+    // Two identifier children separated by `.` or `:`. Pull them in
+    // order: the first is the class, the second is the method.
+    let mut identifiers: Vec<String> = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" | "name" => {
+                if let Ok(t) = child.utf8_text(source.as_bytes()) {
+                    if !t.is_empty() {
+                        identifiers.push(t.to_string());
+                    }
+                }
+            }
+            "dot_index_expression" | "method_index_expression" => {
+                if let Some(pair) = lua_split_dotted_name(&child, source) {
+                    return Some(pair);
+                }
+            }
+            _ => {}
+        }
+    }
+    if identifiers.len() >= 2 {
+        Some((identifiers[0].clone(), identifiers[1].clone()))
+    } else {
+        None
     }
 }
 
@@ -554,7 +1361,12 @@ fn extract_cpp_class_info(
     // `cohesion` surfaces at the source.
     let body = node.child_by_field_name("body")?;
     let methods = extract_cpp_methods(&body, source);
-    Some(ClassInfo { name, line, methods })
+    Some(ClassInfo {
+        name,
+        line,
+        methods,
+        is_partial: false,
+    })
 }
 
 fn extract_cpp_macro_prefixed_class(
@@ -585,7 +1397,12 @@ fn extract_cpp_macro_prefixed_class(
             break;
         }
     }
-    Some(ClassInfo { name, line, methods: body_methods })
+    Some(ClassInfo {
+        name,
+        line,
+        methods: body_methods,
+        is_partial: false,
+    })
 }
 
 fn extract_cpp_methods(
@@ -689,6 +1506,7 @@ fn extract_python_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         name,
         line,
         methods,
+        is_partial: false,
     })
 }
 
@@ -771,6 +1589,7 @@ fn extract_typescript_class_info(node: &tree_sitter::Node, source: &str) -> Opti
         name,
         line,
         methods,
+        is_partial: false,
     })
 }
 
@@ -848,6 +1667,7 @@ fn extract_java_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         name,
         line,
         methods,
+        is_partial: false,
     })
 }
 
@@ -915,6 +1735,7 @@ fn collect_go_structs(
                                             name: name.to_string(),
                                             line,
                                             methods: Vec::new(),
+                                            is_partial: false,
                                         },
                                     );
                                 }
@@ -1022,6 +1843,7 @@ fn collect_rust_structs(
                             name: name.to_string(),
                             line,
                             methods: Vec::new(),
+                            is_partial: false,
                         },
                     );
                 }
@@ -1147,6 +1969,7 @@ fn extract_ruby_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         name,
         line,
         methods,
+        is_partial: false,
     })
 }
 
@@ -1220,11 +2043,45 @@ fn extract_csharp_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
     let body = node.child_by_field_name("body")?;
     let methods = extract_csharp_methods(&body, source);
 
+    // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): detect the
+    // `partial` modifier on a `class_declaration` / `struct_declaration`
+    // / `interface_declaration`. Tree-sitter-c-sharp surfaces
+    // modifiers either as `modifier` direct children (current grammar)
+    // or via a `modifiers` field (older grammars / robustness path).
+    // When `partial` is present, downstream aggregation (in
+    // `analyze_cohesion_with_options`) merges entries with the same
+    // name across files into a single LCOM4 computation.
+    let is_partial = csharp_class_is_partial(node, source);
+
     Some(ClassInfo {
         name,
         line,
         methods,
+        is_partial,
     })
+}
+
+fn csharp_class_is_partial(node: &tree_sitter::Node, source: &str) -> bool {
+    // Scan direct children for a `modifier` text == "partial".
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifier" {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                if text == "partial" {
+                    return true;
+                }
+            }
+        }
+    }
+    // Defense-in-depth: older grammars expose a `modifiers` aggregate.
+    if let Some(mods) = node.child_by_field_name("modifiers") {
+        if let Ok(text) = mods.utf8_text(source.as_bytes()) {
+            if text.split_whitespace().any(|w| w == "partial") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Extract methods from a C# class body (declaration_list node).
@@ -1318,6 +2175,7 @@ fn extract_scala_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
         name,
         line,
         methods,
+        is_partial: false,
     })
 }
 
@@ -1401,6 +2259,7 @@ fn extract_php_class_info(node: &tree_sitter::Node, source: &str) -> Option<Clas
         name,
         line,
         methods,
+        is_partial: false,
     })
 }
 
@@ -1555,6 +2414,12 @@ fn extract_php_this_accesses(method_source: &str) -> HashSet<String> {
 }
 
 /// Compute cohesion for a single class
+///
+/// cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): superseded by
+/// `cohesion_from_method_fields` in the directory-walk pipeline so
+/// partial-class entries can be merged across files. Retained for
+/// the in-tree unit tests that drive the legacy data shape directly.
+#[cfg(test)]
 fn compute_class_cohesion(
     class_info: &ClassInfo,
     source: &str,
@@ -1912,13 +2777,7 @@ fn extract_field_from_pattern(
             "this",
             "call_expression",
         ),
-        Language::Swift => extract_navigation_field_access(
-            node,
-            source,
-            "self_expression",
-            "self",
-            "call_expression",
-        ),
+        Language::Swift => extract_swift_navigation_field_access(node, source),
         Language::Scala => extract_scala_this_field_access(node, source),
         Language::Php => extract_php_this_field_access(node, source),
         Language::Lua | Language::Luau => extract_lua_self_field_access(node, source),
@@ -2060,6 +2919,103 @@ fn extract_suffix_identifier(node: &tree_sitter::Node, source: &[u8]) -> Option<
         }
     }
     None
+}
+
+/// Swift-specific field extraction that tolerates tree-sitter-swift's
+/// left-associative misparse of mixed-arithmetic + member-access
+/// expressions.
+///
+/// Background: for `self.a + self.b`, tree-sitter-swift produces
+///
+/// ```text
+/// navigation_expression "self.a + self.b"
+///   additive_expression "self.a + self"
+///     navigation_expression "self.a"
+///       self_expression
+///       navigation_suffix .a
+///     +
+///     self_expression "self"      <-- orphan self
+///   navigation_suffix .b          <-- attached to outer node
+/// ```
+///
+/// The trailing `.b` is parented by the *outer* `navigation_expression`
+/// whose `child(0)` is the additive_expression, NOT a `self_expression`.
+/// The legacy `extract_navigation_field_access(self_kind="self_expression",
+/// self_text="self")` filter then rejected the outer node, dropping
+/// `b` from the field set. This was observable as e.g. `Shape.area`
+/// reporting only `width` from `self.width * self.height`
+/// (cohesion-cross-file-aggregation-v1 / v0.4.2 M-030).
+///
+/// Recovery: if the outer `navigation_expression` carries a trailing
+/// `navigation_suffix` AND the subtree (excluding sub-
+/// navigation_expressions which already booked their own field) holds
+/// at least one orphan `self_expression`, treat the suffix's
+/// identifier as a self.field access too.
+fn extract_swift_navigation_field_access(
+    node: &tree_sitter::Node,
+    source: &[u8],
+) -> Option<String> {
+    // Fast path: the conventional `self.x` shape.
+    if let Some(s) = extract_navigation_field_access(
+        node,
+        source,
+        "self_expression",
+        "self",
+        "call_expression",
+    ) {
+        return Some(s);
+    }
+
+    // Misparse recovery (see doc comment).
+    // We only run the rescue for the OUTER navigation_expression — i.e.
+    // when its trailing child is a `navigation_suffix` AND there's an
+    // orphan `self_expression` reachable in the subtree that is NOT
+    // already consumed by an inner navigation_expression. We avoid
+    // double-counting by requiring the orphan self to sit directly
+    // inside an `additive_expression` / `multiplicative_expression` /
+    // similar arithmetic parent rather than under a nested
+    // navigation_expression.
+    if node.kind() != "navigation_expression" {
+        return None;
+    }
+    let last_idx = node.child_count().checked_sub(1)?;
+    let last = node.child(last_idx)?;
+    if last.kind() != "navigation_suffix" {
+        return None;
+    }
+    if !swift_subtree_has_orphan_self(node) {
+        return None;
+    }
+    // Don't emit if the navigation_expression itself is the function
+    // target of a call_expression (consistent with the legacy filter).
+    if parent_child_matches_node(node, "call_expression", 0) {
+        return None;
+    }
+    extract_suffix_identifier(&last, source)
+}
+
+/// True iff `root`'s descendants contain a `self_expression` whose
+/// nearest navigation_expression ancestor is `root` itself — i.e. a
+/// `self` reference that has NOT already been paired with a
+/// navigation_suffix by a sub-navigation_expression. Used by the
+/// swift misparse recovery in
+/// `extract_swift_navigation_field_access`.
+fn swift_subtree_has_orphan_self(root: &tree_sitter::Node) -> bool {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            // Skip sub-navigation_expressions: their `self_expression`
+            // descendants are already consumed.
+            "navigation_expression" => continue,
+            "self_expression" => return true,
+            _ => {
+                if swift_subtree_has_orphan_self(&child) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn extract_scala_this_field_access(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
