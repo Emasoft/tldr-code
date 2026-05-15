@@ -115,11 +115,11 @@ fn extract_from_elixir_file(
         let module_name = class.name.clone();
         apis.push(ApiEntry {
             qualified_name: module_name.clone(),
-            kind: ApiKind::Class,
+            kind: ApiKind::Module,
             module: module_name.clone(),
             signature: None,
             docstring: class.docstring.clone().map(|doc| truncate_docstring(&doc)),
-            example: Some(format!("{}/0", module_name)),
+            example: Some(module_name.clone()),
             triggers: extract_triggers(&class.name, class.docstring.as_deref()),
             is_property: false,
             return_type: None,
@@ -190,7 +190,7 @@ fn elixir_package_preference_score(api: &ApiEntry, package_name: &str) -> i32 {
         score += 25;
     }
 
-    if matches!(api.kind, ApiKind::Class) {
+    if matches!(api.kind, ApiKind::Class | ApiKind::Module) {
         score += 5;
     }
 

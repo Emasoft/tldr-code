@@ -74,6 +74,8 @@ pub enum SmellType {
     RefusedBequest,
     /// Two classes with bidirectional internal access
     InappropriateIntimacy,
+    /// Function flagged by cyclomatic complexity threshold (not line count)
+    ComplexMethod,
 }
 
 impl std::fmt::Display for SmellType {
@@ -97,6 +99,7 @@ impl std::fmt::Display for SmellType {
             SmellType::MiddleMan => write!(f, "Middle Man"),
             SmellType::RefusedBequest => write!(f, "Refused Bequest"),
             SmellType::InappropriateIntimacy => write!(f, "Inappropriate Intimacy"),
+            SmellType::ComplexMethod => write!(f, "Complex Method"),
         }
     }
 }
@@ -127,6 +130,7 @@ impl SmellType {
             SmellType::MiddleMan => "Class where more than half of its methods just delegate to another class",
             SmellType::RefusedBequest => "Subclass using less than a third of inherited methods",
             SmellType::InappropriateIntimacy => "Two classes with bidirectional internal access to each other's details",
+            SmellType::ComplexMethod => "Method with high cyclomatic complexity (threshold exceeded) but not necessarily long",
         }
     }
 }
@@ -796,7 +800,7 @@ fn maybe_add_long_method_smell(
     }
     if metrics.cyclomatic > thresholds.long_method_complexity {
         smells.push(SmellFinding {
-            smell_type: SmellType::LongMethod,
+            smell_type: SmellType::ComplexMethod,
             file: path.to_path_buf(),
             name: func.name.clone(),
             line: func.line_number,

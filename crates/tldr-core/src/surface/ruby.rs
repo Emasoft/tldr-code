@@ -440,7 +440,7 @@ fn extract_from_ruby_file(
 
         apis.push(ApiEntry {
             qualified_name: qualified_name.clone(),
-            kind: ApiKind::Class,
+            kind: if is_module { ApiKind::Module } else { ApiKind::Class },
             module: module_path.clone(),
             signature: None,
             docstring: class.docstring.clone().map(|doc| truncate_docstring(&doc)),

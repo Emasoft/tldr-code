@@ -98,6 +98,8 @@ pub enum ApiKind {
     Constant,
     /// Type alias
     TypeAlias,
+    /// Module definition (Elixir defmodule, OCaml module, Ruby module)
+    Module,
 }
 
 impl std::fmt::Display for ApiKind {
@@ -115,6 +117,7 @@ impl std::fmt::Display for ApiKind {
             ApiKind::Enum => write!(f, "enum"),
             ApiKind::Constant => write!(f, "constant"),
             ApiKind::TypeAlias => write!(f, "type_alias"),
+            ApiKind::Module => write!(f, "module"),
         }
     }
 }
@@ -268,6 +271,7 @@ mod tests {
         assert_eq!(ApiKind::Enum.to_string(), "enum");
         assert_eq!(ApiKind::Constant.to_string(), "constant");
         assert_eq!(ApiKind::TypeAlias.to_string(), "type_alias");
+        assert_eq!(ApiKind::Module.to_string(), "module");
     }
 
     #[test]

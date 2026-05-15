@@ -576,7 +576,7 @@ fn walk_for_modules_and_types(
                 let line = node.start_position().row + 1;
                 out.push(ApiEntry {
                     qualified_name: format!("{}.{}", module_path, name),
-                    kind: ApiKind::Class,
+                    kind: ApiKind::Module,
                     module: module_path.to_string(),
                     signature: None,
                     docstring: extract_ocaml_doc_before(node, source),
@@ -912,8 +912,8 @@ mod tests {
         assert!(
             entries
                 .iter()
-                .any(|(name, kind)| name.ends_with(".Inner") && matches!(kind, ApiKind::Class)),
-            "expected Inner module to surface as Class; got: {:?}",
+                .any(|(name, kind)| name.ends_with(".Inner") && matches!(kind, ApiKind::Module)),
+            "expected Inner module to surface as Module; got: {:?}",
             entries
         );
         assert!(

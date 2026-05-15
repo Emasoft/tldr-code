@@ -961,7 +961,7 @@ fn contains_yield(node: &tree_sitter::Node) -> bool {
 fn api_kind_rank(kind: ApiKind) -> u8 {
     match kind {
         ApiKind::Function => 0,
-        ApiKind::Class | ApiKind::Struct | ApiKind::Trait | ApiKind::Interface | ApiKind::Enum => 1,
+        ApiKind::Class | ApiKind::Struct | ApiKind::Trait | ApiKind::Interface | ApiKind::Enum | ApiKind::Module => 1,
         ApiKind::Constant | ApiKind::TypeAlias => 2,
         ApiKind::Method | ApiKind::ClassMethod | ApiKind::StaticMethod => 3,
         ApiKind::Property => 4,

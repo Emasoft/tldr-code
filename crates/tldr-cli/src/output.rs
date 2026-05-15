@@ -1128,6 +1128,7 @@ pub fn format_smells_text(report: &tldr_core::SmellsReport) -> String {
                 tldr_core::SmellType::RefusedBequest => base.magenta(),
                 tldr_core::SmellType::InappropriateIntimacy => base.red(),
                 tldr_core::SmellType::DataClumps => base.white(),
+                tldr_core::SmellType::ComplexMethod => base.yellow(),
             };
             colored.to_string()
         };

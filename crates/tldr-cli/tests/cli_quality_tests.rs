@@ -1417,15 +1417,34 @@ mod hotspots_tests {
     }
 
     /// Test hotspots command with non-git directory
+    ///
+    /// M-038 fix (v0.4.2): non-git directories no longer produce an error.
+    /// Instead the command succeeds with a complexity-only fallback and emits
+    /// a warning in the JSON `warnings` array about the absent git history.
     #[test]
     fn test_hotspots_not_git_repo() {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join("test.py"), "def foo(): pass").unwrap();
 
         let mut cmd = tldr_cmd();
-        cmd.args(["hotspots", temp.path().to_str().unwrap(), "-q"]);
-        cmd.assert()
-            .failure()
-            .stderr(predicate::str::contains("Not a git repository"));
+        cmd.args(["hotspots", temp.path().to_str().unwrap(), "--format", "json"]);
+        let output = cmd.output().expect("tldr binary missing");
+
+        let code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(code, 0, "hotspots on non-git dir must succeed; stdout: {}", stdout);
+
+        let v: serde_json::Value = serde_json::from_str(&stdout)
+            .expect("expected valid JSON from hotspots on non-git dir");
+
+        let warnings = v["warnings"].as_array().cloned().unwrap_or_default();
+        let has_git_warn = warnings
+            .iter()
+            .any(|w| w.as_str().map(|s| s.contains("git")).unwrap_or(false));
+        assert!(
+            has_git_warn,
+            "Expected a warning about missing git history; warnings: {:?}",
+            warnings
+        );
     }
 }

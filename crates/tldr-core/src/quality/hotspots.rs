@@ -45,6 +45,7 @@ use crate::quality::churn::{
     check_shallow_clone, get_file_churn_detailed, is_git_repository, ChurnError, FileChurn,
     FileChurnDetailed,
 };
+use crate::quality::complexity::{analyze_complexity, ComplexityOptions};
 use crate::types::Language;
 
 #[allow(unused_imports)]
@@ -501,6 +502,187 @@ pub enum HotspotsError {
 }
 
 // =============================================================================
+// Non-git fallback (complexity-only hotspots)
+// =============================================================================
+
+/// Fallback analysis for non-git repositories.
+///
+/// When no git history is available, churn data is absent. This function
+/// scores files purely on cyclomatic complexity (percentile-ranked), setting
+/// churn_score to 0.0 and commit_count/lines_changed to 0. The resulting
+/// report contains a warning explaining the degraded mode.
+fn analyze_hotspots_no_git(
+    path: &Path,
+    options: &HotspotsOptions,
+) -> Result<HotspotsReport, HotspotsError> {
+    let mut warnings = vec![
+        "Not a git repository. Churn data unavailable; scoring by complexity only.".to_string(),
+    ];
+
+    // Detect language for the complexity pass (best-effort; None = auto)
+    let language = if path.is_file() {
+        Language::from_path(path)
+    } else {
+        Language::from_directory(path)
+    };
+
+    let complexity_opts = ComplexityOptions {
+        hotspot_threshold: 1, // low threshold → keep all functions
+        max_hotspots: usize::MAX,
+        include_cognitive: false,
+    };
+
+    let complexity_report =
+        analyze_complexity(path, language, Some(complexity_opts)).map_err(|e| {
+            HotspotsError::ComplexityError {
+                file: path.to_path_buf(),
+                reason: e.to_string(),
+            }
+        })?;
+
+    if complexity_report.functions_analyzed == 0 {
+        warnings.push("No functions found for complexity analysis.".to_string());
+        return Ok(build_empty_hotspots_report(
+            path,
+            options,
+            false,
+            None,
+            0,
+            warnings,
+            "No source files found.".to_string(),
+        ));
+    }
+
+    // Build one HotspotEntry per file (aggregate max cyclomatic per file).
+    // We use a HashMap keyed on relative file path.
+    let mut file_complexity: HashMap<String, u32> = HashMap::new();
+    for func in &complexity_report.functions {
+        let file_str = func.file.to_string_lossy().to_string();
+        // Make path relative to `path` if possible
+        let relative = if let Ok(rel) = func.file.strip_prefix(path) {
+            rel.to_string_lossy().to_string()
+        } else {
+            file_str
+        };
+        let entry = file_complexity.entry(relative).or_insert(0);
+        if func.cyclomatic as u32 > *entry {
+            *entry = func.cyclomatic as u32;
+        }
+    }
+
+    if file_complexity.is_empty() {
+        return Ok(build_empty_hotspots_report(
+            path,
+            options,
+            false,
+            None,
+            0,
+            warnings,
+            "No complexity data extracted.".to_string(),
+        ));
+    }
+
+    let total_files = file_complexity.len();
+
+    // Build raw hotspot entries (churn fields zeroed)
+    let mut hotspots: Vec<HotspotEntry> = file_complexity
+        .iter()
+        .map(|(file, &max_cc)| {
+            let full_path = path.join(file);
+            let loc = std::fs::read_to_string(&full_path)
+                .map(|s| s.lines().count() as u32)
+                .unwrap_or(0);
+            HotspotEntry {
+                file: file.clone(),
+                function: None,
+                line: None,
+                churn_score: 0.0,
+                complexity_score: 0.0,
+                hotspot_score: 0.0,
+                commit_count: 0,
+                lines_changed: 0,
+                complexity: max_cc,
+                trend: None,
+                recommendation: String::new(),
+                relative_churn: None,
+                knowledge_fragmentation: None,
+                current_loc: Some(loc),
+                author_count: None,
+                algorithm_version: 2,
+            }
+        })
+        .collect();
+
+    // Score using complexity percentile only (churn dimension has no variance)
+    let complexity_values: Vec<f64> = hotspots.iter().map(|h| h.complexity as f64).collect();
+    let complexity_has_variance = has_variance(&complexity_values);
+
+    let pct_complexity = if complexity_has_variance {
+        percentile_ranks(&complexity_values)
+    } else {
+        vec![1.0; hotspots.len()]
+    };
+
+    // All weight goes to complexity when churn is absent
+    let effective_weights = ScoringWeights {
+        churn: 0.0,
+        complexity: 1.0,
+        knowledge_fragmentation: 0.0,
+        temporal_coupling: 0.0,
+    };
+
+    for (i, hotspot) in hotspots.iter_mut().enumerate() {
+        hotspot.complexity_score = pct_complexity[i];
+        hotspot.hotspot_score = pct_complexity[i];
+        hotspot.recommendation = get_recommendation(hotspot.hotspot_score);
+    }
+
+    hotspots.sort_by(|a, b| {
+        b.hotspot_score
+            .partial_cmp(&a.hotspot_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    if let Some(threshold) = options.threshold {
+        hotspots.retain(|h| h.hotspot_score >= threshold);
+    }
+    hotspots.truncate(options.top);
+
+    let summary_recommendation =
+        "No git history available. Hotspots ranked by complexity only.".to_string();
+
+    Ok(HotspotsReport {
+        hotspots,
+        summary: HotspotsSummary {
+            total_files_analyzed: total_files,
+            total_commits: 0,
+            time_window_days: options.days,
+            hotspot_concentration: 0.0,
+            recommendation: summary_recommendation,
+            total_bot_commits_filtered: None,
+            avg_knowledge_fragmentation: None,
+        },
+        metadata: HotspotsMetadata {
+            path: path.to_string_lossy().to_string(),
+            days: options.days,
+            by_function: options.by_function,
+            min_commits: options.min_commits,
+            is_shallow: false,
+            shallow_depth: None,
+            bot_commits_filtered: None,
+            recency_halflife: if options.recency_halflife > 0.0 {
+                Some(options.recency_halflife as u32)
+            } else {
+                None
+            },
+            scoring_weights: Some(effective_weights),
+            algorithm_version: 2,
+        },
+        warnings,
+    })
+}
+
+// =============================================================================
 // Core Analysis Function
 // =============================================================================
 
@@ -530,9 +712,9 @@ pub fn analyze_hotspots(
         return Err(HotspotsError::PathNotFound(path.to_path_buf()));
     }
 
-    // Check if it's a git repository
+    // Check if it's a git repository; fall back to complexity-only when not.
     if !is_git_repository(path)? {
-        return Err(HotspotsError::NotGitRepository(path.to_path_buf()));
+        return analyze_hotspots_no_git(path, options);
     }
 
     let mut warnings = Vec::new();
