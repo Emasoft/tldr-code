@@ -30,6 +30,7 @@ use super::error::RemainingError;
 use super::types::{CallInfo, ComplexityInfo, ExplainReport, ParamInfo, PurityInfo, SignatureInfo};
 
 use crate::output::{OutputFormat, OutputWriter};
+use tldr_core::ast::extract::decl_keyword_line_from_node;
 use tldr_core::types::Language;
 use tldr_core::{
     build_project_call_graph, find_references, impact_analysis_with_ast_fallback, names_match,
@@ -2667,11 +2668,19 @@ impl ExplainArgs {
             Language::Swift => "swift",
         };
 
+        // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002):
+        // anchor `line_start` to the first non-modifier child of the
+        // function node so annotation-decorated declarations
+        // (java `@Override`, kotlin `@Deprecated`, scala `@deprecated`,
+        // swift `@inlinable`) report the decl-keyword line, not the
+        // leading annotation line. Matches the AST-walker normalisation
+        // applied in `extract`/`slice` (CFG entry-block seed).
+        let line_start = decl_keyword_line_from_node(&func_node);
         // Build report
         let mut report = ExplainReport::new(
             &self.function,
             &file_path,
-            get_line_number(func_node),
+            line_start,
             get_end_line_number(func_node),
             language_name,
         );

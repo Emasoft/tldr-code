@@ -23,6 +23,7 @@ use std::path::Path;
 
 use tree_sitter::{Node, Tree};
 
+use crate::ast::extract::decl_keyword_line_from_node;
 use crate::ast::function_finder::{find_function_node, get_function_body, get_function_name};
 use crate::ast::parser::parse;
 use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType, Language};
@@ -175,7 +176,14 @@ fn build_cfg_for_function(
     // rows) still resolve to a CFG block. Without this, the entry block
     // was set to body-start in `process_block`, so any slice/chop with a
     // criterion line in the signature returned an empty result.
-    let def_line = func_node.start_position().row as u32 + 1;
+    //
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): use the
+    // decl-keyword line rather than the raw `node.start_position()` so
+    // annotation-decorated declarations (java `@Override`, kotlin
+    // `@Deprecated`, scala `@deprecated`, swift `@inlinable`) don't pull
+    // the leading annotation line into the CFG entry block (which then
+    // surfaces as a spurious line in slice/chop output).
+    let def_line = decl_keyword_line_from_node(&func_node);
     let mut builder = CfgBuilder::new(function_name.to_string(), source, language);
     builder.seed_entry_block_start(def_line);
 

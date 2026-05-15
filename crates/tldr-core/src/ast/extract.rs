@@ -442,6 +442,108 @@ pub(crate) fn extract_classes_detailed(tree: &Tree, source: &str, language: Lang
 }
 
 // =============================================================================
+// extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002)
+// =============================================================================
+//
+// tree-sitter's `method_declaration` / `function_declaration` /
+// `function_definition` nodes start at their first child. For
+// annotation-decorated declarations, that first child is a `modifiers`
+// container holding the annotations (Java `@Override`, Kotlin
+// `@Deprecated(...)`) or a leading `annotation` / `attribute` /
+// `modifier` sibling node (Scala `@deprecated`, Swift `@inlinable`).
+// The result: `node.start_position()` reports the annotation line, not
+// the decl-keyword line — so `extract`'s `line_number`, `explain`'s
+// `line_start`, and any consumer that pulls bounds via
+// `find_function_bounds` all attribute the function to the wrong line.
+//
+// `decl_keyword_line_from_node` walks the AST children in order and
+// returns the start line (1-indexed) of the first child that is NOT in
+// the annotation/modifier kind set for the language family. Returns the
+// fallback `node.start_position()` line if all children look like
+// annotations (e.g. malformed input) or the node has no children.
+//
+// The fix is AST-only — no source-text scanning. We accept the union of
+// annotation/modifier kinds across the four affected grammars
+// (java/kotlin/scala/swift). Other languages' extractors are not
+// touched: their grammars place the decl keyword (`def`, `fn`, `pub`)
+// directly as the first child, so `node.start_position()` already
+// agrees with the decl-keyword line.
+
+/// Kinds that should be skipped when locating the decl-keyword line of
+/// a function/method/class declaration node.
+///
+/// - `modifiers` — Java/Kotlin container holding annotations + access
+///   keywords (`@Override`, `@Deprecated`, `public`, `static`, etc.).
+/// - `annotation` / `marker_annotation` / `single_member_annotation`
+///   / `normal_annotation` — Java grammar variants for `@Foo`,
+///   `@Foo(x)`, `@Foo(x = 1)`.
+/// - `attribute` / `attributes` / `modifier` — Swift grammar variants
+///   for `@inlinable`, `@available(...)`, `@objc`, etc.
+/// - `block_comment` / `line_comment` / `comment` — leading doc
+///   comments are tree-sitter children of the declaration in some
+///   grammars; they should not anchor the decl line.
+/// - `simple_identifier` / `identifier` keyword-prefix shapes are NOT
+///   skipped — they are real decl content.
+const ANNOTATION_LIKE_KINDS: &[&str] = &[
+    // Java + Kotlin grammars
+    "modifiers",
+    "annotation",
+    "marker_annotation",
+    "single_member_annotation",
+    "normal_annotation",
+    // Kotlin grammar additions
+    "annotation_modifier",
+    "function_modifier",
+    "platform_modifier",
+    "member_modifier",
+    "inheritance_modifier",
+    "parameter_modifier",
+    "reification_modifier",
+    "visibility_modifier",
+    // Scala grammar
+    "annotations",
+    // Swift grammar variants
+    "attribute",
+    "attributes",
+    "modifier",
+    "type_modifiers",
+    "user_type",
+    // Leading doc / comments (defensive — most grammars don't make
+    // these children of the decl node, but if they do they should not
+    // anchor the line).
+    "block_comment",
+    "line_comment",
+    "comment",
+    // Decorators (only when grammar emits them as a separate child;
+    // python uses `decorated_definition` parent which is handled
+    // separately).
+    "decorator",
+];
+
+/// Return the 1-indexed start line of the first child of `node` whose
+/// kind is NOT annotation-like (per `ANNOTATION_LIKE_KINDS`). Falls back
+/// to `node.start_position()` if every child is annotation-like or the
+/// node has no children.
+///
+/// This is the AST-only normaliser shared across the
+/// java/kotlin/scala/swift function and class extractors so that
+/// `extract`/`slice`/`explain` all report the decl-keyword line rather
+/// than the leading-annotation line. v0.4.2 M-002.
+///
+/// Public so `find_function_bounds` (slice consumer) and `explain` can
+/// reuse the same normalisation for the function/method/class node
+/// returned by `find_function_node`.
+pub fn decl_keyword_line_from_node(node: &Node) -> u32 {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if !ANNOTATION_LIKE_KINDS.contains(&child.kind()) {
+            return child.start_position().row as u32 + 1;
+        }
+    }
+    node.start_position().row as u32 + 1
+}
+
+// =============================================================================
 // Python detailed extraction
 // =============================================================================
 
@@ -3482,7 +3584,13 @@ fn extract_java_function_info(node: &Node, source: &str) -> FunctionInfo {
         .child_by_field_name("type")
         .map(|n| get_node_text(&n, source));
 
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): Java
+    // `method_declaration` starts at its `modifiers` child for
+    // annotation-decorated methods (`@Override`, `@Deprecated`).
+    // Anchor to the first non-modifier child so the reported line is
+    // the decl-keyword line, matching what `definition`/`references`
+    // already do via forward-scan.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // is-public-visibility-v1 (v0.4.2 M-007): Java method_declaration
@@ -3600,7 +3708,10 @@ fn extract_java_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Cl
                 .map(|n| get_node_text(&n, source))
                 .unwrap_or_default();
 
-            let line_number = child.start_position().row as u32 + 1;
+            // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002):
+            // annotation-decorated classes (`@Entity public class Foo`)
+            // would otherwise report the annotation line.
+            let line_number = decl_keyword_line_from_node(&child);
             let line_end = child.end_position().row as u32 + 1;
 
             // Extract methods
@@ -4206,7 +4317,11 @@ fn extract_swift_function_info(node: &Node, source: &str, is_method: bool) -> Fu
     let return_type = extract_swift_return_type(node, source);
     let docstring = extract_swift_docstring_before(node, source);
     let is_async = get_node_text(node, source).contains("async ");
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): Swift
+    // `function_declaration` starts at its `attribute`/`modifiers`
+    // children for `@inlinable`/`@available(...)` decorated funcs.
+    // Anchor to the first non-attribute child.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // is-public-visibility-v1 (v0.4.2 M-007): Swift allows
@@ -4452,7 +4567,9 @@ fn extract_swift_class_info(node: &Node, source: &str) -> ClassInfo {
 
     let bases = extract_swift_bases(node, source);
     let docstring = extract_swift_docstring_before(node, source);
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): anchor
+    // to the first non-attribute child for `@objc class` etc.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // Extract methods from the body
@@ -6413,7 +6530,12 @@ fn extract_kotlin_function_info(node: &Node, source: &str, is_method: bool) -> F
     };
 
     let decorators = extract_kotlin_annotations(node, source);
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): Kotlin
+    // `function_declaration` starts at its `modifiers` child for
+    // annotation-decorated funs (`@Deprecated(...) public fun ...`).
+    // Anchor to the first non-modifier child so the reported line is
+    // `fun`/`val`/`public`, not the leading annotation.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // is-public-visibility-v1 (v0.4.2 M-007): Kotlin nests its access
@@ -6630,7 +6752,10 @@ fn extract_kotlin_class_info(node: &Node, source: &str) -> ClassInfo {
             String::new()
         });
 
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002):
+    // anchor to the first non-modifier child so `@Deprecated class Foo`
+    // reports the `class` line, not the annotation line.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
     let bases = extract_kotlin_bases(node, source);
     let docstring = extract_kotlin_docstring(node, source);
@@ -6681,7 +6806,9 @@ fn extract_kotlin_object_info(node: &Node, source: &str) -> ClassInfo {
             String::new()
         });
 
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): anchor
+    // to the first non-modifier child for annotation-decorated objects.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // Extract methods from class_body
@@ -6818,7 +6945,11 @@ fn extract_scala_function_info(node: &Node, source: &str, is_method: bool) -> Fu
     let params = extract_scala_params(node, source);
     let return_type = extract_scala_return_type(node, source);
     let docstring = extract_scala_docstring(node, source);
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): Scala
+    // `function_definition`/`function_declaration` may have leading
+    // `annotation` children (`@deprecated`, `@tailrec`) before `def`.
+    // Anchor to the first non-annotation child.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     FunctionInfo {
@@ -6985,7 +7116,9 @@ fn extract_scala_class_info(node: &Node, source: &str) -> ClassInfo {
             String::new()
         });
 
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): anchor
+    // to the first non-annotation child for `@inline class Foo` etc.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
     let bases = extract_scala_bases(node, source);
     let docstring = extract_scala_docstring(node, source);
@@ -7020,7 +7153,9 @@ fn extract_scala_object_info(node: &Node, source: &str) -> ClassInfo {
             String::new()
         });
 
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002):
+    // anchor to the first non-annotation child for decorated objects.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
     let bases = extract_scala_bases(node, source);
     let docstring = extract_scala_docstring(node, source);
@@ -7054,7 +7189,9 @@ fn extract_scala_trait_info(node: &Node, source: &str) -> ClassInfo {
             String::new()
         });
 
-    let line_number = node.start_position().row as u32 + 1;
+    // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002): anchor
+    // to the first non-annotation child for decorated traits.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
     let bases = extract_scala_bases(node, source);
     let docstring = extract_scala_docstring(node, source);
