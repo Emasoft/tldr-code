@@ -252,8 +252,13 @@ impl<'a> DfgBuilder<'a> {
             Language::Ocaml => {} // OCaml uses value_path-based suppression
             _ => return,
         }
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
+        // dfg-extractor-test-sync-v1: track whether each node on the walk
+        // stack was reached from file-level scope (true) or from inside a
+        // function body (false). This lets the lexical_declaration /
+        // variable_declaration collectors below guard against inadvertently
+        // inserting function-local variable names into the suppression set.
+        let mut stack: Vec<(Node, bool)> = vec![(root, true)];
+        while let Some((node, is_file_level)) = stack.pop() {
             let kind = node.kind();
             // Java: import_declaration child layout is roughly
             //   "import" ("static")? scoped_identifier ("." "*")? ";"
@@ -349,8 +354,12 @@ impl<'a> DfgBuilder<'a> {
                 }
                 // Descend into the body so we collect names of
                 // nested function declarations as well.
+                // dfg-extractor-test-sync-v1: mark children as NOT
+                // file-level so that lexical_declaration / variable_declaration
+                // nodes found inside the function body are not mistakenly
+                // added to the suppression set as file-level bindings.
                 for child in node.children(&mut node.walk()) {
-                    stack.push(child);
+                    stack.push((child, false));
                 }
                 continue;
             }
@@ -363,10 +372,15 @@ impl<'a> DfgBuilder<'a> {
             // `variable_declaration` for `local x = ...` and
             // `function_declaration` / `local_function` for functions,
             // so we stop the walk at function entry points.
+            // dfg-extractor-test-sync-v1: only collect file-level Lua locals;
+            // skip `local y = ...` declarations inside function bodies
+            // (is_file_level == false when reached via function-body descent).
             if matches!(self.language, Language::Lua | Language::Luau)
                 && kind == "variable_declaration"
             {
-                collect_lua_local_names(node, self.source, &mut self.imported_type_names);
+                if is_file_level {
+                    collect_lua_local_names(node, self.source, &mut self.imported_type_names);
+                }
                 continue;
             }
             // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
@@ -380,14 +394,20 @@ impl<'a> DfgBuilder<'a> {
             // We only collect bindings whose direct ancestor on the
             // walk stack is NOT a function body (the stop-at-function
             // guards earlier in this loop already handle that).
+            // dfg-extractor-test-sync-v1: only collect file-level TS/JS
+            // variable bindings; declarations inside function bodies
+            // (is_file_level == false) are local to the function and must
+            // not pollute the suppression set.
             if matches!(self.language, Language::TypeScript | Language::JavaScript)
                 && matches!(kind, "lexical_declaration" | "variable_declaration")
             {
-                collect_ts_js_variable_names(
-                    node,
-                    self.source,
-                    &mut self.imported_type_names,
-                );
+                if is_file_level {
+                    collect_ts_js_variable_names(
+                        node,
+                        self.source,
+                        &mut self.imported_type_names,
+                    );
+                }
                 continue;
             }
             // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
@@ -521,8 +541,19 @@ impl<'a> DfgBuilder<'a> {
             ) {
                 continue;
             }
+            // dfg-extractor-test-sync-v1: for Lua/Luau also stop at
+            // `function_declaration` (e.g. `function foo(x) ... end`).
+            // Previously only `local_function` and `function_definition`
+            // were listed, so the walker descended into top-level
+            // function_declaration bodies, collecting local variable names
+            // as if they were file-level module locals.
+            if matches!(self.language, Language::Lua | Language::Luau)
+                && kind == "function_declaration"
+            {
+                continue;
+            }
             for child in node.children(&mut node.walk()) {
-                stack.push(child);
+                stack.push((child, is_file_level));
             }
         }
     }
