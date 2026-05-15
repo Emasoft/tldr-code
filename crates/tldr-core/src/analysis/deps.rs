@@ -532,14 +532,20 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                 DepKind::External | DepKind::Stdlib => {
                     // Only track external deps if include_external is true
                     if options.include_external {
-                        // Use base module name (first component)
-                        let module_name = import.module.split('.').next().unwrap_or(&import.module);
-                        // For TS, strip leading ./ or ../
-                        let clean_name = module_name
-                            .trim_start_matches("./")
-                            .trim_start_matches("../");
-                        if !file_external_deps.contains(&clean_name.to_string()) {
-                            file_external_deps.push(clean_name.to_string());
+                        // deps-external-internal-classifier-v1 (M-048):
+                        // per-language external-package extractor preserves
+                        // namespace precision (e.g. `org.springframework`,
+                        // `kotlinx.coroutines`, `Newtonsoft.Json`) instead of
+                        // collapsing to the bare first segment (`org`,
+                        // `kotlinx`, `Newtonsoft`). For Spring petclinic the
+                        // pre-fix collapse yielded 4 unique entries
+                        // (`["jakarta","java","javax","org"]`) for ~76 import
+                        // sites; post-fix it preserves package-manager-grain
+                        // precision (`org.springframework`,
+                        // `jakarta.persistence`, etc.).
+                        let pkg = external_package_name(&import.module, language);
+                        if !pkg.is_empty() && !file_external_deps.contains(&pkg) {
+                            file_external_deps.push(pkg);
                         }
                     }
                 }
@@ -555,6 +561,18 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
     // Go same-package implicit dependencies:
     // In Go, all files in the same directory share the same package scope.
     // Add edges between files in the same package directory.
+    //
+    // (deps-external-internal-classifier-v1 / M-048) Track these implicit
+    // edges in a separate set so the cycle detector can exclude them.
+    // Pre-fix, the implicit n*n same-package edges between (router.go,
+    // router_test.go, tree.go, tree_test.go, path.go, path_test.go) in
+    // go-httprouter generated 15 spurious cycles even though no real
+    // import-based cycle exists. Same-package files are mutually visible
+    // by Go's package-scope rules (a compile-time fact about identifier
+    // visibility) but that is NOT the same thing as "router.go imports
+    // router_test.go imports router.go" — feeding it to the cycle
+    // detector is a category error.
+    let mut same_package_edges: HashSet<(PathBuf, PathBuf)> = HashSet::new();
     if language == Language::Go {
         let go_packages = group_go_files_by_package(&root, &files);
         for pkg_files in go_packages.values() {
@@ -573,6 +591,7 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                         if !deps.contains(&rel_b) {
                             deps.push(rel_b.clone());
                             total_internal_deps += 1;
+                            same_package_edges.insert((rel_a.clone(), rel_b.clone()));
                         }
                     }
                 }
@@ -618,8 +637,29 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
     };
 
     // Detect circular dependencies (Phase 3) - use final_deps
+    //
+    // (deps-external-internal-classifier-v1 / M-048) Build a cycle-input
+    // graph that excludes same-package implicit edges (Go). Without this,
+    // every same-package file pair (`router.go` <-> `router_test.go`,
+    // etc.) registers as a 2-cycle, manufacturing 15 spurious cycles for
+    // go-httprouter where zero real cyclic imports exist.
     let max_cycle_length = options.max_cycle_length.unwrap_or(10);
-    let circular_dependencies = detect_cycles(&final_deps, max_cycle_length);
+    let circular_dependencies = if same_package_edges.is_empty() {
+        detect_cycles(&final_deps, max_cycle_length)
+    } else {
+        let mut cycle_input: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        for (src, deps) in &final_deps {
+            let filtered: Vec<PathBuf> = deps
+                .iter()
+                .filter(|tgt| {
+                    !same_package_edges.contains(&(src.clone(), (*tgt).clone()))
+                })
+                .cloned()
+                .collect();
+            cycle_input.insert(src.clone(), filtered);
+        }
+        detect_cycles(&cycle_input, max_cycle_length)
+    };
     let cycles_found = circular_dependencies.len();
 
     // Calculate depth stats (Phase 7)
@@ -1808,7 +1848,17 @@ fn index_csharp_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, r
     let fp = file_path.to_path_buf();
     let stem = relative.with_extension("");
     let path_str = stem.to_string_lossy();
-    let cleaned = strip_jvm_prefix(&path_str, &["src/", "lib/", "app/"]);
+    // (deps-external-internal-classifier-v1 / M-048) Many .NET solutions
+    // use `Src/` (capital S) as the source root (e.g. Newtonsoft.Json.Bson:
+    // `Src/Newtonsoft.Json.Bson/BsonDataReader.cs`). The pre-fix
+    // `strip_jvm_prefix(&["src/"...])` was case-sensitive and so left
+    // `Src.Newtonsoft.Json.Bson.BsonDataReader` in the index — but
+    // `using Newtonsoft.Json.Bson;` would never match this `Src.`-prefixed
+    // key. Strip both casings.
+    let cleaned = strip_jvm_prefix(
+        &path_str,
+        &["src/", "Src/", "lib/", "Lib/", "app/", "App/"],
+    );
     let qualified = cleaned.replace(['/', '\\'], ".");
     if !qualified.is_empty() {
         index.insert(qualified, fp.clone());
@@ -3115,6 +3165,122 @@ pub fn classify_import(
     }
 }
 
+/// Extract the package-manager-grain "external package name" for an import
+/// module string, per language conventions.
+///
+/// (deps-external-internal-classifier-v1 / M-048) The pre-fix
+/// `analyze_dependencies` collapsed every external import to the bare first
+/// component (`import.module.split('.').next()`), which makes sense for
+/// Python (`numpy.linalg` -> `numpy`) but is wrong for languages whose
+/// package coordinate spans multiple dotted segments (Java's
+/// `org.springframework`, Kotlin's `kotlinx.coroutines`, CSharp's
+/// `Newtonsoft.Json`). The pre-fix collapse made `total_external_deps` for
+/// Spring petclinic = 4 (`["jakarta","java","javax","org"]`) across 47
+/// files — a useless precision-loss.
+///
+/// Rules:
+///   * **Java / Kotlin / Scala / Elixir / Ocaml / Lua / Luau / Php / Python**
+///     – dot-separated module. Keep at most two leading segments (the
+///     typical `groupId.artifactId` / `package.subpackage` precision).
+///     Special-case Java/Kotlin: `org.springframework.boot.*` is best
+///     bucketed at `org.springframework` (three-segment vendors like
+///     `org.springframework`, `com.fasterxml`, `io.netty` get the
+///     `vendor.product` shape).
+///   * **CSharp** – same as Java/Kotlin; PascalCase namespaces like
+///     `Newtonsoft.Json.Bson` bucket at `Newtonsoft.Json`.
+///   * **Rust** – `::`-separated. The first segment is the crate name,
+///     which is the package coordinate. `bstr::ByteSlice` -> `bstr`,
+///     `tokio::sync::Mutex` -> `tokio`.
+///   * **Go** – `/`-separated import path. The full path IS the package
+///     coordinate. `github.com/gin-gonic/gin` -> the whole thing.
+///   * **TypeScript / JavaScript** – npm packages may be scoped (`@foo/bar`)
+///     and may have sub-paths (`lodash/fp`). For scoped packages keep both
+///     `@scope` + `name`; for unscoped, keep just the leading name.
+///     `node:fs` builtins keep the `node:fs` form.
+///   * **Ruby** – `'minitest/autorun'` -> `minitest` (gem name is the
+///     leading segment).
+///   * **C / C++** – `#include "path/to/header.h"` is path-shaped; keep
+///     the verbatim form (already coarse).
+fn external_package_name(module: &str, language: Language) -> String {
+    let module = module
+        .trim_start_matches("./")
+        .trim_start_matches("../")
+        .trim();
+    if module.is_empty() {
+        return String::new();
+    }
+
+    fn first_n_dotted(s: &str, n: usize) -> String {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() <= n {
+            s.to_string()
+        } else {
+            parts[..n].join(".")
+        }
+    }
+
+    match language {
+        Language::Java | Language::Kotlin | Language::Scala | Language::CSharp => {
+            // Java/Kotlin/CSharp/Scala — typical 2-segment Maven/NuGet
+            // group:artifact coordinate. For `org.*` / `com.*` / `io.*`
+            // there's usually a vendor.product convention; 2 segments
+            // captures e.g. `org.springframework`, `Newtonsoft.Json`,
+            // `kotlinx.coroutines`, `jakarta.persistence`.
+            first_n_dotted(module, 2)
+        }
+        Language::Python | Language::Lua | Language::Luau | Language::Elixir | Language::Ocaml
+        | Language::Php => {
+            // Python / Lua / Elixir / OCaml / PHP — typically one
+            // top-level package per pip/luarocks/hex/opam entry.
+            module
+                .split('.')
+                .next()
+                .unwrap_or(module)
+                .to_string()
+        }
+        Language::Rust => {
+            // Rust crate name == first `::` segment.
+            module
+                .split("::")
+                .next()
+                .unwrap_or(module)
+                .to_string()
+        }
+        Language::Go => {
+            // Go module path is the full import path (e.g.
+            // `github.com/gin-gonic/gin`). Internal stdlib was already
+            // filtered by `is_go_stdlib`; keep the full path here.
+            module.to_string()
+        }
+        Language::TypeScript | Language::JavaScript => {
+            // npm convention: scoped (`@foo/bar/sub`) -> `@foo/bar`;
+            // unscoped (`lodash/fp`) -> `lodash`; builtins (`node:fs`)
+            // keep verbatim.
+            if let Some(rest) = module.strip_prefix('@') {
+                let parts: Vec<&str> = rest.splitn(3, '/').collect();
+                if parts.len() >= 2 {
+                    format!("@{}/{}", parts[0], parts[1])
+                } else {
+                    format!("@{}", rest)
+                }
+            } else if module.starts_with("node:") {
+                module.to_string()
+            } else {
+                module.split('/').next().unwrap_or(module).to_string()
+            }
+        }
+        Language::Ruby => {
+            // `require 'minitest/autorun'` -> `minitest` (the gem).
+            module.split('/').next().unwrap_or(module).to_string()
+        }
+        Language::C | Language::Cpp => {
+            // `#include` is path-shaped; keep verbatim.
+            module.to_string()
+        }
+        _ => module.to_string(),
+    }
+}
+
 /// Check if Python import is stdlib.
 ///
 /// Uses a comprehensive list of Python 3.11+ stdlib modules.
@@ -4048,6 +4214,7 @@ mod tests {
             names: Vec::new(),
             is_from: None,
             alias: None,
+            line: 0,
         };
         let result = resolve_c_cpp_import(
             &import,
@@ -4067,6 +4234,7 @@ mod tests {
             names: Vec::new(),
             is_from: None,
             alias: None,
+            line: 0,
         };
         let result = resolve_c_cpp_import(
             &import,
@@ -4094,6 +4262,7 @@ mod tests {
             names: Vec::new(),
             is_from: None,
             alias: None,
+            line: 0,
         };
         let result = resolve_c_cpp_import(
             &import,
@@ -4141,6 +4310,7 @@ mod tests {
             names: Vec::new(),
             is_from: None,
             alias: None,
+            line: 0,
         };
         let result = resolve_ruby_import(
             &import,
@@ -4165,6 +4335,7 @@ mod tests {
             names: Vec::new(),
             is_from: None,
             alias: None,
+            line: 0,
         };
         let result = resolve_ruby_import(
             &import,
@@ -4210,6 +4381,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_csharp_import(
             &import,
@@ -4228,6 +4400,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_csharp_import(
             &import,
@@ -4272,6 +4445,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_scala_import(
             &import,
@@ -4299,6 +4473,7 @@ mod tests {
             names: vec!["*".to_string()],
             is_from: Some(true),
             alias: None,
+            line: 0,
         };
         let result = resolve_scala_import(
             &import,
@@ -4317,6 +4492,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_scala_import(
             &import,
@@ -4341,6 +4517,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_import(
             &import,
@@ -4365,6 +4542,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_import(
             &import,
@@ -4386,6 +4564,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_import(
             &import,
@@ -4410,6 +4589,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_import(
             &import,
@@ -4434,6 +4614,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
         let result = resolve_import(
             &import,
