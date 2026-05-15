@@ -1192,7 +1192,7 @@ pub type FunctionLineLookup = HashMap<(PathBuf, String), u32>;
 /// Functions that fail to parse are skipped silently (mirrors the call-graph
 /// builder's behavior — bad files don't poison hub metrics).
 pub fn enumerate_function_lines(root: &Path, language: Language) -> FunctionLineLookup {
-    use crate::ast::extract_file;
+    use crate::ast::extract_file_with_lang;
     use crate::walker::ProjectWalker;
 
     let mut lookup: FunctionLineLookup = HashMap::new();
@@ -1201,10 +1201,14 @@ pub fn enumerate_function_lines(root: &Path, language: Language) -> FunctionLine
         return lookup;
     }
 
-    // Strip leading dots from extensions: walker wants "py", `Language::extensions`
-    // returns ".py".
+    // hubs-line-population-v1 / M-036 fix: use `scan_extensions()` instead of
+    // `extensions()` so that C++ header files (`.h`) are included in the walk.
+    // `Language::extensions()` for Cpp returns only `.cpp`/`.cc`/`.cxx`/…
+    // and omits `.h`, leaving inline header functions unindexed (line stays 0).
+    // `scan_extensions()` adds `.h` for Cpp (and the full JS/TS sibling set
+    // for those families) — see `types.rs:scan_extensions`.
     let exts: Vec<&'static str> = language
-        .extensions()
+        .scan_extensions()
         .iter()
         .map(|e| e.trim_start_matches('.'))
         .collect();
@@ -1223,7 +1227,13 @@ pub fn enumerate_function_lines(root: &Path, language: Language) -> FunctionLine
         };
         let rel_norm = PathBuf::from(rel.to_string_lossy().replace('\\', "/"));
 
-        let module = match extract_file(path, Some(root)) {
+        // M-036 fix: pass the known `language` as a hint so that `.h` files
+        // in a C++ project are parsed with the C++ grammar rather than the C
+        // grammar that `from_path` would select.  Without the hint, `class`
+        // declarations in C++ headers come out as free functions with
+        // `return_type == "class"`, and method entries are missing from
+        // `module.classes[].methods` so the line lookup stays incomplete.
+        let module = match extract_file_with_lang(path, Some(root), Some(language)) {
             Ok(m) => m,
             Err(_) => continue,
         };
@@ -1235,12 +1245,19 @@ pub fn enumerate_function_lines(root: &Path, language: Language) -> FunctionLine
                 .or_insert(f.line_number);
         }
 
-        // Class methods: index by both bare `name` and qualified `Class.name`.
+        // Class methods: index by bare `name`, dot-qualified `Class.name`,
+        // and also by `Class::name` (C++ double-colon separator) since the
+        // call-graph builder emits FunctionRefs as `"XMLUtil::ToStr"` while
+        // the extractor records class.name="XMLUtil" and method.name="ToStr".
         for class in &module.classes {
             for m in &class.methods {
-                let qualified = format!("{}.{}", class.name, m.name);
+                let qualified_dot = format!("{}.{}", class.name, m.name);
+                let qualified_colon = format!("{}::{}", class.name, m.name);
                 lookup
-                    .entry((rel_norm.clone(), qualified))
+                    .entry((rel_norm.clone(), qualified_dot))
+                    .or_insert(m.line_number);
+                lookup
+                    .entry((rel_norm.clone(), qualified_colon))
                     .or_insert(m.line_number);
                 // Also index the bare method name as a fallback for
                 // builders that do not qualify (first-writer-wins so the
@@ -1336,11 +1353,27 @@ pub fn compute_hub_report_with_lines(
             // Populate the line from the canonical AST extractor. If the
             // node is not in the lookup, fall back to whatever line the
             // FunctionRef already carries (typically 0 = unknown).
+            //
+            // M-036: C++ call-graph builders emit qualified names like
+            // `"XMLUtil::ToStr"` while `extract_file` strips the qualifier
+            // and records the bare name `"ToStr"` (tree-sitter C++ surfaces
+            // `void XMLUtil::ToStr(...)` as a top-level function_definition
+            // with identifier `"ToStr"`). The lookup therefore has the entry
+            // `(file, "ToStr")` but not `(file, "XMLUtil::ToStr")`. Fall back
+            // to the bare-name form (everything after the last `::`) when the
+            // fully-qualified key misses.
             let mut node_with_line = node.clone();
             if let Some(lookup) = function_line_lookup {
                 let key = (node.file.clone(), node.name.clone());
                 if let Some(&line) = lookup.get(&key) {
                     node_with_line.line = line;
+                } else if node.name.contains("::") {
+                    // C++ qualified name fallback: try bare name after last `::`.
+                    let bare = node.name.rsplit("::").next().unwrap_or(&node.name);
+                    let bare_key = (node.file.clone(), bare.to_string());
+                    if let Some(&line) = lookup.get(&bare_key) {
+                        node_with_line.line = line;
+                    }
                 }
             }
 

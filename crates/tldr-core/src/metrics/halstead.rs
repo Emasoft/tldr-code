@@ -30,7 +30,8 @@ use tree_sitter::Node;
 
 use crate::ast::extract::extract_file;
 use crate::ast::function_finder::{
-    find_function_node, find_function_node_by_name_and_line,
+    find_function_node, find_function_node_by_name_and_line, get_function_name,
+    get_function_node_kinds,
 };
 use crate::ast::parser::{parse, parse_file};
 use crate::metrics::types::HalsteadInfo;
@@ -366,6 +367,101 @@ pub fn analyze_halstead(
                 };
 
                 functions.push(func_halstead);
+            }
+        }
+    }
+
+    // M-037 fix (halstead/cognitive function-count parity): `extract_file`
+    // does not surface all node kinds that cognitive's AST walker visits.
+    // Notably, Java `constructor_declaration` nodes are in
+    // `get_function_node_kinds(Java)` and therefore counted by cognitive, but
+    // `module.functions` and `module.classes[].methods` from `extract_file`
+    // never include them, leaving halstead's count 1 short for each constructor.
+    //
+    // Solution: after the extractor-based loops above, do a supplementary
+    // tree-sitter walk over the full source using `get_function_node_kinds(lang)`.
+    // Any function name not already present in `seen_names` (by name, since the
+    // extractor and tree-sitter may differ on line numbers by ±1 for the same
+    // function) is added.  The subsequent dedup-by-(name, file, line) ensures
+    // no double-counting of functions already found with the same line.
+    {
+        let func_kinds = get_function_node_kinds(lang);
+        // Key by name only: the extractor and tree-sitter can differ on line
+        // by ±1 for the same function, so (name, line) dedup would add
+        // duplicates.  The only functions the supplementary walk should add
+        // are those whose name is absent entirely from the extractor output
+        // (e.g. Java constructors, C# expression-bodied members that the
+        // extractor misses).
+        let seen_names: HashSet<String> = functions
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if func_kinds.contains(&node.kind()) {
+                if let Some(name) = get_function_name(node, lang, &source) {
+                    if !seen_names.contains(&name) {
+                        // Name is entirely new — compute Halstead for this node.
+                        // Apply function filter if set.
+                        let should_include = options.function.as_deref()
+                            .map(|f| f == name.as_str())
+                            .unwrap_or(true);
+                        if should_include {
+                            let line = node.start_position().row as u32 + 1;
+                            let (metrics, operators_set, operands_set) =
+                                calculate_function_halstead(node, &source, lang);
+                            let thresholds = evaluate_thresholds(&metrics, &options);
+
+                            if metrics.volume > options.volume_threshold {
+                                violations.push(HalsteadViolation {
+                                    name: name.clone(),
+                                    file: path.display().to_string(),
+                                    metric: "volume".to_string(),
+                                    value: metrics.volume,
+                                    threshold: options.volume_threshold,
+                                });
+                            }
+                            if metrics.difficulty > options.difficulty_threshold {
+                                violations.push(HalsteadViolation {
+                                    name: name.clone(),
+                                    file: path.display().to_string(),
+                                    metric: "difficulty".to_string(),
+                                    value: metrics.difficulty,
+                                    threshold: options.difficulty_threshold,
+                                });
+                            }
+
+                            functions.push(FunctionHalstead {
+                                name,
+                                file: path.display().to_string(),
+                                line,
+                                metrics,
+                                thresholds,
+                                operators: if options.show_operators {
+                                    Some(operators_set.into_iter().collect())
+                                } else {
+                                    None
+                                },
+                                operands: if options.show_operands {
+                                    Some(operands_set.into_iter().collect())
+                                } else {
+                                    None
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            // Continue walking children.
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    stack.push(cursor.node());
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
             }
         }
     }

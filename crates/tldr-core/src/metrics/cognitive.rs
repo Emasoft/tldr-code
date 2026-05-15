@@ -469,18 +469,25 @@ fn augment_cognitive_with_extractor_functions(
     let tree = parse(source, language)?;
     let root = tree.root_node();
 
-    let existing: std::collections::HashSet<String> =
-        functions.iter().map(|f| f.name.clone()).collect();
+    // M-037 fix: key `existing` by (name, line) not just name, so that
+    // overloaded methods sharing a name but defined at different lines are
+    // each treated as distinct candidates.  Previously, once the first
+    // `ReadElementAsync` (line 46) was found by the AST walker, the second
+    // overload (line 58) was silently skipped here — leaving cognitive with
+    // fewer functions than halstead (which uses `extract_file` and deduplicates
+    // by (name, file, line) rather than by name alone).
+    let existing: std::collections::HashSet<(String, u32)> =
+        functions.iter().map(|f| (f.name.clone(), f.line)).collect();
 
     let mut candidates: Vec<(String, u32)> = Vec::new();
     for f in &module.functions {
-        if !existing.contains(&f.name) {
+        if !existing.contains(&(f.name.clone(), f.line_number)) {
             candidates.push((f.name.clone(), f.line_number));
         }
     }
     for class in &module.classes {
         for m in &class.methods {
-            if !existing.contains(&m.name) {
+            if !existing.contains(&(m.name.clone(), m.line_number)) {
                 candidates.push((m.name.clone(), m.line_number));
             }
         }
