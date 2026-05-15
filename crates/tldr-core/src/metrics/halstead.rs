@@ -460,8 +460,14 @@ pub fn compute_halstead(
 // Internal Helpers
 // =============================================================================
 
-/// Calculate Halstead metrics for a single function node
-fn calculate_function_halstead(
+/// Calculate Halstead metrics for a single function node.
+///
+/// debt-sqale-wiring-v1 (M-015): exposed as `pub(crate)` so the
+/// debt aggregator can compute per-function Halstead metrics directly
+/// from an already-walked AST without going through the public
+/// `analyze_halstead` entry point (which re-parses and re-extracts
+/// the whole file).
+pub(crate) fn calculate_function_halstead(
     func_node: Node,
     source: &str,
     language: Language,

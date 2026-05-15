@@ -92,6 +92,32 @@ pub enum DebtRule {
     ComplexityVeryHigh,
     /// Cyclomatic complexity > 25 (60 minutes)
     ComplexityExtreme,
+    /// Cognitive complexity > 15 (20 minutes)
+    ///
+    /// debt-sqale-wiring-v1 (M-015): cognitive complexity sibling to
+    /// the cyclomatic ladder, using the SonarSource-style metric the
+    /// `tldr cognitive` command already exposes. Many languages
+    /// (Kotlin, Ruby, Lua, OCaml, Elixir) score `cyclomatic=1` because
+    /// the cyclomatic calculator hasn't been wired for that grammar
+    /// yet, but the cognitive walker handles them. Picking up cognitive
+    /// independently ensures the SQALE aggregate isn't blind to
+    /// functions that are clearly too complex just because cyclomatic
+    /// returned a default.
+    CognitiveHigh,
+    /// Cognitive complexity > 25 (30 minutes)
+    CognitiveVeryHigh,
+    /// Cognitive complexity > 50 (60 minutes)
+    CognitiveExtreme,
+    /// Halstead volume > 1000 (30 minutes)
+    ///
+    /// debt-sqale-wiring-v1 (M-015): Halstead volume violation per the
+    /// thresholds used by `tldr halstead`. Maps to maintainability
+    /// because high volume indicates a function is hard to read and
+    /// modify; it sits between long-method (LOC heuristic) and
+    /// cognitive (control-flow heuristic) by measuring lexical density.
+    HalsteadHighVolume,
+    /// Halstead difficulty > 20 (15 minutes)
+    HalsteadHighDifficulty,
     /// Class with >20 methods and LCOM4 > 0.8 (60 minutes)
     GodClass,
     /// Method with >100 lines of code (30 minutes)
@@ -115,6 +141,11 @@ impl DebtRule {
             Self::ComplexityHigh => 20,
             Self::ComplexityVeryHigh => 30,
             Self::ComplexityExtreme => 60,
+            Self::CognitiveHigh => 20,
+            Self::CognitiveVeryHigh => 30,
+            Self::CognitiveExtreme => 60,
+            Self::HalsteadHighVolume => 30,
+            Self::HalsteadHighDifficulty => 15,
             Self::GodClass => 60,
             Self::LongMethod => 30,
             Self::LongParamList => 15,
@@ -131,6 +162,11 @@ impl DebtRule {
             Self::ComplexityHigh
             | Self::ComplexityVeryHigh
             | Self::ComplexityExtreme
+            | Self::CognitiveHigh
+            | Self::CognitiveVeryHigh
+            | Self::CognitiveExtreme
+            | Self::HalsteadHighVolume
+            | Self::HalsteadHighDifficulty
             | Self::LongMethod
             | Self::DeepNesting
             | Self::MissingDocs => DebtCategory::Maintainability,
@@ -146,6 +182,11 @@ impl DebtRule {
             Self::ComplexityHigh => "Cyclomatic complexity > 10",
             Self::ComplexityVeryHigh => "Cyclomatic complexity > 15",
             Self::ComplexityExtreme => "Cyclomatic complexity > 25",
+            Self::CognitiveHigh => "Cognitive complexity > 15",
+            Self::CognitiveVeryHigh => "Cognitive complexity > 25",
+            Self::CognitiveExtreme => "Cognitive complexity > 50",
+            Self::HalsteadHighVolume => "Halstead volume > 1000",
+            Self::HalsteadHighDifficulty => "Halstead difficulty > 20",
             Self::GodClass => "Large class with low cohesion",
             Self::LongMethod => "Method too long (LOC > 100)",
             Self::LongParamList => "Too many parameters (> 5)",
@@ -162,6 +203,11 @@ impl DebtRule {
             Self::ComplexityHigh => "complexity.high",
             Self::ComplexityVeryHigh => "complexity.very_high",
             Self::ComplexityExtreme => "complexity.extreme",
+            Self::CognitiveHigh => "cognitive.high",
+            Self::CognitiveVeryHigh => "cognitive.very_high",
+            Self::CognitiveExtreme => "cognitive.extreme",
+            Self::HalsteadHighVolume => "halstead.volume_high",
+            Self::HalsteadHighDifficulty => "halstead.difficulty_high",
             Self::GodClass => "god_class",
             Self::LongMethod => "long_method",
             Self::LongParamList => "long_param_list",
@@ -919,6 +965,50 @@ fn find_complexity_issues_inner(
                     debt_minutes: minutes,
                 });
             }
+
+            // debt-sqale-wiring-v1 (v0.4.2 M-015): cognitive complexity
+            // is a separate signal from cyclomatic and stays correct on
+            // languages where the cyclomatic calculator's default
+            // reports `1` (e.g. Kotlin's `if_expression`, Ruby's
+            // implicit `cond`, OCaml/Elixir functional control flow).
+            // Threshold mirrors the canonical SonarSource cutoffs that
+            // `tldr cognitive` uses (15 / 25 / 50). Only the highest
+            // applicable bucket fires (matches the cyclomatic rule for
+            // consistency).
+            let cog = metrics.cognitive;
+            let cog_issue = if cog > 50 {
+                Some((
+                    "cognitive.extreme",
+                    60,
+                    format!("Cognitive complexity {} exceeds threshold", cog),
+                ))
+            } else if cog > 25 {
+                Some((
+                    "cognitive.very_high",
+                    30,
+                    format!("Cognitive complexity {} exceeds threshold", cog),
+                ))
+            } else if cog > 15 {
+                Some((
+                    "cognitive.high",
+                    20,
+                    format!("Cognitive complexity {} exceeds threshold", cog),
+                ))
+            } else {
+                None
+            };
+
+            if let Some((rule, minutes, message)) = cog_issue {
+                issues.push(DebtIssue {
+                    file: file.clone(),
+                    line: func_info.start_line,
+                    element: Some(func_info.full_name.clone()),
+                    rule: rule.to_string(),
+                    message,
+                    category: "maintainability".to_string(),
+                    debt_minutes: minutes,
+                });
+            }
         }
         // PM-3: On error, silently skip complexity check (don't add issue, don't default CC=1)
 
@@ -956,6 +1046,52 @@ fn find_complexity_issues_inner(
                 category: "testability".to_string(),
                 debt_minutes: 15,
             });
+        }
+
+        // debt-sqale-wiring-v1 (v0.4.2 M-015): Halstead volume /
+        // difficulty per function. Volume thresholds mirror the
+        // defaults in `crate::metrics::halstead::HalsteadOptions::new`
+        // (volume_threshold=1000, difficulty_threshold=20) — the same
+        // values `tldr halstead` reports as violations. Only the
+        // primary metric (volume) fires the higher cost bucket; we
+        // intentionally don't double-count by also raising difficulty
+        // when both trip, since they're highly correlated.
+        if let Some(func_node) = find_function_node_by_line(&root, func_info.start_line, language) {
+            let (h_metrics, _ops, _opnds) =
+                crate::metrics::halstead::calculate_function_halstead(func_node, source, language);
+            // Skip degenerate cases (empty bodies / single-statement
+            // stubs) — they produce volume in the low hundreds and
+            // would generate noise.
+            if h_metrics.volume > 1000.0 {
+                issues.push(DebtIssue {
+                    file: file.clone(),
+                    line: func_info.start_line,
+                    element: Some(func_info.full_name.clone()),
+                    rule: "halstead.volume_high".to_string(),
+                    message: format!(
+                        "Halstead volume {:.0} exceeds threshold (1000)",
+                        h_metrics.volume
+                    ),
+                    category: "maintainability".to_string(),
+                    debt_minutes: 30,
+                });
+            } else if h_metrics.difficulty > 20.0 {
+                // Only emit a difficulty issue when volume isn't
+                // already flagged — keeps the SQALE total proportional
+                // to the underlying problem rather than double-billing.
+                issues.push(DebtIssue {
+                    file: file.clone(),
+                    line: func_info.start_line,
+                    element: Some(func_info.full_name.clone()),
+                    rule: "halstead.difficulty_high".to_string(),
+                    message: format!(
+                        "Halstead difficulty {:.1} exceeds threshold (20)",
+                        h_metrics.difficulty
+                    ),
+                    category: "maintainability".to_string(),
+                    debt_minutes: 15,
+                });
+            }
         }
     }
 
@@ -995,10 +1131,138 @@ fn extract_function_infos_for_debt(
         Language::Go => extract_go_functions_for_debt(root, source, &mut functions),
         Language::Rust => extract_rust_functions_for_debt(root, source, &mut functions, None, 0),
         Language::Java => extract_java_functions_for_debt(root, source, &mut functions, None, 0),
-        _ => {} // Unsupported language - return empty
+        // debt-sqale-wiring-v1 (v0.4.2 M-015): for the remaining 13
+        // languages (c, cpp, csharp, kotlin, scala, ruby, php, lua,
+        // luau, swift, elixir, ocaml, and anything new wired through
+        // `get_function_node_kinds`) we fall through to a universal
+        // walker that uses the same shared `get_function_node_kinds` /
+        // `get_function_name` / `extract_function_params` API that the
+        // smells, halstead, and complexity siblings already rely on.
+        // Pre-fix `extract_function_infos_for_debt` returned an empty
+        // vec for these langs, so the cyclomatic/cognitive/long-method/
+        // long-param/deep-nesting branches all silently skipped them
+        // and `tldr debt` reported `total_minutes: 0` despite obvious
+        // smells (cluster M-015).
+        _ => extract_universal_functions_for_debt(root, source, language, &mut functions, 0),
     }
 
     functions
+}
+
+/// Universal AST walker that collects [`FunctionInfoForDebt`] for any
+/// language with function node kinds registered in
+/// `crate::ast::function_finder::get_function_node_kinds`.
+///
+/// This is the cross-language analog of the per-language extractors
+/// (`extract_python_functions_for_debt`, `extract_rust_functions_for_debt`,
+/// ...). Class/impl/module context for the `full_name` field is
+/// inferred from the AST ancestors via [`enclosing_class_name`] so
+/// debt issues are still labelled as `Class.method` for the affected
+/// languages (Kotlin's `class Foo { fun bar() }`, Ruby's
+/// `class Foo; def bar; end; end`, C++'s `class Foo { void bar(); };`,
+/// etc.). Recursion is bounded by `DEBT_MAX_AST_DEPTH` (mirrors the
+/// per-language walkers).
+///
+/// debt-sqale-wiring-v1 (v0.4.2 M-015): introduced to unblock SQALE
+/// debt aggregation for c/cpp/csharp/elixir/kotlin/lua/luau/ocaml/php/
+/// ruby/scala/swift.
+fn extract_universal_functions_for_debt(
+    node: Node,
+    source: &str,
+    language: Language,
+    functions: &mut Vec<FunctionInfoForDebt>,
+    recursion_depth: usize,
+) {
+    if recursion_depth > DEBT_MAX_AST_DEPTH {
+        return;
+    }
+
+    let func_kinds = crate::ast::function_finder::get_function_node_kinds(language);
+
+    if func_kinds.contains(&node.kind()) {
+        if let Some(info) = build_universal_function_info(node, source, language) {
+            functions.push(info);
+        }
+        // Note: we still recurse into the body so closures / nested
+        // functions are visited (matches the per-language behaviour
+        // for Rust / TS / Python).
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        extract_universal_functions_for_debt(
+            child,
+            source,
+            language,
+            functions,
+            recursion_depth + 1,
+        );
+    }
+}
+
+/// Build a single [`FunctionInfoForDebt`] from a function-kind AST
+/// node, reusing the shared `get_function_name` and
+/// `extract_function_params` so naming and parameter extraction stays
+/// consistent across `tldr` commands (BUG-AGG: previously each
+/// command rolled its own walker — this is one of the fixes coalescing
+/// them).
+fn build_universal_function_info(
+    node: Node,
+    source: &str,
+    language: Language,
+) -> Option<FunctionInfoForDebt> {
+    let name = crate::ast::function_finder::get_function_name(node, language, source)?;
+    let class_name = enclosing_class_name(node, source, language);
+    let full_name = match &class_name {
+        Some(c) => format!("{}.{}", c, name),
+        None => name.clone(),
+    };
+
+    let params = crate::ast::extract::extract_function_params(&node, source, language);
+
+    Some(FunctionInfoForDebt {
+        name,
+        full_name,
+        start_line: node.start_position().row as u32 + 1,
+        end_line: node.end_position().row as u32 + 1,
+        params,
+    })
+}
+
+/// Walk up the AST from `node` looking for an enclosing class/struct/
+/// module/impl node and return its name. Returns `None` when no such
+/// ancestor exists (free functions in C/Lua/Elixir/OCaml/etc.).
+///
+/// Mirrors the `Class.method` naming convention the per-language
+/// extractors already produce for Python/TS/JS/Rust/Java.
+fn enclosing_class_name(node: Node, source: &str, language: Language) -> Option<String> {
+    let class_kinds = crate::ast::function_finder::get_class_node_kinds(language);
+    if class_kinds.is_empty() {
+        return None;
+    }
+    let mut current = node.parent();
+    while let Some(p) = current {
+        if class_kinds.contains(&p.kind()) {
+            // Try the standard "name" field first; fall back to a
+            // direct identifier child for grammars that don't use the
+            // field name.
+            if let Some(name_node) = p.child_by_field_name("name") {
+                if let Ok(text) = name_node.utf8_text(source.as_bytes()) {
+                    return Some(text.to_string());
+                }
+            }
+            let mut cursor = p.walk();
+            for child in p.children(&mut cursor) {
+                if matches!(child.kind(), "identifier" | "type_identifier" | "name") {
+                    if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+        }
+        current = p.parent();
+    }
+    None
 }
 
 /// Extract Python functions for debt analysis
@@ -1752,8 +2016,120 @@ fn get_nesting_node_kinds(language: Language) -> Vec<&'static str> {
             "while_statement",
             "try_statement",
             "switch_expression",
+            "switch_statement",
         ],
-        _ => vec!["if_statement", "for_statement", "while_statement"],
+        // debt-sqale-wiring-v1 (v0.4.2 M-015): the prior catch-all
+        // fallback only listed statement-form kinds, which silently
+        // dropped nesting detection on languages whose tree-sitter
+        // grammars expose control flow as *expressions* (Kotlin's
+        // `if_expression`, Scala's `if_expression`, OCaml's `match_expression`,
+        // Lua's `elseif`). The replacement set is the union of the
+        // node kinds the smells module already uses for cross-language
+        // deep-nesting detection (`crate::quality::smells::is_nesting_node`)
+        // so debt and smells agree on what counts as a nesting level.
+        Language::Kotlin => vec![
+            "if_expression",
+            "when_expression",
+            "for_statement",
+            "while_statement",
+            "do_while_statement",
+            "try_expression",
+            "catch_clause",
+        ],
+        Language::Scala => vec![
+            "if_expression",
+            "for_expression",
+            "while_expression",
+            "match_expression",
+            "try_expression",
+            "catch_clause",
+        ],
+        Language::Ruby => vec![
+            "if",
+            "if_modifier",
+            "unless",
+            "unless_modifier",
+            "while",
+            "while_modifier",
+            "until",
+            "until_modifier",
+            "for",
+            "case",
+            "begin",
+            "rescue",
+        ],
+        Language::C | Language::Cpp => vec![
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "do_statement",
+            "switch_statement",
+            "try_statement",
+            "catch_clause",
+        ],
+        Language::CSharp => vec![
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "do_statement",
+            "foreach_statement",
+            "switch_statement",
+            "try_statement",
+            "catch_clause",
+            "switch_expression",
+        ],
+        Language::Php => vec![
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "do_statement",
+            "foreach_statement",
+            "switch_statement",
+            "try_statement",
+            "catch_clause",
+        ],
+        Language::Swift => vec![
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "guard_statement",
+            "do_statement",
+            "switch_statement",
+            "catch_clause",
+        ],
+        Language::Lua | Language::Luau => vec![
+            "if_statement",
+            "elseif_statement",
+            "for_statement",
+            "for_generic_statement",
+            "for_numeric_statement",
+            "while_statement",
+            "repeat_statement",
+        ],
+        Language::Elixir => vec![
+            // Elixir uses `do_block`-bearing macro calls. The most
+            // common control flow constructs are `case`, `cond`, `if`,
+            // `unless`, `with`, `try`. tree-sitter-elixir models them
+            // all as `call` nodes whose target is the macro name plus
+            // a `do_block` child. To keep parity with the smells
+            // detector we count any `do_block` (which always introduces
+            // a fresh scope) plus the bare `stab_clause`s that nest
+            // inside `case`/`cond`. This intentionally over-counts a
+            // little vs. the strict ISO definition but matches what
+            // SonarSource cognitive does on the same source.
+            "do_block",
+            "stab_clause",
+            "rescue_block",
+            "catch_block",
+        ],
+        Language::Ocaml => vec![
+            "match_expression",
+            "if_expression",
+            "for_expression",
+            "while_expression",
+            "try_expression",
+            "function_expression",
+        ],
     }
 }
 
@@ -2694,6 +3070,33 @@ pub fn analyze_debt(options: DebtOptions) -> TldrResult<DebtReport> {
     sorted_files.sort_by(|a, b| b.total_minutes.cmp(&a.total_minutes));
     let top_files: Vec<_> = sorted_files.into_iter().take(options.top_k).collect();
 
+    // sibling-resolver-gaps-v1 (P14.AGG14-5): expose the resolved
+    // language so consumers can confirm `--lang <X>` was honoured
+    // (mirrors the top-level `language` field on `clones`).
+    //
+    // debt-sqale-wiring-v1 (v0.4.2 M-015): when `--lang` is not
+    // supplied, fall back to detection from the analyzed path. For a
+    // single file this is path-extension detection; for a directory
+    // it's `Language::from_directory` (the dominant-language picker
+    // that `tldr structure` and `tldr smells` already use). Without
+    // this fallback the field was unconditionally `null` even when
+    // every analyzed file had a detectable language, breaking
+    // downstream consumers that gate on the field (and showing up in
+    // the Phase-22 audit cells for c#/go/ruby).
+    let resolved_language: Option<String> = match options.language {
+        Some(l) => Some(l.as_str().to_string()),
+        None => {
+            let detected = if path.is_file() {
+                Language::from_path(path)
+            } else if path.is_dir() {
+                Language::from_directory(path)
+            } else {
+                None
+            };
+            detected.map(|l| l.as_str().to_string())
+        }
+    };
+
     Ok(DebtReport {
         issues: all_issues,
         top_files,
@@ -2708,9 +3111,6 @@ pub fn analyze_debt(options: DebtOptions) -> TldrResult<DebtReport> {
             by_severity,
             by_severity_count,
         },
-        // sibling-resolver-gaps-v1 (P14.AGG14-5): expose the resolved
-        // language so consumers can confirm `--lang <X>` was honoured
-        // (mirrors the top-level `language` field on `clones`).
-        language: options.language.map(|l| l.as_str().to_string()),
+        language: resolved_language,
     })
 }
