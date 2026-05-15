@@ -365,12 +365,19 @@ fn agg12_6_diagnostics_no_tools_emits_valid_sarif() {
 }
 
 // =============================================================================
-// BUG-SWIFT-2: change-impact errors must go to stderr
+// BUG-SWIFT-2: change-impact on a file path succeeds with clean JSON output
+// (Updated in v0.4.2 to match W-R commit 4ce6f8a: accept-path-or-dir contract)
 // =============================================================================
 
-/// Real-repo: `tldr change-impact` on a FILE (instead of a directory) is
-/// a usage error. The error message must go to stderr exclusively; stdout
-/// must stay empty (or JSON-clean) so JSON consumers don't choke.
+/// Real-repo: `tldr change-impact` on a FILE is now accepted (design-correct
+/// as of W-R commit 4ce6f8a).  The command must exit 0, emit valid JSON on
+/// stdout with the file listed in `changed_files`, and produce no error
+/// output on stderr.
+///
+/// The original test asserted a non-zero "usage error" exit because the old
+/// implementation rejected file paths.  That over-strict guard was removed
+/// in 4ce6f8a — file-path input now maps to a single-file change-set with
+/// language inferred from the extension.
 #[test]
 fn swift_2_change_impact_usage_error_to_stderr() {
     if !require_repo("swift-collections") {
@@ -385,35 +392,40 @@ fn swift_2_change_impact_usage_error_to_stderr() {
     let stdout_str = String::from_utf8_lossy(&stdout);
     let stderr_str = String::from_utf8_lossy(&stderr);
 
-    // Usage error means non-zero exit.
-    assert_ne!(code, Some(0), "change-impact on a file is a usage error");
-
-    // Stdout must NOT carry the error message.
-    assert!(
-        !stdout_str.to_lowercase().contains("error:"),
-        "change-impact usage error must not appear on stdout; got: {}",
-        stdout_str
-    );
-    assert!(
-        !stdout_str.to_lowercase().contains("requires a directory"),
-        "change-impact usage hint must not appear on stdout; got: {}",
-        stdout_str
-    );
-
-    // Stderr MUST carry the diagnostic.
-    assert!(
-        stderr_str.to_lowercase().contains("requires a directory")
-            || stderr_str.to_lowercase().contains("got file"),
-        "change-impact usage hint must appear on stderr; got: {}",
+    // New contract: file path is accepted, exit 0.
+    assert_eq!(
+        code,
+        Some(0),
+        "change-impact on a file must now succeed (exit 0); stderr: {}",
         stderr_str
     );
 
-    // If stdout is non-empty, it must be valid JSON.
-    if !stdout.iter().all(|b| b.is_ascii_whitespace()) {
-        serde_json::from_slice::<serde_json::Value>(&stdout).expect(
-            "non-empty stdout from change-impact usage error must still parse as JSON",
-        );
-    }
+    // Stderr must be empty — no error/warning noise for a valid file path.
+    assert!(
+        stderr_str.trim().is_empty(),
+        "change-impact on a valid file must not write to stderr; got: {}",
+        stderr_str
+    );
+
+    // Stdout must be valid JSON.
+    let parsed: serde_json::Value = serde_json::from_slice(&stdout).expect(
+        "change-impact on a file must emit valid JSON on stdout",
+    );
+
+    // The supplied file must appear in changed_files.
+    let changed = parsed
+        .get("changed_files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .any(|f| f.as_str().map_or(false, |s| s.ends_with("Heap.swift")))
+        })
+        .unwrap_or(false);
+    assert!(
+        changed,
+        "Heap.swift must appear in changed_files; stdout: {}",
+        stdout_str
+    );
 }
 
 /// Confirm `tldr change-impact` on a real DIRECTORY (the happy path)
