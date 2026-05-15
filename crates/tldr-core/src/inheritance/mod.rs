@@ -41,11 +41,13 @@
 
 pub mod cpp; // real-repo-fixes-v1 (P9.BUG-R4): C/C++ inheritance extraction
 pub mod csharp;
+pub mod elixir; // inheritance-walker-per-lang-v1 (M-039)
 pub mod filter;
 pub mod format;
 pub mod go;
 pub mod java;
 pub mod kotlin;
+pub mod lua; // inheritance-walker-per-lang-v1 (M-039)
 pub mod patterns;
 pub mod php;
 pub mod python;
@@ -65,7 +67,8 @@ use walkdir::WalkDir;
 use crate::ast::parser::ParserPool;
 use crate::error::TldrError;
 use crate::types::{
-    BaseResolution, InheritanceEdge, InheritanceGraph, InheritanceReport, Language,
+    BaseResolution, InheritanceEdge, InheritanceGraph, InheritanceKind, InheritanceReport,
+    Language,
 };
 use crate::TldrResult;
 
@@ -168,6 +171,9 @@ pub fn extract_inheritance(
             // real-repo-fixes-v1 (P9.BUG-R4): plug C/C++ inheritance.
             Language::Cpp => cpp::extract_classes(&source, file_path, &parser_pool)?,
             Language::C => cpp::extract_classes_c(&source, file_path, &parser_pool)?,
+            // inheritance-walker-per-lang-v1 (M-039)
+            Language::Elixir => elixir::extract_classes(&source, file_path, &parser_pool)?,
+            Language::Lua => lua::extract_classes(&source, file_path, &parser_pool)?,
             _ => Vec::new(), // Unsupported language
         };
 
@@ -289,6 +295,17 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
             None => continue,
         };
 
+        // inheritance-walker-per-lang-v1 (M-039): build a name→kind
+        // map from the child's bases/base_kinds parallel vectors so
+        // the per-base kind survives the graph round-trip.
+        let mut kind_for_base: std::collections::HashMap<String, InheritanceKind> =
+            std::collections::HashMap::new();
+        for (i, b) in child_node.bases.iter().enumerate() {
+            kind_for_base
+                .entry(b.clone())
+                .or_insert_with(|| child_node.base_kind_at(i));
+        }
+
         // Dedupe parent names per child (M5 dedup) — a child can have the same
         // parent listed multiple times when extractors emit the heritage
         // clause repeatedly. We preserve order via a HashSet-tracking pass.
@@ -308,7 +325,7 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
                 (BaseResolution::Unresolved, true)
             };
 
-            let edge = if external {
+            let base_edge = if external {
                 if resolution == BaseResolution::Stdlib {
                     InheritanceEdge::stdlib(
                         child_name,
@@ -335,6 +352,14 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
                     pn.line,
                 )
             };
+
+            // inheritance-walker-per-lang-v1 (M-039): apply per-base
+            // kind. Defaults to Extends when not specified.
+            let kind = kind_for_base
+                .get(parent_name)
+                .copied()
+                .unwrap_or(InheritanceKind::Extends);
+            let edge = base_edge.with_kind(kind);
 
             // M5 dedup: (child, parent, parent_file) is the canonical edge
             // identity. Skip if we've already emitted this triple.

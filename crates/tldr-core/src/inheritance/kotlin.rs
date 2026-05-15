@@ -17,7 +17,7 @@ use std::path::Path;
 use tree_sitter::Node;
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class, interface, object, and enum definitions from Kotlin source code
@@ -76,6 +76,11 @@ fn extract_class_declaration(
     let is_interface = is_interface_declaration(node, source);
     let is_abstract = has_modifier(node, source, "abstract");
     let is_enum = has_modifier(node, source, "enum");
+    // inheritance-walker-per-lang-v1 (M-039): sealed class/interface
+    // is distinguished via the `mixin` marker. Also surface
+    // `abstract: false` when sealed (no explicit `abstract` modifier)
+    // so JSON has a concrete value rather than null.
+    let is_sealed = has_modifier(node, source, "sealed");
 
     let mut class_node =
         InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Kotlin);
@@ -85,11 +90,28 @@ fn extract_class_declaration(
     }
     if is_abstract {
         class_node.is_abstract = Some(true);
+    } else if is_sealed {
+        class_node.is_abstract = Some(false);
+    }
+    if is_sealed {
+        class_node.mixin = Some(true);
     }
 
-    // Extract delegation specifiers (base classes/interfaces)
-    let bases = extract_delegation_specifiers(node, source);
-    class_node.bases = bases;
+    // Extract delegation specifiers (base classes/interfaces).
+    // inheritance-walker-per-lang-v1 (M-039): per-base kind comes from
+    // the AST shape — constructor_invocation = extends, bare user_type
+    // = implements.
+    let bases_with_kind = extract_delegation_specifiers(node, source);
+    if !bases_with_kind.is_empty() {
+        let mut bases = Vec::with_capacity(bases_with_kind.len());
+        let mut kinds = Vec::with_capacity(bases_with_kind.len());
+        for (b, k) in bases_with_kind {
+            bases.push(b);
+            kinds.push(k);
+        }
+        class_node.bases = bases;
+        class_node.base_kinds = Some(kinds);
+    }
 
     // Mark enum classes but still capture their bases
     if is_enum {
@@ -115,9 +137,17 @@ fn extract_object_declaration(
 
     let mut obj_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Kotlin);
 
-    // Extract delegation specifiers
-    let bases = extract_delegation_specifiers(node, source);
-    obj_node.bases = bases;
+    let bases_with_kind = extract_delegation_specifiers(node, source);
+    if !bases_with_kind.is_empty() {
+        let mut bases = Vec::with_capacity(bases_with_kind.len());
+        let mut kinds = Vec::with_capacity(bases_with_kind.len());
+        for (b, k) in bases_with_kind {
+            bases.push(b);
+            kinds.push(k);
+        }
+        obj_node.bases = bases;
+        obj_node.base_kinds = Some(kinds);
+    }
 
     Some(obj_node)
 }
@@ -196,8 +226,11 @@ fn has_modifier_in_modifiers(node: &Node, source: &str, modifier: &str) -> bool 
 ///     user_type                    (interface implementation: Serializable)
 ///       identifier "Serializable"
 /// ```
-fn extract_delegation_specifiers(node: &Node, source: &str) -> Vec<String> {
-    let mut bases = Vec::new();
+fn extract_delegation_specifiers(
+    node: &Node,
+    source: &str,
+) -> Vec<(String, InheritanceKind)> {
+    let mut bases: Vec<(String, InheritanceKind)> = Vec::new();
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -205,8 +238,10 @@ fn extract_delegation_specifiers(node: &Node, source: &str) -> Vec<String> {
             let mut spec_cursor = child.walk();
             for spec in child.children(&mut spec_cursor) {
                 if spec.kind() == "delegation_specifier" {
-                    if let Some(name) = extract_type_from_delegation_specifier(&spec, source) {
-                        bases.push(name);
+                    if let Some(pair) =
+                        extract_type_from_delegation_specifier(&spec, source)
+                    {
+                        bases.push(pair);
                     }
                 }
             }
@@ -221,19 +256,24 @@ fn extract_delegation_specifiers(node: &Node, source: &str) -> Vec<String> {
 /// A delegation_specifier can contain:
 /// - `constructor_invocation` with `user_type > identifier` (class inheritance)
 /// - `user_type > identifier` directly (interface implementation)
-fn extract_type_from_delegation_specifier(node: &Node, source: &str) -> Option<String> {
+fn extract_type_from_delegation_specifier(
+    node: &Node,
+    source: &str,
+) -> Option<(String, InheritanceKind)> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "constructor_invocation" => {
-                // Class inheritance: Animal(name)
-                // -> user_type > identifier
-                return extract_type_name_from_user_type_parent(&child, source);
+                // inheritance-walker-per-lang-v1 (M-039): class
+                // inheritance shape `: Super()` -> extends.
+                let name = extract_type_name_from_user_type_parent(&child, source)?;
+                return Some((name, InheritanceKind::Extends));
             }
             "user_type" => {
-                // Interface implementation: Serializable
-                // -> identifier
-                return extract_identifier_from_user_type(&child, source);
+                // Bare user_type `: Iface` -> implements (interface
+                // conformance).
+                let name = extract_identifier_from_user_type(&child, source)?;
+                return Some((name, InheritanceKind::Implements));
             }
             _ => {}
         }

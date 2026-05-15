@@ -11,7 +11,7 @@ use std::path::Path;
 use tree_sitter::Node;
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class and module definitions from Ruby source code
@@ -74,10 +74,76 @@ fn extract_class_definition(
     if let Some(superclass_node) = node.child_by_field_name("superclass") {
         if let Some(parent_name) = extract_superclass_name(&superclass_node, source) {
             class_node.bases.push(parent_name);
+            let kinds = class_node.base_kinds.get_or_insert_with(Vec::new);
+            kinds.push(InheritanceKind::Extends);
         }
     }
 
+    // inheritance-walker-per-lang-v1 (M-039): scan body for include /
+    // extend / prepend mixin calls.
+    collect_ruby_mixins(node, source, &mut class_node);
+
     Some(class_node)
+}
+
+fn collect_ruby_mixins(
+    class_node_ast: &Node,
+    source: &str,
+    out: &mut InheritanceNode,
+) {
+    let body = class_node_ast
+        .child_by_field_name("body")
+        .or_else(|| ruby_find_first_kind(class_node_ast, "body_statement"));
+    let body = match body {
+        Some(b) => b,
+        None => return,
+    };
+
+    let mut cursor = body.walk();
+    for stmt in body.children(&mut cursor) {
+        if let Some(target) = ruby_mixin_call_target(&stmt, source) {
+            if !out.bases.iter().any(|b| b == &target) {
+                out.bases.push(target);
+                let kinds = out.base_kinds.get_or_insert_with(Vec::new);
+                kinds.push(InheritanceKind::Implements);
+            }
+        }
+    }
+}
+
+fn ruby_find_first_kind<'a>(node: &Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            return Some(child);
+        }
+    }
+    None
+}
+
+fn ruby_mixin_call_target(node: &Node, source: &str) -> Option<String> {
+    if node.kind() != "call" && node.kind() != "method_call" {
+        return None;
+    }
+    if node.child_by_field_name("receiver").is_some() {
+        return None;
+    }
+    let method_node = node.child_by_field_name("method")?;
+    let method = method_node.utf8_text(source.as_bytes()).ok()?;
+    if method != "include" && method != "extend" && method != "prepend" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    for arg in args.children(&mut cursor) {
+        match arg.kind() {
+            "constant" | "scope_resolution" => {
+                return arg.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Extract a module node.

@@ -29,6 +29,16 @@ pub struct InheritanceNode {
     pub language: Language,
     /// Base classes/interfaces this class extends
     pub bases: Vec<String>,
+    /// Per-base inheritance kind, positionally aligned with `bases`.
+    ///
+    /// inheritance-walker-per-lang-v1 (M-039): per-language walkers
+    /// distinguish `extends` from `implements` (and Go-style `embeds`)
+    /// on a per-base granularity. The vector, when present, is parallel
+    /// to `bases`. When `None`, all bases default to `Extends` at
+    /// edge-build time. When `Some` but shorter than `bases`, missing
+    /// trailing entries default to `Extends`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_kinds: Option<Vec<InheritanceKind>>,
     /// Whether this is an abstract class (ABC in Python, abstract class in TS)
     /// Note: `abstract` is a reserved keyword in Rust
     #[serde(rename = "abstract")]
@@ -56,6 +66,7 @@ impl InheritanceNode {
             line,
             language,
             bases: Vec::new(),
+            base_kinds: None,
             is_abstract: None,
             protocol: None,
             interface: None,
@@ -68,6 +79,29 @@ impl InheritanceNode {
     pub fn with_base(mut self, base: impl Into<String>) -> Self {
         self.bases.push(base.into());
         self
+    }
+
+    /// Add a base with an explicit inheritance kind.
+    ///
+    /// inheritance-walker-per-lang-v1 (M-039).
+    pub fn with_base_kind(
+        mut self,
+        base: impl Into<String>,
+        kind: InheritanceKind,
+    ) -> Self {
+        self.bases.push(base.into());
+        let kinds = self.base_kinds.get_or_insert_with(Vec::new);
+        kinds.push(kind);
+        self
+    }
+
+    /// Get the inheritance kind for the base at index `i`, defaulting
+    /// to `Extends` when `base_kinds` is missing/shorter than `bases`.
+    pub fn base_kind_at(&self, i: usize) -> InheritanceKind {
+        self.base_kinds
+            .as_ref()
+            .and_then(|v| v.get(i).copied())
+            .unwrap_or(InheritanceKind::Extends)
     }
 
     /// Add multiple base classes

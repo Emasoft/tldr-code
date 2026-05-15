@@ -13,7 +13,7 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract trait definitions and struct/enum types with impl blocks
@@ -33,10 +33,26 @@ pub fn extract_classes(
     // Second pass: collect impl blocks to add bases
     collect_impl_blocks(&tree, source, &mut impl_map);
 
-    // Apply impl blocks to types
+    // inheritance-walker-per-lang-v1 (M-039): each `impl Trait for
+    // Type` block contributes an `implements` edge. The trait name is
+    // taken from `extract_qualified_trait_name` which preserves scoped
+    // paths so `impl std::error::Error for Error` does NOT collapse to
+    // a self-loop. As a defensive guard, any same-name pair (would
+    // only happen for single-segment self-impls) is filtered out.
     for class in &mut classes {
         if let Some(traits) = impl_map.get(&class.name) {
-            class.bases = traits.clone();
+            if !class.bases.is_empty() && class.base_kinds.is_none() {
+                class.base_kinds =
+                    Some(vec![InheritanceKind::Extends; class.bases.len()]);
+            }
+            for trait_name in traits {
+                if trait_name == &class.name {
+                    continue;
+                }
+                class.bases.push(trait_name.clone());
+                let kinds = class.base_kinds.get_or_insert_with(Vec::new);
+                kinds.push(InheritanceKind::Implements);
+            }
         }
     }
 
@@ -203,8 +219,12 @@ fn extract_impl_for(node: &Node, source: &str) -> Option<(String, String)> {
     // In tree-sitter-rust, impl_item has:
     // - trait: the trait being implemented (optional)
     // - type: the type implementing the trait
+    // inheritance-walker-per-lang-v1 (M-039): preserve the full
+    // scoped path for the trait side so orphan-rule self-impls
+    // (`impl std::error::Error for Error`) don't collapse to a
+    // self-loop on `Error`.
     if let Some(trait_node) = node.child_by_field_name("trait") {
-        trait_name = extract_type_name(&trait_node, source);
+        trait_name = extract_qualified_trait_name(&trait_node, source);
     }
 
     if let Some(type_node) = node.child_by_field_name("type") {
@@ -214,6 +234,26 @@ fn extract_impl_for(node: &Node, source: &str) -> Option<(String, String)> {
     // Only return if both trait and type are present (impl Trait for Type)
     match (type_name, trait_name) {
         (Some(t), Some(tr)) => Some((t, tr)),
+        _ => None,
+    }
+}
+
+/// Extract a fully-qualified trait name, preserving scope path
+/// segments. inheritance-walker-per-lang-v1 (M-039).
+fn extract_qualified_trait_name(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string()),
+        "generic_type" => {
+            let type_name = node.child_by_field_name("type")?;
+            extract_qualified_trait_name(&type_name, source)
+        }
+        "scoped_type_identifier" => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string()),
         _ => None,
     }
 }

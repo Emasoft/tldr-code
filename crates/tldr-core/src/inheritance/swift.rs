@@ -15,7 +15,7 @@ use std::path::Path;
 use tree_sitter::Node;
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class, protocol, struct, and enum definitions from Swift source code
@@ -36,6 +36,22 @@ pub fn extract_classes(
 fn visit_node(node: &Node, source: &str, file_path: &Path, classes: &mut Vec<InheritanceNode>) {
     match node.kind() {
         "class_declaration" => {
+            // inheritance-walker-per-lang-v1 (M-039): class_declaration
+            // covers extension in swift's tree-sitter grammar. Route
+            // extensions to extract_extension so protocol conformance
+            // edges are emitted on the extended type.
+            if let Some(kind_node) = node.child_by_field_name("declaration_kind") {
+                if let Ok("extension") = kind_node.utf8_text(source.as_bytes()) {
+                    if let Some(class) = extract_extension(node, source, file_path) {
+                        classes.push(class);
+                    }
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        visit_node(&child, source, file_path, classes);
+                    }
+                    return;
+                }
+            }
             if let Some(class) = extract_class_declaration(node, source, file_path) {
                 classes.push(class);
             }
@@ -87,13 +103,51 @@ fn extract_class_declaration(
     let line = node.start_position().row as u32 + 1;
     let mut class_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Swift);
 
-    // Extract inheritance specifiers
-    class_node.bases = extract_inheritance_specifiers(node, source);
-
-    // Check for abstract-like annotations (Swift doesn't have abstract classes,
-    // but we can detect if it has only protocol-like behavior)
+    // inheritance-walker-per-lang-v1 (M-039): per-base kind. Only
+    // class declarations can have a class superclass in the first
+    // specifier; struct/enum/actor can only conform to protocols.
+    let bases = extract_inheritance_specifiers(node, source);
+    if !bases.is_empty() {
+        let mut kinds = Vec::with_capacity(bases.len());
+        for (i, _) in bases.iter().enumerate() {
+            if kind == "class" && i == 0 {
+                kinds.push(InheritanceKind::Extends);
+            } else {
+                kinds.push(InheritanceKind::Implements);
+            }
+        }
+        class_node.bases = bases;
+        class_node.base_kinds = Some(kinds);
+    }
 
     Some(class_node)
+}
+
+/// Extract an `extension Type: Protocol1, Protocol2` declaration.
+///
+/// inheritance-walker-per-lang-v1 (M-039): produces a node whose name
+/// is the extended type with each protocol after the colon emitted as
+/// an `implements` base.
+fn extract_extension(
+    node: &Node,
+    source: &str,
+    file_path: &Path,
+) -> Option<InheritanceNode> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = extract_type_name(&name_node, source)?;
+
+    let line = node.start_position().row as u32 + 1;
+    let mut ext_node =
+        InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Swift);
+
+    let bases = extract_inheritance_specifiers(node, source);
+    if !bases.is_empty() {
+        let kinds = vec![InheritanceKind::Implements; bases.len()];
+        ext_node.bases = bases;
+        ext_node.base_kinds = Some(kinds);
+    }
+
+    Some(ext_node)
 }
 
 /// Extract a protocol_declaration node.
@@ -114,8 +168,15 @@ fn extract_protocol_declaration(
     proto_node.interface = Some(true);
     proto_node.protocol = Some(true);
 
-    // Protocols can inherit from other protocols
-    proto_node.bases = extract_inheritance_specifiers(node, source);
+    // Protocols can inherit from other protocols.
+    // inheritance-walker-per-lang-v1 (M-039): protocol-to-protocol is
+    // surfaced as `implements`.
+    let bases = extract_inheritance_specifiers(node, source);
+    if !bases.is_empty() {
+        let kinds = vec![InheritanceKind::Implements; bases.len()];
+        proto_node.bases = bases;
+        proto_node.base_kinds = Some(kinds);
+    }
 
     Some(proto_node)
 }
