@@ -304,7 +304,31 @@ fn extract_from_test_file(path: &Path) -> ContractsResult<FileSpecReport> {
     let mut specs: HashMap<String, FunctionSpecs> = HashMap::new();
     let mut test_func_count = 0u32;
 
+    // Helper: total spec count across all entries in a FunctionSpecs map.
+    let spec_total = |m: &HashMap<String, FunctionSpecs>| -> usize {
+        m.values().map(|v| {
+            v.input_output_specs.len() + v.exception_specs.len() + v.property_specs.len()
+        }).sum()
+    };
+
+    // cluster-misc-v2 (M-029): after each test function is processed,
+    // increment test_count for every FunctionSpecs entry that gained at
+    // least one new spec from that test function.
+    let bump_test_counts = |specs: &mut HashMap<String, FunctionSpecs>,
+                                pre: &HashMap<String, usize>| {
+        for (name, entry) in specs.iter_mut() {
+            let prev = pre.get(name).copied().unwrap_or(0);
+            let now = entry.input_output_specs.len()
+                + entry.exception_specs.len()
+                + entry.property_specs.len();
+            if now > prev {
+                entry.test_count += 1;
+            }
+        }
+    };
+
     // Process all test functions
+    let _ = spec_total; // suppress unused warning from closure capture
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         match child.kind() {
@@ -313,7 +337,12 @@ fn extract_from_test_file(path: &Path) -> ContractsResult<FileSpecReport> {
                     let name = get_node_text(name_node, source.as_bytes());
                     if name.starts_with("test_") {
                         test_func_count += 1;
+                        let pre: HashMap<String, usize> = specs
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.input_output_specs.len() + v.exception_specs.len() + v.property_specs.len()))
+                            .collect();
                         process_test_function(child, name, source.as_bytes(), &mut specs, 0)?;
+                        bump_test_counts(&mut specs, &pre);
                     }
                 }
             }
@@ -330,6 +359,10 @@ fn extract_from_test_file(path: &Path) -> ContractsResult<FileSpecReport> {
                                         let mname = get_node_text(method_name, source.as_bytes());
                                         if mname.starts_with("test_") {
                                             test_func_count += 1;
+                                            let pre: HashMap<String, usize> = specs
+                                                .iter()
+                                                .map(|(k, v)| (k.clone(), v.input_output_specs.len() + v.exception_specs.len() + v.property_specs.len()))
+                                                .collect();
                                             process_test_function(
                                                 method,
                                                 mname,
@@ -337,6 +370,7 @@ fn extract_from_test_file(path: &Path) -> ContractsResult<FileSpecReport> {
                                                 &mut specs,
                                                 0,
                                             )?;
+                                            bump_test_counts(&mut specs, &pre);
                                         }
                                     }
                                 }
@@ -1278,7 +1312,35 @@ fn walk_for_test_bodies(
 ) {
     if super::test_recognizer::is_test_function_node(&node, source, language) {
         let test_name = test_function_display_name(&node, source);
+
+        // cluster-misc-v2 (M-029): snapshot spec counts before harvesting so
+        // we can increment test_count on every FunctionSpecs entry that
+        // received at least one new spec from this test function.
+        let pre_counts: HashMap<String, usize> = specs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    v.input_output_specs.len()
+                        + v.exception_specs.len()
+                        + v.property_specs.len(),
+                )
+            })
+            .collect();
+
         harvest_assertions_in(&node, source, language, &test_name, path, specs);
+
+        // Increment test_count for any entry whose total spec count grew.
+        for (name, entry) in specs.iter_mut() {
+            let prev = pre_counts.get(name).copied().unwrap_or(0);
+            let now = entry.input_output_specs.len()
+                + entry.exception_specs.len()
+                + entry.property_specs.len();
+            if now > prev {
+                entry.test_count += 1;
+            }
+        }
+
         // Don't double-count nested matches inside a single recognised test.
         return;
     }
@@ -1295,14 +1357,64 @@ fn test_function_display_name(node: &Node, source: &[u8]) -> String {
     if let Some(name) = node.child_by_field_name("name") {
         return get_node_text(name, source).to_string();
     }
+
+    // cluster-misc-v2 (M-029): Elixir ExUnit `test "name" do ... end`
+    // macros are parsed as `call` nodes whose first child is an `identifier`
+    // "test" (the macro target). The previous fallback therefore returned
+    // "test" for every Elixir test, losing the actual test name.
+    //
+    // For Elixir `call` nodes, look for the first string-literal argument
+    // inside the `arguments` child. The tree-sitter-elixir grammar nests
+    // the argument list under `arguments > string > quoted_content`.
+    if node.kind() == "call" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "arguments" {
+                // Walk the arguments node for the first string child.
+                let mut arg_cursor = child.walk();
+                for arg in child.children(&mut arg_cursor) {
+                    // tree-sitter-elixir: string literals are either
+                    // `string` nodes (double-quoted) or the raw text.
+                    if arg.kind() == "string" {
+                        // The content lives in a `quoted_content` child or
+                        // is the direct text of the string node.
+                        let mut sc = arg.walk();
+                        for s_child in arg.children(&mut sc) {
+                            if s_child.kind() == "quoted_content" {
+                                let txt = get_node_text(s_child, source).to_string();
+                                if !txt.is_empty() {
+                                    return txt;
+                                }
+                            }
+                        }
+                        // Fallback: strip surrounding quotes from node text.
+                        let raw = get_node_text(arg, source);
+                        let trimmed = raw.trim_matches('"').trim_matches('\'').to_string();
+                        if !trimmed.is_empty() {
+                            return trimmed;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Walk children for the first identifier child (covers Swift,
     // Kotlin, etc. whose grammar exposes the name as a positional child).
+    // NOTE: this path must come AFTER the Elixir call-node path above so
+    // Elixir tests don't hit the identifier "test" and return the keyword.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let kind = child.kind();
-        if kind == "identifier" || kind == "simple_identifier" || kind == "name" {
+        if kind == "simple_identifier" || kind == "name" {
             return get_node_text(child, source).to_string();
         }
+        // "identifier" is intentionally excluded here: it matches the
+        // Elixir macro target "test" and the Lua function name "it" /
+        // "test" — returning those is unhelpful. For languages that genuinely
+        // expose the test-function name as a bare `identifier` child
+        // (e.g. Go `function_declaration`), the `child_by_field_name("name")`
+        // path above already handles them correctly.
     }
     "<anonymous>".to_string()
 }

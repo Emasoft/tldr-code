@@ -188,11 +188,19 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
                 && (stem.ends_with("Tests") || stem.ends_with("Test") || stem.ends_with("Spec"))
         }
         // Ruby: Minitest `test_*.rb` / `*_test.rb`; RSpec `*_spec.rb`.
+        // cluster-misc-v2 (M-029): also accept any `.rb` file whose path
+        // passes through a directory literally named `test` or `tests` — the
+        // same convention already applied to Java/Kotlin/JavaScript/CSharp.
+        // This covers Minitest suites where test helpers are named after
+        // the subject (e.g. `test/sanitizer.rb`) without a `test_` prefix.
         Language::Ruby => {
             lower.ends_with(".rb")
                 && (file_name.starts_with("test_")
                     || stem.ends_with("_test")
-                    || stem.ends_with("_spec"))
+                    || stem.ends_with("_spec")
+                    || path
+                        .components()
+                        .any(|c| c.as_os_str() == "test" || c.as_os_str() == "tests"))
         }
         // Go: convention is `*_test.go`.
         Language::Go => lower.ends_with("_test.go"),

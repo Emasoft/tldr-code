@@ -598,6 +598,11 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
     }
 
     let mut by_language: HashMap<Language, (usize, LocInfo)> = HashMap::new(); // (file_count, loc_info)
+    // cluster-misc-v2 (M-043): HTML/HTM files don't map to any Language
+    // variant but should appear under "html" in by_language rather than being
+    // silently dropped. Track them in a dedicated bucket so the Language enum
+    // doesn't need a new variant.
+    let mut html_bucket: (usize, LocInfo) = (0, LocInfo::default());
     let mut by_file: Vec<FileLocEntry> = Vec::new();
     let mut by_directory: HashMap<PathBuf, LocInfo> = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -679,6 +684,54 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         }
         if should_exclude(relative_path, &options.exclude) {
             continue;
+        }
+
+        // cluster-misc-v2 (M-043): HTML/HTM files — handle before the
+        // Language::from_path call so they are counted under "html" rather
+        // than being silently dropped (Language enum has no Html variant).
+        let ext_lower = entry_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        if matches!(ext_lower.as_deref(), Some("html") | Some("htm")) {
+            // Skip when a language filter is active (no Language::Html to
+            // compare against; only count when scanning all languages).
+            if options.lang.is_none() {
+                if let Ok(source) = std::fs::read_to_string(entry_path) {
+                    // Count HTML lines using the JavaScript comment style
+                    // as a proxy (/* */ block comments; <!-- --> are not
+                    // modelled, so HTML comment lines become "code" — this
+                    // is acceptable for a LOC-count approximation).
+                    let info = count_lines(&source, Language::JavaScript);
+                    files_processed += 1;
+                    html_bucket.0 += 1;
+                    html_bucket.1.merge(&info);
+
+                    if options.by_file {
+                        by_file.push(FileLocEntry {
+                            path: relative_path.to_path_buf(),
+                            language: "html".to_string(),
+                            code_lines: info.code_lines,
+                            comment_lines: info.comment_lines,
+                            blank_lines: info.blank_lines,
+                            total_lines: info.total_lines,
+                        });
+                    }
+
+                    if options.by_dir {
+                        if let Some(parent) = relative_path.parent() {
+                            let dir_path = if parent.as_os_str().is_empty() {
+                                PathBuf::from(".")
+                            } else {
+                                parent.to_path_buf()
+                            };
+                            let dir_entry = by_directory.entry(dir_path).or_default();
+                            dir_entry.merge(&info);
+                        }
+                    }
+                }
+            }
+            continue; // Don't fall through to Language-based analysis.
         }
 
         // Detect language
@@ -768,6 +821,20 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
                 comment_lines: info.comment_lines,
                 blank_lines: info.blank_lines,
                 total_lines: info.total_lines,
+            },
+        );
+    }
+    // cluster-misc-v2 (M-043): emit HTML files under "html" key.
+    if html_bucket.0 > 0 {
+        by_language_map.insert(
+            "html".to_string(),
+            LanguageLocEntry {
+                language: "html".to_string(),
+                files: html_bucket.0,
+                code_lines: html_bucket.1.code_lines,
+                comment_lines: html_bucket.1.comment_lines,
+                blank_lines: html_bucket.1.blank_lines,
+                total_lines: html_bucket.1.total_lines,
             },
         );
     }

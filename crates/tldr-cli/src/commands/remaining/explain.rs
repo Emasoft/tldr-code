@@ -263,6 +263,13 @@ fn get_end_line_number(node: Node) -> u32 {
     node.end_position().row as u32 + 1
 }
 
+/// Get the column number (0-indexed) for a node.
+/// cluster-misc-v2 (M-020): used to populate the column field on
+/// CallInfo so explain callers/callees carry full position data.
+fn get_column_number(node: Node) -> u32 {
+    node.start_position().column as u32
+}
+
 // =============================================================================
 // Function Finding
 // =============================================================================
@@ -1300,13 +1307,14 @@ fn find_callees_recursive(
             // back to the legacy exact-name check when line numbers
             // cannot be resolved.
             let line = get_line_number(node);
+            let col = get_column_number(node);
             let last_seg = name.rsplit('.').next().unwrap_or(&name).to_string();
             if !callees.iter().any(|c| {
                 c.name == name
                     || (c.line == line
                         && c.name.rsplit('.').next().unwrap_or(&c.name) == last_seg)
             }) {
-                callees.push(CallInfo::new(name, file, line));
+                callees.push(CallInfo::with_column(name, file, line, col));
             }
         }
     }
@@ -1454,7 +1462,12 @@ fn find_callers_in_file(
                     if caller_name != target_function
                         && !callers.iter().any(|c| c.name == caller_name)
                     {
-                        callers.push(CallInfo::new(caller_name, file_path, get_line_number(node)));
+                        callers.push(CallInfo::with_column(
+                            caller_name,
+                            file_path,
+                            get_line_number(node),
+                            get_column_number(node),
+                        ));
                     }
                 }
             }

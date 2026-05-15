@@ -698,8 +698,13 @@ pub struct CallInfo {
     pub name: String,
     /// File path
     pub file: String,
-    /// Line number
+    /// Line number (1-indexed)
     pub line: u32,
+    /// Column number (0-indexed). cluster-misc-v2 (M-020): add column field
+    /// so explain callers/callees carry position parity with all other
+    /// location-bearing types (Location, FuncDef, etc.).
+    #[serde(default)]
+    pub column: u32,
 }
 
 impl CallInfo {
@@ -709,6 +714,22 @@ impl CallInfo {
             name: name.into(),
             file: file.into(),
             line,
+            column: 0,
+        }
+    }
+
+    /// Create new call info with column.
+    pub fn with_column(
+        name: impl Into<String>,
+        file: impl Into<String>,
+        line: u32,
+        column: u32,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            file: file.into(),
+            line,
+            column,
         }
     }
 }
