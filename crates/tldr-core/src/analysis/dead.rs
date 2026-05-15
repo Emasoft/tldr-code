@@ -142,6 +142,16 @@ pub fn dead_code_analysis(
         // Private/unenriched and uncalled -> definitely dead
         if func_ref.is_public {
             possibly_dead.push(func_ref.clone());
+            // dead-by-file-population-v1 (M-045): also bucket possibly_dead by
+            // file path so `by_file` is the complete map "file -> all
+            // dead-or-possibly-dead names in this file". Pre-fix only
+            // dead_functions were bucketed, so consumers that read `by_file`
+            // saw `{}` whenever a project had only public-but-uncalled
+            // functions (the common case for libraries with exported APIs).
+            by_file
+                .entry(func_ref.file.clone())
+                .or_default()
+                .push(func_ref.name.clone());
         } else {
             dead_functions.push(func_ref.clone());
             by_file
@@ -293,6 +303,16 @@ pub fn dead_code_analysis_refcount(
         enriched.ref_count = ref_counts.get(lookup_name).copied().unwrap_or(0) as u32;
 
         if func_ref.is_public {
+            // dead-by-file-population-v1 (M-045): bucket possibly_dead in
+            // `by_file` too so the map is the union of
+            // dead_functions + possibly_dead grouped by source file. Pre-fix
+            // only dead_functions populated `by_file`; library projects with
+            // exported-but-uncalled APIs saw `by_file: {}` while
+            // `possibly_dead` carried hundreds of entries.
+            by_file
+                .entry(func_ref.file.clone())
+                .or_default()
+                .push(func_ref.name.clone());
             possibly_dead.push(enriched);
         } else {
             by_file
@@ -485,8 +505,40 @@ pub fn collect_all_functions(
         let is_framework_entry =
             is_framework_entry_file(file_path, language) || has_framework_directive(file_path);
 
+        // dead-by-file-population-v1 (M-045): Elixir's AST extractor surfaces
+        // every `def` as BOTH a top-level function `foo` AND a method
+        // `Module.foo` of the enclosing-module pseudo-class. That produces a
+        // qualified/unqualified duplicate pair for the same source function
+        // (e.g. `sent_pushes` + `Plug.Test.sent_pushes` in
+        // `lib/plug/test.ex`). The qualified form is the canonical Elixir
+        // identifier (`Module.fn`), so build a set of bare method names
+        // present under any class in this file and skip the top-level entry
+        // whose name matches — emit only the qualified `Module.fn` variant.
+        // No other language exhibits this double-emit pattern; the dedup is
+        // gated on `language == Elixir`.
+        let elixir_class_method_names: std::collections::HashSet<String> = if matches!(
+            language,
+            crate::types::Language::Elixir
+        ) {
+            info.classes
+                .iter()
+                .flat_map(|c| c.methods.iter().map(|m| m.name.clone()))
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         // Add top-level functions
         for func in &info.functions {
+            // Elixir qualified/unqualified dedup (M-045): drop the bare
+            // top-level form if the same name exists as a class method in
+            // this file — the qualified `Module.fn` form will be emitted
+            // in the class-method loop below.
+            if matches!(language, crate::types::Language::Elixir)
+                && elixir_class_method_names.contains(&func.name)
+            {
+                continue;
+            }
             // is-public-visibility-v1 (v0.4.2 M-007): prefer explicit AST
             // visibility when the per-language extractor populated it
             // (csharp/java/kotlin/swift/go/js). Fall back to the legacy
