@@ -3271,24 +3271,79 @@ fn extract_identifier_at_column(line: &str, col: usize) -> String {
         return String::new();
     }
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    // Start from min(col, line.len()-1); walk back to identifier start.
-    let mut start = col.min(bytes.len().saturating_sub(1));
-    // If we landed on a non-ident byte, scan one to the left first.
-    if !is_ident(bytes[start]) && start > 0 && is_ident(bytes[start - 1]) {
-        start -= 1;
+    // Start from min(col, line.len()-1).
+    let landing = col.min(bytes.len().saturating_sub(1));
+
+    // If we landed inside an identifier run, walk back to the start
+    // and forward to the end and return that whole identifier.
+    if is_ident(bytes[landing]) {
+        let mut start = landing;
+        while start > 0 && is_ident(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = landing;
+        while end < bytes.len() && is_ident(bytes[end]) {
+            end += 1;
+        }
+        return clamp_symbol(&line[start..end]);
     }
-    if !is_ident(bytes[start]) {
-        return String::new();
+
+    // definition-resolver-ranking-v1 (v0.4.2 M-040, scala arm): the
+    // cursor sits on a non-identifier byte (punctuation, whitespace).
+    // The legacy implementation only inspected the byte immediately to
+    // the left, so a cursor on `:` (or on whitespace AFTER `:`)
+    // adjacent to a single-character identifier was returned as an
+    // empty symbol. ExitCode.scala:35:14 (the colon after the `i`
+    // parameter declaration) is the canonical scala c44 case — the
+    // resolver previously errored with `symbol '' not found in scope`.
+    //
+    // Post-fix: walk LEFT through non-identifier bytes until we either
+    // (a) find an identifier byte and return the identifier ending
+    // there, or (b) reach the line start without seeing one. If the
+    // left scan finds nothing, do the symmetric scan to the RIGHT so
+    // a cursor placed before a token (e.g. on the opening `(` of a
+    // call) still resolves to the call name.
+    //
+    // The scan is bounded to a small window per side (32 bytes) to
+    // avoid pathological behavior on long lines — beyond that, a
+    // failure to resolve is a more honest answer than an arbitrary
+    // identifier from the other end of the line.
+    const SCAN_WINDOW: usize = 32;
+
+    // Scan LEFT for an adjacent identifier run.
+    let mut left = landing;
+    let left_lo = landing.saturating_sub(SCAN_WINDOW);
+    while left > left_lo && !is_ident(bytes[left]) {
+        left -= 1;
     }
-    while start > 0 && is_ident(bytes[start - 1]) {
-        start -= 1;
+    if is_ident(bytes[left]) {
+        let mut start = left;
+        while start > 0 && is_ident(bytes[start - 1]) {
+            start -= 1;
+        }
+        let mut end = left + 1;
+        while end < bytes.len() && is_ident(bytes[end]) {
+            end += 1;
+        }
+        return clamp_symbol(&line[start..end]);
     }
-    let mut end = start;
-    while end < bytes.len() && is_ident(bytes[end]) {
-        end += 1;
+
+    // No identifier found to the left within the window. Scan RIGHT.
+    let right_hi = (landing + SCAN_WINDOW).min(bytes.len());
+    let mut right = landing;
+    while right < right_hi && !is_ident(bytes[right]) {
+        right += 1;
     }
-    let slice = &line[start..end];
-    clamp_symbol(slice)
+    if right < right_hi && is_ident(bytes[right]) {
+        let start = right;
+        let mut end = right;
+        while end < bytes.len() && is_ident(bytes[end]) {
+            end += 1;
+        }
+        return clamp_symbol(&line[start..end]);
+    }
+
+    String::new()
 }
 
 /// Returns true for tokens that are language keywords (and therefore
@@ -3489,50 +3544,97 @@ fn match_definition(
     classes: &[ClassDef],
     file: &Path,
 ) -> Option<(SymbolKind, Location)> {
-    for f in funcs {
-        if f.name == symbol {
-            let kind = if f.is_method {
-                SymbolKind::Method
-            } else {
-                SymbolKind::Function
-            };
-            // p19-secondary-fixes-v1 (BUG-P19-06): `FuncDef`/`ClassDef`
-            // carry only the line number; locating the column of the
-            // symbol name on that source line gives `definition` a
-            // 1-indexed column instead of the default 0. Without this
-            // every cpp/rust/scala/swift definition reported column=0.
-            //
-            // cross-lang-definition-column-v1 (v0.4.2 bug-A1-A2-A4):
-            // `locate_symbol_line_column` additionally scans a small
-            // forward window when the symbol is not present on the
-            // `FuncDef`-reported line. tree-sitter-java's
-            // `method_declaration` and tree-sitter-kotlin's
-            // `function_declaration` start at the leading annotation
-            // line; same for Scala `@deprecated`-decorated methods. The
-            // scan recovers the actual header line and 1-indexed column.
-            let (line_out, col_out) = locate_symbol_line_column(file, f.line, symbol);
-            let loc = match col_out {
-                Some(c) => Location::with_column(file.display().to_string(), line_out, c),
-                None => Location::new(file.display().to_string(), line_out),
-            };
-            return Some((kind, loc));
+    // definition-resolver-ranking-v1 (v0.4.2 M-040): rank candidates
+    // instead of picking the first textual match. The legacy behaviour
+    // (first-match-wins) caused the cpp arm of M-040 — a forward
+    // declaration `class XMLDocument;` at line 116 was returned in
+    // preference to the real class body at line 1718. The same
+    // pattern bites any language whose extractor emits both a
+    // bodyless declaration and a real body for the same name (e.g.
+    // C/C++ prototypes vs definitions).
+    //
+    // Ranking key (lower = better):
+    //
+    //   - `end_line > line` (multi-line body present): preferred over
+    //     `end_line == line` (single-line declaration). Forward
+    //     declarations and bodyless prototypes always satisfy
+    //     `end_line == line`. Bodied definitions span multiple lines
+    //     when the declaration includes a `{ ... }` block, which is
+    //     the universal C/C++/Rust/Scala/etc. shape.
+    //   - For functions, additionally prefer matches that are
+    //     themselves inside a class (`is_method`) when the caller
+    //     asked for a method-shaped name — but since we cannot
+    //     distinguish caller intent here, we fall back to the
+    //     `end_line > line` tie-breaker first, then preserve source
+    //     order for ties.
+    //
+    // The ranking is stable: the FIRST best-ranked match wins, so
+    // tie-breakers fall back to legacy first-match order — keeping
+    // existing tests green.
+    fn rank_score(line: u32, end_line: u32) -> u32 {
+        // Bodied entries (multi-line span) get score 0; bodyless
+        // entries (single-line) get score 1. Lower is better.
+        if end_line > line {
+            0
+        } else {
+            1
         }
     }
-    for c in classes {
-        if c.name == symbol {
-            // cross-lang-definition-column-v1 (v0.4.2 bug-A1-A2-A4):
-            // mirror the FuncDef path — annotation-decorated class
-            // declarations would otherwise emit column=0.
-            let (line_out, col_out) = locate_symbol_line_column(file, c.line, symbol);
-            let loc = match col_out {
-                Some(col_v) => {
-                    Location::with_column(file.display().to_string(), line_out, col_v)
-                }
-                None => Location::new(file.display().to_string(), line_out),
-            };
-            return Some((SymbolKind::Class, loc));
-        }
+
+    let best_func = funcs
+        .iter()
+        .filter(|f| f.name == symbol)
+        .enumerate()
+        .min_by_key(|(idx, f)| (rank_score(f.line, f.end_line), *idx))
+        .map(|(_, f)| f);
+
+    if let Some(f) = best_func {
+        let kind = if f.is_method {
+            SymbolKind::Method
+        } else {
+            SymbolKind::Function
+        };
+        // p19-secondary-fixes-v1 (BUG-P19-06): `FuncDef`/`ClassDef`
+        // carry only the line number; locating the column of the
+        // symbol name on that source line gives `definition` a
+        // 1-indexed column instead of the default 0. Without this
+        // every cpp/rust/scala/swift definition reported column=0.
+        //
+        // cross-lang-definition-column-v1 (v0.4.2 bug-A1-A2-A4):
+        // `locate_symbol_line_column` additionally scans a small
+        // forward window when the symbol is not present on the
+        // `FuncDef`-reported line. tree-sitter-java's
+        // `method_declaration` and tree-sitter-kotlin's
+        // `function_declaration` start at the leading annotation
+        // line; same for Scala `@deprecated`-decorated methods. The
+        // scan recovers the actual header line and 1-indexed column.
+        let (line_out, col_out) = locate_symbol_line_column(file, f.line, symbol);
+        let loc = match col_out {
+            Some(c) => Location::with_column(file.display().to_string(), line_out, c),
+            None => Location::new(file.display().to_string(), line_out),
+        };
+        return Some((kind, loc));
     }
+
+    let best_class = classes
+        .iter()
+        .filter(|c| c.name == symbol)
+        .enumerate()
+        .min_by_key(|(idx, c)| (rank_score(c.line, c.end_line), *idx))
+        .map(|(_, c)| c);
+
+    if let Some(c) = best_class {
+        // cross-lang-definition-column-v1 (v0.4.2 bug-A1-A2-A4):
+        // mirror the FuncDef path — annotation-decorated class
+        // declarations would otherwise emit column=0.
+        let (line_out, col_out) = locate_symbol_line_column(file, c.line, symbol);
+        let loc = match col_out {
+            Some(col_v) => Location::with_column(file.display().to_string(), line_out, col_v),
+            None => Location::new(file.display().to_string(), line_out),
+        };
+        return Some((SymbolKind::Class, loc));
+    }
+
     None
 }
 

@@ -64,6 +64,49 @@ fn is_elixir_skip_keyword(name: &str) -> bool {
     ELIXIR_SKIP_KEYWORDS.contains(&name)
 }
 
+/// definition-resolver-ranking-v1 (v0.4.2 M-040): true when an Elixir
+/// `def`/`defp` `call` node carries a function body. Two body shapes
+/// are recognized AST-only:
+///
+///   1. `def name(args) do ... end` — the `do_block` is a direct
+///      child of the `call` node (the `arguments` sibling holds
+///      `name(args)`).
+///
+///   2. `def name(args), do: <body>` — a single `arguments` child
+///      contains both the call signature and a `keywords` form whose
+///      `do:` key encodes the body. The keyword form's body
+///      contributes a `keyword` / `keywords` subtree under
+///      `arguments`. We accept any `arguments` descendant whose kind
+///      is `do_block`, `keywords`, or `keyword` as evidence of a
+///      body. The bodyless form `def name(args)` has none of these.
+///
+/// Bodyless `def`/`defp` calls are introduced to attach `@spec`
+/// signatures, declare behaviour callbacks, or set default arguments
+/// — they MUST NOT be picked as the "definition" of a function when
+/// real clauses exist in the same file (M-040, elixir-plug
+/// `send_resp/1`).
+fn elixir_def_call_has_body(node: &Node) -> bool {
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            // Block form: `do ... end`.
+            "do_block" => return true,
+            // Keyword form: `, do: <body>` — the keyword pair sits
+            // inside the call's `arguments` subtree.
+            "arguments" => {
+                for j in 0..child.child_count() {
+                    let Some(arg) = child.child(j) else { continue };
+                    if matches!(arg.kind(), "do_block" | "keywords" | "keyword") {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Elixir language handler using tree-sitter-elixir.
 ///
 /// Supports:
@@ -1019,6 +1062,24 @@ impl CallGraphLanguageSupport for ElixirHandler {
                             }
                         }
                         "def" | "defp" => {
+                            // definition-resolver-ranking-v1 (v0.4.2
+                            // M-040): skip bodyless `def`/`defp`
+                            // headers — they introduce a function
+                            // contract (default arguments, behaviour
+                            // callbacks, `@spec` carrier) but are not
+                            // themselves the implementation. Real
+                            // clauses carry a `do_block` either as a
+                            // sibling of the arg list (`do ... end`
+                            // form) or as the second `arguments`
+                            // element (`do: <body>` keyword form). The
+                            // elixir arm of CLUSTER-M-040 — picking
+                            // line 437 `def send_resp(conn)` (the
+                            // bodyless callback head) over the actual
+                            // clause at line 439 in `plug/conn.ex` —
+                            // is fixed by this filter.
+                            if !elixir_def_call_has_body(&node) {
+                                continue;
+                            }
                             if let Some(fn_name) = self.get_function_name(&node, source_bytes) {
                                 let line = node.start_position().row as u32 + 1;
                                 let end_line = node.end_position().row as u32 + 1;

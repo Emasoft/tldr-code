@@ -37,6 +37,61 @@ use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
+/// definition-resolver-ranking-v1 (v0.4.2 M-040): inspect a
+/// `function_definition` node and, if its children match the shape
+/// produced by tree-sitter-cpp when it encounters a class definition
+/// prefixed with an unrecognized attribute macro
+/// (e.g. `class TINYXML2_LIB XMLDocument : public XMLNode { ... }`),
+/// return the trailing class identifier text.
+///
+/// The recognised pattern (in order of named children, ignoring trivia):
+///
+///   1. `class_specifier` or `struct_specifier` — carries `class MACRO`
+///      and is itself a parser-emitted forward-decl shape (no
+///      `field_declaration_list` child).
+///   2. `identifier` — the real class name (the one this fallback
+///      returns).
+///   3. (optional) one or more `ERROR` nodes carrying the rest of the
+///      class header (e.g. `: public XMLNode`).
+///   4. `compound_statement` — the class body.
+///
+/// Returns `None` when the children do not match this signature so the
+/// caller falls back to its normal `get_function_name` resolution.
+fn extract_macro_decorated_class_name(node: &Node, source: &[u8]) -> Option<String> {
+    let mut saw_class_specifier_without_body = false;
+    let mut class_name: Option<String> = None;
+    let mut saw_compound_statement = false;
+
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "class_specifier" | "struct_specifier" => {
+                // Must be the parser's forward-decl shape (no body).
+                let has_body = (0..child.child_count())
+                    .filter_map(|j| child.child(j))
+                    .any(|c| c.kind() == "field_declaration_list");
+                if has_body {
+                    return None;
+                }
+                saw_class_specifier_without_body = true;
+            }
+            "identifier" if saw_class_specifier_without_body && class_name.is_none() => {
+                class_name = Some(get_node_text(&child, source).to_string());
+            }
+            "compound_statement" => {
+                saw_compound_statement = true;
+            }
+            _ => {}
+        }
+    }
+
+    if saw_class_specifier_without_body && class_name.is_some() && saw_compound_statement {
+        class_name
+    } else {
+        None
+    }
+}
+
 // =============================================================================
 // C++ Handler
 // =============================================================================
@@ -726,6 +781,30 @@ impl CallGraphLanguageSupport for CppHandler {
         fn walk_for_defs(walker: &mut DefWalker, node: Node, source: &[u8], handler: &CppHandler) {
             match node.kind() {
                 "class_specifier" | "struct_specifier" => {
+                    // definition-resolver-ranking-v1 (v0.4.2 M-040): skip
+                    // `friend class Foo;` (or `friend struct Foo;`)
+                    // declarations — their parent node kind is
+                    // `friend_declaration`. Declaring `friend` access
+                    // to `Foo` from another class body is never the
+                    // definition site of `Foo` and must not appear in
+                    // the candidate list returned to `definition`. The
+                    // forward-declaration case (`class Foo;` with no
+                    // body) is NOT filtered here; instead the caller
+                    // (`match_definition`) ranks bodied entries above
+                    // bodyless ones so a real class body at a later
+                    // line is preferred over an earlier forward
+                    // declaration. This split keeps the
+                    // `extract_definitions` return value
+                    // (`Vec<ClassDef>`) populated with every name
+                    // discovered — preserving callers that legitimately
+                    // need forward-decl visibility — while still
+                    // resolving the M-040 issue at the resolver layer.
+                    if let Some(parent) = node.parent() {
+                        if parent.kind() == "friend_declaration" {
+                            return;
+                        }
+                    }
+
                     let mut class_name = None;
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
@@ -797,6 +876,74 @@ impl CallGraphLanguageSupport for CppHandler {
                     }
                 }
                 "function_definition" => {
+                    // definition-resolver-ranking-v1 (v0.4.2 M-040): when
+                    // tree-sitter-cpp encounters a class definition
+                    // prefixed with an unrecognized attribute macro
+                    // (`class TINYXML2_LIB XMLDocument : public XMLNode
+                    // { ... }`), it misparses the construct as a
+                    // `function_definition` whose children are:
+                    //
+                    //   class_specifier(`class MACRO`) +
+                    //   identifier(`ClassName`)         +
+                    //   ERROR(`: public Base`)          +
+                    //   compound_statement              (the class body)
+                    //
+                    // Without this fallback `extract_definitions` would
+                    // only surface the inner `class MACRO` forward-decl
+                    // shape (line 116-style entries) and `definition`
+                    // could never reach the real class body. Detect the
+                    // exact shape AST-only (children pattern) and emit
+                    // a `ClassDef` named after the trailing identifier.
+                    if let Some(cls_name) =
+                        extract_macro_decorated_class_name(&node, source)
+                    {
+                        let line = node.start_position().row as u32 + 1;
+                        let end_line = node.end_position().row as u32 + 1;
+
+                        // Walk the body for methods (mirrors the
+                        // class_specifier path above so members of
+                        // macro-decorated classes are still emitted).
+                        let mut methods = Vec::new();
+                        let old_class = walker.current_class.clone();
+                        walker.current_class = Some(cls_name.clone());
+
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.kind() == "compound_statement" {
+                                    for j in 0..child.child_count() {
+                                        if let Some(member) = child.child(j) {
+                                            if member.kind() == "function_definition" {
+                                                if let Some(fn_name) =
+                                                    handler.get_function_name(&member, source)
+                                                {
+                                                    methods.push(fn_name.clone());
+                                                    let m_line =
+                                                        member.start_position().row as u32 + 1;
+                                                    let m_end =
+                                                        member.end_position().row as u32 + 1;
+                                                    walker.funcs.push(FuncDef::method(
+                                                        fn_name, &cls_name, m_line, m_end,
+                                                    ));
+                                                }
+                                            }
+                                            walk_for_defs(walker, member, source, handler);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        walker.classes.push(ClassDef::new(
+                            cls_name,
+                            line,
+                            end_line,
+                            methods,
+                            Vec::new(),
+                        ));
+                        walker.current_class = old_class;
+                        return;
+                    }
+
                     if let Some(name) = handler.get_function_name(&node, source) {
                         let line = node.start_position().row as u32 + 1;
                         let end_line = node.end_position().row as u32 + 1;
