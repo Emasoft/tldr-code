@@ -1529,6 +1529,7 @@ fn main() {
             names: vec!["helper".to_string()],
             is_from: Some(true),
             alias: None,
+            line: 0,
         };
         let from_file = std::path::Path::new("/project/src/main.rs");
         let resolved = resolver.resolve_import(&import, from_file);

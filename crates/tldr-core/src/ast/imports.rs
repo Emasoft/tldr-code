@@ -78,6 +78,8 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
+        // importers-ast-anchored-v1 (M-035): pin line to the AST node.
+        let stmt_line = node_line(&child);
         match child.kind() {
             "import_statement" => {
                 // import X, Y, Z
@@ -90,6 +92,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: Some(false),
                             alias: None,
+                            line: stmt_line,
                         });
                     } else if import_child.kind() == "aliased_import" {
                         let module = import_child
@@ -104,6 +107,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: Some(false),
                             alias,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -151,6 +155,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                                 names: vec![name],
                                 is_from: Some(true),
                                 alias,
+                                line: stmt_line,
                             });
                         }
                         _ => {}
@@ -162,6 +167,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         names,
                         is_from: Some(true),
                         alias: None,
+                        line: stmt_line,
                     });
                 }
             }
@@ -215,6 +221,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                                 names: vec![name],
                                 is_from: Some(true),
                                 alias,
+                                line: stmt_line,
                             });
                         }
                         "wildcard_import" => {
@@ -231,6 +238,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         names,
                         is_from: Some(true),
                         alias: None,
+                        line: stmt_line,
                     });
                 }
             }
@@ -266,7 +274,8 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
             // downstream consumers (call graph builder, dependency graphs)
             // see the edge.
             "call_expression" => {
-                if let Some(import) = parse_cjs_require(&child, source) {
+                if let Some(mut import) = parse_cjs_require(&child, source) {
+                    import.line = node_line(&child);
                     imports.push(import);
                 }
                 // Still recurse — `require()` may be nested inside an
@@ -336,6 +345,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                     names,
                     is_from: Some(!is_default),
                     alias: None,
+                    line: node_line(&child),
                 });
             }
             "export_statement" => {
@@ -347,6 +357,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                         names: Vec::new(),
                         is_from: Some(true),
                         alias: None,
+                        line: node_line(&child),
                     });
                 }
             }
@@ -377,6 +388,12 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                 for decl_child in child.children(&mut decl_cursor) {
                     match decl_child.kind() {
                         "import_spec" => {
+                            // importers-ast-anchored-v1 (M-035): use the
+                            // import_spec line so multi-spec `import (...)`
+                            // blocks surface the row where the module
+                            // string actually sits, not the outer
+                            // `import` keyword line.
+                            let spec_line = node_line(&decl_child);
                             let module = decl_child
                                 .child_by_field_name("path")
                                 .map(|n| get_string_content(&n, source))
@@ -391,12 +408,14 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                 names: Vec::new(),
                                 is_from: Some(false),
                                 alias,
+                                line: spec_line,
                             });
                         }
                         "import_spec_list" => {
                             let mut list_cursor = decl_child.walk();
                             for spec in decl_child.children(&mut list_cursor) {
                                 if spec.kind() == "import_spec" {
+                                    let spec_line = node_line(&spec);
                                     let module = spec
                                         .child_by_field_name("path")
                                         .map(|n| get_string_content(&n, source))
@@ -411,18 +430,21 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                         names: Vec::new(),
                                         is_from: Some(false),
                                         alias,
+                                        line: spec_line,
                                     });
                                 }
                             }
                         }
                         "interpreted_string_literal" => {
                             // Single import without parentheses
+                            let spec_line = node_line(&decl_child);
                             let module = get_string_content(&decl_child, source);
                             imports.push(ImportInfo {
                                 module,
                                 names: Vec::new(),
                                 is_from: Some(false),
                                 alias: None,
+                                line: spec_line,
                             });
                         }
                         _ => {}
@@ -450,6 +472,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
+        let stmt_line = node_line(&child);
         match child.kind() {
             "use_declaration" => {
                 // use std::collections::HashMap;
@@ -462,6 +485,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names,
                         is_from: Some(true),
                         alias: None,
+                        line: stmt_line,
                     });
                 }
             }
@@ -474,6 +498,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names: Vec::new(),
                         is_from: Some(false),
                         alias: None,
+                        line: stmt_line,
                     });
                 }
             }
@@ -489,6 +514,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names: Vec::new(),
                         is_from: Some(false),
                         alias,
+                        line: stmt_line,
                     });
                 }
             }
@@ -667,6 +693,7 @@ fn extract_java_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                 names: Vec::new(),
                 is_from: Some(is_static),
                 alias: None,
+                line: node_line(&child),
             });
         } else {
             extract_java_imports_recursive(&child, source, imports);
@@ -717,6 +744,7 @@ fn extract_c_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Impo
                     names: Vec::new(),
                     is_from: None,
                     alias: None,
+                    line: node_line(&child),
                 });
             }
         } else {
@@ -765,6 +793,7 @@ fn extract_cpp_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
                     names: Vec::new(),
                     is_from: None,
                     alias: None,
+                    line: node_line(&child),
                 });
             }
         } else {
@@ -787,6 +816,7 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
+        let stmt_line = node_line(&child);
         if child.kind() == "call" {
             // Check if this is a require/require_relative call
             let mut call_cursor = child.walk();
@@ -835,6 +865,7 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                             names: Vec::new(),
                             is_from: None,
                             alias: None,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -846,6 +877,7 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                             names: Vec::new(),
                             is_from: None, // is_from = true for require_relative (relative import)
                             alias: None,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -878,6 +910,17 @@ fn extract_csharp_imports_recursive(node: &Node, source: &str, imports: &mut Vec
             // - using static System.Math;
             // - global using System;
             // - using Alias = System.Collections.Generic;
+            //
+            // importers-ast-anchored-v1 (v0.4.2 M-035): tree-sitter-c-sharp
+            // grammar variants differ on alias shape. Some emit a
+            // `name_equals` parent wrapping `identifier "Alias"` + `=`; older
+            // grammars (and the version pinned here) emit a bare `=` literal
+            // child of the using_directive with `Alias` as the FIRST
+            // `identifier` child and the RHS qualified_name AFTER the `=`.
+            // The previous code assumed only the `name_equals` shape, so on
+            // grammars without that node the alias name was captured as
+            // `module` (wrong), with `alias = None`. The corrected pass
+            // below handles both shapes.
 
             let text = get_node_text(&child, source);
             let is_static = text.contains("static");
@@ -886,50 +929,48 @@ fn extract_csharp_imports_recursive(node: &Node, source: &str, imports: &mut Vec
             let mut module = String::new();
             let mut alias: Option<String> = None;
 
+            // Single pass: track whether we've passed an `=` token. The
+            // first qualified-name-shaped child BEFORE `=` is the alias;
+            // the first one AFTER `=` is the real module. If no `=` is
+            // present (no alias), the first qualified-name-shaped child
+            // IS the module.
+            let mut past_equals = false;
             let mut using_cursor = child.walk();
             for using_child in child.children(&mut using_cursor) {
                 match using_child.kind() {
-                    // Handle qualified name (e.g., System.Collections.Generic)
+                    "=" => {
+                        past_equals = true;
+                        // Whatever we captured before `=` was actually the
+                        // alias, not the module — re-assign.
+                        if !module.is_empty() && alias.is_none() {
+                            alias = Some(std::mem::take(&mut module));
+                        }
+                    }
+                    "name_equals" => {
+                        // Grammar variant: `name_equals` wraps `identifier =`.
+                        past_equals = true;
+                        if alias.is_none() {
+                            let mut name_cursor = using_child.walk();
+                            for name_child in using_child.children(&mut name_cursor) {
+                                if name_child.kind() == "identifier" {
+                                    alias = Some(get_node_text(&name_child, source));
+                                    break;
+                                }
+                            }
+                        }
+                        // Clear module: anything captured before this is
+                        // discarded (would have been the alias).
+                        module.clear();
+                    }
                     "qualified_name" | "identifier" | "name" => {
-                        // Only set module if not already set (for alias case)
-                        if module.is_empty() {
+                        if past_equals {
+                            // Always prefer the post-= name as module.
+                            module = get_node_text(&using_child, source);
+                        } else if module.is_empty() {
                             module = get_node_text(&using_child, source);
                         }
                     }
-                    // Handle alias: using Alias = Namespace;
-                    "name_equals" => {
-                        // The alias is in the name_equals node
-                        let mut name_cursor = using_child.walk();
-                        for name_child in using_child.children(&mut name_cursor) {
-                            if name_child.kind() == "identifier" {
-                                alias = Some(get_node_text(&name_child, source));
-                                break;
-                            }
-                        }
-                        // The actual namespace comes after name_equals
-                        // Continue iteration to find it
-                    }
                     _ => {}
-                }
-            }
-
-            // If we found a name_equals but module is the alias, we need to find the real module
-            // Re-traverse to get the qualified_name after name_equals
-            if alias.is_some() {
-                let mut found_name_equals = false;
-                let mut using_cursor2 = child.walk();
-                for using_child in child.children(&mut using_cursor2) {
-                    if using_child.kind() == "name_equals" {
-                        found_name_equals = true;
-                        continue;
-                    }
-                    if found_name_equals
-                        && (using_child.kind() == "qualified_name"
-                            || using_child.kind() == "identifier")
-                    {
-                        module = get_node_text(&using_child, source);
-                        break;
-                    }
                 }
             }
 
@@ -940,6 +981,7 @@ fn extract_csharp_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     // Use is_from to indicate static imports (similar to Java pattern)
                     is_from: Some(is_static || is_global),
                     alias,
+                    line: node_line(&child),
                 });
             }
         } else {
@@ -981,7 +1023,7 @@ fn extract_scala_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                 .trim();
 
             // Parse the import text
-            parse_scala_import_text(text, imports);
+            parse_scala_import_text(text, imports, node_line(&child));
         } else {
             // Recurse into other nodes
             extract_scala_imports_recursive(&child, source, imports);
@@ -990,7 +1032,7 @@ fn extract_scala_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
 }
 
 /// Parse Scala import text and extract ImportInfo entries
-fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
+fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>, line: u32) {
     // Check for selective imports with braces: import scala.util.{Try, Success}
     if let Some(brace_pos) = text.find('{') {
         let base_path = text[..brace_pos].trim_end_matches('.').to_string();
@@ -1037,6 +1079,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                         } else {
                             Some(alias.to_string())
                         },
+                        line,
                     });
                 }
             } else if selector == "_" {
@@ -1046,6 +1089,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                     names: vec!["*".to_string()],
                     is_from: Some(true),
                     alias: None,
+                    line,
                 });
             } else {
                 // Simple selector: import scala.util.{Try}
@@ -1060,6 +1104,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                     names: Vec::new(),
                     is_from: Some(false),
                     alias: None,
+                    line,
                 });
             }
         }
@@ -1071,6 +1116,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
             names: vec!["*".to_string()],
             is_from: Some(true),
             alias: None,
+            line,
         });
     } else {
         // Simple import: import scala.collection.mutable.ListBuffer
@@ -1079,6 +1125,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line,
         });
     }
 }
@@ -1105,6 +1152,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
+        let stmt_line = node_line(&child);
         if child.kind() == "call" {
             // Elixir import-like statements are all `call` nodes.
             // Structure: call -> identifier (keyword) + arguments -> alias (module name)
@@ -1174,6 +1222,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: vec!["*".to_string()],
                             is_from: Some(true),
                             alias: None,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -1187,6 +1236,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: Some(false),
                             alias: resolved_alias,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -1197,6 +1247,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: Some(false),
                             alias: None,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -1207,6 +1258,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: vec!["*".to_string()],
                             is_from: Some(true),
                             alias: None,
+                            line: stmt_line,
                         });
                     }
                 }
@@ -1243,6 +1295,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
+        let stmt_line = node_line(&child);
         match child.kind() {
             "open_module" => {
                 // Structure: open_module -> "open" + module_path -> module_name
@@ -1252,6 +1305,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                         names: vec!["*".to_string()],
                         is_from: Some(true),
                         alias: None,
+                        line: stmt_line,
                     });
                 }
             }
@@ -1284,6 +1338,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                                 names: Vec::new(),
                                 is_from: Some(false),
                                 alias: alias_name,
+                                line: stmt_line,
                             });
                         }
                     }
@@ -1300,6 +1355,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                         names: vec!["*".to_string()],
                         is_from: Some(true),
                         alias: None,
+                        line: stmt_line,
                     });
                 }
             }
@@ -1366,7 +1422,8 @@ fn extract_lua_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
     for child in node.children(&mut cursor) {
         // Look for function_call nodes where the function is "require"
         if child.kind() == "function_call" {
-            if let Some(import) = extract_lua_require(&child, source) {
+            if let Some(mut import) = extract_lua_require(&child, source) {
+                import.line = node_line(&child);
                 imports.push(import);
                 continue;
             }
@@ -1420,6 +1477,7 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
             names: Vec::new(),
             is_from: None,
             alias: None,
+                    line: 0,
         })
     } else {
         None
@@ -1452,10 +1510,11 @@ fn extract_php_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
+        let stmt_line = node_line(&child);
         match child.kind() {
             // PHP use statements: use App\Models\User;
             "namespace_use_declaration" => {
-                extract_php_use_declaration(&child, source, imports);
+                extract_php_use_declaration(&child, source, imports, stmt_line);
             }
             // PHP require/include expressions
             "expression_statement" => {
@@ -1467,9 +1526,10 @@ fn extract_php_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
                         | "require_once_expression"
                         | "include_expression"
                         | "include_once_expression" => {
-                            if let Some(import_info) =
+                            if let Some(mut import_info) =
                                 extract_php_require_include(&expr_child, source)
                             {
+                                import_info.line = stmt_line;
                                 imports.push(import_info);
                             }
                         }
@@ -1482,7 +1542,8 @@ fn extract_php_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
             | "require_once_expression"
             | "include_expression"
             | "include_once_expression" => {
-                if let Some(import_info) = extract_php_require_include(&child, source) {
+                if let Some(mut import_info) = extract_php_require_include(&child, source) {
+                    import_info.line = stmt_line;
                     imports.push(import_info);
                 }
             }
@@ -1501,7 +1562,12 @@ fn extract_php_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
 /// - Aliased: use App\Models\User as UserModel;
 /// - Function use: use function App\helper;
 /// - Const use: use const App\CONSTANT;
-fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<ImportInfo>) {
+fn extract_php_use_declaration(
+    node: &Node,
+    source: &str,
+    imports: &mut Vec<ImportInfo>,
+    stmt_line: u32,
+) {
     let mut use_cursor = node.walk();
 
     // Check if this is a grouped import by looking for namespace_use_group
@@ -1541,6 +1607,7 @@ fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<Impo
                                 names: Vec::new(),
                                 is_from: Some(true), // use is similar to "from X import Y"
                                 alias,
+                                line: stmt_line,
                             });
                         }
                     }
@@ -1563,6 +1630,7 @@ fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<Impo
                     names: Vec::new(),
                     is_from: Some(true),
                     alias,
+                    line: stmt_line,
                 });
             }
         }
@@ -1671,6 +1739,7 @@ fn extract_php_require_include(node: &Node, source: &str) -> Option<ImportInfo> 
         } else {
             None
         },
+                    line: 0,
     })
 }
 
@@ -1681,6 +1750,16 @@ fn extract_php_require_include(node: &Node, source: &str) -> Option<ImportInfo> 
 /// Get text content of a node
 fn get_node_text(node: &Node, source: &str) -> String {
     source[node.byte_range()].to_string()
+}
+
+/// 1-indexed line of the node's start position.
+///
+/// importers-ast-anchored-v1 (v0.4.2 M-035): used by every per-language
+/// import extractor to populate `ImportInfo.line` from the AST so the
+/// `importers` command can emit a precise line number instead of
+/// falling back to a text-substring scan.
+fn node_line(node: &Node) -> u32 {
+    node.start_position().row as u32 + 1
 }
 
 /// Get string content (strips quotes)
@@ -1746,6 +1825,7 @@ fn parse_cjs_require(node: &Node, source: &str) -> Option<ImportInfo> {
         names: Vec::new(),
         is_from: Some(true),
         alias: None,
+                    line: 0,
     })
 }
 
@@ -1779,7 +1859,8 @@ fn extract_swift_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "import_declaration" {
-            if let Some(info) = parse_swift_import_text(&get_node_text(&child, source)) {
+            if let Some(mut info) = parse_swift_import_text(&get_node_text(&child, source)) {
+                info.line = node_line(&child);
                 imports.push(info);
             }
         } else {
@@ -1836,6 +1917,7 @@ fn parse_swift_import_text(raw: &str) -> Option<ImportInfo> {
         names: Vec::new(),
         is_from: None,
         alias: None,
+                    line: 0,
     })
 }
 
@@ -1874,7 +1956,8 @@ fn extract_kotlin_imports_recursive(node: &Node, source: &str, imports: &mut Vec
         //   tree-sitter-kotlin-ng: `import` (top-level statement node)
         //   tree-sitter-kotlin (vanilla): `import_header` inside `import_list`
         if child.kind() == "import_header" || is_kotlin_import_statement(&child) {
-            if let Some(info) = parse_kotlin_import_text(&get_node_text(&child, source)) {
+            if let Some(mut info) = parse_kotlin_import_text(&get_node_text(&child, source)) {
+                info.line = node_line(&child);
                 imports.push(info);
             }
         } else {
@@ -1929,6 +2012,7 @@ fn parse_kotlin_import_text(raw: &str) -> Option<ImportInfo> {
         // for Java `static`/wildcard and Scala `_` selectors).
         is_from: None,
         alias: alias_part.filter(|s| !s.is_empty()),
+                    line: 0,
     })
 }
 

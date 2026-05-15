@@ -1110,6 +1110,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(false),
             alias: None,
+            line: 0,
         };
 
         let resolved = resolve_python_import(
@@ -1136,6 +1137,7 @@ mod tests {
             names: Vec::new(),
             is_from: Some(true),
             alias: None,
+            line: 0,
         };
 
         let resolved = resolve_python_import(

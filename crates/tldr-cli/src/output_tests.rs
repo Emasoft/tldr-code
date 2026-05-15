@@ -406,18 +406,21 @@ fn test_imports_text_groups_by_module() {
             names: vec!["Abort".into(), "BadParameter".into()],
             is_from: Some(true),
             alias: None,
+            line: 0,
         },
         ImportInfo {
             module: ".exceptions".into(),
             names: vec!["UsageError".into()],
             is_from: Some(true),
             alias: None,
+            line: 0,
         },
         ImportInfo {
             module: ".core".into(),
             names: vec!["Command".into(), "Group".into()],
             is_from: Some(true),
             alias: None,
+            line: 0,
         },
     ];
     let text = format_imports_text(&imports);
@@ -436,12 +439,14 @@ fn test_imports_text_bare_imports() {
             names: vec![],
             is_from: Some(false),
             alias: None,
+            line: 0,
         },
         ImportInfo {
             module: "sys".into(),
             names: vec![],
             is_from: Some(false),
             alias: None,
+            line: 0,
         },
     ];
     let text = format_imports_text(&imports);
@@ -457,6 +462,7 @@ fn test_imports_text_aliased() {
         names: vec![],
         is_from: Some(false),
         alias: Some("t".into()),
+        line: 0,
     }];
     let text = format_imports_text(&imports);
     assert!(text.contains("typing as t"));
@@ -477,18 +483,21 @@ fn test_imports_text_mixed() {
             names: vec!["echo".into(), "make_str".into()],
             is_from: Some(true),
             alias: None,
+            line: 0,
         },
         ImportInfo {
             module: "os".into(),
             names: vec![],
             is_from: Some(false),
             alias: None,
+            line: 0,
         },
         ImportInfo {
             module: "typing".into(),
             names: vec![],
             is_from: Some(false),
             alias: Some("t".into()),
+            line: 0,
         },
     ];
     let text = format_imports_text(&imports);
@@ -1640,12 +1649,14 @@ fn make_module_info() -> ModuleInfo {
                 names: vec![],
                 is_from: Some(false),
                 alias: None,
+            line: 0,
             },
             ImportInfo {
                 module: "typing".to_string(),
                 names: vec!["List".to_string(), "Optional".to_string()],
                 is_from: Some(true),
                 alias: None,
+            line: 0,
             },
         ],
         functions: vec![

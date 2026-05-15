@@ -1411,7 +1411,7 @@ pub struct MethodInfo {
 }
 
 /// Import statement information (spec Section 2.1.4)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImportInfo {
     /// Module or package being imported
     pub module: String,
@@ -1435,6 +1435,18 @@ pub struct ImportInfo {
     /// Import alias (e.g., `import X as Y`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// 1-indexed line of the AST import node.
+    ///
+    /// `importers-ast-anchored-v1` (v0.4.2 M-035): populated by every
+    /// per-language AST extractor from the import node's
+    /// `start_position().row + 1`. The `importers` command consumes this
+    /// directly so it can emit a precise line number instead of
+    /// substring-scanning the file text (which previously surfaced
+    /// docstring/alias false positives and `line: 1` hardcodes).
+    /// `#[serde(default)]` keeps backward compatibility with persisted
+    /// JSON written before this field existed (deserialised as `0`).
+    #[serde(default)]
+    pub line: u32,
 }
 
 /// Complete module information (spec Section 2.1.3)

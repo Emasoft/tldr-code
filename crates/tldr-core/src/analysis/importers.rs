@@ -62,7 +62,15 @@ pub fn find_importers(
     })
 }
 
-/// Check if a file imports the specified module
+/// Check if a file imports the specified module.
+///
+/// `importers-ast-anchored-v1` (v0.4.2 M-035): the line and import-statement
+/// text are now sourced from the AST extractor's `ImportInfo.line`. Previously
+/// this function ran a text-substring scan (`find_import_line`) that surfaced
+/// docstring/alias false positives and fell back to `line: 1` whenever the
+/// idiomatic match failed (notably Go imports inside `import (...)` blocks).
+/// The text scan is gone; the only thing read from disk is the literal text
+/// of the AST-pinned line.
 fn find_import_in_file(
     file_path: &Path,
     target_module: &str,
@@ -70,48 +78,75 @@ fn find_import_in_file(
 ) -> TldrResult<Option<ImporterInfo>> {
     let imports = get_imports(file_path, language)?;
 
-    for import in &imports {
-        if module_matches(&import.module, target_module, language) {
-            // Read file to get the import statement text
-            let content = std::fs::read_to_string(file_path)?;
-            let lines: Vec<&str> = content.lines().collect();
-
-            // imports-is-from-schema-v1: is_from is Option<bool>; None means
-            // "no from-style distinction applies" (treated like Some(false)).
-            let (line_number, import_statement) = find_import_line(
-                &lines,
-                &import.module,
-                import.is_from.unwrap_or(false),
-                language,
-            );
-
-            return Ok(Some(ImporterInfo {
-                file: file_path.to_path_buf(),
-                line: line_number,
-                import_statement,
-            }));
-        }
-
-        // Also check if target is one of the imported names.
-        // imports-is-from-schema-v1: treat None as false.
-        if import.is_from.unwrap_or(false) {
-            // from X import target_module
-            if import.names.iter().any(|n| n == target_module) {
-                let content = std::fs::read_to_string(file_path)?;
-                let lines: Vec<&str> = content.lines().collect();
-                let (line_number, import_statement) =
-                    find_import_line(&lines, &import.module, true, language);
-
-                return Ok(Some(ImporterInfo {
-                    file: file_path.to_path_buf(),
-                    line: line_number,
-                    import_statement,
-                }));
+    // Two-pass scan: prefer non-aliased imports (M-035 cluster intent).
+    // Pre-fix the emitter used a text-scan that simply returned the first
+    // line containing the module substring; in a file with both
+    //   line 6:  using Assert = Newtonsoft.Json.Bson.Tests.XUnitAssert;  (aliased)
+    //   line 7:  using Newtonsoft.Json.Bson;                              (real)
+    // the alias-RHS at line 6 also lexically matches `Newtonsoft.Json.Bson`
+    // (it's a sub-namespace), so the importers emitter surfaced line 6.
+    // The user-intuitive answer is line 7: the unaliased `using` is the
+    // direct importer; the alias-RHS is a transitive reference embedded in
+    // a local binding. Iterate twice: first pass picks unaliased imports,
+    // second pass falls back to aliased ones.
+    for prefer_unaliased in [true, false] {
+        for import in &imports {
+            // CSharp alias-exclusion: a `using A = B.C;` directive should
+            // NOT match a query for `A` — the alias name is a local binding,
+            // not an imported module.
+            if matches!(language, Language::CSharp)
+                && import.alias.as_deref() == Some(target_module)
+            {
+                continue;
             }
+
+            // Skip aliased imports in the first pass so an unaliased import
+            // lower in the file is preferred over an aliased one higher up.
+            if prefer_unaliased && import.alias.is_some() {
+                continue;
+            }
+
+            let matched_module = module_matches(&import.module, target_module, language);
+
+            // Secondary match: `from X import target_module` — when querying
+            // for a named import (Python's `target` as one of `import.names`),
+            // the file is still an importer of the parent module.
+            let matched_from_name = import.is_from.unwrap_or(false)
+                && import.names.iter().any(|n| n == target_module);
+
+            if !matched_module && !matched_from_name {
+                continue;
+            }
+
+            return Ok(Some(emit_importer(file_path, import.line)?));
         }
     }
 
     Ok(None)
+}
+
+/// Emit an `ImporterInfo` for a file given the AST-anchored line.
+///
+/// importers-ast-anchored-v1 (M-035): reads exactly one line from the file —
+/// the line the AST extractor pinned via `ImportInfo.line` — and uses its
+/// text as the `import_statement`. No substring scanning, no fallback to
+/// line 1. If `ast_line == 0` (e.g. a defensive path where a helper failed
+/// to set the line), we degrade gracefully to the first line of the file.
+fn emit_importer(file_path: &Path, ast_line: u32) -> TldrResult<ImporterInfo> {
+    let content = std::fs::read_to_string(file_path)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = if ast_line == 0 {
+        0
+    } else {
+        (ast_line as usize).saturating_sub(1)
+    };
+    let stmt = lines.get(idx).copied().unwrap_or("").trim().to_string();
+    let line = if ast_line == 0 { 1 } else { ast_line };
+    Ok(ImporterInfo {
+        file: file_path.to_path_buf(),
+        line,
+        import_statement: stmt,
+    })
 }
 
 /// Check if a module name matches the target
@@ -188,7 +223,11 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
         // (`cats.effect`, `cats.effect.kernel`, …) which represent
         // genuine sub-package imports. Top-level wildcards still match
         // exact target queries via the `import_module == target` rule.
-        Language::Scala | Language::Kotlin | Language::Java => {
+        Language::Scala | Language::Kotlin | Language::Java | Language::CSharp => {
+            // importers-ast-anchored-v1 (M-035): CSharp added to the dotted-FQN
+            // family. `using Foo.Bar.Baz;` should match a query for
+            // `Foo.Bar` (sub-namespace prefix) and a bare-class query
+            // `Baz` (last-segment) — mirroring the Java/Scala rules.
             if import_module == target {
                 return true;
             }
@@ -205,11 +244,39 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             }
             false
         }
+        Language::C | Language::Cpp => {
+            // importers-ast-anchored-v1 (M-035): #include "../subdir/foo.h"
+            // should match a query for the bare header name `foo.h`. The AST
+            // extractor preserves the literal include path (`../subdir/foo.h`,
+            // `subdir/foo.h`, or `foo.h`); compare the basename against the
+            // target so a relative include resolves correctly. System includes
+            // (`<stdio.h>`) compare via the same rule.
+            if import_module == target {
+                return true;
+            }
+            let import_basename = std::path::Path::new(import_module)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(import_module);
+            let target_basename = std::path::Path::new(target)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(target);
+            import_basename == target_basename
+        }
         _ => import_module == target,
     }
 }
 
-/// Find the line number and text of an import statement
+/// Find the line number and text of an import statement.
+///
+/// importers-ast-anchored-v1 (v0.4.2 M-035): this function is no longer
+/// called from production code — the importers emitter now reads the line
+/// directly from `ImportInfo.line` populated by the AST extractor. The
+/// function is retained for the existing unit-test coverage (which pins
+/// the per-language idiom recognition); marking `#[cfg(test)]` is the
+/// truthful way to express that it is exercised only by tests.
+#[cfg(test)]
 fn find_import_line(
     lines: &[&str],
     module: &str,
