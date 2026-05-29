@@ -11,7 +11,7 @@ use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{CodeStructure, DefinitionInfo, FileStructure, IgnoreSpec, Language, MethodInfo};
 use crate::TldrResult;
 
-use super::extract::is_upper_case_name;
+use super::extract::{decl_keyword_line_from_node, is_upper_case_name};
 use super::imports::extract_imports_from_tree;
 use super::parser::parse_file;
 
@@ -2079,7 +2079,26 @@ fn collect_definitions(
 
     if (is_func || is_class) && !is_bodyless_c_specifier {
         if let Some(name) = get_definition_node_name(node, source) {
-            let line_start = node.start_position().row as u32 + 1; // 1-indexed
+            // m002-java-cross-pipeline-drift-v1 (v0.4.2 M-109): For Java
+            // function/class/method/constructor/interface/enum/record
+            // declarations, route through `decl_keyword_line_from_node`
+            // so the line we surface here matches the line emitted by
+            // `extract` / `explain` / `slice` (which already adopted the
+            // helper). Without this, `structure` / `interface` /
+            // `contracts` / `verify` / `definition` / `cohesion` reported
+            // the line of a leading `@Annotation` / `modifiers` child
+            // while the other pipelines reported the decl-keyword line
+            // for the SAME symbol — a cross-pipeline drift.
+            //
+            // Gated on `Language::Java` only: other grammars use the
+            // bare node start line elsewhere and the test
+            // `m002_java_cross_pipeline_v1` pins their pre-fix behavior
+            // so we don't widen the gate unintentionally.
+            let line_start = if language == Language::Java {
+                decl_keyword_line_from_node(&node)
+            } else {
+                node.start_position().row as u32 + 1 // 1-indexed
+            };
             let line_end = node.end_position().row as u32 + 1;
 
             // Extract signature: skip doc comments/attributes, use actual def line
@@ -2290,6 +2309,13 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
             let name = declarator
                 .child_by_field_name("name")
                 .map(|n| get_node_text(&n, source))?;
+            // m002-java-cross-pipeline-drift-v1 (v0.4.2 M-109): Java
+            // static-final constants resolve to `field_declaration` nodes,
+            // which the extract pipeline anchors to the bare node start
+            // line (the leading `@Deprecated` annotation row). Keep the
+            // same behavior here so structure↔extract parity for
+            // constants is preserved. Aligning to the decl-keyword line
+            // requires a coordinated update on the extract side.
             Some(make_constant_def(node, name, source))
         }
 
@@ -2522,6 +2548,18 @@ fn try_field_definition(
 
     // Extract names.
     let mut defs: Vec<DefinitionInfo> = Vec::new();
+    // m002-java-cross-pipeline-drift-v1 (v0.4.2 M-109): NOTE — we
+    // intentionally do NOT route Java field declarations through
+    // `decl_keyword_line_from_node` here. The `extract` pipeline's Java
+    // field extractor (`extract_java_class_fields` in `ast::extract`)
+    // also uses the bare `node.start_position()` row, so both pipelines
+    // currently agree on the annotation line for annotated Java fields
+    // (`@Column private String x;` → both report line of `@Column`).
+    // Aligning structure to the decl-keyword line here would NEWLY drift
+    // from extract — making the bug worse for fields. The M-109 scope
+    // (per Phase-22 iter-2 audit) is class/interface/method/constructor,
+    // which are handled in `collect_definitions` above. Realigning Java
+    // fields is a separate change that must update extract in lockstep.
     let line_start = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
     let signature = extract_def_signature(node, source);
