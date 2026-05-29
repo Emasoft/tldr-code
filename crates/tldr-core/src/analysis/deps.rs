@@ -529,7 +529,7 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                         }
                     }
                 }
-                DepKind::External | DepKind::Stdlib => {
+                DepKind::External => {
                     // Only track external deps if include_external is true
                     if options.include_external {
                         // deps-external-internal-classifier-v1 (M-048):
@@ -548,6 +548,18 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                             file_external_deps.push(pkg);
                         }
                     }
+                }
+                DepKind::Stdlib => {
+                    // m048-deps-stdlib-wiring-v1 (v0.4.2 M-111): stdlib
+                    // imports are explicitly NOT added to `file_external_deps`
+                    // — they are part of the language toolchain and don't
+                    // count as third-party dependencies. Pre-fix this arm
+                    // was fused with External (both were pushed into the
+                    // same bucket), which silently inflated
+                    // `total_external_deps` by the size of every project's
+                    // stdlib surface (kotlin reported `kotlin.collections`,
+                    // c# reported `System.IO`, ocaml reported `Stdlib.Map`,
+                    // etc.).
                 }
             }
         }
@@ -2873,6 +2885,12 @@ fn resolve_elixir_import(
 }
 
 /// Check if an Elixir module is from the standard library.
+///
+/// Sourced from <https://hexdocs.pm/elixir/api-reference.html> (Elixir
+/// 1.16 "Modules" index). Bundled tooling applications shipped with the
+/// Elixir tarball (`ExUnit`, `EEx`, `Logger`, `Mix`, `IEx`) are also
+/// included — they don't require a Mix.exs dep entry, so they aren't
+/// third-party.
 fn is_elixir_stdlib(module_name: &str) -> bool {
     // Elixir stdlib modules
     let first_part = module_name.split('.').next().unwrap_or(module_name);
@@ -2895,22 +2913,39 @@ fn is_elixir_stdlib(module_name: &str) -> bool {
             | "Macro"
             | "Module"
             | "Access"
+            | "Application"
             | "Atom"
             | "Base"
             | "Bitwise"
             | "Code"
+            | "Config"
             | "Date"
             | "DateTime"
+            | "EEx"
+            | "ExUnit"
             | "Exception"
             | "Float"
             | "Function"
+            | "IEx"
             | "Integer"
             | "Inspect"
+            | "Keyword"
+            | "MapSet"
+            | "Mix"
             | "NaiveDateTime"
             | "Node"
             | "OptionParser"
             | "Port"
+            | "Protocol"
             | "Range"
+            | "Record"
+            | "Reference"
+            | "DynamicSupervisor"
+            | "PartitionSupervisor"
+            | "GenEvent"
+            | "Behaviour"
+            | "HashDict"
+            | "HashSet"
             | "Regex"
             | "Registry"
             | "Stream"
@@ -3088,6 +3123,281 @@ fn is_php_stdlib(module_name: &str) -> bool {
 }
 
 // =============================================================================
+// Ruby / Lua / Swift / JS-builtin stdlib classifiers
+// =============================================================================
+// (m048-deps-stdlib-wiring-v1 / v0.4.2 M-111) These four helpers fill the
+// hole left by the iter-2 audit: `classify_import` had `_ => DepKind::External`
+// for every language except python / ts/js / go / rust / java. That meant
+// kotlin / c# / scala / elixir / ocaml / php stdlib helpers EXISTED but were
+// never called from `classify_import`, and ruby / lua / swift / js-node-builtin
+// had no helper at all. Both bugs polluted `total_external_deps`.
+//
+// The lists are curated from the most authoritative source per language
+// (Ruby docs, Lua 5.4 reference, Swift Foundation, Node.js docs). They are
+// conservative on purpose — a missing entry under-classifies stdlib as
+// External (over-counts external deps slightly) which is a much smaller
+// harm than over-classifying real third-party as Stdlib (silently hides a
+// dependency from the auditor).
+
+/// Check if a Ruby `require` target is part of the Ruby standard library.
+///
+/// Source: <https://docs.ruby-lang.org/en/3.3/standard_library_rdoc.html>
+/// (Ruby 3.3 "Standard Library" + "Default & Bundled Gems"). Both default
+/// gems (`json`, `set`, `securerandom`) and bundled gems shipped with the
+/// MRI release (`minitest`, `test-unit`, `rake`) count as stdlib for
+/// dependency-graph purposes — they don't need a Gemfile entry on a stock
+/// install, so they shouldn't be counted in `total_external_deps`.
+///
+/// The check matches the gem-grain (leading path segment), so
+/// `require 'minitest/autorun'` and `require 'json/add/core'` both
+/// classify as stdlib.
+pub fn is_ruby_stdlib(module_name: &str) -> bool {
+    let head = module_name.split('/').next().unwrap_or(module_name);
+    matches!(
+        head,
+        // Core / built-in (always available; some are autoloaded)
+        "English"
+        | "abbrev"
+        | "base64"
+        | "benchmark"
+        | "bigdecimal"
+        | "cgi"
+        | "coverage"
+        | "csv"
+        | "date"
+        | "delegate"
+        | "did_you_mean"
+        | "digest"
+        | "drb"
+        | "erb"
+        | "etc"
+        | "fcntl"
+        | "fiddle"
+        | "fileutils"
+        | "find"
+        | "forwardable"
+        | "getoptlong"
+        | "io"
+        | "io/console"
+        | "io/nonblock"
+        | "io/wait"
+        | "ipaddr"
+        | "irb"
+        | "json"
+        | "logger"
+        | "monitor"
+        | "mutex_m"
+        | "net/http"
+        | "net/imap"
+        | "net/pop"
+        | "net/smtp"
+        | "nkf"
+        | "objspace"
+        | "observer"
+        | "open-uri"
+        | "open3"
+        | "openssl"
+        | "optparse"
+        | "ostruct"
+        | "pathname"
+        | "pp"
+        | "prettyprint"
+        | "prime"
+        | "pstore"
+        | "psych"
+        | "racc"
+        | "rdoc"
+        | "readline"
+        | "resolv"
+        | "resolv-replace"
+        | "ripper"
+        | "rss"
+        | "scanf"
+        | "securerandom"
+        | "set"
+        | "shellwords"
+        | "singleton"
+        | "socket"
+        | "stringio"
+        | "strscan"
+        | "syslog"
+        | "tempfile"
+        | "time"
+        | "timeout"
+        | "tmpdir"
+        | "tracer"
+        | "tsort"
+        | "un"
+        | "uri"
+        | "weakref"
+        | "yaml"
+        | "zlib"
+        // Bundled gems (ship with MRI; no Gemfile entry needed)
+        | "minitest"
+        | "power_assert"
+        | "rake"
+        | "rbs"
+        | "rexml"
+        | "rss-maker"
+        | "test-unit"
+        | "typeprof"
+        // Common subforms that come with the Ruby tarball
+        | "rubygems"
+        | "bundler"
+    )
+}
+
+/// Check if a Lua `require` target is part of the Lua 5.4 standard library.
+///
+/// Source: <https://www.lua.org/manual/5.4/manual.html#6> (Standard
+/// Libraries). The basic library is identifier-grain; `math`, `string`,
+/// `table` etc. are the module-grain names users `require` or address as
+/// globals.
+pub fn is_lua_stdlib(module_name: &str) -> bool {
+    let head = module_name.split('.').next().unwrap_or(module_name);
+    matches!(
+        head,
+        "coroutine"
+            | "debug"
+            | "io"
+            | "math"
+            | "os"
+            | "package"
+            | "string"
+            | "table"
+            | "utf8"
+            // Lua 5.2 bit32 (kept available in some 5.3+ builds and LuaJIT)
+            | "bit32"
+            // LuaJIT extensions commonly treated as part of the runtime
+            | "bit"
+            | "ffi"
+            | "jit"
+    )
+}
+
+/// Check if a Swift `import` target is part of the Apple SDK / Swift stdlib.
+///
+/// Source: Apple's Swift Standard Library + Foundation umbrella
+/// (<https://developer.apple.com/documentation/swift>,
+/// <https://developer.apple.com/documentation/foundation>) and the Swift
+/// concurrency / package-graph modules shipped with the toolchain.
+///
+/// The list deliberately leaves out community-maintained packages
+/// (`swift-collections`, `swift-argument-parser`) — those ARE third-party
+/// dependencies on a stock toolchain.
+pub fn is_swift_stdlib(module_name: &str) -> bool {
+    // The Swift module identifier is a single segment; sub-modules
+    // (`os.log`, `Combine.AnyPublisher`) keep the umbrella as head.
+    let head = module_name.split('.').next().unwrap_or(module_name);
+    matches!(
+        head,
+        // Core Swift runtime
+        "Swift"
+            | "SwiftShims"
+            | "_Concurrency"
+            | "_StringProcessing"
+            | "_Differentiation"
+            | "RegexBuilder"
+            // Apple SDK umbrellas
+            | "Foundation"
+            | "Dispatch"
+            | "Combine"
+            | "SwiftUI"
+            | "UIKit"
+            | "AppKit"
+            | "CoreData"
+            | "CoreFoundation"
+            | "CoreGraphics"
+            | "CoreImage"
+            | "CoreLocation"
+            | "CoreML"
+            | "CoreText"
+            | "CoreVideo"
+            | "QuartzCore"
+            | "Metal"
+            | "MetalKit"
+            | "AVFoundation"
+            | "AVKit"
+            | "WebKit"
+            | "MapKit"
+            | "Network"
+            | "CryptoKit"
+            | "Security"
+            | "os"
+            | "Darwin"
+            | "Glibc"
+            | "WinSDK"
+            // Toolchain testing modules
+            | "XCTest"
+            | "Testing"
+            // Swift package authoring (ships with swiftc, not third-party)
+            | "PackageDescription"
+            | "PackagePlugin"
+            // Swift toolchain compiler intrinsics
+            | "Builtin"
+    )
+}
+
+/// Check if a JavaScript / TypeScript import path is a Node.js built-in module.
+///
+/// Source: <https://nodejs.org/api/modules.html> (Node.js v22 built-ins).
+/// Both the bare form (`require('fs')`) and the `node:` prefixed form
+/// (`import fs from 'node:fs'`) are recognised. Sub-paths
+/// (`node:fs/promises`, `stream/web`) are matched by leading segment.
+pub fn is_js_node_builtin(import_path: &str) -> bool {
+    // Strip the `node:` scheme if present, then drop any sub-path.
+    let stripped = import_path.strip_prefix("node:").unwrap_or(import_path);
+    let head = stripped.split('/').next().unwrap_or(stripped);
+    matches!(
+        head,
+        "assert"
+            | "async_hooks"
+            | "buffer"
+            | "child_process"
+            | "cluster"
+            | "console"
+            | "constants"
+            | "crypto"
+            | "dgram"
+            | "diagnostics_channel"
+            | "dns"
+            | "domain"
+            | "events"
+            | "fs"
+            | "http"
+            | "http2"
+            | "https"
+            | "inspector"
+            | "module"
+            | "net"
+            | "os"
+            | "path"
+            | "perf_hooks"
+            | "process"
+            | "punycode"
+            | "querystring"
+            | "readline"
+            | "repl"
+            | "stream"
+            | "string_decoder"
+            | "sys"
+            | "timers"
+            | "tls"
+            | "trace_events"
+            | "tty"
+            | "url"
+            | "util"
+            | "v8"
+            | "vm"
+            | "wasi"
+            | "worker_threads"
+            | "zlib"
+            // Test runner (Node 18+)
+            | "test"
+    )
+}
+
+// =============================================================================
 // External vs Internal Classification (Phase 4)
 // =============================================================================
 
@@ -3121,7 +3431,17 @@ pub fn classify_import(
         return DepKind::Internal;
     }
 
-    // 2. If not found, classify as stdlib or external based on language
+    // 2. If not found, classify as stdlib or external based on language.
+    //
+    // (m048-deps-stdlib-wiring-v1 / v0.4.2 M-111) Every language with a
+    // known `is_<lang>_stdlib` helper now consults it before falling
+    // through to External. Prior to this fix the match had an
+    // `_ => DepKind::External` catch-all that swallowed kotlin / c# /
+    // scala / elixir / ocaml / php — their stdlib helpers existed but
+    // were never called, so kotlin.collections / System.IO / scala.io /
+    // Logger / Stdlib.Map / PDO all got bucketed as External and
+    // inflated `total_external_deps`. Ruby / Lua / Swift / JS node
+    // builtins gained dedicated helpers in the same change.
     let module = &import.module;
     match language {
         Language::Python => {
@@ -3136,6 +3456,8 @@ pub fn classify_import(
             // attempts at internal imports (maybe missing files)
             if is_typescript_relative(module) {
                 DepKind::Internal
+            } else if is_js_node_builtin(module) {
+                DepKind::Stdlib
             } else {
                 DepKind::External
             }
@@ -3156,6 +3478,69 @@ pub fn classify_import(
         }
         Language::Java => {
             if is_java_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Kotlin => {
+            if is_kotlin_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::CSharp => {
+            if is_csharp_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Scala => {
+            if is_scala_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Elixir => {
+            if is_elixir_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Ocaml => {
+            if is_ocaml_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Php => {
+            if is_php_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Ruby => {
+            if is_ruby_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Lua | Language::Luau => {
+            if is_lua_stdlib(module) {
+                DepKind::Stdlib
+            } else {
+                DepKind::External
+            }
+        }
+        Language::Swift => {
+            if is_swift_stdlib(module) {
                 DepKind::Stdlib
             } else {
                 DepKind::External
