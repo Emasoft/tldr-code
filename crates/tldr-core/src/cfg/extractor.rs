@@ -129,6 +129,38 @@ fn is_control_flow_node(kind: &str) -> bool {
             | "break_expression"
             | "continue_statement"
             | "continue_expression"
+            // (cfg-per-lang-decision-edges-v1 M-103) Swift control flow.
+            | "guard_statement"
+            | "do_statement"
+            | "switch_statement"
+    )
+}
+
+/// (cfg-per-lang-decision-edges-v1 M-103) Returns the bare identifier name
+/// of the target of an Elixir `call` node, if any. Used to dispatch
+/// `cond do …` / `case x do …` / `try do …` constructs into branch
+/// emission. Elixir's tree-sitter grammar surfaces these as ordinary
+/// `call` nodes (target=identifier) with a `do_block` containing
+/// `stab_clause` arms (and `rescue_block`/`catch_block`/`after_block`
+/// siblings for `try`).
+fn elixir_call_target_name<'a>(node: Node<'a>, source: &'a str) -> Option<&'a str> {
+    let target = node.child_by_field_name("target")?;
+    if target.kind() != "identifier" {
+        return None;
+    }
+    target.utf8_text(source.as_bytes()).ok()
+}
+
+/// (cfg-per-lang-decision-edges-v1 M-103) Quick predicate: does this
+/// Elixir `call` node represent a `cond do …` / `case x do …` /
+/// `try do …` control-flow construct?
+fn is_elixir_control_call(node: Node, source: &str) -> bool {
+    if node.kind() != "call" {
+        return false;
+    }
+    matches!(
+        elixir_call_target_name(node, source),
+        Some("cond") | Some("case") | Some("try")
     )
 }
 
@@ -339,6 +371,10 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
             "match_expression" => self.process_match_expression(node, depth)?,
+            // (cfg-per-lang-decision-edges-v1 M-103) Swift-specific control flow.
+            "guard_statement" => self.process_swift_guard(node, depth)?,
+            "do_statement" => self.process_swift_do_catch(node, depth)?,
+            "switch_statement" => self.process_swift_switch(node, depth)?,
             // Rust uses _expression variants (return/break/continue are expressions)
             "return_statement" | "return_expression" => {
                 self.process_return_statement(node, start_line, end_line)?
@@ -381,6 +417,24 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            // (cfg-per-lang-decision-edges-v1 M-103) Elixir cond/case/try are
+            // surfaced by tree-sitter as bare `call` nodes whose target is an
+            // identifier "cond"/"case"/"try"; the body lives in a `do_block`
+            // and (for try) rescue/catch/after blocks are siblings. Without
+            // this guard the generic `call` arm below would treat them as
+            // ordinary expressions and add zero decision edges.
+            "call"
+                if self.language == Language::Elixir
+                    && is_elixir_control_call(node, self.source) =>
+            {
+                match elixir_call_target_name(node, self.source).unwrap_or("") {
+                    "try" => self.process_elixir_try(node, depth)?,
+                    "case" => self.process_elixir_case(node, depth)?,
+                    "cond" => self.process_elixir_cond(node, depth)?,
+                    _ => {}
+                }
+            }
+
             // Bare call expressions
             "call_expression" | "call" => {
                 self.process_expression(node, start_line, end_line)?;
@@ -388,8 +442,16 @@ impl<'a> CfgBuilder<'a> {
 
             // Container expressions that may contain control flow (OCaml let-in bindings,
             // semicolon-separated sequences, value definitions, Rust blocks inside
-            // match arms or other contexts) - recurse into children
-            "sequence_expression" | "let_expression" | "value_definition" | "block" => {
+            // match arms or other contexts) - recurse into children.
+            //
+            // (cfg-per-lang-decision-edges-v1 M-103) `statements` is added for
+            // Swift: tree-sitter-swift wraps every block of code (function
+            // body, guard else-body, do/catch bodies, switch_entry bodies)
+            // in a `statements` container. Without this arm the descent
+            // stops at the container and we never reach the
+            // `guard_statement`/`do_statement`/`switch_statement` children.
+            "sequence_expression" | "let_expression" | "value_definition" | "block"
+            | "statements" => {
                 self.process_block(node, depth)?;
             }
 
@@ -511,10 +573,19 @@ impl<'a> CfgBuilder<'a> {
         );
 
         // Create loop body block
-        // Standard languages use "body" field; OCaml uses do_clause child
+        // Standard languages use "body" field; OCaml uses do_clause child;
+        // tree-sitter-kotlin-ng's `for_statement` exposes the body as a
+        // bare `block` child (no field name) so the recursive body walk
+        // below would otherwise drop nested if-expressions / continue /
+        // break — see iter-2 audit `kotlin.md` c15/c17 (#61 reproduces).
+        // (cfg-per-lang-decision-edges-v1 M-103) Fall back to the first
+        // `block` / `statement_block` child for Kotlin and any other
+        // grammar that elides the `body` field.
         let body = node
             .child_by_field_name("body")
-            .or_else(|| find_child_by_kind(node, "do_clause"));
+            .or_else(|| find_child_by_kind(node, "do_clause"))
+            .or_else(|| find_child_by_kind(node, "block"))
+            .or_else(|| find_child_by_kind(node, "statement_block"));
         let exit_block = self.new_block(BlockType::Body, end_line, end_line);
 
         if let Some(body_node) = body {
@@ -977,6 +1048,591 @@ impl<'a> CfgBuilder<'a> {
         Ok(())
     }
 
+    // -- (cfg-per-lang-decision-edges-v1 M-103) -------------------------------
+    //
+    // Per-language CFG handlers for Elixir cond/case/try and Swift
+    // guard/do-catch/switch. Each handler mirrors the
+    // branch+arms+join shape used by `process_if_statement` /
+    // `process_match_expression` so that downstream cyclomatic / edge-count /
+    // hubs / dead-code analyses see structurally valid graphs.
+
+    /// Process Elixir `case x do … end`.
+    ///
+    /// AST shape (verified via `dump_ast` example):
+    /// ```text
+    /// call
+    ///   target: identifier "case"
+    ///   arguments: <scrutinee>
+    ///   do_block
+    ///     do
+    ///     stab_clause  (left=pattern, operator=->, right=body)
+    ///     stab_clause
+    ///     …
+    ///     end
+    /// ```
+    fn process_elixir_case(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let scrutinee = node.child_by_field_name("arguments").map(|n| {
+            n.utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let do_block = find_child_by_kind(node, "do_block");
+        let mut clause_count = 0usize;
+        if let Some(do_block) = do_block {
+            let mut cursor = do_block.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "stab_clause" {
+                        self.process_elixir_stab_clause(
+                            child,
+                            branch_block,
+                            join_block,
+                            scrutinee.clone(),
+                            clause_count,
+                            depth,
+                        )?;
+                        clause_count += 1;
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if clause_count == 0 {
+            self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Process Elixir `cond do … end`. Same shape as `case` but no
+    /// scrutinee — each `stab_clause` left is itself a boolean test.
+    fn process_elixir_cond(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let do_block = find_child_by_kind(node, "do_block");
+        let mut clause_count = 0usize;
+        if let Some(do_block) = do_block {
+            let mut cursor = do_block.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "stab_clause" {
+                        let cond_text = child.child_by_field_name("left").map(|n| {
+                            n.utf8_text(self.source.as_bytes())
+                                .unwrap_or("")
+                                .to_string()
+                        });
+                        self.process_elixir_stab_clause(
+                            child,
+                            branch_block,
+                            join_block,
+                            cond_text,
+                            clause_count,
+                            depth,
+                        )?;
+                        clause_count += 1;
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if clause_count == 0 {
+            self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Helper: emit a branch→arm-body→join slice for one `stab_clause`
+    /// (used by both `process_elixir_case` and `process_elixir_cond`).
+    fn process_elixir_stab_clause(
+        &mut self,
+        clause: Node,
+        branch_block: usize,
+        join_block: usize,
+        condition: Option<String>,
+        clause_index: usize,
+        depth: usize,
+    ) -> TldrResult<()> {
+        let clause_start = clause.start_position().row as u32 + 1;
+        let clause_end = clause.end_position().row as u32 + 1;
+        let arm_block = self.new_block(BlockType::Body, clause_start, clause_end);
+
+        let edge_type = if clause_index == 0 {
+            EdgeType::True
+        } else {
+            EdgeType::False
+        };
+        self.add_edge(branch_block, arm_block, edge_type, condition);
+
+        self.current_block_id = arm_block;
+
+        if let Some(body) = clause.child_by_field_name("right") {
+            self.process_block(body, depth + 1)?;
+        }
+
+        if !self.exit_blocks.contains(&self.current_block_id)
+            && !self.loop_exit_blocks.contains(&self.current_block_id)
+        {
+            self.add_edge(
+                self.current_block_id,
+                join_block,
+                EdgeType::Unconditional,
+                None,
+            );
+        }
+        Ok(())
+    }
+
+    /// Process Elixir `try do … rescue … catch … after … end`.
+    ///
+    /// AST shape:
+    /// ```text
+    /// call
+    ///   target: identifier "try"
+    ///   do_block
+    ///     do
+    ///     <try-body statements…>
+    ///     rescue_block { rescue, stab_clause, … }
+    ///     catch_block  { catch,  stab_clause, … }
+    ///     after_block  { after,  <statements> }
+    ///     end
+    /// ```
+    fn process_elixir_try(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let do_block = match find_child_by_kind(node, "do_block") {
+            Some(b) => b,
+            None => {
+                self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+                self.current_block_id = join_block;
+                return Ok(());
+            }
+        };
+
+        // 1. Process the try-body (statements between `do` and the first
+        //    rescue/catch/after sibling).
+        let try_body_block = self.new_block(BlockType::Body, start_line, start_line);
+        self.add_edge(branch_block, try_body_block, EdgeType::True, None);
+        self.current_block_id = try_body_block;
+
+        let mut cursor = do_block.walk();
+        let mut seen_handler = false;
+        let mut handlers: Vec<Node> = Vec::new();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                let kind = child.kind();
+                if matches!(kind, "rescue_block" | "catch_block" | "after_block") {
+                    seen_handler = true;
+                    handlers.push(child);
+                } else if !seen_handler && !matches!(kind, "do" | "end") {
+                    self.process_statement(child, depth + 1)?;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        if !self.exit_blocks.contains(&self.current_block_id)
+            && !self.loop_exit_blocks.contains(&self.current_block_id)
+        {
+            self.add_edge(
+                self.current_block_id,
+                join_block,
+                EdgeType::Unconditional,
+                None,
+            );
+        }
+
+        // 2. Emit each handler as a False-edge from the dispatch branch.
+        //    For rescue/catch, each `stab_clause` child becomes its own
+        //    arm so the cyclomatic count grows with arm count. For
+        //    `after` the handler is a single block.
+        for handler in handlers {
+            let kind = handler.kind();
+            let h_start = handler.start_position().row as u32 + 1;
+            let h_end = handler.end_position().row as u32 + 1;
+
+            match kind {
+                "rescue_block" | "catch_block" => {
+                    let mut hc = handler.walk();
+                    let mut any_clause = false;
+                    if hc.goto_first_child() {
+                        loop {
+                            let clause = hc.node();
+                            if clause.kind() == "stab_clause" {
+                                any_clause = true;
+                                let c_start = clause.start_position().row as u32 + 1;
+                                let c_end = clause.end_position().row as u32 + 1;
+                                let arm_block =
+                                    self.new_block(BlockType::Body, c_start, c_end);
+                                self.add_edge(
+                                    branch_block,
+                                    arm_block,
+                                    EdgeType::False,
+                                    Some(kind.to_string()),
+                                );
+                                self.current_block_id = arm_block;
+                                if let Some(body) = clause.child_by_field_name("right") {
+                                    self.process_block(body, depth + 1)?;
+                                }
+                                if !self.exit_blocks.contains(&self.current_block_id)
+                                    && !self
+                                        .loop_exit_blocks
+                                        .contains(&self.current_block_id)
+                                {
+                                    self.add_edge(
+                                        self.current_block_id,
+                                        join_block,
+                                        EdgeType::Unconditional,
+                                        None,
+                                    );
+                                }
+                            }
+                            if !hc.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                    }
+                    if !any_clause {
+                        let arm_block = self.new_block(BlockType::Body, h_start, h_end);
+                        self.add_edge(
+                            branch_block,
+                            arm_block,
+                            EdgeType::False,
+                            Some(kind.to_string()),
+                        );
+                        self.current_block_id = arm_block;
+                        self.process_block(handler, depth + 1)?;
+                        if !self.exit_blocks.contains(&self.current_block_id)
+                            && !self.loop_exit_blocks.contains(&self.current_block_id)
+                        {
+                            self.add_edge(
+                                self.current_block_id,
+                                join_block,
+                                EdgeType::Unconditional,
+                                None,
+                            );
+                        }
+                    }
+                }
+                "after_block" => {
+                    let arm_block = self.new_block(BlockType::Body, h_start, h_end);
+                    self.add_edge(
+                        branch_block,
+                        arm_block,
+                        EdgeType::False,
+                        Some("after".to_string()),
+                    );
+                    self.current_block_id = arm_block;
+                    self.process_block(handler, depth + 1)?;
+                    if !self.exit_blocks.contains(&self.current_block_id)
+                        && !self.loop_exit_blocks.contains(&self.current_block_id)
+                    {
+                        self.add_edge(
+                            self.current_block_id,
+                            join_block,
+                            EdgeType::Unconditional,
+                            None,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Process Swift `guard <conditions> else { … }`.
+    ///
+    /// AST shape:
+    /// ```text
+    /// guard_statement
+    ///   guard
+    ///   condition: <value_binding_pattern …>
+    ///   else
+    ///   statements   ← else-body (always exits)
+    ///   }
+    /// ```
+    fn process_swift_guard(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+
+        // The else-body is the `statements` child that appears AFTER the
+        // `else` token.
+        let mut cursor = node.walk();
+        let mut seen_else = false;
+        let mut else_body: Option<Node> = None;
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "else" {
+                    seen_else = true;
+                } else if seen_else && child.kind() == "statements" {
+                    else_body = Some(child);
+                    break;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+
+        let continue_block = self.new_block(BlockType::Body, end_line, end_line);
+        self.add_edge(branch_block, continue_block, EdgeType::True, None);
+
+        if let Some(else_node) = else_body {
+            let e_start = else_node.start_position().row as u32 + 1;
+            let e_end = else_node.end_position().row as u32 + 1;
+            let else_block = self.new_block(BlockType::Body, e_start, e_end);
+            self.add_edge(branch_block, else_block, EdgeType::False, None);
+
+            self.current_block_id = else_block;
+            self.process_block(else_node, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(
+                    self.current_block_id,
+                    continue_block,
+                    EdgeType::Unconditional,
+                    None,
+                );
+            }
+        } else {
+            self.add_edge(branch_block, continue_block, EdgeType::False, None);
+        }
+
+        self.current_block_id = continue_block;
+        Ok(())
+    }
+
+    /// Process Swift `do { … } catch <pattern>? { … } catch { … } …`.
+    ///
+    /// AST shape:
+    /// ```text
+    /// do_statement
+    ///   do
+    ///   { statements }            ← do-body
+    ///   catch_block               ← 1..N catch arms
+    ///     catch_keyword
+    ///     <pattern?>
+    ///     { statements }
+    /// ```
+    fn process_swift_do_catch(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let mut do_body: Option<Node> = None;
+        let mut catches: Vec<Node> = Vec::new();
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "statements" if do_body.is_none() => {
+                        do_body = Some(child);
+                    }
+                    "catch_block" => {
+                        catches.push(child);
+                    }
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+
+        // do-body arm.
+        let body_block = self.new_block(BlockType::Body, start_line, start_line);
+        self.add_edge(branch_block, body_block, EdgeType::True, None);
+        self.current_block_id = body_block;
+        if let Some(body) = do_body {
+            self.process_block(body, depth + 1)?;
+        }
+        if !self.exit_blocks.contains(&self.current_block_id)
+            && !self.loop_exit_blocks.contains(&self.current_block_id)
+        {
+            self.add_edge(
+                self.current_block_id,
+                join_block,
+                EdgeType::Unconditional,
+                None,
+            );
+        }
+
+        let had_catch = !catches.is_empty();
+        for catch in catches {
+            let c_start = catch.start_position().row as u32 + 1;
+            let c_end = catch.end_position().row as u32 + 1;
+            let catch_block = self.new_block(BlockType::Body, c_start, c_end);
+            self.add_edge(
+                branch_block,
+                catch_block,
+                EdgeType::False,
+                Some("catch".to_string()),
+            );
+            self.current_block_id = catch_block;
+            self.process_block(catch, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(
+                    self.current_block_id,
+                    join_block,
+                    EdgeType::Unconditional,
+                    None,
+                );
+            }
+        }
+
+        if !had_catch {
+            self.add_edge(branch_block, join_block, EdgeType::False, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Process Swift `switch x { case … : … ; case …, … : … ; default: … }`.
+    ///
+    /// AST shape:
+    /// ```text
+    /// switch_statement
+    ///   switch
+    ///   expr: <scrutinee>
+    ///   {
+    ///   switch_entry  (case …)  ← 1..N
+    ///     case|default_keyword
+    ///     switch_pattern (…)
+    ///     :
+    ///     statements
+    ///   }
+    /// ```
+    fn process_swift_switch(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let scrutinee = node.child_by_field_name("expr").map(|n| {
+            n.utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let mut entry_count = 0usize;
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "switch_entry" {
+                    let c_start = child.start_position().row as u32 + 1;
+                    let c_end = child.end_position().row as u32 + 1;
+                    let arm_block = self.new_block(BlockType::Body, c_start, c_end);
+                    let edge_type = if entry_count == 0 {
+                        EdgeType::True
+                    } else {
+                        EdgeType::False
+                    };
+                    self.add_edge(branch_block, arm_block, edge_type, scrutinee.clone());
+                    self.current_block_id = arm_block;
+                    self.process_block(child, depth + 1)?;
+                    if !self.exit_blocks.contains(&self.current_block_id)
+                        && !self.loop_exit_blocks.contains(&self.current_block_id)
+                    {
+                        self.add_edge(
+                            self.current_block_id,
+                            join_block,
+                            EdgeType::Unconditional,
+                            None,
+                        );
+                    }
+                    entry_count += 1;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        if entry_count == 0 {
+            self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
     /// Process return statement
     fn process_return_statement(
         &mut self,
@@ -1135,6 +1791,431 @@ impl<'a> CfgBuilder<'a> {
                     .to_string(),
             ),
         }
+    }
+
+    // =========================================================================
+    // cfg-ruby-rebuild-v1 (v0.4.2 M-102): Ruby control-flow handlers.
+    //
+    // tree-sitter-ruby uses BARE node kinds (`if`, `case`, `while`, `until`,
+    // `for`, `begin`, `unless`) rather than the `_statement`-suffixed kinds
+    // used by Python/JS/Rust. These handlers mirror the generic ones but
+    // navigate Ruby's grammar correctly. See `process_statement` dispatch.
+    // =========================================================================
+
+    /// Process Ruby `if` / `unless` expressions.
+    fn process_ruby_if(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+        let invert = node.kind() == "unless";
+
+        let condition = node.child_by_field_name("condition").map(|n| {
+            n.utf8_text(self.source.as_bytes()).unwrap_or("").to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(self.current_block_id, branch_block, EdgeType::Unconditional, None);
+
+        let consequence = node.child_by_field_name("consequence");
+        let alternative = node.child_by_field_name("alternative");
+        let (true_clause, false_clause) = if invert {
+            (alternative, consequence)
+        } else {
+            (consequence, alternative)
+        };
+
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        if let Some(then_node) = true_clause {
+            let ts = then_node.start_position().row as u32 + 1;
+            let te = then_node.end_position().row as u32 + 1;
+            let then_block = self.new_block(BlockType::Body, ts, te);
+            self.add_edge(branch_block, then_block, EdgeType::True, condition.clone());
+            self.current_block_id = then_block;
+            self.process_block(then_node, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, join_block, EdgeType::Unconditional, None);
+            }
+        } else {
+            self.add_edge(branch_block, join_block, EdgeType::True, condition.clone());
+        }
+
+        if let Some(else_node) = false_clause {
+            let es = else_node.start_position().row as u32 + 1;
+            let ee = else_node.end_position().row as u32 + 1;
+            let else_block = self.new_block(BlockType::Body, es, ee);
+            self.add_edge(branch_block, else_block, EdgeType::False, None);
+            self.current_block_id = else_block;
+            // `elsif` has same shape as `if`; `else` is a body container.
+            if else_node.kind() == "elsif" {
+                self.process_statement(else_node, depth + 1)?;
+            } else {
+                self.process_block(else_node, depth + 1)?;
+            }
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, join_block, EdgeType::Unconditional, None);
+            }
+        } else {
+            self.add_edge(branch_block, join_block, EdgeType::False, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Process Ruby modifier-if/unless: `expr if cond`, `expr unless cond`.
+    fn process_ruby_if_modifier(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+        let invert = node.kind() == "unless_modifier";
+
+        let condition = node.child_by_field_name("condition").map(|n| {
+            n.utf8_text(self.source.as_bytes()).unwrap_or("").to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(self.current_block_id, branch_block, EdgeType::Unconditional, None);
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        if let Some(body) = node.child_by_field_name("body") {
+            let bs = body.start_position().row as u32 + 1;
+            let be = body.end_position().row as u32 + 1;
+            let body_block = self.new_block(BlockType::Body, bs, be);
+            let (true_target, false_target) = if invert {
+                (join_block, body_block)
+            } else {
+                (body_block, join_block)
+            };
+            self.add_edge(branch_block, true_target, EdgeType::True, condition);
+            self.add_edge(branch_block, false_target, EdgeType::False, None);
+            self.current_block_id = body_block;
+            self.process_statement(body, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, join_block, EdgeType::Unconditional, None);
+            }
+        } else {
+            self.add_edge(branch_block, join_block, EdgeType::True, condition);
+            self.add_edge(branch_block, join_block, EdgeType::False, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Process Ruby `while` / `until` loops.
+    fn process_ruby_while_until(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+        let invert = node.kind() == "until";
+
+        let condition = node.child_by_field_name("condition").map(|n| {
+            n.utf8_text(self.source.as_bytes()).unwrap_or("").to_string()
+        });
+
+        let header_block = self.new_block(BlockType::LoopHeader, start_line, start_line);
+        self.add_edge(self.current_block_id, header_block, EdgeType::Unconditional, None);
+        let exit_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        if let Some(body) = node.child_by_field_name("body") {
+            let bs = body.start_position().row as u32 + 1;
+            let be = body.end_position().row as u32 + 1;
+            let body_block = self.new_block(BlockType::LoopBody, bs, be);
+            if invert {
+                // `until`: body executes while condition is FALSE.
+                self.add_edge(header_block, body_block, EdgeType::False, condition);
+                self.add_edge(header_block, exit_block, EdgeType::True, None);
+            } else {
+                self.add_edge(header_block, body_block, EdgeType::True, condition);
+                self.add_edge(header_block, exit_block, EdgeType::False, None);
+            }
+            self.current_block_id = body_block;
+            self.process_block(body, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, header_block, EdgeType::BackEdge, None);
+            }
+        } else {
+            self.add_edge(header_block, exit_block, EdgeType::False, condition);
+        }
+
+        self.current_block_id = exit_block;
+        Ok(())
+    }
+
+    /// Process Ruby modifier-loop: `expr while cond`, `expr until cond`.
+    fn process_ruby_modifier_loop(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+        let invert = node.kind() == "until_modifier";
+
+        let condition = node.child_by_field_name("condition").map(|n| {
+            n.utf8_text(self.source.as_bytes()).unwrap_or("").to_string()
+        });
+
+        let header_block = self.new_block(BlockType::LoopHeader, start_line, start_line);
+        self.add_edge(self.current_block_id, header_block, EdgeType::Unconditional, None);
+        let exit_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        if let Some(body) = node.child_by_field_name("body") {
+            let bs = body.start_position().row as u32 + 1;
+            let be = body.end_position().row as u32 + 1;
+            let body_block = self.new_block(BlockType::LoopBody, bs, be);
+            if invert {
+                self.add_edge(header_block, body_block, EdgeType::False, condition);
+                self.add_edge(header_block, exit_block, EdgeType::True, None);
+            } else {
+                self.add_edge(header_block, body_block, EdgeType::True, condition);
+                self.add_edge(header_block, exit_block, EdgeType::False, None);
+            }
+            self.current_block_id = body_block;
+            self.process_statement(body, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, header_block, EdgeType::BackEdge, None);
+            }
+        } else {
+            self.add_edge(header_block, exit_block, EdgeType::False, condition);
+        }
+
+        self.current_block_id = exit_block;
+        Ok(())
+    }
+
+    /// Process Ruby `for var in expr; body; end`.
+    fn process_ruby_for(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let header_block = self.new_block(BlockType::LoopHeader, start_line, start_line);
+        self.add_edge(self.current_block_id, header_block, EdgeType::Unconditional, None);
+        let exit_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        if let Some(body) = node.child_by_field_name("body") {
+            let bs = body.start_position().row as u32 + 1;
+            let be = body.end_position().row as u32 + 1;
+            let body_block = self.new_block(BlockType::LoopBody, bs, be);
+            self.add_edge(header_block, body_block, EdgeType::True, None);
+            self.add_edge(header_block, exit_block, EdgeType::False, None);
+            self.current_block_id = body_block;
+            self.process_block(body, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, header_block, EdgeType::BackEdge, None);
+            }
+        } else {
+            self.add_edge(header_block, exit_block, EdgeType::False, None);
+        }
+
+        self.current_block_id = exit_block;
+        Ok(())
+    }
+
+    /// Process Ruby `case ... when ... else ... end`.
+    fn process_ruby_case(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let scrutinee = node.child_by_field_name("value").map(|n| {
+            n.utf8_text(self.source.as_bytes()).unwrap_or("").to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(self.current_block_id, branch_block, EdgeType::Unconditional, None);
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let mut cursor = node.walk();
+        let mut arm_count = 0;
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "when" => {
+                        let cs = child.start_position().row as u32 + 1;
+                        let ce = child.end_position().row as u32 + 1;
+                        let arm_block = self.new_block(BlockType::Body, cs, ce);
+                        let edge_type = if arm_count == 0 { EdgeType::True } else { EdgeType::False };
+                        self.add_edge(branch_block, arm_block, edge_type, scrutinee.clone());
+                        self.current_block_id = arm_block;
+                        if let Some(body) = child.child_by_field_name("body") {
+                            self.process_block(body, depth + 1)?;
+                        } else {
+                            self.process_block(child, depth + 1)?;
+                        }
+                        if !self.exit_blocks.contains(&self.current_block_id)
+                            && !self.loop_exit_blocks.contains(&self.current_block_id)
+                        {
+                            self.add_edge(self.current_block_id, join_block, EdgeType::Unconditional, None);
+                        }
+                        arm_count += 1;
+                    }
+                    "else" => {
+                        let cs = child.start_position().row as u32 + 1;
+                        let ce = child.end_position().row as u32 + 1;
+                        let else_block = self.new_block(BlockType::Body, cs, ce);
+                        self.add_edge(branch_block, else_block, EdgeType::False, None);
+                        self.current_block_id = else_block;
+                        self.process_block(child, depth + 1)?;
+                        if !self.exit_blocks.contains(&self.current_block_id)
+                            && !self.loop_exit_blocks.contains(&self.current_block_id)
+                        {
+                            self.add_edge(self.current_block_id, join_block, EdgeType::Unconditional, None);
+                        }
+                    }
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        if arm_count == 0 {
+            self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// Process Ruby `begin ... rescue ... ensure ... end`.
+    fn process_ruby_begin(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let try_block = self.new_block(BlockType::Body, start_line, start_line);
+        self.add_edge(self.current_block_id, try_block, EdgeType::Unconditional, None);
+        let exit_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        self.current_block_id = try_block;
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            // Leading body statements (before rescue/ensure/else).
+            loop {
+                let child = cursor.node();
+                let k = child.kind();
+                if matches!(k, "rescue" | "ensure" | "else") {
+                    break;
+                }
+                if child.is_named() {
+                    self.process_statement(child, depth + 1)?;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            // Fall-through edge from try body to exit.
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, exit_block, EdgeType::Unconditional, None);
+            }
+
+            let try_block_id_for_edges = try_block;
+            let mut finally_block: Option<usize> = None;
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "rescue" => {
+                        let cs = child.start_position().row as u32 + 1;
+                        let ce = child.end_position().row as u32 + 1;
+                        let except_block = self.new_block(BlockType::Body, cs, ce);
+                        self.add_edge(
+                            try_block_id_for_edges,
+                            except_block,
+                            EdgeType::Unconditional,
+                            Some("exception".to_string()),
+                        );
+                        self.current_block_id = except_block;
+                        if let Some(body) = child.child_by_field_name("body") {
+                            self.process_block(body, depth + 1)?;
+                        }
+                        if !self.exit_blocks.contains(&self.current_block_id)
+                            && !self.loop_exit_blocks.contains(&self.current_block_id)
+                        {
+                            self.add_edge(self.current_block_id, exit_block, EdgeType::Unconditional, None);
+                        }
+                    }
+                    "else" => {
+                        let cs = child.start_position().row as u32 + 1;
+                        let ce = child.end_position().row as u32 + 1;
+                        let else_block = self.new_block(BlockType::Body, cs, ce);
+                        self.add_edge(try_block_id_for_edges, else_block, EdgeType::Unconditional, None);
+                        self.current_block_id = else_block;
+                        self.process_block(child, depth + 1)?;
+                        if !self.exit_blocks.contains(&self.current_block_id)
+                            && !self.loop_exit_blocks.contains(&self.current_block_id)
+                        {
+                            self.add_edge(self.current_block_id, exit_block, EdgeType::Unconditional, None);
+                        }
+                    }
+                    "ensure" => {
+                        let cs = child.start_position().row as u32 + 1;
+                        let ce = child.end_position().row as u32 + 1;
+                        let fin = self.new_block(BlockType::Body, cs, ce);
+                        self.add_edge(exit_block, fin, EdgeType::Unconditional, None);
+                        self.current_block_id = fin;
+                        self.process_block(child, depth + 1)?;
+                        finally_block = Some(fin);
+                    }
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            if let Some(fin) = finally_block {
+                let post_finally = self.new_block(BlockType::Body, end_line, end_line);
+                if !self.exit_blocks.contains(&self.current_block_id)
+                    && !self.loop_exit_blocks.contains(&self.current_block_id)
+                {
+                    self.add_edge(fin, post_finally, EdgeType::Unconditional, None);
+                }
+                self.current_block_id = post_finally;
+                return Ok(());
+            }
+        }
+
+        self.current_block_id = exit_block;
+        Ok(())
+    }
+
+    /// Process Ruby `loop do ... end` — `Kernel#loop` with `do_block`.
+    /// Semantically equivalent to `while true`: only exit is via `break`.
+    fn process_ruby_loop_call(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let header_block = self.new_block(BlockType::LoopHeader, start_line, start_line);
+        self.add_edge(self.current_block_id, header_block, EdgeType::Unconditional, None);
+        let exit_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        if let Some(do_block) = node.child_by_field_name("block") {
+            let body_node = do_block.child_by_field_name("body").unwrap_or(do_block);
+            let bs = body_node.start_position().row as u32 + 1;
+            let be = body_node.end_position().row as u32 + 1;
+            let body_block = self.new_block(BlockType::LoopBody, bs, be);
+            self.add_edge(header_block, body_block, EdgeType::True, None);
+            self.current_block_id = body_block;
+            self.process_block(body_node, depth + 1)?;
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(self.current_block_id, header_block, EdgeType::BackEdge, None);
+            }
+        }
+        // Always emit an exit-edge so the exit block is reachable
+        // (mirrors `process_loop_expression` for Rust `loop { ... }`).
+        self.add_edge(header_block, exit_block, EdgeType::False, None);
+
+        self.current_block_id = exit_block;
+        Ok(())
     }
 
     /// Finalize the CFG and compute metrics
