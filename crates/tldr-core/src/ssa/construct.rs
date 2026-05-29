@@ -360,9 +360,19 @@ fn get_source_text(line: u32, statements: &[String]) -> Option<String> {
 
 /// Find Use refs on the same line as a Definition ref, and resolve their
 /// current SSA name IDs from the renaming state.
+///
+/// callgraph-dataflow-issues-v1 (#50): the previous implementation
+/// filtered out any Use ref whose `name == def_var_name`, which silently
+/// dropped self-uses such as `x = x + 1` and broke taint propagation
+/// (and reaching-def chains) for the canonical re-assignment pattern.
+/// `state.current(&r.name)` is called BEFORE the LHS is rebound, so the
+/// self-use resolves to the PRIOR version (`x_v1`) — exactly what SSA
+/// semantics expect for `x_v2 = x_v1 + 1`. Re-including the self-use
+/// fixes JS `x = x + 1`, PHP `$n++`, and any language where the same
+/// variable name appears on both sides of an assignment.
 fn resolve_uses_on_line(
     line: u32,
-    def_var_name: &str,
+    _def_var_name: &str,
     dfg: &DfgInfo,
     line_to_block: &HashMap<u32, usize>,
     block_id: usize,
@@ -372,7 +382,6 @@ fn resolve_uses_on_line(
         .iter()
         .filter(|r| {
             r.line == line
-                && r.name != def_var_name  // Don't include the variable being defined
                 && matches!(r.ref_type, RefType::Use)
                 && get_block_for_line(r.line, line_to_block) == Some(block_id)
         })

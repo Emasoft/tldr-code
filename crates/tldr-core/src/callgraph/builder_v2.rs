@@ -434,6 +434,41 @@ fn resolve_intra_call(
             class_name: None,
         });
     }
+
+    // callgraph-dataflow-issues-v1 (#60): the Go handler classifies
+    // `c.Meow()` as Intra with target `c.Meow` when `Meow` is locally
+    // defined as a method on some struct. Resolve via the receiver's
+    // type by consulting `var_types` (`c := Cat{}` populates a
+    // var_types entry `c -> Cat`). When the receiver type is found and
+    // a method with the same simple name exists on that class, prefer
+    // the type-qualified target.
+    if let Some(receiver) = call_site.receiver.as_deref() {
+        if let Some((_, simple_method)) = call_site.target.split_once('.') {
+            if let Some(receiver_type) = call_site.receiver_type.as_deref().or_else(|| {
+                find_best_vartype_simple(&file_ir.var_types, receiver, call_site.line)
+            }) {
+                if let Some(target) = resolve_method_in_class(
+                    receiver_type,
+                    simple_method,
+                    class_index,
+                    func_index,
+                    language,
+                ) {
+                    return Some(target);
+                }
+                if let Some(target) = resolve_method_in_bases(
+                    receiver_type,
+                    simple_method,
+                    class_index,
+                    func_index,
+                    language,
+                ) {
+                    return Some(target);
+                }
+            }
+        }
+    }
+
     if let Some(class_name) = enclosing_class_for_call(&file_ir.funcs, call_site) {
         if let Some(target) = resolve_method_in_class(
             &class_name,
@@ -456,6 +491,35 @@ fn resolve_intra_call(
         return context.resolve_call(&call_site.target, &call_site.call_type);
     }
     context.resolve_call(&call_site.target, &call_site.call_type)
+}
+
+/// Look up the most recent VarType entry for `receiver_name` defined at or
+/// before `call_line`. Mirrors the scoping/priority of
+/// `find_best_vartype` in resolution.rs but without the
+/// caller-scope priority (since Intra fallback paths may not have a
+/// usable caller name).
+fn find_best_vartype_simple<'a>(
+    var_types: &'a [super::cross_file_types::VarType],
+    receiver_name: &str,
+    call_line: Option<u32>,
+) -> Option<&'a str> {
+    let mut best: Option<&super::cross_file_types::VarType> = None;
+    for vt in var_types {
+        if vt.var_name != receiver_name {
+            continue;
+        }
+        if let Some(cl) = call_line {
+            if vt.line > cl {
+                continue;
+            }
+        }
+        match best {
+            None => best = Some(vt),
+            Some(cur) if vt.line > cur.line => best = Some(vt),
+            _ => {}
+        }
+    }
+    best.map(|vt| vt.type_name.as_str())
 }
 
 fn resolve_static_call(

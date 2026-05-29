@@ -53,21 +53,47 @@ pub fn filter_by_class(
     // BFS for descendants
     collect_descendants(graph, class_name, max_depth, &mut included);
 
-    // Build filtered graph
+    // Build filtered graph — callgraph-dataflow-issues-v1 (#54): preserve
+    // per-file node entries and per-file edge info so cross-file
+    // same-named classes survive filtering.
     let mut filtered = InheritanceGraph::new();
 
-    for name in &included {
-        if let Some(node) = graph.nodes.get(name) {
-            filtered.add_node(node.clone());
+    if !graph.nodes_per_file.is_empty() {
+        for ((file, name), node) in &graph.nodes_per_file {
+            if included.contains(name) {
+                filtered
+                    .nodes_per_file
+                    .insert((file.clone(), name.clone()), node.clone());
+                filtered.nodes.insert(name.clone(), node.clone());
+            }
+        }
+    } else {
+        for name in &included {
+            if let Some(node) = graph.nodes.get(name) {
+                filtered.add_node(node.clone());
+            }
         }
     }
 
-    // Add edges between included nodes
-    for (child, parents) in &graph.parents {
-        if included.contains(child) {
-            for parent in parents {
-                if included.contains(parent) {
-                    filtered.add_edge(child, parent);
+    if !graph.parent_edges.is_empty() {
+        for edge in &graph.parent_edges {
+            if included.contains(&edge.child) && included.contains(&edge.parent) {
+                filtered.add_edge_with_file(
+                    &edge.child,
+                    &edge.parent,
+                    edge.child_file.clone(),
+                    edge.child_line,
+                    edge.kind,
+                );
+            }
+        }
+    } else {
+        for (child, parents) in &graph.parents {
+            if included.contains(child) {
+                for parent in parents {
+                    if included.contains(parent) {
+                        filtered.add_edge(child, parent);
+                    }
                 }
             }
         }

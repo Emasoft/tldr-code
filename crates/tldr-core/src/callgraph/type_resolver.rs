@@ -637,27 +637,36 @@ pub fn resolve_go_receiver_type(
     receiver_name: &str,
     enclosing_receiver: Option<&str>,
 ) -> (Option<String>, Confidence) {
-    // 1. If receiver matches the method receiver parameter, use enclosing receiver type
-    if let Some(recv_type) = enclosing_receiver {
-        // Check if receiver_name matches the typical single-letter Go convention
-        if receiver_name.len() == 1 {
-            return (Some(recv_type.to_string()), Confidence::High);
-        }
-    }
+    // callgraph-dataflow-issues-v1 (#60): consult explicit local bindings
+    // BEFORE shortcutting to the enclosing receiver via the single-letter
+    // heuristic. Pre-fix `c := Cat{}` inside `func (d Dog) Process()`
+    // was silently misresolved to `Dog` because `c.len() == 1` won the
+    // race. Mirrors the Go convention that a local binding always wins
+    // over the enclosing receiver name when both happen to be one letter.
 
-    // 2. Look for explicit var declaration: `var x Type`
+    // 1. Look for explicit var declaration: `var x Type`
     if let Some(type_name) = find_go_var_declaration(source, receiver_name, call_line) {
         return (Some(type_name), Confidence::High);
     }
 
-    // 3. Look for short declaration with struct literal: `x := Type{}`
+    // 2. Look for short declaration with struct literal: `x := Type{}`
     if let Some(type_name) = find_go_struct_literal(source, receiver_name, call_line) {
         return (Some(type_name), Confidence::High);
     }
 
-    // 4. Look for pointer/address-of: `x := &Type{}`
+    // 3. Look for pointer/address-of: `x := &Type{}`
     if let Some(type_name) = find_go_pointer_struct(source, receiver_name, call_line) {
         return (Some(type_name), Confidence::High);
+    }
+
+    // 4. Fall back to the enclosing-method receiver type for the
+    // single-letter Go convention (`(d Dog).Process()` calling
+    // `d.Bark()`). Only triggers when none of the explicit local
+    // binding lookups succeeded above.
+    if let Some(recv_type) = enclosing_receiver {
+        if receiver_name.len() == 1 {
+            return (Some(recv_type.to_string()), Confidence::High);
+        }
     }
 
     // 5. Fallback - unknown type

@@ -5600,10 +5600,9 @@ pub fn compute_taint_with_tree(
             let str_set: HashSet<String> = taint_keys
                 .iter()
                 .filter_map(|k| match k {
-                    TaintKey::Versioned(id) => ssa_ref
-                        .ssa_names
-                        .get(id.0 as usize)
-                        .map(|n| n.variable.clone()),
+                    TaintKey::Versioned(id) => {
+                        ssa_name_by_id(ssa_ref, *id).map(|n| n.variable.clone())
+                    }
                     TaintKey::Raw(s) => Some(s.clone()),
                 })
                 .collect();
@@ -6172,6 +6171,39 @@ struct SsaPropagateCtx<'a> {
     sanitizer_ast_index: &'a HashMap<u32, SanitizerType>,
 }
 
+/// Look up an SSA name by id.
+///
+/// callgraph-dataflow-issues-v1 (#50): SsaNameIds are 1-indexed (the
+/// renaming state's `next_id` starts at 1, with `0` reserved for the
+/// "undefined" marker), but `ssa.ssa_names` is a 0-indexed `Vec` sorted
+/// by id. Direct indexing via `ssa_names.get(id.0 as usize)` produces
+/// an off-by-one error that silently returned the wrong SsaName and
+/// broke source-seeding / use-checking throughout the SSA-aware taint
+/// propagation. This helper performs a correct id-based lookup.
+///
+/// The Vec is sorted by id (per `RenamingState::into_ssa_names`) so we
+/// binary-search; the common case where the id-to-position offset is
+/// exactly 1 hits in O(1) via direct indexing first.
+fn ssa_name_by_id(
+    ssa: &SsaFunction,
+    id: crate::ssa::types::SsaNameId,
+) -> Option<&crate::ssa::types::SsaName> {
+    // Fast path: `id.0 - 1` is the expected position when ids are dense
+    // and 1-indexed starting at 1 (the canonical construction layout).
+    let target = id.0;
+    let expected_idx = (target.saturating_sub(1)) as usize;
+    if let Some(n) = ssa.ssa_names.get(expected_idx) {
+        if n.id == id {
+            return Some(n);
+        }
+    }
+    // Fallback: binary search over the sorted Vec.
+    ssa.ssa_names
+        .binary_search_by_key(&target, |n| n.id.0)
+        .ok()
+        .and_then(|i| ssa.ssa_names.get(i))
+}
+
 fn ssa_propagate(
     ctx: &SsaPropagateCtx<'_>,
     sanitized_vars: &mut HashSet<String>,
@@ -6216,7 +6248,7 @@ fn ssa_propagate(
                         continue;
                     }
                     if let Some(target) = inst.target {
-                        if let Some(name) = ssa.ssa_names.get(target.0 as usize) {
+                        if let Some(name) = ssa_name_by_id(ssa, target) {
                             if name.variable == source.var {
                                 block.insert(TaintKey::Versioned(target));
                                 seeded_versioned = true;
@@ -6279,7 +6311,7 @@ fn ssa_propagate(
                             continue;
                         }
                         if let Some(target) = inst.target {
-                            if let Some(name) = ssa.ssa_names.get(target.0 as usize) {
+                            if let Some(name) = ssa_name_by_id(ssa, target) {
                                 if name.variable == source.var {
                                     taint_in.insert(TaintKey::Versioned(target));
                                     found = true;
@@ -6321,7 +6353,7 @@ fn ssa_propagate(
                     if current_taint.contains(&TaintKey::Versioned(*use_id)) {
                         return true;
                     }
-                    if let Some(name) = ssa.ssa_names.get(use_id.0 as usize) {
+                    if let Some(name) = ssa_name_by_id(ssa, *use_id) {
                         if current_taint.contains(&TaintKey::Raw(name.variable.clone())) {
                             return true;
                         }
@@ -6330,10 +6362,7 @@ fn ssa_propagate(
                 });
 
                 if let Some(target) = inst.target {
-                    let target_var = ssa
-                        .ssa_names
-                        .get(target.0 as usize)
-                        .map(|n| n.variable.clone());
+                    let target_var = ssa_name_by_id(ssa, target).map(|n| n.variable.clone());
 
                     // sanitizer-removal-v1 M4 (ATOMIC): AST-only (regex
                     // bank deleted; M2 fallback removed). Mirrors
@@ -6415,13 +6444,13 @@ fn ssa_sink_is_tainted(
         }
         for use_id in &inst.uses {
             if block_taint.contains(&TaintKey::Versioned(*use_id)) {
-                if let Some(name) = ssa.ssa_names.get(use_id.0 as usize) {
+                if let Some(name) = ssa_name_by_id(ssa, *use_id) {
                     if name.variable == sink.var {
                         return true;
                     }
                 }
             }
-            if let Some(name) = ssa.ssa_names.get(use_id.0 as usize) {
+            if let Some(name) = ssa_name_by_id(ssa, *use_id) {
                 if name.variable == sink.var
                     && block_taint.contains(&TaintKey::Raw(name.variable.clone()))
                 {
@@ -6441,6 +6470,47 @@ fn ssa_sink_is_tainted(
     if block_taint.contains(&TaintKey::Raw(sink.var.clone())) {
         return true;
     }
+
+    // callgraph-dataflow-issues-v1 (#50): bare expression-statement sinks
+    // such as `eval(x)` produce NO SSA instruction at the sink line
+    // (only definitions create instructions). The Raw-key fallback above
+    // only catches free-variable sources that never received a versioned
+    // seed. Walk the SSA names to find the most recent version of the
+    // sink variable defined at or before the sink line, then check
+    // whether that version is tainted at the sink block. This handles
+    // the `x = user_input; eval(x)` chain where the SSA propagation
+    // correctly marked `x_v_latest` as Versioned-tainted but the sink
+    // check could not locate it without a colocated instruction.
+    let mut latest_def: Option<&crate::ssa::types::SsaName> = None;
+    for name in &ssa.ssa_names {
+        if name.variable != sink.var {
+            continue;
+        }
+        if name.def_line > sink.line {
+            continue;
+        }
+        match latest_def {
+            None => latest_def = Some(name),
+            Some(cur) if name.def_line > cur.def_line => latest_def = Some(name),
+            _ => {}
+        }
+    }
+    if let Some(name) = latest_def {
+        if block_taint.contains(&TaintKey::Versioned(name.id)) {
+            return true;
+        }
+    }
+
+    // Also check the union of taint across THIS block's predecessors:
+    // some flows reach the sink block via `taint_in` but the local
+    // worklist did not re-record the version-keyed entry under our
+    // block's exit set if the sink block has no defining instruction
+    // for the variable. (Defensive guard for the `x = src; eval(x)`
+    // pattern when the sink lives in a successor of the definition.)
+    // The taint_in is materialised via `tainted_ssa` predecessors
+    // implicitly — `block_taint` is exit-of-block — so the Versioned
+    // lookup above already handles same-block. No-op here serves as
+    // documentation of intent.
 
     false
 }

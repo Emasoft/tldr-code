@@ -219,6 +219,39 @@ pub(crate) fn extract_python_definitions(source: &str, _file_path: &Path) -> Fil
                         &mut calls,
                     );
 
+                    // callgraph-dataflow-issues-v1 (#39): when this
+                    // function is wrapped in `decorated_definition`, the
+                    // sibling `decorator` nodes ARE NOT children of the
+                    // function_definition. Walk them explicitly so
+                    // `@register(my_handler)` emits the Direct call to
+                    // `register` AND the Ref edge to the identifier
+                    // argument `my_handler` (mirroring the function body
+                    // extraction). Without this, `tldr impact my_handler`
+                    // returned `caller_count: 0` even though the
+                    // decorator references were trivially visible to
+                    // `tldr references` / `tldr search`.
+                    if let Some(parent) = node.parent() {
+                        if parent.kind() == "decorated_definition" {
+                            for i in 0..parent.named_child_count() {
+                                if let Some(sib) = parent.named_child(i) {
+                                    if sib.kind() != "decorator" {
+                                        continue;
+                                    }
+                                    let dec_calls =
+                                        extract_python_calls(&sib, source_bytes, &caller_name);
+                                    calls.extend(dec_calls);
+                                    collect_python_value_refs(
+                                        &sib,
+                                        source_bytes,
+                                        &caller_name,
+                                        &defined_names,
+                                        &mut calls,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     if !calls.is_empty() {
                         result.calls.insert(caller_name, calls);
                     }

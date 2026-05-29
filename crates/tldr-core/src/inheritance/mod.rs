@@ -58,7 +58,7 @@ pub mod scala;
 pub mod swift;
 pub mod typescript;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -180,13 +180,29 @@ pub fn extract_inheritance(
         // Add classes to graph
         for class in classes {
             let class_name = class.name.clone();
+            let class_file = class.file.clone();
+            let class_line = class.line;
             let bases = class.bases.clone();
+
+            // Snapshot per-base kinds before move so each edge gets the
+            // right kind from the parallel base_kinds vector.
+            let base_kinds: Vec<crate::types::InheritanceKind> = (0..bases.len())
+                .map(|i| class.base_kind_at(i))
+                .collect();
 
             graph.add_node(class);
 
-            // Add edges for each base
-            for base in bases {
-                graph.add_edge(&class_name, &base);
+            // Add edges for each base — callgraph-dataflow-issues-v1
+            // (#54): use the file/line-preserving variant so cross-file
+            // same-named children don't collapse on top of each other.
+            for (i, base) in bases.iter().enumerate() {
+                graph.add_edge_with_file(
+                    &class_name,
+                    base,
+                    class_file.clone(),
+                    class_line,
+                    base_kinds[i],
+                );
             }
         }
     }
@@ -208,6 +224,33 @@ pub fn extract_inheritance(
         patterns::detect_diamonds(&graph)
     };
 
+    // callgraph-dataflow-issues-v1 (#54): pattern detectors mutate the
+    // bare-name `nodes` map (legacy API). Sync the pattern marks back
+    // into `nodes_per_file` so consumers reading the per-file storage
+    // see consistent `is_abstract` / `protocol` / `interface` / `mixin`
+    // flags. Properties that depend on the file path (file, line, bases)
+    // are preserved from the per-file copy; pattern-derived booleans are
+    // overwritten from the bare-name copy.
+    let bare_marks: HashMap<String, (Option<bool>, Option<bool>, Option<bool>, Option<bool>)> =
+        graph
+            .nodes
+            .iter()
+            .map(|(name, n)| {
+                (
+                    name.clone(),
+                    (n.is_abstract, n.protocol, n.interface, n.mixin),
+                )
+            })
+            .collect();
+    for ((_, name), node) in graph.nodes_per_file.iter_mut() {
+        if let Some(&(is_abs, proto, iface, mix)) = bare_marks.get(name) {
+            node.is_abstract = is_abs;
+            node.protocol = proto;
+            node.interface = iface;
+            node.mixin = mix;
+        }
+    }
+
     // Apply class filter if specified
     let filtered_graph = if let Some(ref class_name) = options.class_filter {
         filter::filter_by_class(&graph, class_name, options.depth)?
@@ -215,15 +258,21 @@ pub fn extract_inheritance(
         graph
     };
 
-    // Build report
+    // Build report — callgraph-dataflow-issues-v1 (#54): emit nodes from
+    // `nodes_per_file` so cross-file same-named classes are preserved.
+    // Falls back to the bare-name map when per-file storage is empty
+    // (legacy graphs / synthetic tests).
     let mut report = InheritanceReport::new(path.to_path_buf());
-    report.count = filtered_graph.nodes.len();
+    report.nodes = if !filtered_graph.nodes_per_file.is_empty() {
+        filtered_graph.nodes_per_file.values().cloned().collect()
+    } else {
+        filtered_graph.nodes.values().cloned().collect()
+    };
+    report.count = report.nodes.len();
     report.languages = languages_seen.into_iter().collect();
     report.scan_time_ms = start.elapsed().as_millis() as u64;
     report.diamonds = diamonds;
 
-    // Convert graph to edges and nodes for report
-    report.nodes = filtered_graph.nodes.values().cloned().collect();
     report.edges = build_edges(&filtered_graph, path);
     report.roots = filtered_graph.find_roots();
     report.leaves = filtered_graph.find_leaves();
@@ -287,6 +336,94 @@ fn collect_source_files(path: &Path, lang: Option<Language>) -> Vec<PathBuf> {
 /// downstream consumers (and diamond detection counts) honest.
 fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<InheritanceEdge> {
     let mut edges = Vec::new();
+    // callgraph-dataflow-issues-v1 (#54): edge identity must include the
+    // child file so two same-named children in different files produce
+    // distinct edges. Pre-fix the dedup key was
+    // `(child, parent, parent_file)` and silently collapsed cross-file
+    // duplicates.
+    let mut seen_edges: HashSet<(String, String, PathBuf, Option<PathBuf>)> = HashSet::new();
+
+    // Fall back to the legacy `parents` map when no per-file edges were
+    // recorded (synthetic graphs in tests, etc.) so existing callers that
+    // construct graphs via `add_edge` keep working.
+    if graph.parent_edges.is_empty() {
+        return build_edges_legacy(graph);
+    }
+
+    for edge_info in &graph.parent_edges {
+        let parent_node = graph.nodes.get(&edge_info.parent);
+        // Determine language from per-file node when available, else from
+        // bare-name node; needed for stdlib classification.
+        let child_node = graph
+            .nodes_per_file
+            .get(&(edge_info.child_file.clone(), edge_info.child.clone()))
+            .or_else(|| graph.nodes.get(&edge_info.child));
+        let language = match child_node {
+            Some(n) => n.language,
+            None => continue,
+        };
+
+        let (resolution, external) = if parent_node.is_some() {
+            (BaseResolution::Project, false)
+        } else if resolve::is_stdlib_class(&edge_info.parent, language) {
+            (BaseResolution::Stdlib, true)
+        } else {
+            (BaseResolution::Unresolved, true)
+        };
+
+        let base_edge = if external {
+            if resolution == BaseResolution::Stdlib {
+                InheritanceEdge::stdlib(
+                    &edge_info.child,
+                    &edge_info.parent,
+                    edge_info.child_file.clone(),
+                    edge_info.child_line,
+                )
+            } else {
+                InheritanceEdge::unresolved(
+                    &edge_info.child,
+                    &edge_info.parent,
+                    edge_info.child_file.clone(),
+                    edge_info.child_line,
+                )
+            }
+        } else {
+            let pn = parent_node.unwrap();
+            InheritanceEdge::project(
+                &edge_info.child,
+                &edge_info.parent,
+                edge_info.child_file.clone(),
+                edge_info.child_line,
+                pn.file.clone(),
+                pn.line,
+            )
+        };
+
+        let edge = base_edge.with_kind(edge_info.kind);
+
+        // Edge identity: (child, parent, child_file, parent_file). The
+        // child_file distinguishes cross-file same-named edges; the
+        // parent_file preserves the M5 dedup semantics for repeated
+        // heritage clauses in the same file (TS overloads etc.).
+        let key = (
+            edge.child.clone(),
+            edge.parent.clone(),
+            edge.child_file.clone(),
+            edge.parent_file.clone(),
+        );
+        if seen_edges.insert(key) {
+            edges.push(edge);
+        }
+    }
+
+    edges
+}
+
+/// Legacy edge-building path for graphs constructed via the bare
+/// `add_edge` API (tests, synthetic graphs). Preserves the pre-fix
+/// behaviour for callers that never invoked `add_edge_with_file`.
+fn build_edges_legacy(graph: &InheritanceGraph) -> Vec<InheritanceEdge> {
+    let mut edges = Vec::new();
     let mut seen_edges: HashSet<(String, String, Option<PathBuf>)> = HashSet::new();
 
     for (child_name, parents) in &graph.parents {
@@ -295,9 +432,6 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
             None => continue,
         };
 
-        // inheritance-walker-per-lang-v1 (M-039): build a name→kind
-        // map from the child's bases/base_kinds parallel vectors so
-        // the per-base kind survives the graph round-trip.
         let mut kind_for_base: std::collections::HashMap<String, InheritanceKind> =
             std::collections::HashMap::new();
         for (i, b) in child_node.bases.iter().enumerate() {
@@ -306,9 +440,6 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
                 .or_insert_with(|| child_node.base_kind_at(i));
         }
 
-        // Dedupe parent names per child (M5 dedup) — a child can have the same
-        // parent listed multiple times when extractors emit the heritage
-        // clause repeatedly. We preserve order via a HashSet-tracking pass.
         let mut seen_parents: HashSet<String> = HashSet::new();
         let parents: Vec<&String> = parents
             .iter()
@@ -353,16 +484,12 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
                 )
             };
 
-            // inheritance-walker-per-lang-v1 (M-039): apply per-base
-            // kind. Defaults to Extends when not specified.
             let kind = kind_for_base
                 .get(parent_name)
                 .copied()
                 .unwrap_or(InheritanceKind::Extends);
             let edge = base_edge.with_kind(kind);
 
-            // M5 dedup: (child, parent, parent_file) is the canonical edge
-            // identity. Skip if we've already emitted this triple.
             let key = (
                 edge.child.clone(),
                 edge.parent.clone(),

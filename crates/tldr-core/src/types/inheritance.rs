@@ -364,14 +364,53 @@ impl InheritanceReport {
 /// In-memory graph structure for inheritance analysis
 ///
 /// Used during computation; InheritanceReport is the serializable output.
+///
+/// # Per-file disambiguation (callgraph-dataflow-issues-v1 #54)
+///
+/// The legacy `nodes` map is keyed by bare class name and is last-write-wins
+/// — it is retained for back-compat with parent-lookup callsites (resolve,
+/// filter, patterns). The authoritative storage that survives same-name
+/// cross-file collisions is `nodes_per_file`, keyed by `(file, name)`. The
+/// report emits its `nodes[]` from `nodes_per_file`, and `build_edges`
+/// iterates `parent_edges` (a flat Vec carrying per-edge child file/line)
+/// instead of the bare-keyed `parents` map.
 #[derive(Debug, Clone, Default)]
 pub struct InheritanceGraph {
-    /// Map from class name to node
+    /// Map from class name to node (last-write-wins; retained for
+    /// parent-resolution lookups that key by bare name).
     pub nodes: HashMap<String, InheritanceNode>,
-    /// Edges: child -> list of parents
+    /// All class definitions keyed by `(file, name)` — preserves same-name
+    /// classes in different files (#54).
+    pub nodes_per_file: HashMap<(PathBuf, String), InheritanceNode>,
+    /// Edges: child -> list of parent names. Retained for filter/patterns
+    /// graph traversal which is name-based.
     pub parents: HashMap<String, Vec<String>>,
     /// Reverse edges: parent -> list of children
     pub children: HashMap<String, Vec<String>>,
+    /// Flat list of parent edges with per-child file/line attribution.
+    /// Iterating this Vec in `build_edges` yields the correct child_file
+    /// for each edge even when the same child name appears in multiple
+    /// files (#54).
+    pub parent_edges: Vec<ParentEdgeInfo>,
+}
+
+/// Per-child-file record of a single parent edge.
+///
+/// callgraph-dataflow-issues-v1 (#54): preserves the child's file and line
+/// so that `build_edges` emits one edge per definition site instead of
+/// last-write-wins overwriting earlier same-name entries.
+#[derive(Debug, Clone)]
+pub struct ParentEdgeInfo {
+    /// Child class name
+    pub child: String,
+    /// Parent class name
+    pub parent: String,
+    /// File where the child class was defined
+    pub child_file: PathBuf,
+    /// Line where the child class was defined
+    pub child_line: u32,
+    /// Kind of inheritance (Extends / Implements / Embeds)
+    pub kind: InheritanceKind,
 }
 
 impl InheritanceGraph {
@@ -380,13 +419,23 @@ impl InheritanceGraph {
         Self::default()
     }
 
-    /// Add a node to the graph
+    /// Add a node to the graph.
+    ///
+    /// callgraph-dataflow-issues-v1 (#54): in addition to the
+    /// bare-name-keyed `nodes` (last-write-wins), the node is also
+    /// recorded in `nodes_per_file` so same-name cross-file definitions
+    /// are preserved.
     pub fn add_node(&mut self, node: InheritanceNode) {
-        let name = node.name.clone();
-        self.nodes.insert(name, node);
+        let key = (node.file.clone(), node.name.clone());
+        self.nodes_per_file.insert(key, node.clone());
+        self.nodes.insert(node.name.clone(), node);
     }
 
-    /// Add an edge (child extends/implements parent)
+    /// Add an edge (child extends/implements parent).
+    ///
+    /// Backwards-compatible entry point that does not record the child's
+    /// file/line — used by tests/legacy paths. Production extractors
+    /// should call `add_edge_with_file` so per-file edges are preserved.
     pub fn add_edge(&mut self, child: &str, parent: &str) {
         self.parents
             .entry(child.to_string())
@@ -396,6 +445,37 @@ impl InheritanceGraph {
             .entry(parent.to_string())
             .or_default()
             .push(child.to_string());
+    }
+
+    /// Add an edge with the child's file/line preserved.
+    ///
+    /// callgraph-dataflow-issues-v1 (#54): the file/line are stored in
+    /// `parent_edges` so `build_edges` can attribute the edge to the
+    /// correct definition site even when multiple files define a class
+    /// with the same name.
+    pub fn add_edge_with_file(
+        &mut self,
+        child: &str,
+        parent: &str,
+        child_file: PathBuf,
+        child_line: u32,
+        kind: InheritanceKind,
+    ) {
+        self.parents
+            .entry(child.to_string())
+            .or_default()
+            .push(parent.to_string());
+        self.children
+            .entry(parent.to_string())
+            .or_default()
+            .push(child.to_string());
+        self.parent_edges.push(ParentEdgeInfo {
+            child: child.to_string(),
+            parent: parent.to_string(),
+            child_file,
+            child_line,
+            kind,
+        });
     }
 
     /// Get all classes that have multiple parents (potential diamond sources)
