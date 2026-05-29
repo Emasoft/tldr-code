@@ -2752,6 +2752,34 @@ impl ExplainArgs {
             if !cfg.blocks.is_empty() {
                 complexity_info.num_blocks = cfg.blocks.len() as u32;
             }
+            // cfg-ruby-rebuild-v1 (v0.4.2 M-102): align `num_edges` and
+            // `has_loops` to the canonical CFG too. The local
+            // `count_complexity_recursive` walker only recognises
+            // Python-shaped node kinds and was returning `num_edges:0,
+            // has_loops:false` for every Ruby method — even ones with
+            // `while`/`until`/`for`/`loop`. Mirroring `num_blocks`
+            // alignment (BUG-CPP-P20-04) closes the same gap for the
+            // remaining structural fields.
+            if !cfg.edges.is_empty() {
+                complexity_info.num_edges = cfg.edges.len() as u32;
+            }
+            // A function "has loops" iff its CFG carries a back-edge
+            // or contains a LoopHeader block. Either signal is
+            // sufficient — back-edges are the canonical marker but
+            // LoopHeader is also distinctive for the explicit-exit
+            // patterns (Rust `loop`, Ruby `loop do`).
+            use tldr_core::types::{BlockType as CfgBlockType, EdgeType as CfgEdgeType};
+            let has_back_edge = cfg
+                .edges
+                .iter()
+                .any(|e| e.edge_type == CfgEdgeType::BackEdge);
+            let has_loop_header = cfg
+                .blocks
+                .iter()
+                .any(|b| b.block_type == CfgBlockType::LoopHeader);
+            if has_back_edge || has_loop_header {
+                complexity_info.has_loops = true;
+            }
         }
         // rust-explain-cognitive-v1 (v0.4.2 bug-C6 / VAL-RUST-EXPLAIN):
         // join `tldr cognitive`'s per-function value into explain's

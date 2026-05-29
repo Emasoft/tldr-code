@@ -349,6 +349,63 @@ impl<'a> CfgBuilder<'a> {
         let start_line = node.start_position().row as u32 + 1;
         let end_line = node.end_position().row as u32 + 1;
 
+        // cfg-ruby-rebuild-v1 (v0.4.2 M-102): tree-sitter-ruby emits BARE
+        // kinds for control-flow constructs (`"if"`, `"while"`, `"until"`,
+        // `"for"`, `"case"`, `"begin"`, `"unless"`, plus modifier forms).
+        // These cognates collide with bare token / identifier text in
+        // other grammars (Python uses `"if_statement"`, never bare `"if"`),
+        // so they are dispatched only when `language == Ruby`. Without
+        // this dispatcher every Ruby method came out flat
+        // (`cyclomatic=1, num_edges=0`), which cascaded into broken
+        // output for `complexity`, `slice`, `available`, `reaching-defs`,
+        // `dead-stores`, `taint`, `chop`, `context`, `health`,
+        // `hotspots`, `debt`.
+        if matches!(self.language, Language::Ruby) {
+            match kind {
+                "if" | "unless" => {
+                    return self.process_ruby_if(node, depth);
+                }
+                "if_modifier" | "unless_modifier" => {
+                    return self.process_ruby_if_modifier(node, depth);
+                }
+                "while" | "until" => {
+                    return self.process_ruby_while_until(node, depth);
+                }
+                "while_modifier" | "until_modifier" => {
+                    return self.process_ruby_modifier_loop(node, depth);
+                }
+                "for" => {
+                    return self.process_ruby_for(node, depth);
+                }
+                "case" => {
+                    return self.process_ruby_case(node, depth);
+                }
+                "begin" => {
+                    return self.process_ruby_begin(node, depth);
+                }
+                "break" => {
+                    return self.process_break_statement(node, start_line, end_line);
+                }
+                "next" | "redo" | "retry" => {
+                    return self.process_continue_statement(node, start_line, end_line);
+                }
+                "return" => {
+                    return self.process_return_statement(node, start_line, end_line);
+                }
+                "call" => {
+                    // `loop do ... end` is parsed as a `call` to `Kernel#loop`
+                    // with an attached `do_block`. Lower it as an infinite
+                    // loop so the CFG carries the back-edge and the
+                    // loop_header decision-point. Other calls fall through
+                    // to the generic call-expression handler below.
+                    if crate::metrics::complexity::is_ruby_loop_call(node, self.source) {
+                        return self.process_ruby_loop_call(node, depth);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         match kind {
             // Control flow statements
             "if_statement" | "if_expression" => self.process_if_statement(node, depth)?,

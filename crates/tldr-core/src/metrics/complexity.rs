@@ -259,6 +259,32 @@ impl<'a> ComplexityCalculator<'a> {
 
     /// Check if a node kind introduces nesting
     fn is_nesting_structure(&self, kind: &str) -> bool {
+        // cfg-ruby-rebuild-v1 (v0.4.2 M-102): tree-sitter-ruby emits bare
+        // kinds (`if`, `while`, `until`, `for`, `case`, `begin`, `unless`)
+        // for Ruby control-flow constructs. These cognates would falsely
+        // match identifier / keyword tokens in other grammars (e.g. Python
+        // uses `if_statement`, never bare `if`), so they are gated on
+        // Language::Ruby.
+        if matches!(self.language, Language::Ruby)
+            && matches!(
+                kind,
+                "if" | "unless"
+                    | "while"
+                    | "until"
+                    | "for"
+                    | "case"
+                    | "begin"
+                    | "rescue"
+                    | "if_modifier"
+                    | "unless_modifier"
+                    | "while_modifier"
+                    | "until_modifier"
+                    | "do_block"
+            )
+        {
+            return true;
+        }
+
         matches!(
             kind,
             "if_statement"
@@ -290,6 +316,57 @@ impl<'a> ComplexityCalculator<'a> {
     /// - ?: ternary operator
     fn count_cyclomatic_increment(&mut self, node: Node) {
         let kind = node.kind();
+
+        // cfg-ruby-rebuild-v1 (v0.4.2 M-102): tree-sitter-ruby emits BARE
+        // kinds for control-flow constructs (`if`, `elsif`, `while`, `until`,
+        // `for`, `case`, `when`, `rescue`, `unless`, plus modifier forms).
+        // These cognates collide with bare keyword tokens / identifier
+        // text in other grammars, so they are gated on Language::Ruby.
+        // Without this, every Ruby method came out as cyclomatic=1, which
+        // cascaded into broken output for `complexity`, `slice`, `available`,
+        // `reaching-defs`, `dead-stores`, `taint`, `chop`, `context`,
+        // `health`, `hotspots`, `debt`.
+        if matches!(self.language, Language::Ruby) {
+            match kind {
+                "if" | "elsif" | "unless" => {
+                    self.cyclomatic += 1;
+                }
+                "while" | "until" | "for" => {
+                    self.cyclomatic += 1;
+                }
+                "when" => {
+                    // Each `when` arm is a decision point in a `case` switch.
+                    self.cyclomatic += 1;
+                }
+                "rescue" => {
+                    // Each `rescue` clause is a decision point in `begin/rescue`.
+                    self.cyclomatic += 1;
+                }
+                "call" => {
+                    // `loop do ... end` is parsed as a `call` to `Kernel#loop`
+                    // with an attached `do_block`. Recognise this iteration
+                    // construct as a decision point.
+                    if is_ruby_loop_call(node, self.source) {
+                        self.cyclomatic += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Modifier forms (`x if cond`, `y unless cond`, `expr while cond`,
+        // `expr until cond`) — these node kinds are Ruby-specific in
+        // tree-sitter-ruby but the names don't collide with other grammars
+        // so they can match unconditionally.
+        match kind {
+            "if_modifier" | "unless_modifier" => {
+                self.cyclomatic += 1;
+            }
+            "while_modifier" | "until_modifier" => {
+                self.cyclomatic += 1;
+            }
+            _ => {}
+        }
 
         // Primary decision points
         match kind {
@@ -415,6 +492,37 @@ impl<'a> ComplexityCalculator<'a> {
             lines_of_code: self.lines_of_code,
         }
     }
+}
+
+/// cfg-ruby-rebuild-v1 (v0.4.2 M-102): Check whether a Ruby `call` node
+/// represents `loop do ... end` (a `Kernel#loop` invocation with an
+/// attached `do_block`).
+///
+/// The call must:
+/// 1. Have method name `loop` (tree-sitter-ruby stores it under the
+///    `method` field as an `identifier` node).
+/// 2. Have an attached `do_block` or `block` (the iteration body).
+///
+/// Used by the cyclomatic decision counter to count `loop do` as a
+/// decision point, and re-exported (`pub(crate)`) so the CFG builder
+/// can dispatch to its dedicated Ruby loop handler.
+pub(crate) fn is_ruby_loop_call(node: tree_sitter::Node, source: &str) -> bool {
+    let method = match node.child_by_field_name("method") {
+        Some(m) => m,
+        None => return false,
+    };
+    if method.kind() != "identifier" {
+        return false;
+    }
+    let method_name = method.utf8_text(source.as_bytes()).unwrap_or("");
+    if method_name != "loop" {
+        return false;
+    }
+    // Must have a block (the iteration body). `loop` without a block
+    // is a no-op / forward reference, not a loop construct.
+    node.child_by_field_name("block")
+        .map(|b| matches!(b.kind(), "do_block" | "block"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
