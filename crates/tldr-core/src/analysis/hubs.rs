@@ -1160,16 +1160,45 @@ pub fn compute_hub_report(
     )
 }
 
-/// Lookup map from `(file, function_name)` -> 1-based definition line.
+/// Per-function lookup payload carrying both the AST definition line and the
+/// `is_public` boolean for hub enrichment.
+///
+/// m007-m036-hubs-line-is-public-v1 (v0.4.2 M-113): the lookup used to be
+/// keyed `(file, name) -> u32 (line)`; `FunctionRef.is_public` was always
+/// `false` on hub entries because no per-function visibility was carried
+/// through. This struct upgrades the lookup payload so a single AST scan
+/// populates both fields.
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionLineMeta {
+    /// 1-based AST definition line. `0` = unknown.
+    pub line: u32,
+    /// Whether the function is public/exported per the AST modifier or
+    /// the language's name-based convention.
+    pub is_public: bool,
+}
+
+impl From<u32> for FunctionLineMeta {
+    fn from(line: u32) -> Self {
+        Self {
+            line,
+            is_public: false,
+        }
+    }
+}
+
+/// Lookup map from `(file, function_name)` -> [`FunctionLineMeta`].
 ///
 /// hubs-line-population-v1: built by [`enumerate_function_lines`] and consumed by
-/// [`compute_hub_report_with_lines`] so each hub's `function_ref.line` reflects
-/// the actual AST definition position instead of the legacy `0` placeholder.
+/// [`compute_hub_report_with_lines`] so each hub's `function_ref.line` (and,
+/// since M-113, `function_ref.is_public`) reflects the actual AST data
+/// instead of the legacy `0` / `false` placeholders.
 ///
 /// The `name` key is whatever the call-graph builder records as the function
 /// identifier, including qualified `Class.method` forms produced by
-/// `CallGraphIR::build_indices` (cross_file_types.rs:1349-1351).
-pub type FunctionLineLookup = HashMap<(PathBuf, String), u32>;
+/// `CallGraphIR::build_indices` (cross_file_types.rs:1349-1351), and — since
+/// M-113 — the bare class name (so `new Foo()` / Kotlin `Foo(...)` constructor
+/// refs resolve to the class declaration line).
+pub type FunctionLineLookup = HashMap<(PathBuf, String), FunctionLineMeta>;
 
 /// Build a `(file, name) -> line` lookup for every function defined under `root`.
 ///
@@ -1240,36 +1269,128 @@ pub fn enumerate_function_lines(root: &Path, language: Language) -> FunctionLine
 
         // Top-level functions: index by bare name.
         for f in &module.functions {
+            let is_public = function_is_public(f, language);
+            let meta = FunctionLineMeta {
+                line: f.line_number,
+                is_public,
+            };
             lookup
                 .entry((rel_norm.clone(), f.name.clone()))
-                .or_insert(f.line_number);
+                .or_insert(meta);
         }
 
         // Class methods: index by bare `name`, dot-qualified `Class.name`,
         // and also by `Class::name` (C++ double-colon separator) since the
         // call-graph builder emits FunctionRefs as `"XMLUtil::ToStr"` while
         // the extractor records class.name="XMLUtil" and method.name="ToStr".
+        //
+        // m007-m036-hubs-line-is-public-v1 (M-113):
+        // - carry per-method `visibility` (Java `public`/`private`/...,
+        //   C# `public`/`internal`, Kotlin `public`/`open`/...,
+        //   C++ `public:`/`private:`) through to the lookup.
+        // - ALSO index the class name itself so that constructor refs (Java
+        //   `new Owner(...)` → call-graph dst_func="Owner" or "Owner.Owner",
+        //   Kotlin `Owner(...)`, C# `new Owner()`) resolve to the class
+        //   declaration line. The class is public if its `name` has no
+        //   leading underscore (Python convention) or per the language's
+        //   default — see `class_is_public_fallback`.
         for class in &module.classes {
+            let class_is_public = class_is_public_fallback(&class.name, language);
+
+            // Index the bare class name (constructor target) and the
+            // dot-qualified `Class.Class` form some call-graph builders
+            // emit (Java/C#).
+            let class_meta = FunctionLineMeta {
+                line: class.line_number,
+                is_public: class_is_public,
+            };
+            lookup
+                .entry((rel_norm.clone(), class.name.clone()))
+                .or_insert(class_meta);
+            lookup
+                .entry((
+                    rel_norm.clone(),
+                    format!("{}.{}", class.name, class.name),
+                ))
+                .or_insert(class_meta);
+
             for m in &class.methods {
+                let is_public = function_is_public(m, language);
+                let meta = FunctionLineMeta {
+                    line: m.line_number,
+                    is_public,
+                };
                 let qualified_dot = format!("{}.{}", class.name, m.name);
                 let qualified_colon = format!("{}::{}", class.name, m.name);
                 lookup
                     .entry((rel_norm.clone(), qualified_dot))
-                    .or_insert(m.line_number);
+                    .or_insert(meta);
                 lookup
                     .entry((rel_norm.clone(), qualified_colon))
-                    .or_insert(m.line_number);
+                    .or_insert(meta);
                 // Also index the bare method name as a fallback for
                 // builders that do not qualify (first-writer-wins so the
                 // qualified form takes priority when both exist).
                 lookup
                     .entry((rel_norm.clone(), m.name.clone()))
-                    .or_insert(m.line_number);
+                    .or_insert(meta);
             }
         }
     }
 
     lookup
+}
+
+/// Decide if a [`crate::types::FunctionInfo`] is public for hubs purposes.
+///
+/// m007-m036-hubs-line-is-public-v1 (M-113):
+/// 1. If the extractor populated `visibility`, honor it — `public`,
+///    `open`, and `internal` (Kotlin/C# semantics) count as public; every
+///    other modifier (`private`, `protected`, `package`, `fileprivate`,
+///    `crate`, ...) is non-public.
+/// 2. Otherwise infer from the language convention — Go uses leading
+///    capital, Python leading underscore, JS/TS treat every declaration
+///    as exported-able. For typed access-modifier languages (Java,
+///    Kotlin, C#, C++, Swift), absence-of-modifier means *package-default
+///    or class-default*. For Java that is package-private (false), for
+///    Kotlin/C#/Swift it is `public` per the language default (true).
+fn function_is_public(func: &crate::types::FunctionInfo, language: Language) -> bool {
+    if let Some(kw) = func.visibility.as_deref() {
+        return matches!(kw, "public" | "open" | "internal");
+    }
+    if !func.decorators.is_empty() {
+        // Framework annotations / decorators (`@Override`, `@Bean`,
+        // `[ApiController]`, `virtual`, `static`...) usually indicate a
+        // framework entry point — treat as public-equivalent so dead-code
+        // / hub consumers do not under-report them.
+        return true;
+    }
+    match language {
+        Language::Go => func.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
+        Language::Python => !func.name.starts_with('_'),
+        Language::Rust => false, // No reliable signal from name alone.
+        Language::Java => false, // No modifier == package-private.
+        Language::Kotlin => true, // No modifier == public.
+        Language::CSharp => false, // No modifier == private (C# default).
+        Language::Cpp | Language::C => false, // No `public:` specifier on a method == private.
+        Language::Swift => true, // No modifier == internal (still externally visible inside module).
+        _ => true,
+    }
+}
+
+/// Fallback `is_public` for a class declaration when the extractor does
+/// not carry an explicit modifier on `ClassInfo`.
+///
+/// Most class declarations a user writes are public by convention; Python
+/// uses the `_` prefix to mean private, and Rust uses `pub` (which we do
+/// not have on `ClassInfo`, so we under-claim public for Rust).
+fn class_is_public_fallback(name: &str, language: Language) -> bool {
+    match language {
+        Language::Python => !name.starts_with('_'),
+        Language::Rust => false, // No signal from name alone.
+        Language::Go => name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
+        _ => true,
+    }
 }
 
 /// Same as [`compute_hub_report`] but populates `HubScore.function_ref.line`
@@ -1350,9 +1471,10 @@ pub fn compute_hub_report_with_lines(
             let callers = caller_counts.get(node).copied().unwrap_or(0);
             let callees = callee_counts.get(node).copied().unwrap_or(0);
 
-            // Populate the line from the canonical AST extractor. If the
-            // node is not in the lookup, fall back to whatever line the
-            // FunctionRef already carries (typically 0 = unknown).
+            // Populate the line (and is_public, M-113) from the canonical
+            // AST extractor. If the node is not in the lookup, fall back to
+            // whatever line the FunctionRef already carries (typically
+            // 0 = unknown).
             //
             // M-036: C++ call-graph builders emit qualified names like
             // `"XMLUtil::ToStr"` while `extract_file` strips the qualifier
@@ -1362,17 +1484,47 @@ pub fn compute_hub_report_with_lines(
             // `(file, "ToStr")` but not `(file, "XMLUtil::ToStr")`. Fall back
             // to the bare-name form (everything after the last `::`) when the
             // fully-qualified key misses.
+            //
+            // m007-m036-hubs-line-is-public-v1 (M-113): the lookup payload
+            // now also carries `is_public` so Java/C#/C++ hub entries surface
+            // the correct visibility instead of `false` for every node.
+            // Additionally, OCaml emits qualified module references like
+            // `"Bar.helper"` while the extractor records the bare `helper`
+            // — add a `.` rsplit fallback so the qualified key still
+            // resolves to the bare-name entry.
             let mut node_with_line = node.clone();
             if let Some(lookup) = function_line_lookup {
                 let key = (node.file.clone(), node.name.clone());
-                if let Some(&line) = lookup.get(&key) {
-                    node_with_line.line = line;
-                } else if node.name.contains("::") {
-                    // C++ qualified name fallback: try bare name after last `::`.
-                    let bare = node.name.rsplit("::").next().unwrap_or(&node.name);
-                    let bare_key = (node.file.clone(), bare.to_string());
-                    if let Some(&line) = lookup.get(&bare_key) {
-                        node_with_line.line = line;
+                let meta = lookup.get(&key).copied().or_else(|| {
+                    if node.name.contains("::") {
+                        // C++ qualified name fallback: try bare name after last `::`.
+                        let bare = node.name.rsplit("::").next().unwrap_or(&node.name);
+                        lookup
+                            .get(&(node.file.clone(), bare.to_string()))
+                            .copied()
+                    } else if node.name.contains('.') {
+                        // Java/C#/OCaml/Kotlin qualified-name fallback: try the
+                        // bare segment after the last `.`. Note: this fires
+                        // AFTER the exact lookup, so concrete `Class.method`
+                        // entries (indexed at populate-time) take precedence
+                        // and the fallback only kicks in for refs without a
+                        // direct entry (e.g. OCaml `Bar.helper` whose lookup
+                        // was indexed only as `helper`).
+                        let bare = node.name.rsplit('.').next().unwrap_or(&node.name);
+                        lookup
+                            .get(&(node.file.clone(), bare.to_string()))
+                            .copied()
+                    } else {
+                        None
+                    }
+                });
+                if let Some(meta) = meta {
+                    node_with_line.line = meta.line;
+                    // Only override the boolean when the lookup says
+                    // "public" — leave any pre-existing `true` alone so
+                    // upstream enrichment is preserved.
+                    if meta.is_public {
+                        node_with_line.is_public = true;
                     }
                 }
             }

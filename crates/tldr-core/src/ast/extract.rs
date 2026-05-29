@@ -3565,7 +3565,11 @@ fn extract_java_functions_detailed(node: &Node, source: &str, functions: &mut Ve
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
-        if child.kind() == "method_declaration" {
+        // m007-m036-hubs-line-is-public-v1 (v0.4.2 M-113): also emit
+        // `constructor_declaration` so that call-graph edges that resolve
+        // `new Foo(...)` to `Foo` (or `Foo.Foo`) find a definition line
+        // and visibility instead of silently dropping to `line: 0`.
+        if child.kind() == "method_declaration" || child.kind() == "constructor_declaration" {
             let info = extract_java_function_info(&child, source);
             functions.push(info);
         }
@@ -5615,14 +5619,30 @@ fn extract_cpp_bases(node: &Node, source: &str) -> Vec<String> {
 }
 
 /// Extract method definitions from a C++ class body (field_declaration_list).
-/// Skips access_specifier nodes (public/private/protected).
+///
+/// m007-m036-hubs-line-is-public-v1 (v0.4.2 M-113): track the current
+/// `access_specifier` (`public:` / `private:` / `protected:`) as we walk
+/// so each method's `visibility` reflects the section it lives under.
+/// Without this, every C++ class method came out `visibility: None` and
+/// downstream consumers (e.g. `tldr hubs`) under-reported `is_public`.
+/// C++ default visibility is `private` for `class` and `public` for
+/// `struct`; we receive only the body here, so we default to `private`
+/// — callers that need struct semantics should pre-seed a `public:`
+/// access specifier before calling, which tree-sitter naturally does
+/// for struct bodies anyway (the grammar inserts none, but the field
+/// list starts implicitly public; callers using this helper for struct
+/// bodies should keep that in mind).
 fn extract_cpp_methods_from_body(body: &Node, source: &str, methods: &mut Vec<FunctionInfo>) {
     let mut cursor = body.walk();
+    let mut current_access: Option<String> = None;
 
     for child in body.children(&mut cursor) {
         match child.kind() {
             "function_definition" => {
-                let info = extract_cpp_function_info(&child, source, true);
+                let mut info = extract_cpp_function_info(&child, source, true);
+                if info.visibility.is_none() {
+                    info.visibility = current_access.clone();
+                }
                 methods.push(info);
             }
             "declaration" => {
@@ -5631,7 +5651,21 @@ fn extract_cpp_methods_from_body(body: &Node, source: &str, methods: &mut Vec<Fu
                 // Usually these are just declarations without body, skip them
             }
             "access_specifier" => {
-                // Skip public:/private:/protected:
+                // public: / private: / protected: — capture the keyword
+                // (first identifier-like child or the node text) so the
+                // next function_definition inherits it. The grammar
+                // exposes the keyword as a direct named child of
+                // `access_specifier` (e.g. `public`) for tree-sitter-cpp.
+                let text = get_node_text(&child, source);
+                // The node text typically includes the trailing colon — strip
+                // it for a clean keyword.
+                let kw = text.trim().trim_end_matches(':').trim().to_string();
+                match kw.as_str() {
+                    "public" | "private" | "protected" => {
+                        current_access = Some(kw);
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -6845,18 +6879,20 @@ fn extract_kotlin_class_info(node: &Node, source: &str) -> ClassInfo {
     let bases = extract_kotlin_bases(node, source);
     let docstring = extract_kotlin_docstring(node, source);
 
-    // Extract methods from class_body
+    // Extract methods from class_body.
+    //
+    // m007-m036-hubs-line-is-public-v1 (v0.4.2 M-113): also recurse into
+    // nested `object_declaration` / `companion_object` children inside the
+    // class body so companion-object factory methods (e.g. Kotlin's
+    // `UtcOffset.ofSeconds`, `Instant.fromEpochSeconds`) are surfaced as
+    // class methods. Without this, downstream consumers (`tldr hubs`,
+    // line lookup, etc.) miss them entirely and report `line: 0` for
+    // call-graph references that resolve to the bare factory name.
     let mut methods = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "class_body" {
-            let mut body_cursor = child.walk();
-            for body_child in child.children(&mut body_cursor) {
-                if body_child.kind() == "function_declaration" {
-                    let info = extract_kotlin_function_info(&body_child, source, true);
-                    methods.push(info);
-                }
-            }
+            collect_kotlin_methods_from_body(&child, source, &mut methods);
         }
     }
 
@@ -6869,6 +6905,33 @@ fn extract_kotlin_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+    }
+}
+
+/// Walk a Kotlin `class_body` collecting `function_declaration` children,
+/// including those nested inside `companion_object` / `object_declaration`
+/// blocks (which Kotlin uses for static/factory methods).
+///
+/// m007-m036-hubs-line-is-public-v1 (M-113): nested-object recursion.
+fn collect_kotlin_methods_from_body(body: &Node, source: &str, methods: &mut Vec<FunctionInfo>) {
+    let mut body_cursor = body.walk();
+    for body_child in body.children(&mut body_cursor) {
+        match body_child.kind() {
+            "function_declaration" => {
+                let info = extract_kotlin_function_info(&body_child, source, true);
+                methods.push(info);
+            }
+            "companion_object" | "object_declaration" => {
+                // Nested object: scan its class_body for function_declaration.
+                let mut nested_cursor = body_child.walk();
+                for nested in body_child.children(&mut nested_cursor) {
+                    if nested.kind() == "class_body" {
+                        collect_kotlin_methods_from_body(&nested, source, methods);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -6896,18 +6959,13 @@ fn extract_kotlin_object_info(node: &Node, source: &str) -> ClassInfo {
     let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
-    // Extract methods from class_body
+    // Extract methods from class_body (using the shared helper that also
+    // recurses into nested object_declaration / companion_object).
     let mut methods = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "class_body" {
-            let mut body_cursor = child.walk();
-            for body_child in child.children(&mut body_cursor) {
-                if body_child.kind() == "function_declaration" {
-                    let info = extract_kotlin_function_info(&body_child, source, true);
-                    methods.push(info);
-                }
-            }
+            collect_kotlin_methods_from_body(&child, source, &mut methods);
         }
     }
 
