@@ -900,16 +900,37 @@ fn get_cfg_metrics(
     func_name: &str,
     language: Language,
 ) -> (Option<usize>, Option<u32>) {
-    // Extract just the function name without class prefix for CFG lookup
-    let lookup_name = if let Some(dot_idx) = func_name.rfind('.') {
-        &func_name[dot_idx + 1..]
-    } else {
-        func_name
-    };
-
-    let blocks = match get_cfg_context(file.to_str().unwrap_or(""), lookup_name, language) {
-        Ok(cfg) => Some(cfg.blocks.len()),
-        Err(_) => None,
+    // cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #48.
+    //
+    // Pre-fix:
+    //     let lookup_name = func_name.rfind('.').map(strip).unwrap_or(func_name);
+    //     get_cfg_context(file, lookup_name, language)
+    // Stripping by `.` discarded the class prefix for Python `Class.method`
+    // (e.g. `Alpha.process` -> `process`), and the bare lookup then
+    // matched the FIRST source-order `process` in the file
+    // (`Beta.process`) — yielding the wrong CFG and the wrong `blocks`
+    // count. The cyclomatic path correctly used the qualified
+    // `Alpha.process` form, so the two metrics on the same record
+    // disagreed (cyclomatic=1 Alpha, blocks=14 Beta).
+    //
+    // Post-fix: pass the qualified name straight through to
+    // `get_cfg_context`. Its internal `find_function_node` already
+    // understands both `Class.method` (Python/JS/TS/Ruby/...) and
+    // `Class::method` (C/C++/Rust) qualified forms via dedicated
+    // class-scope resolvers. Fall back to the bare last segment only
+    // when the qualified lookup returns an empty CFG, splitting on the
+    // LANGUAGE's qualifier separator (`::` for C/C++/Rust, `.` for the
+    // rest) so the prefix-strip is consistent with the qualifier form.
+    let file_str = file.to_str().unwrap_or("");
+    let qualified_cfg = get_cfg_context(file_str, func_name, language).ok();
+    let blocks = match qualified_cfg {
+        Some(ref cfg) if !cfg.blocks.is_empty() => Some(cfg.blocks.len()),
+        _ => {
+            let bare = split_qualified_last_segment(func_name, language);
+            get_cfg_context(file_str, bare, language)
+                .ok()
+                .map(|cfg| cfg.blocks.len())
+        }
     };
 
     // Route cyclomatic through the canonical complexity calculator so
@@ -917,19 +938,39 @@ fn get_cfg_metrics(
     // function. Use the original `func_name` (qualified or bare) — the
     // complexity calculator supports both shapes via
     // `find_function_node`.
-    let file_str = file.to_str().unwrap_or("");
     let cyclomatic =
         match crate::metrics::complexity::calculate_complexity(file_str, func_name, language) {
             Ok(metrics) => Some(metrics.cyclomatic),
             Err(_) => {
-                // Fallback: try with the bare lookup_name.
-                crate::metrics::complexity::calculate_complexity(file_str, lookup_name, language)
+                // Fallback: try with the bare last segment of the
+                // qualified name (lang-aware separator).
+                let bare = split_qualified_last_segment(func_name, language);
+                crate::metrics::complexity::calculate_complexity(file_str, bare, language)
                     .ok()
                     .map(|m| m.cyclomatic)
             }
         };
 
     (blocks, cyclomatic)
+}
+
+/// cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #48.
+///
+/// Return the bare last segment of a (possibly) qualified function name,
+/// using the language's qualifier separator:
+///   - `::` for C, C++, Rust (e.g. `outer::Class::method` -> `method`)
+///   - `.` for everything else (e.g. `Module.Class.method` -> `method`)
+///
+/// When the name carries no qualifier the input is returned unchanged.
+fn split_qualified_last_segment<'a>(func_name: &'a str, language: Language) -> &'a str {
+    let sep: &str = match language {
+        Language::C | Language::Cpp | Language::Rust => "::",
+        _ => ".",
+    };
+    match func_name.rfind(sep) {
+        Some(idx) => &func_name[idx + sep.len()..],
+        None => func_name,
+    }
 }
 
 #[cfg(test)]
@@ -1311,6 +1352,133 @@ def compile_template(template):
         assert!(
             result.is_err(),
             "Expected FunctionNotFound error when filtering to nonexistent file"
+        );
+    }
+
+    /// cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #48 (Python).
+    ///
+    /// `get_cfg_metrics(file, "Alpha.process", Python)` must return the
+    /// CFG blocks of `Alpha.process` — not the first source-order bare
+    /// `process` (which would be `Beta.process`, complex).
+    ///
+    /// Pre-fix stripped `Alpha.` and looked up bare `process`, matching
+    /// Beta's CFG (~14 blocks). Cyclomatic was unaffected because
+    /// `calculate_complexity` already accepted the qualified
+    /// `Alpha.process` form (yielding 1) — so the two metrics
+    /// disagreed for the same record.
+    #[test]
+    fn test_48_python_get_cfg_metrics_qualified_method() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let src = "\
+class Beta:
+    def process(self):
+        a = 1
+        if a > 0:
+            if a > 1:
+                if a > 2:
+                    a += 1
+        while a < 100:
+            a += 1
+
+class Alpha:
+    def process(self):
+        x = 1
+        return
+";
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("ctx48.py");
+        fs::write(&file, src).unwrap();
+
+        let (blocks, cyclomatic) = get_cfg_metrics(&file, "Alpha.process", Language::Python);
+
+        let blocks = blocks.expect("expected `blocks` Some for Alpha.process");
+        let cyclomatic = cyclomatic.expect("expected `cyclomatic` Some for Alpha.process");
+
+        assert_eq!(
+            cyclomatic, 1,
+            "expected cyclomatic=1 for Alpha.process; got {}",
+            cyclomatic
+        );
+        assert!(
+            blocks < 10,
+            "expected `blocks` < 10 for Alpha.process; got {} \
+             (bare-name fallback hit Beta.process). cyclomatic={}.",
+            blocks,
+            cyclomatic
+        );
+    }
+
+    /// cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #48 (C++ guard).
+    #[test]
+    fn test_48_cpp_get_cfg_metrics_qualified_method() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let src = "class Beta {\n\
+            public:\n\
+                void process() {\n\
+                    int a = 1;\n\
+                    if (a > 0) {\n\
+                        if (a > 1) {\n\
+                            if (a > 2) {\n\
+                                a++;\n\
+                            }\n\
+                        }\n\
+                    }\n\
+                    while (a < 100) {\n\
+                        a++;\n\
+                    }\n\
+                }\n\
+            };\n\
+            \n\
+            class Alpha {\n\
+            public:\n\
+                void process() {\n\
+                    int x = 1;\n\
+                    return;\n\
+                }\n\
+            };\n";
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("ctx48.cpp");
+        fs::write(&file, src).unwrap();
+
+        let (blocks, cyclomatic) = get_cfg_metrics(&file, "Alpha::process", Language::Cpp);
+
+        let blocks = blocks.expect("expected `blocks` Some for Alpha::process");
+        let cyclomatic = cyclomatic.expect("expected `cyclomatic` Some for Alpha::process");
+
+        assert_eq!(cyclomatic, 1);
+        assert!(blocks < 10, "got blocks={} (regressing cpp `::` path)", blocks);
+    }
+
+    /// cpp-python-ast-issues-v1 (v0.4.2 M-106) — `split_qualified_last_segment` helper.
+    #[test]
+    fn test_split_qualified_last_segment_unit() {
+        assert_eq!(
+            split_qualified_last_segment("Alpha::process", Language::Cpp),
+            "process"
+        );
+        assert_eq!(
+            split_qualified_last_segment("a::b::c", Language::Rust),
+            "c"
+        );
+        assert_eq!(
+            split_qualified_last_segment("plain", Language::Cpp),
+            "plain"
+        );
+        assert_eq!(
+            split_qualified_last_segment("Alpha.process", Language::Python),
+            "process"
+        );
+        assert_eq!(
+            split_qualified_last_segment("Mod.Class.method", Language::Python),
+            "method"
+        );
+        assert_eq!(
+            split_qualified_last_segment("bare", Language::Python),
+            "bare"
         );
     }
 }

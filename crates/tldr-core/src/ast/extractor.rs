@@ -312,7 +312,20 @@ pub fn extract_classes(tree: &Tree, source: &str, language: Language) -> Vec<Str
         Language::Rust => extract_rust_structs(&root, source, &mut classes),
         Language::Java => extract_java_classes(&root, source, &mut classes),
         Language::C => extract_c_structs(&root, source, &mut classes),
-        Language::Cpp => extract_cpp_classes(&root, source, &mut classes),
+        Language::Cpp => {
+            // cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #46.
+            // `extract_cpp_classes` only matches `class_specifier` /
+            // `struct_specifier` and the macro-misparse `function_definition`
+            // shape; it does NOT emit enums. Run an enum-only collector
+            // first to pick up `enum class Foo { ... }` and `enum Foo { ... }`
+            // (both modelled as `enum_specifier` with a body in the cpp
+            // grammar), then defer struct/class extraction to the cpp
+            // collector. The two collectors handle disjoint node kinds
+            // (enum_specifier vs class_specifier / struct_specifier) so
+            // duplicates are not introduced.
+            extract_cpp_enums(&root, source, &mut classes);
+            extract_cpp_classes(&root, source, &mut classes);
+        }
         Language::Ruby => extract_ruby_classes(&root, source, &mut classes),
         Language::Scala => extract_scala_classes(&root, source, &mut classes),
         Language::Kotlin => extract_kotlin_classes(&root, source, &mut classes),
@@ -921,6 +934,57 @@ fn extract_c_structs(node: &Node, source: &str, structs: &mut Vec<String>) {
 // =============================================================================
 // C++ extraction
 // =============================================================================
+
+/// cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #46.
+///
+/// Walk a cpp AST and collect the names of all `enum_specifier` nodes
+/// that have a body (i.e. real definitions, not bare references like
+/// `enum Color c;` parameter types). Matches both:
+///   - `enum class Status { Ok, Err };` (scoped enum)
+///   - `enum Color { Red, Green };` (unscoped enum)
+/// `typedef enum { ... } Name;` is also captured by walking
+/// `type_definition` nodes whose inner specifier has a body.
+fn extract_cpp_enums(node: &Node, source: &str, enums: &mut Vec<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "enum_specifier" => {
+                // Require a body so we don't emit forward declarations or
+                // parameter-type references as new definitions.
+                if child.child_by_field_name("body").is_some() {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let name = get_node_text(&name_node, source);
+                        enums.push(name);
+                    }
+                }
+            }
+            "type_definition" => {
+                // `typedef enum { ... } Name;` — emit `Name` when the
+                // inner enum_specifier has a body.
+                let mut has_bodied_enum = false;
+                let mut typedef_name = None;
+                let mut inner_cursor = child.walk();
+                for inner in child.children(&mut inner_cursor) {
+                    if inner.kind() == "enum_specifier"
+                        && inner.child_by_field_name("body").is_some()
+                    {
+                        has_bodied_enum = true;
+                    }
+                    if inner.kind() == "type_identifier" {
+                        typedef_name = Some(get_node_text(&inner, source));
+                    }
+                }
+                if has_bodied_enum {
+                    if let Some(name) = typedef_name {
+                        enums.push(name);
+                    }
+                }
+            }
+            _ => {}
+        }
+        extract_cpp_enums(&child, source, enums);
+    }
+}
 
 fn extract_cpp_functions(node: &Node, source: &str, functions: &mut Vec<String>) {
     let mut cursor = node.walk();
@@ -2024,7 +2088,10 @@ fn collect_definitions(
             let entry_kind = if is_class {
                 match kind {
                     "struct_item" | "struct_definition" | "struct_specifier" => "struct",
-                    "enum_item" => "enum",
+                    // cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #46.
+                    // Tag cpp `enum class Foo` / `enum Foo` as kind="enum"
+                    // (consistent with Rust `enum_item`).
+                    "enum_specifier" | "enum_item" => "enum",
                     "trait_item" => "trait",
                     "interface_declaration" => "interface",
                     "module" => "module",
@@ -2699,6 +2766,7 @@ fn classify_definition_node(kind: &str, _language: Language) -> (bool, bool) {
             | "struct_item"        // Rust
             | "struct_definition"  // C/C++
             | "struct_specifier"   // C
+            | "enum_specifier"     // C/C++ — cpp-python-ast-issues-v1 #46
             | "enum_item"          // Rust
             | "trait_item"         // Rust
             | "type_spec"          // Go struct

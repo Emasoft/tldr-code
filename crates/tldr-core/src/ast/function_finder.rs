@@ -207,16 +207,26 @@ fn find_cpp_qualified_function_definition<'a>(
     qualified_name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
-    // BFS / pre-order traversal so that the FIRST matching definition in
-    // source order is returned (matters when a name has multiple
-    // overloads like `XMLDocument::Parse(xml, nBytes)` followed by
-    // `XMLDocument::Parse()` — bare-name fallback historically returned
-    // the first overload, and we preserve that behavior for callers
-    // whose `Class::method` is not arity-specific).
-    let mut queue: std::collections::VecDeque<Node> =
-        std::collections::VecDeque::new();
-    queue.push_back(root);
-    while let Some(node) = queue.pop_front() {
+    // cpp-python-ast-issues-v1 (v0.4.2 M-106) — Issue #47.
+    //
+    // Pre-order DFS traversal so the FIRST matching definition in SOURCE
+    // order is returned. The previous implementation used BFS
+    // (`VecDeque::push_back` + `pop_front`), which returned the
+    // SHALLOWEST match in AST order rather than the first source-order
+    // match. When `Foo::bar` is defined deep inside `namespace outer {
+    // namespace inner { ... } }` BEFORE a sibling top-level
+    // `int Foo::bar()` later in the file, BFS returned the later
+    // (shallower) definition, mis-routing slice / complexity / explain /
+    // contracts / taint downstream.
+    //
+    // The fix uses an explicit stack with `Vec::push` / `Vec::pop` and
+    // pushes children in REVERSE order so the FIRST child is popped
+    // next (yielding pre-order traversal). This mirrors the sibling
+    // helper `find_function_node_in_subtree` immediately below in this
+    // file, which uses the same idiom.
+    let mut stack: Vec<Node> = Vec::new();
+    stack.push(root);
+    while let Some(node) = stack.pop() {
         if node.kind() == "function_definition" {
             if let Some(declarator) = node.child_by_field_name("declarator") {
                 if let Some(inner) = peel_to_function_declarator(declarator) {
@@ -234,14 +244,20 @@ fn find_cpp_qualified_function_definition<'a>(
                 }
             }
         }
+        // Push children in REVERSE so the first child is popped next —
+        // gives pre-order DFS, which visits nodes in source order.
+        let mut children: Vec<Node> = Vec::new();
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                queue.push_back(cursor.node());
+                children.push(cursor.node());
                 if !cursor.goto_next_sibling() {
                     break;
                 }
             }
+        }
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
     None
