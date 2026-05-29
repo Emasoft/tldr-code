@@ -208,10 +208,26 @@ fn extract_from_cpp_headers(
             .to_path_buf();
 
         let mut scopes: Vec<Scope> = Vec::new();
+        // m112-surface-garbage-cleanup-v1 (Wave 17e / M-112):
+        // Track block-comment state across line iterations so the
+        // line-based prototype parser can't pick up identifiers from
+        // doc-comment bodies (e.g. `XMLDocument::DeepCopy()` referenced
+        // inside `/** ... */`). The previous parser had NO comment-state
+        // tracking — every `Param->Method()` mention in a doc block was
+        // parsed as a free function.
+        let mut in_block_comment = false;
 
         for (idx, raw_line) in source.lines().enumerate() {
             let line_no = idx + 1;
-            let line = raw_line.trim();
+            // Strip a `// line comment` tail before we run any heuristic.
+            let stripped = strip_line_comment_outside_strings(raw_line);
+            // Strip any in-line `/* ... */` ranges and update the
+            // `in_block_comment` flag for content that spans line breaks.
+            let code_only = strip_block_comment_spans(&stripped, &mut in_block_comment);
+            let line = code_only.trim();
+            if line.is_empty() {
+                continue;
+            }
             if let Some(namespace_name) = parse_namespace_name(line) {
                 let internal = is_internal_cpp_namespace(&namespace_name);
                 scopes.push(Scope::Namespace { internal });
@@ -369,6 +385,71 @@ fn extract_from_cpp_headers(
     }
 
     Ok(apis)
+}
+
+/// Strip a `// line-comment` tail from `raw_line`, but only if the
+/// `//` is not inside a string literal. Returns the code portion only.
+fn strip_line_comment_outside_strings(raw_line: &str) -> String {
+    let bytes = raw_line.as_bytes();
+    let mut in_string = false;
+    let mut in_char = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\\' if (in_string || in_char) && i + 1 < bytes.len() => {
+                i += 2;
+                continue;
+            }
+            b'"' if !in_char => in_string = !in_string,
+            b'\'' if !in_string => in_char = !in_char,
+            b'/' if !in_string
+                && !in_char
+                && i + 1 < bytes.len()
+                && bytes[i + 1] == b'/' =>
+            {
+                return raw_line[..i].to_string();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    raw_line.to_string()
+}
+
+/// Replace any `/* ... */` block-comment spans in `line` with spaces and
+/// update `in_block_comment` to reflect comment state at end of line.
+///
+/// Block comments that span multiple lines are tracked across calls so
+/// content inside a `/** doc */` block can't be parsed as code by the
+/// line-based prototype heuristic.
+fn strip_block_comment_spans(line: &str, in_block_comment: &mut bool) -> String {
+    let bytes = line.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if *in_block_comment {
+            if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                *in_block_comment = false;
+                out.push(b' ');
+                out.push(b' ');
+                i += 2;
+            } else {
+                out.push(b' ');
+                i += 1;
+            }
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            *in_block_comment = true;
+            out.push(b' ');
+            out.push(b' ');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    // Already valid UTF-8 because we only replaced ASCII spans.
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn parse_namespace_name(line: &str) -> Option<String> {

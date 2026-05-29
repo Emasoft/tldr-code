@@ -3,8 +3,19 @@
 //! When headers are present, the public C surface is derived from function
 //! declarations in header files. If no headers are present, we fall back to
 //! function definitions in `.c` files.
+//!
+//! Header extraction (`extract_from_c_headers`) uses an AST walk over
+//! tree-sitter-c's parse tree: only `declaration` nodes whose declarator
+//! is a `function_declarator`, and `function_definition` nodes, qualify
+//! as surface entries. This is the m112-surface-garbage-cleanup-v1 fix
+//! (Wave 17e / M-112): the previous line-based prototype guesser parsed
+//! block-comment continuation lines (`Copyright`, ALL-CAPS legalese) and
+//! GCC `__attribute__` directives as functions, and inline-macro-call
+//! lines (`SDS_HDR(8, s)->len`) leaked macro identifiers as APIs.
 
 use std::path::{Path, PathBuf};
+
+use tree_sitter::Node;
 
 use crate::ast::extract::extract_from_tree;
 use crate::ast::parser::parse;
@@ -111,132 +122,213 @@ fn extract_from_c_headers(
             .unwrap_or(file_path)
             .to_path_buf();
 
-        let mut comments = Vec::new();
-        let mut current = String::new();
-        let mut start_line = 1usize;
-
-        for (idx, raw_line) in source.lines().enumerate() {
-            let line_no = idx + 1;
-            let line = raw_line.trim();
-
-            if line.starts_with("//") {
-                comments.push(line.trim_start_matches("//").trim().to_string());
-                continue;
-            }
-            if line.is_empty() {
-                comments.clear();
-                continue;
-            }
-            if line.starts_with('#') {
-                comments.clear();
-                continue;
-            }
-
-            if current.is_empty() {
-                start_line = line_no;
-            }
-            current.push_str(line);
-            current.push(' ');
-
-            if !line.ends_with(';') {
-                continue;
-            }
-
-            if let Some((name, params, return_type)) = parse_c_prototype(&current) {
-                let params = params
-                    .into_iter()
-                    .map(|param| Param {
-                        name: param,
-                        type_annotation: None,
-                        default: None,
-                        is_variadic: false,
-                        is_keyword: false,
-                    })
-                    .collect::<Vec<_>>();
-
-                apis.push(ApiEntry {
-                    qualified_name: format!("{}.{}", module_path, name),
-                    kind: ApiKind::Function,
-                    module: module_path.clone(),
-                    signature: Some(Signature {
-                        params: params.clone(),
-                        return_type: return_type.clone(),
-                        is_async: false,
-                        is_generator: false,
-                    }),
-                    docstring: (!comments.is_empty()).then(|| comments.join(" ")),
-                    example: Some(format!(
-                        "{}({})",
-                        name,
-                        params
-                            .iter()
-                            .map(|p| p.name.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
-                    triggers: extract_triggers(&name, None),
-                    is_property: false,
-                    return_type,
-                    location: Some(Location {
-                        file: relative_path.clone(),
-                        line: start_line,
-                        column: None,
-                    }),
-                });
-            }
-
-            current.clear();
-            comments.clear();
-        }
+        let tree = parse(&source, Language::C)?;
+        let root = tree.root_node();
+        collect_c_header_apis(
+            &root,
+            source.as_bytes(),
+            &module_path,
+            &relative_path,
+            &mut apis,
+        );
     }
 
     Ok(apis)
 }
 
-fn parse_c_prototype(decl: &str) -> Option<(String, Vec<String>, Option<String>)> {
-    let decl = decl.trim().trim_end_matches(';').trim();
-    if decl.starts_with("typedef")
-        || decl.starts_with("struct")
-        || decl.starts_with("enum")
-        || decl.starts_with("union")
-        || !decl.contains('(')
-        || decl.contains("(*")
-    {
+/// AST walk over a C header parse tree (`m112-surface-garbage-cleanup-v1`).
+///
+/// Only emits surface entries for:
+///   - `function_definition` nodes (inline functions in headers — `static
+///     inline T foo(...) { ... }`),
+///   - `declaration` nodes whose declarator (possibly wrapped in a
+///     `pointer_declarator`) is a `function_declarator` (function
+///     prototypes — `T foo(...);`).
+///
+/// Everything else — block comments, GCC `__attribute__` directives,
+/// `#define` / `#include` preprocessor lines, `struct` / `enum` / `union`
+/// / `typedef` declarations, macro-call expressions inside inline function
+/// bodies — is skipped because tree-sitter-c does not classify those as
+/// `function_definition` or function-shaped `declaration` nodes.
+fn collect_c_header_apis(
+    node: &Node,
+    source: &[u8],
+    module_path: &str,
+    relative_path: &Path,
+    apis: &mut Vec<ApiEntry>,
+) {
+    match node.kind() {
+        "function_definition" => {
+            if let Some(entry) =
+                build_c_api_entry(node, source, module_path, relative_path)
+            {
+                apis.push(entry);
+            }
+            // Don't recurse into function bodies — nested functions are
+            // a GNU extension and are not part of any public C surface.
+            return;
+        }
+        "declaration" => {
+            // A `declaration` carries a function prototype only when its
+            // declarator (after unwrapping any pointer wrapper) is a
+            // `function_declarator`. Plain `int x;` declarations and
+            // `struct __attribute__((__packed__)) sdshdr5 {...};` shapes
+            // do NOT match this guard.
+            if declaration_is_function_prototype(node) {
+                if let Some(entry) =
+                    build_c_api_entry(node, source, module_path, relative_path)
+                {
+                    apis.push(entry);
+                }
+                // Don't recurse — children carry only declarator/type pieces.
+                return;
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_c_header_apis(&child, source, module_path, relative_path, apis);
+    }
+}
+
+/// Returns `true` when a `declaration` node carries a function
+/// prototype (declarator is a `function_declarator`, possibly wrapped in
+/// a `pointer_declarator`). Skips object declarations, `typedef`s,
+/// `struct`/`enum`/`union` definitions, and attribute-only lines.
+fn declaration_is_function_prototype(node: &Node) -> bool {
+    let Some(declarator) = node.child_by_field_name("declarator") else {
+        return false;
+    };
+    contains_function_declarator(&declarator)
+}
+
+fn contains_function_declarator(node: &Node) -> bool {
+    if node.kind() == "function_declarator" {
+        return true;
+    }
+    // Unwrap one level of `pointer_declarator` (e.g. `int *foo(...)`).
+    if let Some(inner) = node.child_by_field_name("declarator") {
+        return contains_function_declarator(&inner);
+    }
+    false
+}
+
+fn build_c_api_entry(
+    node: &Node,
+    source: &[u8],
+    module_path: &str,
+    relative_path: &Path,
+) -> Option<ApiEntry> {
+    let declarator = node.child_by_field_name("declarator")?;
+    let func_decl = unwrap_function_declarator(&declarator)?;
+    let name_node = func_decl.child_by_field_name("declarator")?;
+    let name = c_declarator_name(&name_node, source)?;
+    if name.is_empty() {
         return None;
     }
 
-    let open = decl.find('(')?;
-    let close = decl.rfind(')')?;
-    let prefix = decl[..open].trim();
-    let params_src = decl[open + 1..close].trim();
-    let name = prefix
-        .split_whitespace()
-        .last()?
-        .trim_start_matches('*')
-        .to_string();
-
-    let return_type = prefix
-        .strip_suffix(&name)
-        .map(|s| s.trim().trim_end_matches('*').trim().to_string())
+    let params = c_param_names(&func_decl, source);
+    let return_type = node
+        .child_by_field_name("type")
+        .and_then(|n| n.utf8_text(source).ok())
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let params = if params_src.is_empty() || params_src == "void" {
-        Vec::new()
-    } else {
-        params_src
-            .split(',')
-            .map(|part| {
-                part.split_whitespace()
-                    .last()
-                    .unwrap_or(part)
-                    .trim_start_matches('*')
-                    .trim()
-                    .to_string()
-            })
-            .collect()
-    };
+    let params_vec: Vec<Param> = params
+        .into_iter()
+        .map(|name| Param {
+            name,
+            type_annotation: None,
+            default: None,
+            is_variadic: false,
+            is_keyword: false,
+        })
+        .collect();
 
-    Some((name, params, return_type))
+    let line = node.start_position().row + 1;
+
+    Some(ApiEntry {
+        qualified_name: format!("{}.{}", module_path, name),
+        kind: ApiKind::Function,
+        module: module_path.to_string(),
+        signature: Some(Signature {
+            params: params_vec.clone(),
+            return_type: return_type.clone(),
+            is_async: false,
+            is_generator: false,
+        }),
+        docstring: None,
+        example: Some(format!(
+            "{}({})",
+            name,
+            params_vec
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        triggers: extract_triggers(&name, None),
+        is_property: false,
+        return_type,
+        location: Some(Location {
+            file: relative_path.to_path_buf(),
+            line,
+            column: None,
+        }),
+    })
+}
+
+fn unwrap_function_declarator<'tree>(node: &Node<'tree>) -> Option<Node<'tree>> {
+    match node.kind() {
+        "function_declarator" => Some(*node),
+        // `pointer_declarator { declarator: function_declarator { ... } }`
+        _ => node
+            .child_by_field_name("declarator")
+            .and_then(|inner| unwrap_function_declarator(&inner)),
+    }
+}
+
+fn c_declarator_name(node: &Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => node.utf8_text(source).ok().map(|s| s.to_string()),
+        "pointer_declarator" | "parenthesized_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|inner| c_declarator_name(&inner, source)),
+        // Some C grammars emit `field_identifier` for nested cases; harmless to handle.
+        "field_identifier" => node.utf8_text(source).ok().map(|s| s.to_string()),
+        _ => {
+            // Fallback: scan children for an identifier.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(name) = c_declarator_name(&child, source) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn c_param_names(func_decl: &Node, source: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(params) = func_decl.child_by_field_name("parameters") else {
+        return out;
+    };
+    let mut cursor = params.walk();
+    for child in params.children(&mut cursor) {
+        if child.kind() == "parameter_declaration" {
+            if let Some(decl) = child.child_by_field_name("declarator") {
+                if let Some(name) = c_declarator_name(&decl, source) {
+                    if !name.is_empty() {
+                        out.push(name);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn extract_from_c_source_file(
