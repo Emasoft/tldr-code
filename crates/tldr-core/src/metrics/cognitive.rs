@@ -711,6 +711,8 @@ impl<'a> CognitiveCalculator<'a> {
             "if_statement"
                 | "for_statement"
                 | "for_in_statement"
+                // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101) Java for-each.
+                | "enhanced_for_statement"
                 | "while_statement"
                 | "try_statement"
                 | "with_statement"
@@ -892,6 +894,8 @@ impl<'a> CognitiveCalculator<'a> {
             "elif_clause" => Some((1, "elif")),
             // for/while add +1 base + nesting
             "for_statement" | "for_in_statement" => Some((1, "for")),
+            // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101) Java for-each.
+            "enhanced_for_statement" => Some((1, "for")),
             "while_statement" => Some((1, "while")),
             // pattern-match-arm-undercount-v1: Rust/Scala/Kotlin/OCaml
             // expose loops as `*_expression` rather than `*_statement`.
@@ -1128,6 +1132,8 @@ impl<'a> CognitiveCalculator<'a> {
         match kind {
             "if_statement" | "if_expression" | "elif_clause" => self.cyclomatic += 1,
             "for_statement" | "for_in_statement" | "while_statement" => self.cyclomatic += 1,
+            // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101) Java for-each.
+            "enhanced_for_statement" => self.cyclomatic += 1,
             "except_clause" | "catch_clause" | "except_handler" => self.cyclomatic += 1,
             "case_clause" | "match_arm" | "switch_case" => self.cyclomatic += 1,
             "conditional_expression" | "ternary_expression" => self.cyclomatic += 1,

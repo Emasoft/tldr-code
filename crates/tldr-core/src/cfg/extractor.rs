@@ -117,6 +117,8 @@ fn is_control_flow_node(kind: &str) -> bool {
             | "for_statement"
             | "for_in_statement"
             | "for_expression"
+            // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101) Java for-each.
+            | "enhanced_for_statement"
             | "while_statement"
             | "while_expression"
             | "loop_expression"
@@ -412,6 +414,15 @@ impl<'a> CfgBuilder<'a> {
             "for_statement" | "for_in_statement" | "for_expression" => {
                 self.process_for_loop(node, depth)?
             }
+            // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101): Java
+            // for-each form `for (T x : xs) { ... }` parses as
+            // `enhanced_for_statement` (distinct from `for_statement`,
+            // which is the classical C-style three-part form). Iter-2
+            // audit `java.md` "Layer probe: CFG" showed sumEven reporting
+            // `has_loops:false` because this node had no CFG handler.
+            // Route it through the same `process_for_loop` handler —
+            // the `body` field lookup works identically.
+            "enhanced_for_statement" => self.process_for_loop(node, depth)?,
             "while_statement" | "while_expression" => self.process_while_loop(node, depth)?,
             "loop_expression" => self.process_loop_expression(node, depth)?,
             "try_statement" => self.process_try_statement(node, depth)?,
@@ -431,7 +442,25 @@ impl<'a> CfgBuilder<'a> {
             // (cfg-per-lang-decision-edges-v1 M-103) Swift-specific control flow.
             "guard_statement" => self.process_swift_guard(node, depth)?,
             "do_statement" => self.process_swift_do_catch(node, depth)?,
-            "switch_statement" => self.process_swift_switch(node, depth)?,
+            "switch_statement" => {
+                // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101): C and
+                // C++ both spell their switch construct `switch_statement`,
+                // with `case_statement` children directly under the
+                // `body: compound_statement`. Swift also uses
+                // `switch_statement` but with `switch_entry` children and
+                // an `expr` scrutinee field. Gate by language so each grammar
+                // gets its own per-case block emission. Pre-fix the Swift
+                // handler ran on every `switch_statement` regardless of
+                // language but only recognised `switch_entry`, so on C the
+                // switch produced one branch+join block pair with NO
+                // per-case blocks (iter-2 audit cell c21 `sdsIncrLen`:
+                // `num_blocks: 2, num_edges: 0`).
+                match self.language {
+                    Language::Swift => self.process_swift_switch(node, depth)?,
+                    Language::C | Language::Cpp => self.process_c_switch(node, depth)?,
+                    _ => self.process_swift_switch(node, depth)?,
+                }
+            }
             // Rust uses _expression variants (return/break/continue are expressions)
             "return_statement" | "return_expression" => {
                 self.process_return_statement(node, start_line, end_line)?
@@ -1683,6 +1712,158 @@ impl<'a> CfgBuilder<'a> {
             }
         }
         if entry_count == 0 {
+            self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// (cfg-c-java-scala-control-flow-v1 v0.4.2 M-101) Process a C / C++
+    /// `switch_statement`. Pre-fix the Swift handler ran on every
+    /// `switch_statement` regardless of language but only knew about Swift's
+    /// `switch_entry` arm-kind, so C switches collapsed to one branch+join
+    /// block pair with zero per-case decision edges (iter-2 audit cells
+    /// c21/c47 — `sdsIncrLen` `num_blocks: 2, num_edges: 0`).
+    ///
+    /// Grammar shape (verified via `cargo run --example dump_ast -- c …`):
+    ///
+    /// ```text
+    /// switch_statement
+    ///   switch
+    ///   condition: parenthesized_expression
+    ///   body: compound_statement
+    ///     {
+    ///     case_statement       ← 1..N (each carries its case label + body)
+    ///       case | default
+    ///       value: <literal>   (absent on default)
+    ///       :
+    ///       <statements…>      (the case body, may include break_statement)
+    ///     }
+    /// ```
+    ///
+    /// Strategy: mirror `process_swift_switch` — create a branch block
+    /// (the dispatch) and a join block (the post-switch successor), then
+    /// for each `case_statement` create an arm block, wire a True/False
+    /// decision edge from the branch (True for the first arm,
+    /// False for subsequent — same convention as Swift), recurse into the
+    /// case body, and tie a fall-through edge to the join block unless
+    /// the case body itself terminated control (`break_statement` ->
+    /// loop_exit_blocks, `return_statement` -> exit_blocks).
+    fn process_c_switch(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let scrutinee = node.child_by_field_name("condition").map(|n| {
+            n.utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        // Use a sentinel so we can still emit the synthetic join edge when
+        // the switch body is empty. The break statements emitted inside
+        // case bodies redirect to a synthetic loop-exit block (so the
+        // back-edge guards in process_for/while don't fire), but for a
+        // switch there's no surrounding loop — `break` is the natural
+        // case terminator and should fall through to the join block
+        // we created above. We handle that by post-processing: after
+        // each case body, regardless of whether `current_block_id` is in
+        // `loop_exit_blocks`, we wire an Unconditional edge to the join
+        // block (the loop_exit_blocks set is purely a marker that the
+        // path's local control flow ended in a break-style exit, not a
+        // signal to skip the join edge).
+        let body = node.child_by_field_name("body");
+        let mut case_count = 0usize;
+        if let Some(body_node) = body {
+            let mut cursor = body_node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "case_statement" {
+                        let c_start = child.start_position().row as u32 + 1;
+                        let c_end = child.end_position().row as u32 + 1;
+                        let arm_block = self.new_block(BlockType::Body, c_start, c_end);
+                        let edge_type = if case_count == 0 {
+                            EdgeType::True
+                        } else {
+                            EdgeType::False
+                        };
+                        self.add_edge(branch_block, arm_block, edge_type, scrutinee.clone());
+
+                        // Walk the case body — `case_statement` children are
+                        // the `case`/`default` keyword, the optional value
+                        // literal, the `:` token, and then the statements
+                        // making up the case body. We dispatch every
+                        // non-token child through `process_statement` so
+                        // break_statement / return_statement are honoured.
+                        self.current_block_id = arm_block;
+                        let mut case_cursor = child.walk();
+                        if case_cursor.goto_first_child() {
+                            loop {
+                                let case_child = case_cursor.node();
+                                let ck = case_child.kind();
+                                // Skip the label tokens — they carry no
+                                // control-flow weight.
+                                if ck != "case"
+                                    && ck != "default"
+                                    && ck != ":"
+                                    && !case_child.is_extra()
+                                    && case_child.is_named()
+                                    // The value literal (e.g. `1`) of a
+                                    // numeric case is named but should
+                                    // not be treated as a statement.
+                                    && ck != "number_literal"
+                                    && ck != "identifier"
+                                    && ck != "char_literal"
+                                    && ck != "string_literal"
+                                {
+                                    self.process_statement(case_child, depth + 1)?;
+                                }
+                                if !case_cursor.goto_next_sibling() {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Wire fall-through edge to join. The break/return
+                        // already redirected `current_block_id` to a
+                        // synthetic loop-exit / exit block; we still want
+                        // the case block itself to flow to the join in the
+                        // absence of break (C fall-through). Conservative
+                        // approximation: if the current block is in
+                        // exit_blocks (return-terminated) skip the edge;
+                        // otherwise emit it. `loop_exit_blocks` here
+                        // signals break-terminated case (the
+                        // process_break_statement helper creates a synthetic
+                        // continue block AND pushes it into
+                        // loop_exit_blocks) — that's exactly what we want
+                        // tied to the join.
+                        if !self.exit_blocks.contains(&self.current_block_id) {
+                            self.add_edge(
+                                self.current_block_id,
+                                join_block,
+                                EdgeType::Unconditional,
+                                None,
+                            );
+                        }
+                        case_count += 1;
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        if case_count == 0 {
             self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
         }
 

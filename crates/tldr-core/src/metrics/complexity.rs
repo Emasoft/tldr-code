@@ -292,6 +292,8 @@ impl<'a> ComplexityCalculator<'a> {
                 | "else_clause"
                 | "for_statement"
                 | "for_in_statement"
+                // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101) Java for-each.
+                | "enhanced_for_statement"
                 | "while_statement"
                 | "try_statement"
                 | "except_clause"
@@ -374,6 +376,32 @@ impl<'a> ComplexityCalculator<'a> {
                 self.cyclomatic += 1;
             }
             "for_statement" | "for_in_statement" | "while_statement" => {
+                self.cyclomatic += 1;
+            }
+            // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101): Java's
+            // `for (T x : xs) { ... }` parses as `enhanced_for_statement`,
+            // a distinct kind from the classical 3-part `for_statement`.
+            // Iter-2 audit `java.md` "Layer probe: CFG" showed sumEven
+            // reporting cyclomatic=2 (instead of >=3 for entry+for+if).
+            "enhanced_for_statement" => {
+                self.cyclomatic += 1;
+            }
+            // cfg-c-java-scala-control-flow-v1 (v0.4.2 M-101): Scala,
+            // Rust, OCaml and Kotlin all expose loop constructs as
+            // `*_expression` rather than `*_statement`. Iter-2 audit
+            // `scala.md` cell c09 showed `Loops.sum` (a plain
+            // while-loop) reporting cyclomatic=1 — the back-edge is
+            // emitted by the CFG but never credited in cyclomatic.
+            // Mirror the cognitive.rs pattern (see
+            // `cognitive::count_cyclomatic_increment` line 1163) — gate
+            // on the expression-oriented languages so we don't
+            // double-count token leaves in C-shaped grammars.
+            "for_expression" | "while_expression" | "loop_expression"
+                if matches!(
+                    self.language,
+                    Language::Scala | Language::Rust | Language::Ocaml | Language::Kotlin
+                ) =>
+            {
                 self.cyclomatic += 1;
             }
             "except_clause" | "catch_clause" | "except_handler" => {
