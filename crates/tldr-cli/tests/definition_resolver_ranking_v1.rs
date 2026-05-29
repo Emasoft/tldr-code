@@ -9,10 +9,10 @@
 //!
 //!   - cpp c45 — `tldr definition --symbol XMLDocument
 //!     /tmp/repos/cpp-tinyxml2/tinyxml2.h` returned the forward
-//!     declaration `class XMLDocument;` at line 116 instead of the
+//!     declaration `class XMLDocument;` at line 113 instead of the
 //!     real class body `class TINYXML2_LIB XMLDocument : public XMLNode
-//!     { ... }` at line 1718. The pre-fix output also tolerated the
-//!     `friend class XMLDocument;` declaration at line 994 being picked
+//!     { ... }` at line 1715. The pre-fix output also tolerated the
+//!     `friend class XMLDocument;` declaration at line 668 being picked
 //!     under earlier handler variants (`kind: "variable"` in the
 //!     reviewer's audit JSON). The post-fix policy: prefer
 //!     class_specifier nodes carrying a `field_declaration_list` body
@@ -80,13 +80,15 @@ fn parse_json(out: &str) -> serde_json::Value {
 
 const CPP_FILE: &str = "/tmp/repos/cpp-tinyxml2/tinyxml2.h";
 const CPP_SYMBOL: &str = "XMLDocument";
-// The forward declaration sits at line 116 (`class XMLDocument;`); the
-// `friend class XMLDocument;` declarations are at 671/994/1034/1073/1108/
-// 1267; the real class body — the one the user wants — begins at line
-// 1718 (`class TINYXML2_LIB XMLDocument : public XMLNode { ... }`).
-const CPP_FORWARD_LINE: u64 = 116;
-const CPP_FRIEND_LINE: u64 = 994;
-const CPP_REAL_BODY_LINE: u64 = 1718;
+// The forward declaration sits at line 113 (`class XMLDocument;`); the
+// `friend class XMLDocument;` declarations are at 668/991/1031/1070/1105/
+// 1264; the real class body — the one the user wants — begins at line
+// 1715 (`class TINYXML2_LIB XMLDocument : public XMLNode { ... }`).
+// (corpus-drift-fix-v1: tinyxml2.h shifted 3 lines upstream; constants
+// updated from 116/994/1718 to 113/668/1715 to match current shallow clone.)
+const CPP_FORWARD_LINE: u64 = 113;
+const CPP_FRIEND_LINE: u64 = 668;
+const CPP_REAL_BODY_LINE: u64 = 1715;
 
 const ELIXIR_FILE: &str = "/tmp/repos/elixir-plug/lib/plug/conn.ex";
 const ELIXIR_SYMBOL: &str = "send_resp";
