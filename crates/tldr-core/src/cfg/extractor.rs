@@ -183,6 +183,30 @@ fn find_child_by_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     None
 }
 
+/// cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): Kotlin `if_expression` has
+/// no named "consequence" field (node-types.json verified). The consequence body
+/// is the first named child AFTER the "condition" field's end position.
+/// Returns the consequence node, or `None` if not found.
+fn kotlin_if_consequence(node: Node<'_>) -> Option<Node<'_>> {
+    let cond_end = node.child_by_field_name("condition")?.end_position();
+    let mut cursor = node.walk();
+    let mut children = node.named_children(&mut cursor);
+    children.find(|c| c.start_position() > cond_end)
+}
+
+/// cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): Kotlin `if_expression` has
+/// no named "alternative" field. The alternative body is the SECOND named child
+/// after the "condition" field (i.e. after skipping the consequence).
+fn kotlin_if_alternative(node: Node<'_>) -> Option<Node<'_>> {
+    let cond_end = node.child_by_field_name("condition")?.end_position();
+    let mut cursor = node.walk();
+    let mut after_cond = node
+        .named_children(&mut cursor)
+        .filter(|c| c.start_position() > cond_end);
+    after_cond.next()?; // skip consequence
+    after_cond.next() // take alternative
+}
+
 /// Build CFG for a function node
 fn build_cfg_for_function(
     func_node: Node,
@@ -331,6 +355,17 @@ impl<'a> CfgBuilder<'a> {
             return self.process_statement(node, depth);
         }
 
+        // cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): Kotlin (tree-sitter-kotlin-ng)
+        // can use a bare leaf node as the consequence of an `if_expression`:
+        //   `if (x < 0) continue`  →  consequence field = `identifier [continue]`
+        // When `process_block` is called with a leaf node (no children), iterating
+        // its children produces nothing. Instead, dispatch the leaf itself as a
+        // statement so the language-specific Kotlin guard in `process_statement`
+        // can recognise it.
+        if node.child_count() == 0 {
+            return self.process_statement(node, depth);
+        }
+
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
@@ -403,6 +438,30 @@ impl<'a> CfgBuilder<'a> {
                     if crate::metrics::complexity::is_ruby_loop_call(node, self.source) {
                         return self.process_ruby_loop_call(node, depth);
                     }
+                }
+                _ => {}
+            }
+        }
+
+        // cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): tree-sitter-kotlin-ng
+        // emits `continue` / `break` / `return` as bare `identifier` nodes (not
+        // `jump_expression` as the grammar spec suggests for newer versions).
+        // Verified by `kt_full_dump` example: `if (i == 0) { continue }` produces
+        // `block { identifier[continue] }`. Because `identifier` matches no arm in
+        // the generic `match kind` below, Kotlin continue/break/return are silently
+        // dropped. Gate on Kotlin-only to avoid false-matches in other languages
+        // where `continue` / `break` would be reserved keywords, not identifiers.
+        if matches!(self.language, Language::Kotlin) && kind == "identifier" {
+            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+            match text {
+                "continue" => {
+                    return self.process_continue_statement(node, start_line, end_line);
+                }
+                "break" => {
+                    return self.process_break_statement(node, start_line, end_line);
+                }
+                "return" => {
+                    return self.process_return_statement(node, start_line, end_line);
                 }
                 _ => {}
             }
@@ -578,12 +637,18 @@ impl<'a> CfgBuilder<'a> {
         // Create blocks for then and else branches
         // Standard languages use "consequence"/"alternative" field names
         // OCaml uses then_clause/else_clause child node types (no field names)
+        // cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): Kotlin `if_expression`
+        // has NO named "consequence" field — the body is an unnamed child after the
+        // closing `)` paren (node-types.json: only field is "condition").
+        // Fall back to scanning named children after the condition position.
         let consequence = node
             .child_by_field_name("consequence")
-            .or_else(|| find_child_by_kind(node, "then_clause"));
+            .or_else(|| find_child_by_kind(node, "then_clause"))
+            .or_else(|| kotlin_if_consequence(node));
         let alternative = node
             .child_by_field_name("alternative")
-            .or_else(|| find_child_by_kind(node, "else_clause"));
+            .or_else(|| find_child_by_kind(node, "else_clause"))
+            .or_else(|| kotlin_if_alternative(node));
 
         // Create join block for after the if
         let join_block = self.new_block(BlockType::Body, end_line, end_line);
@@ -1936,6 +2001,11 @@ impl<'a> CfgBuilder<'a> {
             EdgeType::Continue,
             None,
         );
+
+        // Track the continue block as a loop-exit so that subsequent
+        // back-edge / fallthrough guards do not synthesise spurious edges
+        // out of it. Mirrors `process_break_statement` (see #18). Fixes #61.
+        self.loop_exit_blocks.push(continue_block);
 
         self.current_block_id = continue_block;
         Ok(())
