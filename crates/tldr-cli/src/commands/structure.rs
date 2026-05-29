@@ -42,10 +42,25 @@ impl StructureArgs {
             anyhow::bail!("Path not found: {}", self.path.display());
         }
 
-        // Determine language (auto-detect from directory, default to Python)
-        let language = self
-            .lang
-            .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+        // Determine language. User-supplied `--lang` wins. Otherwise:
+        //   - For a single-file path, prefer the sibling-aware
+        //     `from_path_with_siblings` widening so a `.h` next to a
+        //     `.cpp` parses as C++ (otherwise the C grammar returns
+        //     macro-decorated classes as silent garbage — see
+        //     m040-cpp-macro-class-cross-pipeline-v1 / v0.4.2 M-110).
+        //   - For a directory path, defer to the existing
+        //     `from_directory` autodetector.
+        // Python remains the historic last-resort fallback for empty /
+        // unrecognised inputs.
+        let language = self.lang.unwrap_or_else(|| {
+            if self.path.is_file() {
+                Language::from_path_with_siblings(&self.path)
+                    .or_else(|| Language::from_directory(&self.path))
+                    .unwrap_or(Language::Python)
+            } else {
+                Language::from_directory(&self.path).unwrap_or(Language::Python)
+            }
+        });
 
         // Try daemon first for cached result
         if let Some(structure) = try_daemon_route::<CodeStructure>(

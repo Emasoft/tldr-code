@@ -5396,9 +5396,26 @@ fn extract_c_docstring(node: &Node, source: &str) -> Option<String> {
 
 fn extract_cpp_functions_detailed(node: &Node, source: &str, functions: &mut Vec<FunctionInfo>) {
     let mut cursor = node.walk();
+    let source_bytes = source.as_bytes();
 
     for child in node.children(&mut cursor) {
         if child.kind() == "function_definition" {
+            // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): a
+            // `function_definition` that is actually a macro-decorated
+            // class header (e.g. `class TINYXML2_LIB XMLDocument {…}`)
+            // is NOT a free function. Skipping it here prevents
+            // `XMLDocument` (a class) from polluting the free-function
+            // list AND prevents the body from being walked as a function
+            // body. The body is reached via `extract_cpp_classes_detailed`
+            // which recurses into the recovered body for nested classes.
+            if crate::ast::cpp_macro::is_macro_decorated_class(&child, source_bytes) {
+                // Body methods are emitted by `extract_cpp_classes_detailed`
+                // as `ClassInfo::methods`, not as free functions. Skip
+                // the body walk entirely to keep the free-function list
+                // disjoint from the method list (mirrors the
+                // `class_specifier` / `struct_specifier` skip below).
+                continue;
+            }
             // Only top-level functions (not inside class/struct bodies)
             if !is_inside_cpp_class(&child) {
                 let info = extract_cpp_function_info(&child, source, false);
@@ -5464,23 +5481,91 @@ fn is_inside_cpp_class(node: &Node) -> bool {
 
 fn extract_cpp_classes_detailed(node: &Node, source: &str, classes: &mut Vec<ClassInfo>) {
     let mut cursor = node.walk();
+    let source_bytes = source.as_bytes();
 
     for child in node.children(&mut cursor) {
-        if child.kind() == "class_specifier" || child.kind() == "struct_specifier" {
-            let info = extract_cpp_class_info(&child, source);
-            // Only add named classes/structs (skip anonymous)
-            if !info.name.is_empty() {
-                classes.push(info);
+        match child.kind() {
+            "class_specifier" | "struct_specifier" => {
+                // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110):
+                // skip the inner `class_specifier`/`struct_specifier`
+                // forward-decl shell produced by the macro-misparse
+                // (`class TINYXML2_LIB` with no `field_declaration_list`).
+                // Those shells emit the MACRO as their `name` field; the
+                // real class is recovered at the enclosing
+                // `function_definition` arm below.
+                let is_macro_shell = child.child_by_field_name("body").is_none()
+                    && matches!(
+                        child.parent().map(|p| p.kind()),
+                        Some("function_definition") | Some("declaration")
+                    );
+                if !is_macro_shell {
+                    let info = extract_cpp_class_info(&child, source);
+                    if !info.name.is_empty() {
+                        classes.push(info);
+                    }
+                }
             }
+            "function_definition" | "declaration" => {
+                // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110):
+                // recover the real class name from the
+                // `function_definition`/`declaration` produced by
+                // tree-sitter-cpp when it encounters an
+                // unrecognized-attribute-macro-prefixed class header
+                // (`class TINYXML2_LIB XMLDocument : public XMLNode {…}`).
+                if let Some((name, body)) =
+                    crate::ast::cpp_macro::macro_decorated_class_name_and_body(&child, source_bytes)
+                {
+                    let line_number = child.start_position().row as u32 + 1;
+                    let line_end = child.end_position().row as u32 + 1;
+                    let mut methods = Vec::new();
+                    extract_cpp_methods_from_body(&body, source, &mut methods);
+                    classes.push(ClassInfo {
+                        name,
+                        bases: Vec::new(),
+                        docstring: extract_c_docstring(&child, source),
+                        methods,
+                        fields: Vec::new(),
+                        decorators: Vec::new(),
+                        line_number,
+                        line_end,
+                    });
+                    // Recurse INTO the recovered body so inner classes
+                    // (e.g. tinyxml2's `class DynArray` nested under
+                    // `class TINYXML2_LIB StrPair { … class DynArray …}`)
+                    // are emitted too.
+                    extract_cpp_classes_detailed(&body, source, classes);
+                    continue;
+                }
+            }
+            _ => {}
         }
         extract_cpp_classes_detailed(&child, source, classes);
     }
 }
 
 fn extract_cpp_class_info(node: &Node, source: &str) -> ClassInfo {
+    // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): prefer the
+    // grammar's `name` field, but fall back to the first
+    // `type_identifier` child when that field is missing or empty.
+    // tree-sitter-cpp does NOT always expose `name` as a field on
+    // `class_specifier` (the same gap that drove the
+    // `extract_cpp_class_name` fallback in `extractor.rs::extract_cpp_classes`).
     let name = node
         .child_by_field_name("name")
         .map(|n| get_node_text(&n, source))
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_identifier" {
+                    let text = get_node_text(&child, source);
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            None
+        })
         .unwrap_or_default();
 
     let bases = extract_cpp_bases(node, source);

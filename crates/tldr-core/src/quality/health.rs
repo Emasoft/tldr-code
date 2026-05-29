@@ -717,11 +717,18 @@ pub fn run_health(
     // Step 2: Detect language if not specified (T3 mitigation; delegates to
     // the canonical `Language::from_path` / `Language::from_directory`
     // detectors — VAL-002).
+    //
+    // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): for a single
+    // file, use `from_path_with_siblings` so a `.h` next to a `.cpp` is
+    // routed through the cpp grammar. The plain `from_path` mapping
+    // `.h → C` causes `structure` (which uses the sibling widening) and
+    // `health` to disagree on cpp header files — breaking the M-016
+    // invariant pinned by `cpp_health_cohesion_agree_on_header_file`.
     let detected_language = match language {
         Some(l) => l,
         None => {
             if path.is_file() {
-                Language::from_path(path).ok_or_else(|| {
+                Language::from_path_with_siblings(path).ok_or_else(|| {
                     TldrError::UnsupportedLanguage(
                         path.extension()
                             .and_then(|e| e.to_str())

@@ -37,59 +37,16 @@ use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
-/// definition-resolver-ranking-v1 (v0.4.2 M-040): inspect a
-/// `function_definition` node and, if its children match the shape
-/// produced by tree-sitter-cpp when it encounters a class definition
-/// prefixed with an unrecognized attribute macro
-/// (e.g. `class TINYXML2_LIB XMLDocument : public XMLNode { ... }`),
-/// return the trailing class identifier text.
-///
-/// The recognised pattern (in order of named children, ignoring trivia):
-///
-///   1. `class_specifier` or `struct_specifier` — carries `class MACRO`
-///      and is itself a parser-emitted forward-decl shape (no
-///      `field_declaration_list` child).
-///   2. `identifier` — the real class name (the one this fallback
-///      returns).
-///   3. (optional) one or more `ERROR` nodes carrying the rest of the
-///      class header (e.g. `: public XMLNode`).
-///   4. `compound_statement` — the class body.
-///
-/// Returns `None` when the children do not match this signature so the
-/// caller falls back to its normal `get_function_name` resolution.
+// definition-resolver-ranking-v1 (v0.4.2 M-040) / Wave-17c M-110: the
+// macro-decorated class recovery helper was promoted to the shared
+// `crate::ast::cpp_macro` module so the `structure`, `extract`,
+// `definition`, and `cohesion` pipelines all consume the SAME single
+// source of truth and agree on the recovered class name. The
+// `extract_macro_decorated_class_name` shim below preserves the
+// historical local name for the in-file call sites at lines 803/898 of
+// this file.
 fn extract_macro_decorated_class_name(node: &Node, source: &[u8]) -> Option<String> {
-    let mut saw_class_specifier_without_body = false;
-    let mut class_name: Option<String> = None;
-    let mut saw_compound_statement = false;
-
-    for i in 0..node.child_count() {
-        let Some(child) = node.child(i) else { continue };
-        match child.kind() {
-            "class_specifier" | "struct_specifier" => {
-                // Must be the parser's forward-decl shape (no body).
-                let has_body = (0..child.child_count())
-                    .filter_map(|j| child.child(j))
-                    .any(|c| c.kind() == "field_declaration_list");
-                if has_body {
-                    return None;
-                }
-                saw_class_specifier_without_body = true;
-            }
-            "identifier" if saw_class_specifier_without_body && class_name.is_none() => {
-                class_name = Some(get_node_text(&child, source).to_string());
-            }
-            "compound_statement" => {
-                saw_compound_statement = true;
-            }
-            _ => {}
-        }
-    }
-
-    if saw_class_specifier_without_body && class_name.is_some() && saw_compound_statement {
-        class_name
-    } else {
-        None
-    }
+    crate::ast::cpp_macro::macro_decorated_class_name(node, source)
 }
 
 // =============================================================================

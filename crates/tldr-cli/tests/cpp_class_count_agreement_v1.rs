@@ -286,16 +286,23 @@ fn cpp_health_cohesion_agree_on_header_file() {
         health_classes, structure_classes
     );
 
-    // Cohesion walks nested classes that structure's single-file
-    // top-level emitter skips, so on `.h` files cohesion is actually
-    // GREATER than structure. Pin that direction explicitly to
-    // document the deferred "structure single-file nested-class
-    // emission" defect (separate from M-016 scope).
+    // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): after
+    // `structure` started recovering macro-decorated classes in single-
+    // file mode AND recursing into the recovered bodies for nested
+    // classes (e.g. tinyxml2's `class DynArray` nested under `class
+    // TINYXML2_LIB StrPair`), `structure` is now the BIGGER surface on
+    // `.h` files because it ALSO emits forward declarations and enums
+    // alongside the class bodies that cohesion sees. The previously
+    // recorded direction (`cohesion >= structure`) documented the
+    // deferred "structure single-file nested-class emission" defect —
+    // now closed by M-110. Pin the new direction (`structure >=
+    // cohesion`) which mirrors TEST 4's directory-mode pin.
     assert!(
-        cohesion_classes >= structure_classes,
-        "cohesion on .h must be >= structure (nested classes); got \
-         cohesion={} structure={}",
-        cohesion_classes, structure_classes
+        structure_classes >= cohesion_classes,
+        "post-M-110: structure on .h must be >= cohesion (structure \
+         also emits forward declarations and enums that cohesion's \
+         body-only walker skips); got structure={} cohesion={}",
+        structure_classes, cohesion_classes
     );
 }
 

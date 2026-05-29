@@ -988,9 +988,18 @@ fn extract_cpp_enums(node: &Node, source: &str, enums: &mut Vec<String>) {
 
 fn extract_cpp_functions(node: &Node, source: &str, functions: &mut Vec<String>) {
     let mut cursor = node.walk();
+    let source_bytes = source.as_bytes();
 
     for child in node.children(&mut cursor) {
         if child.kind() == "function_definition" {
+            // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): a
+            // `function_definition` that is actually a macro-decorated
+            // class header (`class TINYXML2_LIB XMLDocument {…}`) is a
+            // class, not a free function. Skip — methods inside are
+            // emitted via `extract_cpp_classes` / `extract_cpp_methods`.
+            if super::cpp_macro::is_macro_decorated_class(&child, source_bytes) {
+                continue;
+            }
             // Only count as free function if NOT inside a class/struct body
             if !is_inside_cpp_class(&child) {
                 if let Some(declarator) = child.child_by_field_name("declarator") {
@@ -2045,6 +2054,55 @@ fn collect_definitions(
 ) {
     let kind = node.kind();
 
+    // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): cpp macro-
+    // decorated class recovery. tree-sitter-cpp misparses
+    // `class MACRO Name : public Base { ... };` as a `function_definition`
+    // whose children are `class_specifier(class MACRO)` +
+    // `identifier(Name)` + (optional) `ERROR(': public Base')` +
+    // `compound_statement(body)`. Without recovery,
+    //   - `classify_definition_node("function_definition") = (true, false)`
+    //     emits the symbol as `kind:"function"` with name `Name`
+    //     (the declarator identifier).
+    //   - the inner bodyless `class_specifier` is then emitted as
+    //     `kind:"class"` with name = the MACRO (from `child_by_field_name("name")`).
+    // The dual emission produces the iter-2 audit's L-1 drift: same line
+    // reports `XMLDocument` as function AND `TINYXML2_LIB` as class.
+    // Recover both pieces here.
+    if matches!(language, Language::Cpp | Language::C) && kind == "function_definition" {
+        if let Some(class_name) =
+            super::cpp_macro::macro_decorated_class_name(&node, source.as_bytes())
+        {
+            let line_start = node.start_position().row as u32 + 1;
+            let line_end = node.end_position().row as u32 + 1;
+            let signature = extract_def_signature(node, source);
+            definitions.push(DefinitionInfo {
+                name: class_name,
+                kind: "class".to_string(),
+                line_start,
+                line_end,
+                signature,
+            });
+            // Recurse INTO children so methods inside the body and any
+            // nested classes are still collected, but skip the bodyless
+            // inner `class_specifier` shell whose `name` field carries
+            // the MACRO identifier (would otherwise emit a phantom
+            // `kind:"class"` for the macro). See `extract_cpp_classes_detailed`
+            // (`ast/extract.rs`) for the mirroring suppression.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let is_macro_shell = matches!(
+                    child.kind(),
+                    "class_specifier" | "struct_specifier"
+                ) && child.child_by_field_name("body").is_none();
+                if is_macro_shell {
+                    continue;
+                }
+                collect_definitions(child, source, language, definitions);
+            }
+            return;
+        }
+    }
+
     // Elixir: def/defp/defmodule are macro calls parsed as "call" nodes.
     // Handle them specially before the generic path.
     if language == Language::Elixir && kind == "call" {
@@ -2969,6 +3027,22 @@ fn is_inside_class_or_impl(node: &Node, language: Language) -> bool {
                 | "object_declaration" // Kotlin
         ) || (kind == "module" && module_is_class)
         // Ruby module
+        {
+            return true;
+        }
+        // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110): cpp
+        // macro-decorated class bodies live in a `compound_statement`
+        // child of a `function_definition` (the tree-sitter-cpp
+        // misparse `class TINYXML2_LIB Name { ... }`). The intervening
+        // shapes are not in the canonical class-scope list above, so
+        // `is_inside_class_or_impl` would miss them and classify
+        // member methods as `kind:"function"`. Recognise the misparse
+        // parent purely from AST structure (no source bytes needed)
+        // so inner methods are tagged `kind:"method"` — matching the
+        // class entry emitted by `collect_definitions` at the misparse
+        // node.
+        if matches!(language, Language::Cpp | Language::C)
+            && super::cpp_macro::is_macro_decorated_class_node(&parent)
         {
             return true;
         }
