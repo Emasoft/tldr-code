@@ -1128,7 +1128,7 @@ fn extract_function_infos_for_debt(
         Language::TypeScript | Language::JavaScript => {
             extract_ts_functions_for_debt(root, source, &mut functions, None, 0)
         }
-        Language::Go => extract_go_functions_for_debt(root, source, &mut functions),
+        Language::Go => extract_go_functions_for_debt(root, source, &mut functions, 0),
         Language::Rust => extract_rust_functions_for_debt(root, source, &mut functions, None, 0),
         Language::Java => extract_java_functions_for_debt(root, source, &mut functions, None, 0),
         // debt-sqale-wiring-v1 (v0.4.2 M-015): for the remaining 13
@@ -1501,11 +1501,24 @@ fn extract_ts_params_for_debt(node: &Node, source: &str) -> Vec<String> {
 }
 
 /// Extract Go functions for debt analysis
+///
+/// Recursion bounded by `DEBT_MAX_AST_DEPTH`. infra-tail-issues-v1
+/// (#53, v0.4.2 M-108): pre-fix this was the lone sibling extractor
+/// without a depth guard — every other language extractor
+/// (Python L1280, TS L1408, Rust L1607, Java L1709, universal L1176)
+/// already had it. Feeding a Go file with pathologically deep nested
+/// blocks (or a non-Go file under a wrong-language override) caused
+/// unbounded recursion at line 1519 and a stack overflow that aborted
+/// the entire `tldr debt` process via SIGABRT.
 fn extract_go_functions_for_debt(
     node: Node,
     source: &str,
     functions: &mut Vec<FunctionInfoForDebt>,
+    depth: usize,
 ) {
+    if depth > DEBT_MAX_AST_DEPTH {
+        return;
+    }
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
@@ -1516,7 +1529,7 @@ fn extract_go_functions_for_debt(
                 }
             }
             _ => {
-                extract_go_functions_for_debt(child, source, functions);
+                extract_go_functions_for_debt(child, source, functions, depth + 1);
             }
         }
     }

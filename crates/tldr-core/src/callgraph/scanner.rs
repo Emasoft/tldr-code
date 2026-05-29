@@ -401,9 +401,25 @@ pub fn scan_project_files(
             }
 
             // Check .tldrignore patterns
+            //
+            // infra-tail-issues-v1 (#63, v0.4.2 M-108): use
+            // `matched_path_or_any_parents` so directory patterns like
+            // `corpus/` correctly filter every file nested under
+            // `corpus/` (e.g. `corpus/vendored.py`,
+            // `corpus/sub/deep.py`). Pre-fix the call was `matched(...)`
+            // which only matched the `corpus` segment itself, never
+            // descendants — so a `.tldrignore` containing `corpus/`
+            // had ZERO effect on `tldr calls` / `smells` / `health` /
+            // any other consumer of `scan_project_files`, while the
+            // sibling `filter_tldrignored` (L562 below) already used
+            // the parent-aware matcher correctly. Bringing this call
+            // in line closes that cross-pipeline drift.
             if let Some(ref gi) = gitignore {
                 let relative_path = path.strip_prefix(root).unwrap_or(path);
-                if gi.matched(relative_path, false).is_ignore() {
+                if gi
+                    .matched_path_or_any_parents(relative_path, false)
+                    .is_ignore()
+                {
                     continue;
                 }
             }

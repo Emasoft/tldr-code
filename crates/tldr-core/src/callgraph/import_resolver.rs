@@ -641,6 +641,24 @@ impl<'a> ImportResolver<'a> {
     /// Looks for patterns like:
     /// - `__all__ = ['Foo', 'Bar']`
     /// - `__all__ = ["Foo", "Bar"]`
+    /// - Multi-line:
+    ///   ```ignore
+    ///   __all__ = [
+    ///       'Foo',
+    ///       'Bar',
+    ///   ]
+    ///   ```
+    ///
+    /// infra-tail-issues-v1 (#58, v0.4.2 M-108): pre-fix this parser
+    /// required `[` and `]` on the same trimmed line, so a multi-line
+    /// `__all__` literal — the canonical Python convention when
+    /// exporting more than a handful of names — produced an empty
+    /// list and the wildcard import resolver dropped every name. The
+    /// `interface` AST-based parser already handled this correctly,
+    /// causing cross-pipeline drift. The new implementation extracts
+    /// the full bracket span (single- or multi-line) and uses the
+    /// shared `extract_dunder_all_names` helper that
+    /// `parse_dunder_all` also relies on.
     fn parse_all(&self, module_file: &Path) -> Vec<String> {
         // Read the file
         let content = match std::fs::read_to_string(module_file) {
@@ -648,35 +666,7 @@ impl<'a> ImportResolver<'a> {
             Err(_) => return vec![],
         };
 
-        // Simple regex-free parsing for __all__ = [...]
-        // Look for __all__ = [
-        let mut names = Vec::new();
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("__all__") && trimmed.contains('=') {
-                // Extract the list part
-                if let Some(bracket_start) = trimmed.find('[') {
-                    if let Some(bracket_end) = trimmed.find(']') {
-                        let list_content = &trimmed[bracket_start + 1..bracket_end];
-                        // Parse quoted strings
-                        for item in list_content.split(',') {
-                            let item = item.trim();
-                            // Remove quotes
-                            let name = item
-                                .trim_matches(|c| c == '"' || c == '\'' || c == ' ')
-                                .to_string();
-                            if !name.is_empty() {
-                                names.push(name);
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-
-        names
+        extract_dunder_all_names_vec(&content)
     }
 
     /// Classify an import into its kind.
@@ -1016,32 +1006,204 @@ impl<'a> ReExportTracer<'a> {
 }
 
 fn parse_dunder_all(content: &str) -> HashSet<String> {
-    let mut exports = HashSet::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("__all__") {
+    // infra-tail-issues-v1 (#58, v0.4.2 M-108): rewritten to use the
+    // shared multi-line extractor. Pre-fix this scanned line-by-line
+    // and required `[` and `]` to coexist on the same trimmed line, so
+    // a multi-line `__all__` literal silently produced an empty
+    // export set, which made the re-export tracer (`parse_init_reexports`)
+    // drop every `from .X import Y` name that should have been
+    // filtered through `__all__`.
+    extract_dunder_all_names_vec(content).into_iter().collect()
+}
+
+/// Extract names declared in a Python `__all__` assignment, supporting
+/// both single-line (`__all__ = ['a', 'b']`) and multi-line
+/// (`__all__ = [\n    'a',\n    'b',\n]`) literals using either `[]`
+/// or `()` as the container.
+///
+/// Returns a Vec to preserve declaration order (callers that need a
+/// set wrap via `.into_iter().collect()`).
+///
+/// Algorithm:
+///   1. Find the start of an `__all__` assignment via a textual scan.
+///   2. Locate the opening bracket (`[` or `(`) at or after the `=`.
+///   3. Walk forward keeping a bracket-depth counter, ignoring
+///      brackets inside string literals (single or double quoted,
+///      including escapes).
+///   4. Split the captured span on `,` and strip surrounding quotes.
+///
+/// This is a deliberately tolerant text parser (not an AST walker) so
+/// it works without pulling tree-sitter into the resolver. It matches
+/// the textual heuristics already used elsewhere in this module for
+/// `from .X import Y` parsing (`parse_init_reexports` L897), keeping
+/// the layer architecture consistent.
+fn extract_dunder_all_names_vec(content: &str) -> Vec<String> {
+    let bytes = content.as_bytes();
+    let mut search_start = 0usize;
+    let mut names: Vec<String> = Vec::new();
+
+    loop {
+        let rest = match content.get(search_start..) {
+            Some(r) => r,
+            None => break,
+        };
+        let rel = match rest.find("__all__") {
+            Some(idx) => idx,
+            None => break,
+        };
+        let dunder_at = search_start + rel;
+
+        // Cheap sanity: __all__ must start at line head (modulo
+        // whitespace) — avoid matching the substring inside a comment
+        // or string. Walk back to the previous newline.
+        let line_start = content[..dunder_at]
+            .rfind('\n')
+            .map(|nl| nl + 1)
+            .unwrap_or(0);
+        let prefix = &content[line_start..dunder_at];
+        if !prefix.chars().all(|c| c.is_whitespace()) {
+            search_start = dunder_at + "__all__".len();
             continue;
         }
-        let (_, rhs) = match trimmed.split_once('=') {
-            Some(parts) => parts,
-            None => continue,
+
+        // Find `=` after `__all__`.
+        let after_dunder = dunder_at + "__all__".len();
+        let eq_rel = match content[after_dunder..].find('=') {
+            Some(idx) => idx,
+            None => break,
         };
-        let rhs = rhs.trim();
-        let inner = if (rhs.starts_with('[') && rhs.ends_with(']'))
-            || (rhs.starts_with('(') && rhs.ends_with(')'))
-        {
-            &rhs[1..rhs.len() - 1]
+        let eq_at = after_dunder + eq_rel;
+
+        // Find opening bracket `[` or `(` after `=`.
+        let mut open_at: Option<usize> = None;
+        let mut open_kind: u8 = 0;
+        for (i, &b) in bytes.iter().enumerate().skip(eq_at + 1) {
+            match b {
+                b' ' | b'\t' | b'\r' | b'\n' => continue,
+                b'[' => {
+                    open_at = Some(i);
+                    open_kind = b'[';
+                    break;
+                }
+                b'(' => {
+                    open_at = Some(i);
+                    open_kind = b'(';
+                    break;
+                }
+                _ => break,
+            }
+        }
+        let open_at = match open_at {
+            Some(p) => p,
+            None => {
+                search_start = eq_at + 1;
+                continue;
+            }
+        };
+        let close_kind = if open_kind == b'[' { b']' } else { b')' };
+
+        // Bracket-balanced walk to find the matching close, ignoring
+        // brackets inside string literals.
+        let mut close_at: Option<usize> = None;
+        let mut depth: i32 = 1;
+        let mut i = open_at + 1;
+        let mut in_str: Option<u8> = None;
+        let mut escape = false;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if let Some(quote) = in_str {
+                if escape {
+                    escape = false;
+                } else if b == b'\\' {
+                    escape = true;
+                } else if b == quote {
+                    in_str = None;
+                }
+            } else {
+                match b {
+                    b'"' | b'\'' => in_str = Some(b),
+                    b'#' => {
+                        // Skip rest-of-line comment.
+                        while i < bytes.len() && bytes[i] != b'\n' {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    b'[' | b'(' => depth += 1,
+                    b']' | b')' => {
+                        if b == close_kind {
+                            depth -= 1;
+                            if depth == 0 {
+                                close_at = Some(i);
+                                break;
+                            }
+                        } else {
+                            depth -= 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            i += 1;
+        }
+
+        let close_at = match close_at {
+            Some(p) => p,
+            None => break,
+        };
+
+        // Extract names inside the bracket span.
+        let inner = &content[open_at + 1..close_at];
+        for item in split_dunder_all_items(inner) {
+            let name = item
+                .trim()
+                .trim_matches(|c: char| c == '"' || c == '\'')
+                .trim();
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                names.push(name.to_string());
+            }
+        }
+
+        // Stop after the first match — the resolver expects the FIRST
+        // top-level __all__ to define the public surface.
+        return names;
+    }
+    names
+}
+
+/// Split a `__all__` body on top-level commas, respecting string
+/// literals so a comma inside `"foo, bar"` does not produce an
+/// erroneous split.
+fn split_dunder_all_items(inner: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let bytes = inner.as_bytes();
+    let mut start = 0usize;
+    let mut in_str: Option<u8> = None;
+    let mut escape = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if let Some(q) = in_str {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == q {
+                in_str = None;
+            }
         } else {
-            continue;
-        };
-        for item in inner.split(',') {
-            let name = item.trim().trim_matches('"').trim_matches('\'').trim();
-            if !name.is_empty() {
-                exports.insert(name.to_string());
+            match b {
+                b'"' | b'\'' => in_str = Some(b),
+                b',' => {
+                    items.push(&inner[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
             }
         }
     }
-    exports
+    if start < bytes.len() {
+        items.push(&inner[start..]);
+    }
+    items
 }
 
 fn looks_like_file_path(module: &str) -> bool {

@@ -1733,8 +1733,26 @@ static PYTHON_AST_SINKS: &[AstSinkPattern] = &[
     // generic `.write(` calls; the new HtmlOutput entry fires alongside it on
     // the specific lowercase-`response` receiver, emitting an additional Xss-
     // classified finding. ADDITIVE — does not modify the broad FileWrite entry.
+    // infra-tail-issues-v1 (#57, v0.4.2 M-108): added the four canonical
+    // Flask reflected-XSS sinks — `render_template_string`,
+    // `render_template`, `make_response`, and bare `Response(...)` — to
+    // close the gap observed in iter-2 python.md c21/c23. Pre-fix only
+    // `Markup` / `mark_safe` / `|safe` / `response.write` /
+    // `Response.set_data` matched, so a view returning
+    // `render_template_string(f"<h1>{user}</h1>")` produced ZERO sinks
+    // and therefore zero findings, even though the taint source
+    // (`request.args.get`) and propagation worked. These four calls all
+    // emit the HTTP response body as HTML (or trigger the Jinja
+    // sandbox), exactly the CWE-79 shape that HtmlOutput projects to.
     AstSinkPattern {
-        call_names: &["Markup", "mark_safe"],
+        call_names: &[
+            "Markup",
+            "mark_safe",
+            "render_template_string",
+            "render_template",
+            "make_response",
+            "Response",
+        ],
         member_patterns: &[
             ("", "|safe"),
             ("response", "write"),
@@ -5149,19 +5167,31 @@ pub fn detect_sinks_ast(
                 }
             }
             if let Some(string_node) = returned_string {
-                // Find first interpolation child of the string.
-                let mut first_interp: Option<tree_sitter::Node> = None;
+                // infra-tail-issues-v1 (#57b, v0.4.2 M-108): walk ALL
+                // interpolation children of the f-string, not just the
+                // first. Pre-fix the arm `break`-d after the first
+                // interpolation, so a return like
+                //   return f"v{version} hello {user}"
+                // (where `version` is a constant and `user` is the
+                // tainted source) only emitted a sink gated on
+                // `version`, and downstream taint reconciliation missed
+                // the `user` flow entirely. Emit one HtmlOutput sink
+                // per interpolation that yields a valid identifier so
+                // any tainted var in any slot triggers the finding.
+                let mut emitted_any = false;
+                let stmt_text = std::str::from_utf8(source)
+                    .unwrap_or("")
+                    .lines()
+                    .nth((line - 1) as usize)
+                    .unwrap_or("");
                 for i in 0..string_node.child_count() {
-                    if let Some(child) = string_node.child(i) {
-                        if child.is_named() && child.kind() == "interpolation" {
-                            first_interp = Some(child);
-                            break;
-                        }
-                    }
-                }
-                if let Some(interp) = first_interp {
-                    // Walk the interpolation's named descendants seeking the
-                    // first identifier — yields the var name to gate taint on.
+                    let interp = match string_node.child(i) {
+                        Some(c) if c.is_named() && c.kind() == "interpolation" => c,
+                        _ => continue,
+                    };
+                    // Walk this interpolation's named descendants
+                    // seeking the first identifier — yields the var
+                    // name to gate taint on.
                     let mut stack: Vec<tree_sitter::Node> = vec![interp];
                     let mut var_name: Option<String> = None;
                     while let Some(node) = stack.pop() {
@@ -5173,8 +5203,8 @@ pub fn detect_sinks_ast(
                                 break;
                             }
                         }
-                        for i in 0..node.child_count() {
-                            if let Some(child) = node.child(i) {
+                        for j in 0..node.child_count() {
+                            if let Some(child) = node.child(j) {
                                 if child.is_named() {
                                     stack.push(child);
                                 }
@@ -5182,11 +5212,6 @@ pub fn detect_sinks_ast(
                         }
                     }
                     if let Some(var) = var_name {
-                        let stmt_text = std::str::from_utf8(source)
-                            .unwrap_or("")
-                            .lines()
-                            .nth((line - 1) as usize)
-                            .unwrap_or("");
                         sinks.push(TaintSink {
                             var,
                             line,
@@ -5194,8 +5219,11 @@ pub fn detect_sinks_ast(
                             tainted: false,
                             statement: Some(stmt_text.to_string()),
                         });
-                        continue;
+                        emitted_any = true;
                     }
+                }
+                if emitted_any {
+                    continue;
                 }
             }
         }

@@ -24,25 +24,34 @@ pub const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 /// Default directories to skip during traversal.
 ///
 /// **api-check-and-patterns-accuracy-v1 (P11.BUG-AGG-7)**: extended this
-/// list to include common generated artifact dirs (e.g. `out`, `bin`,
-/// `obj`, `.gradle`, `dox` for doxygen, `.pytest_cache`, `.mypy_cache`,
-/// `.ruff_cache`) so `tldr patterns` and other tree-driven commands
-/// don't mis-classify projects whose generated docs/build output happens
-/// to outnumber authored sources.
+/// list to include common generated artifact dirs (e.g. `.gradle`,
+/// `dox` for doxygen, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`)
+/// so `tldr patterns` and other tree-driven commands don't
+/// mis-classify projects whose generated docs/build output happens to
+/// outnumber authored sources.
+///
+/// **infra-tail-issues-v1 (#43, v0.4.2 M-108)**: removed `dist`,
+/// `build`, `out`, `bin`, `obj`, `.next`, `.nuxt`, and `coverage` from
+/// the default skip list. These names are routinely authored-source
+/// directories in JavaScript/TypeScript monorepos (e.g.
+/// `src/build/emitter.ts`, packages that ship from `dist/`) — the
+/// callgraph-side scanner already gates them per-language via
+/// `should_skip_build_or_dist_for_lang`, but the tree walker
+/// unconditionally dropped them which caused `tldr deps`, `tldr
+/// patterns`, `tldr structure`, `tldr inheritance`, `tldr vuln`, and
+/// `tldr api-check` to report dramatically smaller file counts than
+/// `tldr calls`/`smells`/`health`/`semantic`/`dead`/`loc` on the same
+/// project. Removing them from the unconditional skip list aligns the
+/// tree walker with the callgraph scanner's per-language policy and
+/// closes the inconsistency. The only directories that remain in the
+/// list are those that are unambiguously package-manager/vendor output
+/// (`node_modules`, `vendor`) or tooling caches.
 pub const DEFAULT_SKIP_DIRS: &[&str] = &[
     // Vendored / package-manager output
     "node_modules",
     "vendor",
-    // Build sinks (general)
+    // Rust build sink (target/ is never authored source)
     "target",
-    "dist",
-    "build",
-    "out",
-    "bin",
-    "obj",
-    // JavaScript framework caches
-    ".next",
-    ".nuxt",
     // Doxygen output (typical custom-config dir; see GENERATED_DIR_SENTINELS
     // below for the `docs/` doxygen-output detection).
     "dox",
@@ -56,8 +65,9 @@ pub const DEFAULT_SKIP_DIRS: &[&str] = &[
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
-    // Coverage artefacts
-    "coverage",
+    // Coverage artefacts (hidden-only — `.coverage` is the pytest-cov
+    // file/dir; non-hidden `coverage/` removed per #43 because JS/TS
+    // projects sometimes use `coverage/` as an authored-data dir).
     ".coverage",
     // JVM tooling
     ".gradle",
