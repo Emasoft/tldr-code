@@ -194,11 +194,75 @@ fn compute_csharp_module_path(file_path: &Path, root_dir: &Path, package_name: &
 }
 
 fn is_csharp_type_visible(source: &str, line_number: usize) -> bool {
-    line_has_word(source, line_number, "public")
+    // m116-easy-mechanical-v1 (#36): tree-sitter-c-sharp starts an
+    // `interface_declaration` / `class_declaration` at its FIRST
+    // attribute_list, not at the `public class|interface|struct` line.
+    // When a type is preceded by one or more attributes
+    //   [Serializable]
+    //   [Obsolete("...")]
+    //   public interface IFoo
+    // the visibility check on a single source line returned `false` and
+    // the type was silently filtered. Scan forward from the reported
+    // line through up to `MAX_FORWARD` lines, looking for `public` on
+    // any line at or before the line that actually contains the
+    // `class|interface|struct|record` keyword. Stop scanning the moment
+    // we pass the declaration keyword line: anything beyond belongs to
+    // the body.
+    csharp_type_visibility_scan(source, line_number, &["public"])
 }
 
 fn is_csharp_member_visible(source: &str, line_number: usize) -> bool {
-    line_has_word(source, line_number, "public") || line_has_word(source, line_number, "protected")
+    // Members are likewise reported at their preceding attribute_list
+    // line — apply the same forward scan for member visibility.
+    csharp_type_visibility_scan(source, line_number, &["public", "protected"])
+}
+
+/// Scan forward from `line_number` (1-indexed) up to and including the
+/// first line that contains a C# top-level declaration keyword
+/// (`class` / `interface` / `struct` / `record` / a method-shape return
+/// type + name), returning `true` if any of the lines contains one of
+/// `words` as a whole word. The scan is intentionally narrow: real
+/// attribute clusters are 1–8 lines for the common case.
+fn csharp_type_visibility_scan(source: &str, line_number: usize, words: &[&str]) -> bool {
+    const MAX_FORWARD: usize = 16;
+    let lines: Vec<&str> = source.lines().collect();
+    let start_idx = line_number.saturating_sub(1);
+    if start_idx >= lines.len() {
+        return false;
+    }
+    let end_idx = std::cmp::min(start_idx + MAX_FORWARD, lines.len());
+    for idx in start_idx..end_idx {
+        let line = lines[idx];
+        for w in words {
+            if line_text_has_word(line, w) {
+                return true;
+            }
+        }
+        // Stop scanning once we've passed the declaration keyword line.
+        // `class` / `interface` / `struct` / `record` (the C# top-level
+        // type-introducing keywords) signal the end of the
+        // attribute-prelude region.
+        if line_text_has_word(line, "class")
+            || line_text_has_word(line, "interface")
+            || line_text_has_word(line, "struct")
+            || line_text_has_word(line, "record")
+            // method or property declarations: signal end of attribute
+            // prelude by the presence of `(` or `=>` or `{` paired with
+            // a return-type-shaped token. Approximation by line: the
+            // attribute prelude is comprised of `[...]` lines.
+            || (idx > start_idx
+                && !line.trim_start().starts_with('[')
+                && !line.trim().is_empty())
+        {
+            break;
+        }
+    }
+    false
+}
+
+fn line_text_has_word(line: &str, word: &str) -> bool {
+    line.split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .any(|part| part == word)
 }
 
 fn line_has_word(source: &str, line_number: usize, word: &str) -> bool {
@@ -241,19 +305,37 @@ fn effective_csharp_class_name(class: &ClassInfo, source: &str) -> String {
 }
 
 fn determine_csharp_kind(class: &ClassInfo, source: &str) -> ApiKind {
-    let line = source
-        .lines()
-        .nth(class.line_number.saturating_sub(1) as usize)
-        .unwrap_or("")
-        .trim_start();
+    // m116-easy-mechanical-v1 (#36): tree-sitter-c-sharp anchors
+    // `interface_declaration` / `class_declaration` at the first
+    // attribute_list (`[Serializable]`), not the declaration keyword
+    // line. Scan forward through the attribute prelude (lines starting
+    // with `[`) until we land on the actual `class|interface|struct`
+    // line.
+    const MAX_FORWARD: usize = 16;
+    let lines: Vec<&str> = source.lines().collect();
+    let start_idx = (class.line_number as usize).saturating_sub(1);
+    let end_idx = std::cmp::min(start_idx + MAX_FORWARD, lines.len());
 
-    if line.starts_with("interface ") || line.contains(" interface ") {
-        ApiKind::Interface
-    } else if line.starts_with("struct ") || line.contains(" struct ") {
-        ApiKind::Struct
-    } else {
-        ApiKind::Class
+    for idx in start_idx..end_idx {
+        let trimmed = lines[idx].trim_start();
+        // Skip attribute_list lines (`[...]`) — they belong to the
+        // prelude, not the declaration head.
+        if trimmed.starts_with('[') {
+            continue;
+        }
+        // Empty lines inside the prelude are tolerated.
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("interface ") || trimmed.contains(" interface ") {
+            return ApiKind::Interface;
+        } else if trimmed.starts_with("struct ") || trimmed.contains(" struct ") {
+            return ApiKind::Struct;
+        } else {
+            return ApiKind::Class;
+        }
     }
+    ApiKind::Class
 }
 
 fn convert_csharp_params(raw_params: &[String]) -> Vec<Param> {

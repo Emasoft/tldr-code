@@ -2474,6 +2474,13 @@ fn is_rust_macro_call_token(n: Node, source: &[u8]) -> bool {
     if !matches!(n.kind(), "identifier" | "scoped_identifier") {
         return false;
     }
+    // m116-easy-mechanical-v1 (#44): mirror the same guards as
+    // `find_rust_macro_inline_call` — an identifier preceded by `.`
+    // is a chain-method position (not a FUT) and identifiers inside
+    // a `|...|` closure are closure-locals, not FUTs.
+    if preceded_by_dot(n, source) || is_inside_rust_macro_closure(n, source) {
+        return false;
+    }
     let end = n.end_byte();
     // Walk forward over whitespace looking for `(`.
     let mut i = end;
@@ -2561,31 +2568,118 @@ fn first_callable_inside(n: Node) -> Option<Node> {
 /// i.e. an inline function call in the macro arguments. Returns the
 /// identifier node (or its containing expression) so the caller can
 /// pull the function-under-test name from its byte range.
+///
+/// m116-easy-mechanical-v1 (#44): walks SOURCE-ORDER (not stack-pop
+/// reverse order) and rejects two cases that yielded the wrong FUT in
+/// nested method-chain assertions:
+///
+/// - `.method(...)` positions (preceded by a `.` byte): these are
+///   intermediate chain helpers (`.iter()`, `.any()`, `.collect()`) —
+///   semantically not the function-under-test, so picking them
+///   produced noisy / wrong spec entries like `function_name: "any"`
+///   in `assert!(result.iter().any(|x| ...))`.
+/// - identifiers inside a `|...|` closure parameter list or its body:
+///   the FUT is the receiver of the enclosing chain, not a closure
+///   helper.
 fn find_rust_macro_inline_call<'a>(root: Node<'a>, source: &[u8]) -> Option<Node<'a>> {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
+    // Source-order DFS: pre-order, left-to-right.
+    fn descend<'a>(node: Node<'a>, source: &[u8]) -> Option<Node<'a>> {
         let kind = node.kind();
-        // Direct shapes the rust grammar DOES expose inside macros: scoped
-        // identifiers and field accesses; either may be the function side
-        // of an inline call when followed by `(`.
         if matches!(
             kind,
             "identifier" | "scoped_identifier" | "field_expression"
         ) && is_followed_by_open_paren(node, source)
+            && !preceded_by_dot(node, source)
+            && !is_inside_rust_macro_closure(node, source)
         {
             return Some(node);
         }
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                stack.push(cursor.node());
+                if let Some(found) = descend(cursor.node(), source) {
+                    return Some(found);
+                }
                 if !cursor.goto_next_sibling() {
                     break;
                 }
             }
         }
+        None
     }
-    None
+    descend(root, source)
+}
+
+/// True if the byte immediately before `node.start_byte()` (skipping
+/// whitespace) is `.` — i.e. the identifier is the method-name side of
+/// a method call on some receiver, not a standalone FUT call.
+fn preceded_by_dot(node: Node, source: &[u8]) -> bool {
+    let start = node.start_byte();
+    if start == 0 {
+        return false;
+    }
+    let mut i = start;
+    while i > 0 {
+        i -= 1;
+        let b = source[i];
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+            continue;
+        }
+        return b == b'.';
+    }
+    false
+}
+
+/// True if `node` sits between a `|...|` closure parameter list and the
+/// matching closure boundary — i.e. it's inside a closure body in a
+/// macro argument like `assert!(it.any(|x| x.foo()))`. The flat
+/// token_tree representation means we can't rely on AST parents, so
+/// scan the surrounding source bytes for an unmatched `|` before the
+/// node's start (closure-param opener) without an intervening closing
+/// `)` / `,` / `;` at depth 0.
+///
+/// Heuristic but conservative: only suppresses identifiers that are
+/// clearly inside a closure body. The macro_invocation's flat
+/// token_tree exposes `|`, `|`, identifiers, etc. as direct children
+/// in source order; we scan backward from `node.start_byte()` looking
+/// for an unmatched `|` at the same paren depth that opens a closure.
+fn is_inside_rust_macro_closure(node: Node, source: &[u8]) -> bool {
+    let start = node.start_byte();
+    let mut depth: i32 = 0;
+    let mut pipe_count: i32 = 0;
+    // Walk backward through the source up to ~512 bytes; closures are
+    // typically short. We track paren/bracket depth so we don't
+    // mistake a `|` in `if a | b > c` style code as a closure opener.
+    let limit = start.saturating_sub(512);
+    let bytes = source;
+    let mut i = start;
+    while i > limit {
+        i -= 1;
+        let b = bytes[i];
+        match b {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' | b'[' | b'{' => {
+                if depth == 0 {
+                    // We've left the enclosing group — no closure
+                    // opener was found at our depth.
+                    return false;
+                }
+                depth -= 1;
+            }
+            b'|' if depth == 0 => {
+                pipe_count += 1;
+                // Two `|`s at depth 0 before `node` => we passed
+                // through `|...|` => `node` is inside the closure
+                // body. A single unmatched `|` means we're inside
+                // the parameter list itself.
+                if pipe_count >= 1 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn is_followed_by_open_paren(node: Node, source: &[u8]) -> bool {

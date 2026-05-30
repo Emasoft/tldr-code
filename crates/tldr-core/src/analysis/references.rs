@@ -3494,6 +3494,15 @@ pub fn find_references(
     // We deliberately keep the original `references[]` entry intact for
     // back-compat with downstream consumers that already iterated the
     // unified list.
+    // m116-easy-mechanical-v1 (#41): the fallback below hardcoded
+    // `DefinitionKind::Function`, which mislabelled class / struct /
+    // interface / enum / trait declarations as "function" for every
+    // unsupported language (java, csharp, kotlin, scala, swift, …).
+    // Classify each promoted definition by re-parsing the file and
+    // walking the AST up from the (line, column) byte position to the
+    // enclosing declaration node, then mapping the node kind to a
+    // `DefinitionKind`.
+    let mut file_parse_cache: HashMap<PathBuf, (tree_sitter::Tree, String, Language)> = HashMap::new();
     for r in &references {
         if r.kind != ReferenceKind::Definition {
             continue;
@@ -3504,10 +3513,8 @@ pub fn find_references(
         if already {
             continue;
         }
-        let kind = match r.kind {
-            ReferenceKind::Definition => DefinitionKind::Function,
-            _ => DefinitionKind::Other,
-        };
+        let kind = classify_promoted_definition_kind(&r.file, r.line, r.column, &mut file_parse_cache)
+            .unwrap_or(DefinitionKind::Other);
         definitions.push(Definition::new(r.file.clone(), r.line, r.column, kind));
     }
 
@@ -3864,6 +3871,149 @@ fn extract_calls_recursive(
     for child in node.children(&mut cursor) {
         extract_calls_recursive(&child, source, language, calls);
     }
+}
+
+// =============================================================================
+// m116-easy-mechanical-v1 (#41): AST-based classifier for definitions
+// promoted from `kind=Definition` references.
+//
+// `find_definitions` only has per-language arms for python / ts / js /
+// go / rust / c / cpp. For java / csharp / kotlin / scala / swift the
+// AST verifier already classifies one of the matched references as
+// `kind=Definition`, but the promotion path previously hardcoded
+// `DefinitionKind::Function`. That mis-labelled every class / struct /
+// interface / enum / trait definition. Re-parse the file once
+// (cached) and map the enclosing declaration node's kind to a
+// `DefinitionKind`.
+// =============================================================================
+
+/// Re-parse `file` (cached across the loop) and classify the
+/// declaration node that contains the byte position at
+/// (`line`, `column`). Returns `None` if the file is unparseable, the
+/// language is unsupported, or no enclosing declaration node exists.
+fn classify_promoted_definition_kind(
+    file: &Path,
+    line: usize,
+    column: usize,
+    cache: &mut HashMap<PathBuf, (tree_sitter::Tree, String, Language)>,
+) -> Option<DefinitionKind> {
+    if !cache.contains_key(file) {
+        let parsed = parse_file(file).ok()?;
+        cache.insert(file.to_path_buf(), parsed);
+    }
+    let (tree, source, language) = cache.get(file)?;
+
+    let row = line.saturating_sub(1);
+    let col = column.saturating_sub(1);
+    let pt = tree_sitter::Point {
+        row,
+        column: col,
+    };
+    let root = tree.root_node();
+    let smallest = root.named_descendant_for_point_range(pt, pt)?;
+
+    // Walk up to the first declaration-shaped ancestor.
+    let mut current = Some(smallest);
+    while let Some(node) = current {
+        if let Some(k) = node_kind_to_definition_kind(node.kind(), *language) {
+            return Some(k);
+        }
+        // Also accept a name-field match: an enclosing decl whose
+        // `name` child contains the position should be classified by
+        // the decl's kind.
+        current = node.parent();
+    }
+    // Fallback: walk the AST top-down looking for a declaration node
+    // whose start_position equals our (line, column) — covers cases
+    // where the verified-reference column points at the IDENTIFIER
+    // child (not the decl node itself).
+    walk_for_decl_containing(&root, row, col, *language, source.as_bytes())
+}
+
+fn walk_for_decl_containing(
+    node: &Node,
+    row: usize,
+    col: usize,
+    language: Language,
+    _source: &[u8],
+) -> Option<DefinitionKind> {
+    let start = node.start_position();
+    let end = node.end_position();
+    let in_range = (start.row < row || (start.row == row && start.column <= col))
+        && (end.row > row || (end.row == row && end.column >= col));
+    if !in_range {
+        return None;
+    }
+
+    let mut best: Option<DefinitionKind> = node_kind_to_definition_kind(node.kind(), language);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(child_kind) = walk_for_decl_containing(&child, row, col, language, _source) {
+            best = Some(child_kind);
+        }
+    }
+    best
+}
+
+/// Map a tree-sitter declaration node kind to a `DefinitionKind`.
+///
+/// Covers the broad set of declaration kinds emitted by the grammars
+/// of the 18 TLDR-supported languages. Returns `None` for non-decl
+/// node kinds — callers walk up to the next ancestor.
+fn node_kind_to_definition_kind(kind: &str, _language: Language) -> Option<DefinitionKind> {
+    let dk = match kind {
+        // Functions
+        "function_item"
+        | "function_definition"
+        | "function_declaration"
+        | "function_declarator"
+        | "function" => DefinitionKind::Function,
+        // Methods
+        "method_declaration"
+        | "method_definition"
+        | "method_spec"
+        | "constructor_declaration"
+        | "destructor_declaration"
+        | "method"
+        | "secondary_constructor" => DefinitionKind::Method,
+        // Classes / structs / interfaces / traits / enums
+        "class_declaration"
+        | "class_definition"
+        | "class_specifier"
+        | "class"
+        | "object_declaration"
+        | "object_definition"
+        | "record_declaration" => DefinitionKind::Class,
+        "struct_declaration"
+        | "struct_item"
+        | "struct_specifier" => DefinitionKind::Class,
+        "interface_declaration"
+        | "interface_definition"
+        | "trait_item"
+        | "trait_definition"
+        | "protocol_declaration" => DefinitionKind::Class,
+        "enum_item"
+        | "enum_declaration"
+        | "enum_definition"
+        | "enum_specifier" => DefinitionKind::Class,
+        // Types / type aliases
+        "type_alias"
+        | "type_alias_declaration"
+        | "type_item"
+        | "type_definition" => DefinitionKind::Type,
+        // Constants
+        "const_item" | "const_declaration" => DefinitionKind::Constant,
+        // Variables (static / let / val / var bindings)
+        "static_item" | "let_declaration" | "variable_declaration"
+        | "lexical_declaration" | "property_declaration"
+        | "field_declaration" | "field_definition" => DefinitionKind::Variable,
+        // Modules / namespaces
+        "mod_item" | "module_declaration" | "namespace_declaration" => {
+            DefinitionKind::Module
+        }
+        _ => return None,
+    };
+    Some(dk)
 }
 
 // =============================================================================

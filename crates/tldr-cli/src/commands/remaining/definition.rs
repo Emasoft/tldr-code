@@ -3689,6 +3689,20 @@ fn locate_symbol_line_column(file: &Path, start_line: u32, symbol: &str) -> (u32
         return (start_line, None);
     }
 
+    // m116-easy-mechanical-v1 (#45): the textual-find paths below
+    // return the FIRST whole-word occurrence of `symbol` on a line,
+    // which is wrong when the call site appears before the
+    // definition on the same line —
+    //   `let x = bar(); fn bar() -> i32 { 42 }`
+    // would emit column 13 (the call site) instead of column 23 (the
+    // `fn bar` definition's name node). Prefer an AST-derived
+    // (line, column) anchored at the actual definition's name child.
+    if let Some((line_out, col_out)) =
+        ast_locate_symbol_definition(file, &content, start_line, symbol, MAX_FORWARD as u32)
+    {
+        return (line_out, Some(col_out));
+    }
+
     // First try the reported line. Use a word-bounded match so a
     // substring (e.g. `parse` inside `parseFully`) is not selected.
     if let Some(col) = find_word_bounded(lines[target_idx], symbol) {
@@ -3706,6 +3720,100 @@ fn locate_symbol_line_column(file: &Path, start_line: u32, symbol: &str) -> (u32
     }
 
     (start_line, None)
+}
+
+/// m116-easy-mechanical-v1 (#45): AST-based column lookup for a
+/// definition's name child. Parses the file, walks the entire AST, and
+/// returns the (1-indexed line, 1-indexed column) of the FIRST
+/// definition-shaped node whose `name` field text equals `symbol` AND
+/// whose start row lies within `[start_line - 0, start_line + max_forward]`.
+/// Returns `None` if the file is unparseable, no language is detected,
+/// or no matching declaration name node exists in the window.
+///
+/// Definition-shaped node kinds covered (cross-language):
+/// `function_item`, `function_declaration`, `function_definition`,
+/// `method_declaration`, `method_definition`, `class_declaration`,
+/// `class_definition`, `struct_declaration`, `struct_item`,
+/// `interface_declaration`, `trait_item`, `enum_item`,
+/// `enum_declaration`, `type_alias`, `type_item`, `const_item`,
+/// `static_item`, `impl_item`, `mod_item`.
+fn ast_locate_symbol_definition(
+    file: &Path,
+    source: &str,
+    start_line: u32,
+    symbol: &str,
+    max_forward: u32,
+) -> Option<(u32, u32)> {
+    let language = tldr_core::Language::from_path(file)?;
+    let tree = PARSER_POOL.parse(source, language).ok()?;
+    let root = tree.root_node();
+    let bytes = source.as_bytes();
+    let window_end = start_line.saturating_add(max_forward);
+
+    let mut best: Option<(u32, u32)> = None;
+    walk_ast_for_definition_name(
+        root, bytes, symbol, start_line, window_end, &mut best,
+    );
+    best
+}
+
+fn walk_ast_for_definition_name(
+    node: Node,
+    source: &[u8],
+    symbol: &str,
+    start_line: u32,
+    window_end: u32,
+    best: &mut Option<(u32, u32)>,
+) {
+    let kind = node.kind();
+    let is_def = matches!(
+        kind,
+        "function_item"
+            | "function_declaration"
+            | "function_definition"
+            | "method_declaration"
+            | "method_definition"
+            | "class_declaration"
+            | "class_definition"
+            | "struct_declaration"
+            | "struct_item"
+            | "interface_declaration"
+            | "trait_item"
+            | "enum_item"
+            | "enum_declaration"
+            | "type_alias"
+            | "type_item"
+            | "const_item"
+            | "static_item"
+            | "mod_item"
+            | "object_declaration"
+    );
+    if is_def {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name_text) = name_node.utf8_text(source) {
+                if name_text == symbol {
+                    let row = name_node.start_position().row as u32 + 1;
+                    let col = name_node.start_position().column as u32 + 1;
+                    if row >= start_line.saturating_sub(0) && row <= window_end {
+                        // Prefer earliest (line, then column).
+                        match best {
+                            None => *best = Some((row, col)),
+                            Some((br, bc)) if (row, col) < (*br, *bc) => {
+                                *best = Some((row, col))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_ast_for_definition_name(
+            child, source, symbol, start_line, window_end, best,
+        );
+    }
 }
 
 /// Find the first whole-word occurrence of `symbol` in `line_text` and

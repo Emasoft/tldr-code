@@ -71,10 +71,22 @@ pub fn recognize(path: &Path, source: &str, language: Language) -> TestFileInfo 
     // a path-level candidate so `tldr specs --from-tests` can cover
     // inline `#[cfg(test)] mod tests { ... }` blocks inside production
     // source files (e.g. ripgrep `crates/globset/src/lib.rs`). To keep
-    // directory walks cheap, gate on a fast `#[test]` substring check
-    // before parsing — any `.rs` without `#[test]` cannot contribute
-    // and parsing the entire file would just be wasted work.
-    if matches!(language, Language::Rust) && !source.contains("#[test]") {
+    // directory walks cheap, gate on a fast attribute substring check
+    // before parsing — any `.rs` without any test-attribute marker
+    // cannot contribute and parsing the entire file would just be
+    // wasted work.
+    //
+    // m116-easy-mechanical-v1 (#42): the original substring `#[test]`
+    // missed async test runners (`#[tokio::test]`, `#[actix_rt::test]`,
+    // `#[async_std::test]`, `#[smol_potat::test]`) — every async-only
+    // crate reported `test_functions_scanned = 0`. Match the broader
+    // `::test]` marker as well; `rust_attribute_is_test` (the per-fn
+    // predicate) already accepts `*::test` via `rsplit("::").next()`.
+    if matches!(language, Language::Rust)
+        && !source.contains("#[test]")
+        && !source.contains("::test]")
+        && !source.contains("::test(")
+    {
         return TestFileInfo::default();
     }
 
