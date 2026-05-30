@@ -41,8 +41,29 @@ impl std::fmt::Display for OutputFormat {
 // =============================================================================
 
 /// Severity level for findings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum, Default)]
-#[serde(rename_all = "lowercase")]
+///
+/// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024, BREAKING): the
+/// in-memory enum keeps its 5 variants for `--severity <level>`
+/// filtering and `order()` ranking, but JSON serialization is now
+/// projected onto the canonical 3-level vocabulary:
+///
+///   ```
+///   Critical → "error"
+///   High     → "error"
+///   Medium   → "warn"
+///   Low      → "info"
+///   Info     → "info"
+///   ```
+///
+/// Deserialize accepts both the canonical 3-level strings AND the
+/// legacy 5-level strings so config files and pre-fix daemon payloads
+/// still parse. Unknown strings default to `Medium`.
+///
+/// `Display` (used by human-readable text output, sort headers, CLI
+/// `--help`) is preserved at the legacy 5-level vocabulary.
+/// `ValueEnum` (used by `--severity <level>` clap parsing) is
+/// preserved at the legacy 5-level vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum, Default)]
 pub enum Severity {
     Critical,
     High,
@@ -63,6 +84,16 @@ impl Severity {
             Self::Info => 4,
         }
     }
+
+    /// m024-severity-normalize-v1: project to the canonical 3-level
+    /// vocabulary emitted in JSON output.
+    pub fn canonical_str(&self) -> &'static str {
+        match self {
+            Self::Critical | Self::High => "error",
+            Self::Medium => "warn",
+            Self::Low | Self::Info => "info",
+        }
+    }
 }
 
 impl std::fmt::Display for Severity {
@@ -74,6 +105,33 @@ impl std::fmt::Display for Severity {
             Self::Low => write!(f, "low"),
             Self::Info => write!(f, "info"),
         }
+    }
+}
+
+impl Serialize for Severity {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.canonical_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Severity {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        Ok(match s.as_str() {
+            // Canonical 3-level (post-M-024)
+            "info" => Self::Info,
+            "warn" => Self::Medium,
+            "error" => Self::High,
+            // Legacy 5-level (pre-M-024) — accepted for back-compat on
+            // round-trip of stored payloads and user config files.
+            "critical" => Self::Critical,
+            "high" => Self::High,
+            "medium" => Self::Medium,
+            "low" => Self::Low,
+            "warning" => Self::Medium,
+            "hint" | "note" => Self::Info,
+            _ => Self::Medium,
+        })
     }
 }
 
@@ -237,11 +295,21 @@ impl TodoReport {
 // =============================================================================
 
 /// A security finding from the secure command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024): the in-memory
+/// `severity` string is preserved at its legacy 5-level vocabulary
+/// (`critical|high|medium|low|info` and a few legacy variants) because
+/// internal sort / filter / text-colorization paths inside
+/// `commands/remaining/secure.rs` compare on those literal strings.
+/// JSON serialization is projected onto the canonical 3-level set
+/// via a manual `Serialize` impl. Deserialize is unchanged (passes the
+/// raw string through).
+#[derive(Debug, Clone, Deserialize)]
 pub struct SecureFinding {
     /// Category of finding (e.g., "taint", "resource_leak", "bounds")
     pub category: String,
-    /// Severity level
+    /// Severity level (in-memory: legacy 5-level vocabulary; JSON:
+    /// canonical 3-level vocabulary projected at serialize time).
     pub severity: String,
     /// Human-readable description
     pub description: String,
@@ -251,6 +319,30 @@ pub struct SecureFinding {
     /// Line number
     #[serde(default)]
     pub line: u32,
+}
+
+/// m024-severity-normalize-v1: project a legacy severity literal onto
+/// the canonical 3-level vocabulary emitted by every M-024 command.
+fn secure_canonical_severity(s: &str) -> &'static str {
+    match s.to_lowercase().as_str() {
+        "info" | "note" | "hint" | "low" => "info",
+        "warn" | "warning" | "medium" => "warn",
+        "error" | "high" | "critical" => "error",
+        _ => "error",
+    }
+}
+
+impl Serialize for SecureFinding {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = ser.serialize_struct("SecureFinding", 5)?;
+        state.serialize_field("category", &self.category)?;
+        state.serialize_field("severity", secure_canonical_severity(&self.severity))?;
+        state.serialize_field("description", &self.description)?;
+        state.serialize_field("file", &self.file)?;
+        state.serialize_field("line", &self.line)?;
+        state.end()
+    }
 }
 
 impl SecureFinding {
@@ -1806,11 +1898,65 @@ mod unit_types_tests {
 
     #[test]
     fn test_severity_serialization() {
-        let critical = serde_json::to_string(&Severity::Critical).unwrap();
-        assert_eq!(critical, r#""critical""#);
+        // m024-severity-normalize-v1 (v0.4.2 M-117 / M-024, BREAKING):
+        // serialization is projected onto the canonical 3-level
+        // vocabulary `{info, warn, error}`. Pre-fix this test pinned
+        // the legacy 5-level strings (e.g. `"critical"`); post-fix
+        // every legacy variant collapses per the M-024 mapping table.
+        assert_eq!(
+            serde_json::to_string(&Severity::Critical).unwrap(),
+            r#""error""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Severity::High).unwrap(),
+            r#""error""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Severity::Medium).unwrap(),
+            r#""warn""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Severity::Low).unwrap(),
+            r#""info""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Severity::Info).unwrap(),
+            r#""info""#
+        );
 
-        let info = serde_json::to_string(&Severity::Info).unwrap();
-        assert_eq!(info, r#""info""#);
+        // Deserialize accepts BOTH the canonical 3-level form and the
+        // legacy 5-level form so user config files / pre-fix daemon
+        // payloads still parse.
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""error""#).unwrap(),
+            Severity::High // canonical "error" decodes to the more
+                           // common High (Critical is reserved for the
+                           // explicit legacy literal)
+        );
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""warn""#).unwrap(),
+            Severity::Medium
+        );
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""info""#).unwrap(),
+            Severity::Info
+        );
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""critical""#).unwrap(),
+            Severity::Critical
+        );
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""high""#).unwrap(),
+            Severity::High
+        );
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""medium""#).unwrap(),
+            Severity::Medium
+        );
+        assert_eq!(
+            serde_json::from_str::<Severity>(r#""low""#).unwrap(),
+            Severity::Low
+        );
     }
 
     // =========================================================================

@@ -70,14 +70,19 @@ mod remaining_types {
     }
 
     /// Severity level for findings.
+    ///
+    /// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024, BREAKING):
+    /// the on-wire JSON `severity` field across vuln/secure/secrets/
+    /// smells/diagnostics is now exactly the canonical 3-level set
+    /// `{info, warn, error}`. The integration-test local mirror is
+    /// reshaped to match — pre-fix `critical|high|medium|low|info`
+    /// no longer appears in vuln command output.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     #[serde(rename_all = "lowercase")]
     pub enum Severity {
-        Critical,
-        High,
-        Medium,
-        Low,
         Info,
+        Warn,
+        Error,
     }
 
     /// A location in source code.
@@ -2745,11 +2750,15 @@ mod vuln_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report: VulnReport = serde_json::from_str(&stdout).unwrap();
 
-        // All findings should be critical or higher
+        // m024-severity-normalize-v1: `--severity critical` filters on
+        // the legacy 5-level CLI vocabulary (still accepted as a
+        // ValueEnum on the input side), but the wire severity collapses
+        // to the canonical "error" bucket — Critical AND High both
+        // project to "error" per the M-024 mapping table.
         for finding in &report.findings {
             assert!(
-                finding.severity == Severity::Critical,
-                "All findings should be critical when filtered by critical"
+                finding.severity == Severity::Error,
+                "All findings should be \"error\" (canonical projection of pre-fix critical/high) when filtered by --severity critical"
             );
         }
     }

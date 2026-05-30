@@ -2,6 +2,52 @@
 
 ## v0.4.2 (in progress)
 
+### M-024 severity normalization (BREAKING)
+
+Closes the iter-3 audit M-024 finding: five user-facing commands
+(`smells`, `vuln`, `secure`, `health`, `diagnostics`) each emitted
+the JSON `severity` field with a slightly different vocabulary,
+forcing every downstream consumer to maintain N independent mappers.
+
+This release **breaks the JSON schema** by collapsing every
+`severity` emission onto a single canonical 3-level vocabulary:
+
+```
+"info"  | "warn"  | "error"
+```
+
+with the following pre-fix → canonical mapping table:
+
+| Command       | Pre-fix vocabulary                              | Canonical mapping                                                                                          |
+|---------------|--------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `smells`      | `severity: <u8>` (1=low, 2=medium, 3=high)       | `1 → "info"`, `2 → "warn"`, `3 → "error"` (and the field is now a string, not a number)                   |
+| `vuln`        | `"critical" \| "high" \| "medium" \| "low" \| "info"` | `Critical \| High → "error"`, `Medium → "warn"`, `Low \| Info → "info"` (applies to `findings[].severity` AND `summary.by_severity` keys) |
+| `secure`      | `"critical" \| "high" \| "medium" \| "low" \| "info"` | same as `vuln`; applies to every `findings[].severity` produced by any sub-analysis (taint / resources / bounds / contracts / behavioral / mutability) |
+| `diagnostics` | `"error" \| "warning" \| "info" \| "hint"` (LSP-shaped) | `Error → "error"`, `Warning → "warn"`, `Information \| Hint → "info"` (the in-memory enum still has 4 variants so `DiagnosticsSummary.errors / warnings / info / hints` keep bucketing distinctly) |
+| `health`      | no per-finding `severity` field (top-level numeric `score`; sub-analyses surface their own metrics) | unchanged at top level — `health` is in the audit set as a no-op confirmation. If a `severity` field is ever added in a future release it MUST be in the canonical set. |
+
+**What is NOT broken:**
+
+- CLI input flags such as `tldr vuln --severity critical` still
+  accept the legacy 5-level CLI vocabulary as a `ValueEnum` —
+  only the wire output is normalized.
+- Human-readable `text`/`sarif` output is unchanged (the legacy
+  `Display` impls are preserved for color-coded summaries).
+- Deserialize accepts BOTH the legacy and canonical strings so
+  daemon round-trips of pre-fix payloads, config files, and
+  parser fixtures keep parsing.
+- Internal sort / rank / threshold logic continues to operate
+  on the legacy in-memory representations (numeric u8 tier in
+  smells; 5-level enum in vuln/secure; 4-level LSP enum in
+  diagnostics). Only the JSON `severity` field is projected.
+
+**Migration:** consumers that switched on `"critical"` / `"high"`
+should switch on `"error"`; consumers that switched on `"medium"`
+/ `"warning"` should switch on `"warn"`; consumers that switched
+on `"low"` / `"hint"` / `"note"` / `"information"` should switch
+on `"info"`. Consumers that read smells' numeric `severity: 2`
+should switch to the string equivalent (per the table).
+
 ### M-117 deferred decisions (D7/D8/D9/D10)
 
 Closes Phase-22 iter-3 audit bundle of UX/ergonomics deferrals that

@@ -278,6 +278,12 @@ impl Thresholds {
 /// cluster-misc-v1 (M-042): `description` is emitted as a top-level field via
 /// a manual `Serialize` impl that calls `smell_type.description()` at
 /// serialization time. No extra storage field is needed.
+///
+/// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024): the in-memory
+/// representation is unchanged (u8 1-3) so internal threshold logic
+/// continues to work, but Serialize/Deserialize project across the
+/// canonical 3-level string vocabulary. See the `Serialize` impl
+/// below and `deserialize_smell_severity` for the bidirectional map.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SmellFinding {
     /// Type of smell detected
@@ -290,15 +296,59 @@ pub struct SmellFinding {
     pub line: u32,
     /// Human-readable reason for the smell
     pub reason: String,
-    /// Severity level (1-3, higher is worse)
+    /// Severity tier in memory (1=info, 2=warn, 3=error). Serialized as
+    /// the canonical M-024 string vocabulary; Deserialize accepts either
+    /// the canonical string form or the legacy u8 form so daemon
+    /// round-trips with pre-fix payloads still decode.
+    #[serde(deserialize_with = "deserialize_smell_severity")]
     pub severity: u8,
     /// Suggestion for fixing (only if requested)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
 }
 
+/// m024-severity-normalize-v1: accept both the canonical M-024 string
+/// (`"info" | "warn" | "error"`) and the legacy u8 (1-3) on deserialize.
+/// Unknown strings collapse to tier 3 (most severe) so we never silently
+/// downgrade an out-of-band payload to "info".
+fn deserialize_smell_severity<'de, D>(d: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Form {
+        Num(u8),
+        Str(String),
+    }
+    Ok(match Form::deserialize(d)? {
+        Form::Num(n) => n,
+        Form::Str(s) => match s.as_str() {
+            "info" => 1,
+            "warn" => 2,
+            "error" => 3,
+            _ => 3,
+        },
+    })
+}
+
 // cluster-misc-v1 (M-042): manual Serialize that adds a top-level
 // `description` field derived from `smell_type.description()`.
+//
+// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024, BREAKING): the
+// `severity` field is now emitted as a canonical 3-level string —
+// `"info" | "warn" | "error"` — instead of the prior u8 (1-3).
+// Internal threshold logic still works on the numeric tier; the
+// projection is serialize-time only.
+//
+// Canonical mapping (per M-024 schema break):
+//   1 (low / minor)    → "info"
+//   2 (medium)         → "warn"
+//   3 (high / severe)  → "error"
+//   anything else      → "error" (defensive — out-of-band tier collapses
+//                       to the most severe canonical bucket so consumers
+//                       never see an unknown value).
 impl Serialize for SmellFinding {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -312,7 +362,13 @@ impl Serialize for SmellFinding {
         state.serialize_field("name", &self.name)?;
         state.serialize_field("line", &self.line)?;
         state.serialize_field("reason", &self.reason)?;
-        state.serialize_field("severity", &self.severity)?;
+        let canonical_severity = match self.severity {
+            1 => "info",
+            2 => "warn",
+            3 => "error",
+            _ => "error",
+        };
+        state.serialize_field("severity", canonical_severity)?;
         // Top-level description mirror (M-042).
         state.serialize_field("description", self.smell_type.description())?;
         if let Some(suggestion) = &self.suggestion {

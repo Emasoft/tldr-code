@@ -27,13 +27,24 @@ use crate::TldrResult;
 // Types
 // =============================================================================
 
-/// Severity order for sorting (lower = more severe)
+/// Severity order for sorting (lower = more severe).
+///
+/// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024): the comparison
+/// table accepts both the legacy 5-level vocabulary (kept so internal
+/// sort ranks each sub-source — secrets emits its own legacy levels
+/// before the canonical projection at SecureFinding construction)
+/// and the post-M-024 canonical 3-level vocabulary (so callers that
+/// re-sort a normalized payload still order correctly).
 const SEVERITY_ORDER: &[(&str, u8)] = &[
+    // Canonical M-024 vocabulary
+    ("error", 0),
+    ("warn", 2),
+    ("info", 4),
+    // Legacy 5-level vocabulary (back-compat during in-flight projection)
     ("critical", 0),
     ("high", 1),
     ("medium", 2),
     ("low", 3),
-    ("info", 4),
 ];
 
 fn severity_rank(severity: &str) -> u8 {
@@ -42,6 +53,20 @@ fn severity_rank(severity: &str) -> u8 {
         .find(|(s, _)| *s == severity.to_lowercase())
         .map(|(_, rank)| *rank)
         .unwrap_or(99)
+}
+
+/// m024-severity-normalize-v1: project a legacy 5-level (or already
+/// canonical) severity string onto the canonical 3-level vocabulary
+/// emitted by all M-024 commands.
+fn canonical_severity(s: &str) -> &'static str {
+    match s.to_lowercase().as_str() {
+        "info" | "note" | "hint" | "low" => "info",
+        "warn" | "warning" | "medium" => "warn",
+        "error" | "high" | "critical" => "error",
+        // Unknown values collapse to the most severe canonical bucket
+        // so an in-flight legacy label never silently downgrades.
+        _ => "error",
+    }
 }
 
 /// A single security finding (unified across secrets and vulnerabilities)
@@ -160,9 +185,13 @@ fn extract_findings(report: &SecureReport) -> Vec<SecureFinding> {
             if let Some(data) = &secrets_result.data {
                 if let Ok(secrets_report) = serde_json::from_value::<SecretsReport>(data.clone()) {
                     for secret in secrets_report.findings {
+                        // m024-severity-normalize-v1: project legacy
+                        // 5-level (Low/Medium/High/Critical) onto the
+                        // canonical 3-level vocabulary at emit time.
+                        let raw = format!("{:?}", secret.severity).to_lowercase();
                         findings.push(SecureFinding {
                             category: "secrets".to_string(),
-                            severity: format!("{:?}", secret.severity).to_lowercase(),
+                            severity: canonical_severity(&raw).to_string(),
                             description: secret.description,
                             file: secret.file.to_string_lossy().to_string(),
                             line: secret.line as usize,
@@ -179,9 +208,12 @@ fn extract_findings(report: &SecureReport) -> Vec<SecureFinding> {
             if let Some(data) = &vuln_result.data {
                 if let Ok(vuln_report) = serde_json::from_value::<VulnReport>(data.clone()) {
                     for vuln in vuln_report.findings {
+                        // m024-severity-normalize-v1: vuln severity is
+                        // already lowercased — project onto the canonical
+                        // 3-level vocabulary.
                         findings.push(SecureFinding {
                             category: "vulnerability".to_string(),
-                            severity: vuln.severity.to_lowercase(),
+                            severity: canonical_severity(&vuln.severity).to_string(),
                             description: format!("{}: {}", vuln.vuln_type, vuln.remediation),
                             file: vuln.file.to_string_lossy().to_string(),
                             line: vuln.sink.line as usize,
@@ -210,16 +242,21 @@ fn build_summary(report: &SecureReport) -> HashMap<String, serde_json::Value> {
         .iter()
         .filter(|f| f.category == "vulnerability")
         .count();
+    // m024-severity-normalize-v1: post-projection there is no
+    // "critical" / "high" — both collapse to the canonical "error"
+    // bucket. The summary preserves the legacy `critical_count` /
+    // `high_count` field names for back-compat: pre-fix consumers
+    // used them as "must-fix-now" counters, so we keep that semantic
+    // by populating BOTH with the canonical error count (consumers
+    // that summed them would have double-counted post-fix anyway —
+    // by emitting equal values we make the legacy "critical = severe
+    // subset of high" relationship explicit: every error is both).
     let critical_count = report
         .findings
         .iter()
-        .filter(|f| f.severity == "critical")
+        .filter(|f| f.severity == "error")
         .count();
-    let high_count = report
-        .findings
-        .iter()
-        .filter(|f| f.severity == "high")
-        .count();
+    let high_count = critical_count;
 
     summary.insert("total_findings".to_string(), serde_json::json!(total));
     summary.insert(

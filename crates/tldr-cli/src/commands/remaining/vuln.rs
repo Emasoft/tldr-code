@@ -1240,7 +1240,11 @@ fn build_summary(findings: &[VulnFinding], files_with_vulns: u32) -> VulnSummary
     let mut by_type: HashMap<String, u32> = HashMap::new();
 
     for finding in findings {
-        *by_severity.entry(finding.severity.to_string()).or_insert(0) += 1;
+        // m024-severity-normalize-v1: by_severity keys use the canonical
+        // 3-level vocabulary, not the legacy 5-level `Display` form.
+        *by_severity
+            .entry(finding.severity.canonical_str().to_string())
+            .or_insert(0) += 1;
         // schema-unification-v1 Bug-02 fix: derive the by_type key from
         // VulnType's serde representation (snake_case via #[serde(rename_all)])
         // so the key matches the `.vuln_type` field on findings — not the

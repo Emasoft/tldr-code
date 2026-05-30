@@ -44,9 +44,28 @@ mod tests;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Diagnostic severity (LSP-compatible)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// Diagnostic severity.
+///
+/// m024-severity-normalize-v1 (v0.4.2 M-117 / M-024, BREAKING):
+/// historically this enum mirrored LSP's 4-level severity vocabulary
+/// (`error|warning|info|hint`) and serialized as such. After M-024 the
+/// JSON `severity` field is projected onto the canonical 3-level set:
+///
+///   ```
+///   Error       → "error"
+///   Warning     → "warn"
+///   Information → "info"
+///   Hint        → "info"
+///   ```
+///
+/// Internal LSP-aligned variants are preserved (4 of them) so per-tool
+/// parsers and the `errors` / `warnings` / `info` / `hints` summary
+/// counters in `DiagnosticsSummary` continue to bucket distinctly.
+/// `Display` (used by human-readable text output and tool-name
+/// formatters) is preserved at the legacy LSP vocabulary.
+/// Deserialize accepts both the canonical 3-level form and the legacy
+/// 4-level form so SARIF / parser fixtures still round-trip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
     /// Error severity - must be fixed
     Error = 1,
@@ -59,6 +78,18 @@ pub enum Severity {
     Hint = 4,
 }
 
+impl Severity {
+    /// m024-severity-normalize-v1: project to the canonical 3-level
+    /// vocabulary emitted in JSON output.
+    pub fn canonical_str(&self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warn",
+            Severity::Information | Severity::Hint => "info",
+        }
+    }
+}
+
 impl std::fmt::Display for Severity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -67,6 +98,33 @@ impl std::fmt::Display for Severity {
             Severity::Information => write!(f, "info"),
             Severity::Hint => write!(f, "hint"),
         }
+    }
+}
+
+impl Serialize for Severity {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.canonical_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Severity {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        Ok(match s.as_str() {
+            // Canonical M-024 vocabulary
+            "error" => Severity::Error,
+            "warn" => Severity::Warning,
+            "info" => Severity::Information,
+            // Legacy LSP vocabulary (back-compat for parser fixtures
+            // and SARIF round-trip)
+            "warning" => Severity::Warning,
+            "information" => Severity::Information,
+            "hint" => Severity::Hint,
+            // Unknown strings collapse to Information rather than Hint
+            // so they show up in the `info` summary counter — Hint is
+            // the silent default used when a parser couldn't tell.
+            _ => Severity::Information,
+        })
     }
 }
 
