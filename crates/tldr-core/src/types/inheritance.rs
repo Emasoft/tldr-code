@@ -149,6 +149,17 @@ pub enum InheritanceKind {
     Implements,
     /// Struct embeds another struct (Go struct embedding - A14)
     Embeds,
+    /// Ruby `include Mod` — mixes module instance methods into the
+    /// including class. m114-adapter-tail-v1 (v0.4.2 M-114).
+    Includes,
+    /// Ruby `extend Mod` — mixes module methods in as CLASS-level
+    /// (singleton) methods rather than instance methods.
+    /// m114-adapter-tail-v1 (v0.4.2 M-114).
+    Extended,
+    /// Ruby `prepend Mod` — mixes a module into the ancestor chain
+    /// BEFORE the including class, so the module's methods win
+    /// dispatch. m114-adapter-tail-v1 (v0.4.2 M-114).
+    Prepends,
 }
 
 /// Resolution status for a base class

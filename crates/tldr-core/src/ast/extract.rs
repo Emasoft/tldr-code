@@ -4660,14 +4660,32 @@ fn extract_ocaml_functions_detailed(node: &Node, source: &str, functions: &mut V
 
     for child in node.children(&mut cursor) {
         if child.kind() == "value_definition" {
-            // value_definition contains let_binding(s)
-            let mut inner_cursor = child.walk();
-            for inner in child.children(&mut inner_cursor) {
-                if inner.kind() == "let_binding" {
-                    // Only extract if it looks like a function (has parameters)
-                    if ocaml_binding_has_params(&inner) {
-                        let info = extract_ocaml_function_info(&inner, &child, source);
-                        functions.push(info);
+            // m114-adapter-tail-v1 (v0.4.2 M-114): tree-sitter-ocaml emits
+            // a `value_definition` wrapper for BOTH top-level
+            // `let f = ...` bindings (parented by `compilation_unit` /
+            // `module_definition` / `module_binding`) AND inner
+            // `let f = ... in body` bindings (parented by
+            // `let_expression`). Without this guard the recursive walk
+            // leaks inner let-in helpers as if they were top-level
+            // definitions (e.g. `let helper z = ... in body` nested
+            // inside another function would surface as a sibling
+            // function on the file's `functions[]`). Only emit when the
+            // parent is NOT `let_expression` — that's the AST shape
+            // that distinguishes the let-in form from a true module-
+            // level binding.
+            let is_let_in = child
+                .parent()
+                .map(|p| p.kind() == "let_expression")
+                .unwrap_or(false);
+            if !is_let_in {
+                let mut inner_cursor = child.walk();
+                for inner in child.children(&mut inner_cursor) {
+                    if inner.kind() == "let_binding" {
+                        // Only extract if it looks like a function (has parameters)
+                        if ocaml_binding_has_params(&inner) {
+                            let info = extract_ocaml_function_info(&inner, &child, source);
+                            functions.push(info);
+                        }
                     }
                 }
             }

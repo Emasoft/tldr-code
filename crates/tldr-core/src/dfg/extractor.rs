@@ -915,6 +915,35 @@ impl<'a> DfgBuilder<'a> {
             }
 
             // =================================================================
+            // PHP increment/decrement: $n++, ++$n, $n--, --$n
+            //
+            // m114-adapter-tail-v1 (v0.4.2 M-114): tree-sitter-php emits
+            // `update_expression` with an `argument` field pointing at the
+            // operand (a `variable_name` for `$n`, possibly a
+            // `subscript_expression` or `member_access_expression` for
+            // `$arr[$i]++`). The pre-fix extractor only walked `identifier`
+            // and `variable_name` nodes for refs, treating them as USE — so
+            // `$n++` registered ONE use of `$n` and ZERO defs. Reaching-defs
+            // then reported every variable mutated only via `++`/`--`
+            // as bound to its initial assignment.
+            //
+            // Emit BOTH a use (the increment reads the current value) and
+            // a def (it writes back the result). Match `process_augmented_
+            // assignment`'s pattern.
+            // =================================================================
+            "update_expression" if matches!(self.language, Language::Php) => {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    if arg.kind() == "variable_name" {
+                        self.add_ref_from_node(arg, RefType::Update);
+                    } else {
+                        // For subscript/member access targets, still walk
+                        // the rhs for nested uses so analyzers see them.
+                        self.extract_refs_from_node(arg, depth + 1)?;
+                    }
+                }
+            }
+
+            // =================================================================
             // Rust let declarations: let x = ...; let mut x = ...;
             // rust-dataflow-v1 (v0.4.2 bug-C2): `let_condition` is the AST
             // node for the `let pat = expr` form that appears INSIDE
@@ -2062,18 +2091,44 @@ impl<'a> DfgBuilder<'a> {
     /// Process Kotlin property declaration: val x = ...; var x = ...
     /// AST: property_declaration -> (val/var) variable_declaration (identifier) = expression
     fn process_kotlin_property(&mut self, node: Node, depth: usize) -> TldrResult<()> {
-        // Find the variable_declaration child which contains the identifier
+        // Find the variable_declaration child which contains the identifier.
+        //
+        // m114-adapter-tail-v1 (v0.4.2 M-114): also handle destructuring
+        // declarations of the form `val (a, b) = pair`. tree-sitter-kotlin
+        // emits this as `property_declaration > multi_variable_declaration >
+        // variable_declaration[]` — one `variable_declaration` per name.
+        // The pre-fix path only recognised a direct `variable_declaration`
+        // child, so the destructured names never got a def-site and
+        // reaching-defs reported them as uninitialised.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "variable_declaration" {
-                // variable_declaration has an identifier child
-                let mut inner = child.walk();
-                for inner_child in child.children(&mut inner) {
-                    if inner_child.kind() == "identifier" {
-                        self.add_ref_from_node(inner_child, RefType::Definition);
-                        break;
+            match child.kind() {
+                "variable_declaration" => {
+                    // variable_declaration has an identifier child
+                    let mut inner = child.walk();
+                    for inner_child in child.children(&mut inner) {
+                        if inner_child.kind() == "identifier" {
+                            self.add_ref_from_node(inner_child, RefType::Definition);
+                            break;
+                        }
                     }
                 }
+                "multi_variable_declaration" => {
+                    // Destructuring: emit one def-site per name.
+                    let mut multi = child.walk();
+                    for vd in child.children(&mut multi) {
+                        if vd.kind() == "variable_declaration" {
+                            let mut id_cursor = vd.walk();
+                            for id_child in vd.children(&mut id_cursor) {
+                                if id_child.kind() == "identifier" {
+                                    self.add_ref_from_node(id_child, RefType::Definition);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 

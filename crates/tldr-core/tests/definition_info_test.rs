@@ -9,6 +9,7 @@ fn test_definition_info_serde_roundtrip() {
         line_start: 1,
         line_end: 10,
         signature: "pub fn foo(x: i32) -> bool".to_string(),
+        is_test: false,
     };
     let json = serde_json::to_string(&def).unwrap();
     let back: DefinitionInfo = serde_json::from_str(&json).unwrap();

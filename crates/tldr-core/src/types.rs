@@ -1259,6 +1259,16 @@ pub struct DefinitionInfo {
     pub line_end: u32,
     /// Signature line (e.g., "pub fn foo(x: i32) -> bool")
     pub signature: String,
+    /// Whether this definition is a recognised test fixture.
+    ///
+    /// m114-adapter-tail-v1 (v0.4.2 M-114): currently set for Ruby
+    /// class definitions whose superclass is a known unit-test base
+    /// (`Minitest::Test`, `Minitest::Spec`, `Test::Unit::TestCase`,
+    /// `ActiveSupport::TestCase`). Default `false` for all other
+    /// languages and other Ruby classes; serialization omits the
+    /// field when false so existing snapshots remain unchanged.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub is_test: bool,
 }
 
 /// Structure of a single file
@@ -1760,6 +1770,11 @@ pub struct IntraFileCallGraph {
 /// Helper for serde skip_serializing_if on u32 fields.
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
+}
+
+/// Helper for serde skip_serializing_if on bool fields whose default is `false`.
+fn is_false_bool(v: &bool) -> bool {
+    !*v
 }
 
 /// Reference to a function in the codebase, used in call graphs and dead code analysis.

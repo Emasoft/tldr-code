@@ -1566,16 +1566,29 @@ fn extract_ocaml_functions(node: &Node, source: &str, functions: &mut Vec<String
 
     for child in node.children(&mut cursor) {
         if child.kind() == "value_definition" {
-            let mut inner_cursor = child.walk();
-            for inner in child.children(&mut inner_cursor) {
-                if inner.kind() == "let_binding" {
-                    // Only extract if it has parameters (i.e., is a function, not a value binding)
-                    if ocaml_binding_has_params_simple(&inner) {
-                        if let Some(pattern_node) = inner.child_by_field_name("pattern") {
-                            let name = get_node_text(&pattern_node, source);
-                            // Skip anonymous bindings like `let () = ...`
-                            if name != "()" && !name.is_empty() {
-                                functions.push(name);
+            // m114-adapter-tail-v1 (v0.4.2 M-114): skip `let_expression`-
+            // parented `value_definition` nodes — those are the
+            // tree-sitter-ocaml wrapper for inner `let ... in body`
+            // bindings, NOT module-level definitions. Without this guard
+            // the recursive walk leaked let-in locals as top-level
+            // functions (mirrors the fix in
+            // `extract_ocaml_functions_detailed`).
+            let is_let_in = child
+                .parent()
+                .map(|p| p.kind() == "let_expression")
+                .unwrap_or(false);
+            if !is_let_in {
+                let mut inner_cursor = child.walk();
+                for inner in child.children(&mut inner_cursor) {
+                    if inner.kind() == "let_binding" {
+                        // Only extract if it has parameters (i.e., is a function, not a value binding)
+                        if ocaml_binding_has_params_simple(&inner) {
+                            if let Some(pattern_node) = inner.child_by_field_name("pattern") {
+                                let name = get_node_text(&pattern_node, source);
+                                // Skip anonymous bindings like `let () = ...`
+                                if name != "()" && !name.is_empty() {
+                                    functions.push(name);
+                                }
                             }
                         }
                     }
@@ -2038,6 +2051,76 @@ fn extract_luau_functions(node: &Node, source: &str, functions: &mut Vec<String>
 ///
 /// This walks the tree-sitter AST recursively and classifies nodes as function-like
 /// or class-like, mirroring the logic in `search/enriched.rs::classify_node`.
+/// Detect whether a Ruby `class` AST node is a unit-test fixture.
+///
+/// m114-adapter-tail-v1 (v0.4.2 M-114): pattern-matches the superclass
+/// chain against the canonical minitest / test-unit / activesupport
+/// base classes. Returns `true` when the superclass name (either a
+/// bare `constant` like `Test`, or a `scope_resolution` like
+/// `Minitest::Test`) matches one of the known endings.
+///
+/// Matched bases (case-sensitive, suffix match on the rightmost
+/// `::`-segment so namespaced aliases such as `MyApp::Test::TestCase`
+/// still resolve):
+/// * `Minitest::Test`, `Minitest::Spec`
+/// * `Test::Unit::TestCase`
+/// * `ActiveSupport::TestCase`
+///
+/// NOT matched: arbitrary RSpec `describe` blocks (those are call
+/// expressions, not class nodes — handled at the discovery layer if
+/// needed; outside the scope of this fix).
+fn ruby_class_is_test(class_node: &Node, source: &str) -> bool {
+    let superclass = match class_node.child_by_field_name("superclass") {
+        Some(s) => s,
+        None => return false,
+    };
+    // Walk children of the `superclass` node and pick the first
+    // `constant` / `scope_resolution` child (the punctuation `<` is a
+    // sibling and is intentionally skipped).
+    let mut cursor = superclass.walk();
+    for child in superclass.children(&mut cursor) {
+        match child.kind() {
+            "constant" | "scope_resolution" => {
+                let text = match child.utf8_text(source.as_bytes()) {
+                    Ok(t) => t,
+                    Err(_) => return false,
+                };
+                return ruby_is_test_base_name(text);
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether `name` matches one of the canonical Ruby unit-test base
+/// classes. Suffix-matches on the rightmost `::`-segment so
+/// re-aliased forms (e.g. `MyProj::Minitest::Test`) still flag.
+fn ruby_is_test_base_name(name: &str) -> bool {
+    // Exact matches against the fully-qualified canonical names.
+    const EXACT: &[&str] = &[
+        "Minitest::Test",
+        "Minitest::Spec",
+        "MiniTest::Test",      // legacy camelCase
+        "MiniTest::Unit::TestCase",
+        "Test::Unit::TestCase",
+        "ActiveSupport::TestCase",
+    ];
+    for b in EXACT {
+        if name == *b {
+            return true;
+        }
+    }
+    // Suffix match: trailing `::Minitest::Test` etc.
+    for b in EXACT {
+        let suffix = format!("::{}", b);
+        if name.ends_with(&suffix) {
+            return true;
+        }
+    }
+    false
+}
+
 fn extract_definitions(tree: &Tree, source: &str, language: Language) -> Vec<DefinitionInfo> {
     let mut definitions = Vec::new();
     let root = tree.root_node();
@@ -2081,6 +2164,7 @@ fn collect_definitions(
                 line_start,
                 line_end,
                 signature,
+                is_test: false,
             });
             // Recurse INTO children so methods inside the body and any
             // nested classes are still collected, but skip the bodyless
@@ -2191,12 +2275,25 @@ fn collect_definitions(
                 }
             };
 
+            // m114-adapter-tail-v1 (v0.4.2 M-114): tag Ruby class
+            // definitions whose superclass is a known unit-test base
+            // class (`Minitest::Test`, `Minitest::Spec`,
+            // `Test::Unit::TestCase`, `ActiveSupport::TestCase`) with
+            // `is_test = true`. The audit corpus
+            // (`/tmp/repos/ruby-rubocop/spec/**`) is dense with these
+            // and downstream tooling (`dead`, `surface`, change-impact)
+            // wants to skip non-test code paths.
+            let is_test = entry_kind == "class"
+                && language == Language::Ruby
+                && ruby_class_is_test(&node, source);
+
             definitions.push(DefinitionInfo {
                 name,
                 kind: entry_kind.to_string(),
                 line_start,
                 line_end,
                 signature,
+                is_test,
             });
         }
     }
@@ -2555,6 +2652,7 @@ fn make_constant_def(node: Node, name: String, source: &str) -> DefinitionInfo {
         line_start,
         line_end,
         signature,
+        is_test: false,
     }
 }
 
@@ -2650,6 +2748,7 @@ fn try_field_definition(
                             line_start,
                             line_end,
                             signature: signature.clone(),
+                            is_test: false,
                         });
                     }
                 }
@@ -2670,6 +2769,7 @@ fn try_field_definition(
                                     line_start,
                                     line_end,
                                     signature: signature.clone(),
+                                    is_test: false,
                                 });
                             }
                             break;
@@ -2693,6 +2793,7 @@ fn try_field_definition(
                                     line_start,
                                     line_end,
                                     signature: signature.clone(),
+                                    is_test: false,
                                 });
                             }
                             break;
@@ -2728,6 +2829,7 @@ fn try_field_definition(
                     line_start,
                     line_end,
                     signature,
+                    is_test: false,
                 });
             }
         }
@@ -2780,6 +2882,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     line_start,
                     line_end,
                     signature,
+                    is_test: false,
                 });
             }
             "defmodule" => {
@@ -2794,6 +2897,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     line_start,
                     line_end,
                     signature,
+                    is_test: false,
                 });
             }
             _ => {}

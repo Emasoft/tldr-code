@@ -101,11 +101,20 @@ fn collect_ruby_mixins(
 
     let mut cursor = body.walk();
     for stmt in body.children(&mut cursor) {
-        if let Some(target) = ruby_mixin_call_target(&stmt, source) {
+        // m114-adapter-tail-v1 (v0.4.2 M-114): preserve `include` /
+        // `extend` / `prepend` as DISTINCT inheritance kinds. The
+        // pre-fix code collapsed all three to `Implements`, which
+        // erased the dispatch-order semantics: `prepend Mod` makes
+        // Mod's methods win over the including class's own methods,
+        // `include Mod` puts them after, and `extend Mod` aliases
+        // to class-level (singleton) methods. Each one is a real
+        // distinction at runtime and consumers (e.g. patch reasoning,
+        // method-resolution-order analyzers) need them separately.
+        if let Some((target, kind)) = ruby_mixin_call_target_kind(&stmt, source) {
             if !out.bases.iter().any(|b| b == &target) {
                 out.bases.push(target);
                 let kinds = out.base_kinds.get_or_insert_with(Vec::new);
-                kinds.push(InheritanceKind::Implements);
+                kinds.push(kind);
             }
         }
     }
@@ -121,7 +130,9 @@ fn ruby_find_first_kind<'a>(node: &Node<'a>, kind: &str) -> Option<Node<'a>> {
     None
 }
 
-fn ruby_mixin_call_target(node: &Node, source: &str) -> Option<String> {
+/// m114-adapter-tail-v1 (v0.4.2 M-114): variant that returns the target
+/// AND the distinct mixin kind.
+fn ruby_mixin_call_target_kind(node: &Node, source: &str) -> Option<(String, InheritanceKind)> {
     if node.kind() != "call" && node.kind() != "method_call" {
         return None;
     }
@@ -130,15 +141,21 @@ fn ruby_mixin_call_target(node: &Node, source: &str) -> Option<String> {
     }
     let method_node = node.child_by_field_name("method")?;
     let method = method_node.utf8_text(source.as_bytes()).ok()?;
-    if method != "include" && method != "extend" && method != "prepend" {
-        return None;
-    }
+    let kind = match method {
+        "include" => InheritanceKind::Includes,
+        "extend" => InheritanceKind::Extended,
+        "prepend" => InheritanceKind::Prepends,
+        _ => return None,
+    };
     let args = node.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
     for arg in args.children(&mut cursor) {
         match arg.kind() {
             "constant" | "scope_resolution" => {
-                return arg.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                return arg
+                    .utf8_text(source.as_bytes())
+                    .ok()
+                    .map(|s| (s.to_string(), kind));
             }
             _ => {}
         }
