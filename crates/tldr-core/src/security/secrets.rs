@@ -408,16 +408,28 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
-/// Check if a high-entropy string is likely a false positive
+/// Check if a high-entropy string is likely a false positive.
+///
+/// M-115 #56: the pre-fix logic suppressed any string matching the
+/// base64 character class `^[A-Za-z0-9+/]+=*$`. That class includes
+/// every pure-alphanumeric string, so an arbitrary 40-char API-key-
+/// shaped token (entropy > 4.5 bits/char) was silently discarded
+/// despite being exactly the high-entropy signal the scanner is
+/// designed to flag. The fix: only suppress structural false
+/// positives (UUIDs, hex hashes, dotted versions, repeated chars,
+/// and `=`-padded base64 payloads which are typically asset blobs).
+/// Alphanumeric high-entropy strings now reach the report.
 fn is_likely_false_positive(s: &str) -> bool {
     // Common non-secret patterns
     let fp_patterns = [
         // UUIDs
         Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap(),
-        // Hex hashes (SHA, MD5, etc.)
-        Regex::new(r"^[0-9a-fA-F]{32,}$").unwrap(),
-        // Base64 encoded common strings
-        Regex::new(r"^[A-Za-z0-9+/]+=*$").unwrap(),
+        // Base64 with explicit `=` padding — almost always asset blobs
+        // (PNG data, compressed protobuf, etc.) rather than secrets.
+        // We KEEP this one because the `=` is a strong signal.
+        // The unpadded variant `^[A-Za-z0-9+/]+$` is REMOVED — too
+        // permissive (matches every alphanumeric token).
+        Regex::new(r"^[A-Za-z0-9+/]+=+$").unwrap(),
     ];
 
     // Check if it matches a known false positive pattern
@@ -425,6 +437,18 @@ fn is_likely_false_positive(s: &str) -> bool {
         if pattern.is_match(s) {
             return true;
         }
+    }
+
+    // Hex-only strings of 32+ chars are likely hashes (SHA-256 = 64,
+    // MD5 = 32, SHA-1 = 40). A real hex API key would also match this
+    // structurally — but hex-only strings cap at log2(16) = 4 bits/char,
+    // so they cannot have entropy > 4.5 anyway and would never reach
+    // this filter unless the entropy threshold is lowered. Still, we
+    // suppress them defensively to keep the historical signal/noise
+    // ratio for code review.
+    let is_hex_only = s.len() >= 32 && s.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex_only {
+        return true;
     }
 
     // Check if it's all same character repeated

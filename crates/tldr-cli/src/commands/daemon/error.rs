@@ -58,6 +58,15 @@ pub enum DaemonError {
     #[error("stale PID file (process {pid} not running)")]
     StalePidFile { pid: u32 },
 
+    /// PID file path is a symbolic link — refused to follow (M-115 #52).
+    ///
+    /// Opening a symlinked PID file would let an attacker with write
+    /// access to the temp directory redirect the daemon's truncate/write
+    /// to an arbitrary victim-writable file. We open with `O_NOFOLLOW`
+    /// and surface this error instead.
+    #[error("refused to follow symlink at PID path: {}", path.display())]
+    PidSymlink { path: PathBuf },
+
     /// Generic IO error
     #[error("IO error: {0}")]
     Io(#[from] io::Error),

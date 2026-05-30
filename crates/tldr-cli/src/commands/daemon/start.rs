@@ -194,12 +194,21 @@ impl DaemonStartArgs {
     ) -> anyhow::Result<()> {
         // First check if daemon is already running
         if check_socket_alive(project).await {
-            // Try to get PID from PID file
+            // Try to get PID from PID file. M-115 #52: refuse to follow
+            // a symlinked PID file; report PID as 0 in that case rather
+            // than leaking the contents of the symlink target.
             let pid_path = compute_pid_path(project);
-            let pid = std::fs::read_to_string(&pid_path)
-                .ok()
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
+            let is_symlink = std::fs::symlink_metadata(&pid_path)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false);
+            let pid = if is_symlink {
+                0
+            } else {
+                std::fs::read_to_string(&pid_path)
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0)
+            };
 
             return Err(anyhow::anyhow!("Daemon already running (PID: {})", pid));
         }

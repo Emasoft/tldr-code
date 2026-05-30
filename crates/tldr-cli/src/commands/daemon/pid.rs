@@ -186,13 +186,55 @@ pub fn try_acquire_lock(pid_path: &Path) -> DaemonResult<PidGuard> {
         std::fs::create_dir_all(parent)?;
     }
 
+    // M-115 #52: refuse to follow symlinks. An attacker with write
+    // access to the temp directory could plant a symlink at this path
+    // pointing at a victim-writable file (e.g. another user's config),
+    // and the daemon's truncate/write would then overwrite the target.
+    // We open with `O_NOFOLLOW` so the kernel returns `ELOOP` instead.
+    //
+    // Belt-and-braces: also call `symlink_metadata` first to surface a
+    // typed `PidSymlink` error rather than a bare `Io(ELOOP)`. This is
+    // cheap (single `lstat`) and gives callers a clear signal.
+    if let Ok(meta) = std::fs::symlink_metadata(pid_path) {
+        if meta.file_type().is_symlink() {
+            return Err(DaemonError::PidSymlink {
+                path: pid_path.to_path_buf(),
+            });
+        }
+    }
+
     // Open or create the PID file
-    let file = OpenOptions::new()
+    let mut open_opts = OpenOptions::new();
+    open_opts
         .read(true)
         .write(true)
         .create(true)
-        .truncate(false) // Don't truncate yet - we might fail to lock
-        .open(pid_path)?;
+        .truncate(false); // Don't truncate yet - we might fail to lock
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NOFOLLOW: fail with ELOOP if the final component is a
+        // symlink. Combined with the explicit symlink_metadata check
+        // above, this closes the race window between the lstat and
+        // the open call.
+        open_opts.custom_flags(libc::O_NOFOLLOW);
+    }
+
+    let file = match open_opts.open(pid_path) {
+        Ok(f) => f,
+        Err(e) => {
+            // Map ELOOP -> PidSymlink for callers that race past the
+            // lstat check above (TOCTOU between lstat and open).
+            #[cfg(unix)]
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                return Err(DaemonError::PidSymlink {
+                    path: pid_path.to_path_buf(),
+                });
+            }
+            return Err(DaemonError::Io(e));
+        }
+    };
 
     // Try to acquire exclusive lock FIRST (before reading)
     // This is critical for security - prevents TOCTOU attacks
@@ -307,7 +349,31 @@ fn try_lock_file(file: &File) -> Result<(), std::io::Error> {
 /// Returns `true` if the file exists and contains a PID of a non-running process.
 /// Returns `false` if file doesn't exist, is empty, or process is running.
 pub fn check_stale_pid(pid_path: &Path) -> DaemonResult<bool> {
-    // Try to read existing PID file
+    // M-115 #52: refuse to follow symlinks. `daemon stop` calls this
+    // on the legacy cleanup path and then unlinks the file via
+    // `cleanup_stale_pid` — following a symlink here would unlink the
+    // target (an arbitrary victim-writable file).
+    match std::fs::symlink_metadata(pid_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(DaemonError::PidSymlink {
+                path: pid_path.to_path_buf(),
+            });
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(DaemonError::Io(e)),
+    }
+
+    // Try to read existing PID file (now known to be a regular file
+    // at the time of lstat — TOCTOU race against a swap-to-symlink is
+    // mitigated by the read_to_string itself failing on subsequent
+    // open if O_NOFOLLOW were set; std::fs::read_to_string does not
+    // expose that flag, so we accept the residual race here in
+    // exchange for the read being read-only — at worst we read the
+    // first few bytes of a victim file as if it were a PID, which
+    // is information disclosure only and does not modify the target.
+    // The truncate/unlink paths (try_acquire_lock, cleanup_stale_pid)
+    // are the dangerous ones and they both lstat first.
     let content = match std::fs::read_to_string(pid_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -330,6 +396,11 @@ pub fn check_stale_pid(pid_path: &Path) -> DaemonResult<bool> {
 /// This is safe to call even if the daemon is running - it will only
 /// remove truly stale files.
 pub fn cleanup_stale_pid(pid_path: &Path) -> DaemonResult<bool> {
+    // M-115 #52: `check_stale_pid` returns `PidSymlink` on a symlinked
+    // path, so the `?` propagates cleanly without ever reaching the
+    // `remove_file` call below — `remove_file` on a symlink unlinks
+    // the symlink itself (safe) but we still surface the error so the
+    // caller (daemon stop) can log the attempted attack.
     if check_stale_pid(pid_path)? {
         std::fs::remove_file(pid_path)?;
         Ok(true)
