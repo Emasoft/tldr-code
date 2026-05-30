@@ -548,6 +548,39 @@ pub fn qualified_name_fallback_bare(function_name: &str, language: Language) -> 
     function_name.rsplit("::").next().map(str::to_string)
 }
 
+/// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): `--qualified` opt-in
+/// pre-canonicaliser for per-function commands.
+///
+/// When a CLI command exposes the `--qualified` opt-in flag and the
+/// user sets it, route the user-supplied function name through this
+/// helper BEFORE doing the AST lookup. The helper:
+///
+/// 1. Returns the input unchanged when `qualified` is false (default).
+/// 2. Returns the input unchanged when the language does not use the
+///    `::` qualifier or the input is already bare (i.e., when
+///    [`qualified_name_fallback_bare`] would return `None`).
+/// 3. Otherwise returns the bare rightmost segment, which mirrors
+///    what M-013 wired into `impact`/`whatbreaks` via
+///    `analysis::impact::names_match`.
+///
+/// The default-off design preserves the existing strict-qualified
+/// behaviour of the per-function dispatchers (the canonical
+/// [`find_function_node`] still tries the qualified form first via
+/// its `Class::method` branch); the flag only opts the caller INTO
+/// the bare-name fallback when they know the input is qualified and
+/// want to short-circuit any ambiguity.
+pub fn resolve_qualified_function_name(
+    function_name: &str,
+    language: Language,
+    qualified: bool,
+) -> String {
+    if !qualified {
+        return function_name.to_string();
+    }
+    qualified_name_fallback_bare(function_name, language)
+        .unwrap_or_else(|| function_name.to_string())
+}
+
 /// halstead-per-function-v1 (v0.4.2 cluster M-026): Find a function node
 /// by BOTH name AND start line.
 ///

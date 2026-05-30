@@ -27,6 +27,17 @@ pub struct ComplexityArgs {
     /// Programming language (auto-detect if not specified)
     #[arg(long, short = 'l')]
     pub lang: Option<Language>,
+
+    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt in to the
+    /// bare-name fallback for Rust / C / C++ `Class::method` inputs.
+    /// Default behaviour is strict-qualified (the canonical
+    /// `find_function_node` C/C++/Rust `::` branch already handles
+    /// the qualified form). With `--qualified` set, the CLI also
+    /// pre-canonicalises the input via
+    /// `tldr_core::ast::function_finder::resolve_qualified_function_name`
+    /// so the lookup short-circuits to the rightmost bare segment.
+    #[arg(long)]
+    pub qualified: bool,
 }
 
 impl ComplexityArgs {
@@ -37,12 +48,26 @@ impl ComplexityArgs {
         // Validate file path exists (M28: shared validator - returns PathNotFound error)
         let validated_path = validate_file_path(self.file.to_str().unwrap_or_default(), None)?;
 
+        // Detect language up front so we can apply the m117 D8
+        // `--qualified` pre-canonicaliser before we hit either the
+        // daemon route or the direct-compute path.
+        let language =
+            detect_or_parse_language(self.lang.as_ref().map(|l| l.as_str()), &validated_path)?;
+
+        // m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt-in bare-name
+        // canonicalisation. Default is strict-qualified (no-op).
+        let function = tldr_core::ast::function_finder::resolve_qualified_function_name(
+            &self.function,
+            language,
+            self.qualified,
+        );
+
         // Try daemon first for cached result (use file's parent as project root)
         let project = validated_path.parent().unwrap_or(&validated_path);
         if let Some(result) = try_daemon_route::<ComplexityMetrics>(
             project,
             "complexity",
-            params_with_file_function(&validated_path, &self.function),
+            params_with_file_function(&validated_path, &function),
         ) {
             if writer.is_text() {
                 writer.write_text(&format_complexity_text(&result))?;
@@ -54,13 +79,9 @@ impl ComplexityArgs {
 
         // Fallback to direct compute
 
-        // Detect or parse language (uses shared validator M28)
-        let language =
-            detect_or_parse_language(self.lang.as_ref().map(|l| l.as_str()), &validated_path)?;
-
         writer.progress(&format!(
             "Calculating complexity for {} in {} ({:?})...",
-            self.function,
+            function,
             validated_path.display(),
             language
         ));
@@ -68,7 +89,7 @@ impl ComplexityArgs {
         // Calculate complexity - the function takes file path as string
         let result = calculate_complexity(
             validated_path.to_str().unwrap_or_default(),
-            &self.function,
+            &function,
             language,
         )?;
 
@@ -79,12 +100,12 @@ impl ComplexityArgs {
         // result (M-E1 selector) for backwards compatibility.
         let per_clauses = elixir_per_clause::for_each_body_bearing_clause(
             &validated_path,
-            &self.function,
+            &function,
             language,
             |tmp_path, _clause, _offset| -> anyhow::Result<ComplexityMetrics> {
                 Ok(calculate_complexity(
                     tmp_path.to_str().unwrap_or_default(),
-                    &self.function,
+                    &function,
                     language,
                 )?)
             },
@@ -98,7 +119,7 @@ impl ComplexityArgs {
         if let Some(per_clauses) = per_clauses {
             let clauses = elixir_per_clause::list_body_bearing_clauses(
                 &validated_path,
-                &self.function,
+                &function,
                 language,
             )
             .unwrap_or_default();

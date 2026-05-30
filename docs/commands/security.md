@@ -2,6 +2,41 @@
 
 Security commands detect vulnerabilities, taint flows, and API misuse.
 
+<!-- m117-deferred-decisions-v1 (v0.4.2 M-118, D9): taint vs vuln role split -->
+
+## When to use `taint` vs `vuln`
+
+`tldr` ships two security-flow engines. They are deliberately disjoint
+in scope and answer different questions; neither subsumes the other.
+
+| Property | `tldr taint <file> <func>` | `tldr vuln [<path>]` |
+|----------|---------------------------|----------------------|
+| Scope | Single function in a single file | Whole project or a sub-path |
+| Engine | Per-function dataflow / taint | Pattern-pack scan + per-function taint |
+| Speed | Fast (~tens of ms) | Slower (whole-project walk) |
+| Sinks | Generic source→sink reachability | Categorized: SQLi, XSS, command injection, path traversal, SSRF, deserialization, etc. |
+| Best for | "Is THIS one function vulnerable?" | "Audit the whole codebase / a subtree" |
+| Output | Source→sink chains for that function | Findings grouped by vulnerability type, with `--severity` and `--vuln-type` filters |
+
+### Decision table
+
+| You want to … | Use |
+|--------------|-----|
+| Verify one suspect handler before merging a PR | `tldr taint src/handler.py handle_request` |
+| Get a one-page risk summary for the whole repo | `tldr vuln .` |
+| Audit only the `auth/` subtree | `tldr vuln auth/` |
+| Filter to SQL-injection findings only | `tldr vuln . --vuln-type sql_injection` |
+| Filter to critical findings only | `tldr vuln . --severity critical` |
+| Drill down on a single function flagged by `vuln` | `tldr taint <file> <func>` (jump from vuln finding) |
+
+The two engines can disagree: `taint` will sometimes catch a flow that
+`vuln`'s pattern packs do not encode, and `vuln` will sometimes flag a
+pattern that `taint` collapses away as unreachable in a specific
+function. This is intentional — they trade scope for precision in
+opposite directions.
+
+---
+
 ## taint
 
 **Alias:** `ta`

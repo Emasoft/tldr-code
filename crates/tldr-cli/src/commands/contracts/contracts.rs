@@ -789,6 +789,13 @@ pub struct ContractsArgs {
     /// Maximum conditions to report per category
     #[arg(long, default_value = "100")]
     pub limit: usize,
+
+    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt in to the
+    /// bare-name fallback for Rust / C / C++ `Class::method` inputs.
+    /// See `complexity.rs::ComplexityArgs::qualified` for the full
+    /// rationale.
+    #[arg(long)]
+    pub qualified: bool,
 }
 
 impl ContractsArgs {
@@ -799,12 +806,6 @@ impl ContractsArgs {
         // Validate inputs
         let canonical_path = validate_file_path(&self.file)?;
         validate_function_name(&self.function)?;
-
-        writer.progress(&format!(
-            "Analyzing contracts for {}::{}...",
-            self.file.display(),
-            self.function
-        ));
 
         // Determine language (FM-22, FM-44: no silent Python fallback)
         let language = match self.lang {
@@ -818,6 +819,20 @@ impl ContractsArgs {
             })?,
         };
 
+        // m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt-in bare-name
+        // canonicalisation. Default is strict-qualified (no-op).
+        let function = tldr_core::ast::function_finder::resolve_qualified_function_name(
+            &self.function,
+            language,
+            self.qualified,
+        );
+
+        writer.progress(&format!(
+            "Analyzing contracts for {}::{}...",
+            self.file.display(),
+            function
+        ));
+
         // Verify we have a tree-sitter grammar for this language
         if ParserPool::get_ts_language(language).is_none() {
             return Err(ContractsError::ParseError {
@@ -828,7 +843,7 @@ impl ContractsArgs {
         }
 
         // Parse and analyze
-        let mut report = run_contracts(&canonical_path, &self.function, language, self.limit)?;
+        let mut report = run_contracts(&canonical_path, &function, language, self.limit)?;
 
         // (path-and-schema-cleanup-v3 P3.BUG-N2) Echo the user-supplied
         // path in the JSON `file` field. `validate_file_path` is still

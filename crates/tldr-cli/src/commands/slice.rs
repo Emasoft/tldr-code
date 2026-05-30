@@ -39,6 +39,13 @@ pub struct SliceArgs {
     /// Programming language (auto-detected from file extension if not specified)
     #[arg(long, short = 'l')]
     pub lang: Option<Language>,
+
+    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt in to the
+    /// bare-name fallback for Rust / C / C++ `Class::method` inputs.
+    /// See `complexity.rs::ComplexityArgs::qualified` for the full
+    /// rationale.
+    #[arg(long)]
+    pub qualified: bool,
 }
 
 /// CLI wrapper for slice direction
@@ -131,6 +138,14 @@ impl SliceArgs {
             .lang
             .unwrap_or_else(|| Language::from_path(&self.file).unwrap_or(Language::Python));
 
+        // m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt-in bare-name
+        // canonicalisation. Default is strict-qualified (no-op).
+        let function = tldr_core::ast::function_finder::resolve_qualified_function_name(
+            &self.function,
+            language,
+            self.qualified,
+        );
+
         let direction: SliceDirection = self.direction.into();
         let direction_str = match direction {
             SliceDirection::Backward => "backward",
@@ -142,7 +157,7 @@ impl SliceArgs {
         if let Some(output) = try_daemon_route::<LegacySliceOutput>(
             project,
             "slice",
-            params_with_file_function_line(&self.file, &self.function, self.line),
+            params_with_file_function_line(&self.file, &function, self.line),
         ) {
             // Daemon returns legacy format -- enrich with source code if possible
             let source_lines = read_file_lines(&self.file);
@@ -164,7 +179,7 @@ impl SliceArgs {
                 if output.lines.is_empty() {
                     if let Some(diag) = slice_oor_explanation(
                         self.file.to_str().unwrap_or_default(),
-                        &self.function,
+                        &function,
                         self.line,
                         language,
                     ) {
@@ -224,7 +239,7 @@ impl SliceArgs {
                 let explanation = if output.lines.is_empty() {
                     slice_oor_explanation(
                         self.file.to_str().unwrap_or_default(),
-                        &self.function,
+                        &function,
                         self.line,
                         language,
                     )
@@ -254,13 +269,13 @@ impl SliceArgs {
             direction_str,
             self.line,
             self.file.display(),
-            self.function
+            function
         ));
 
         // Get rich slice
         let rich = get_slice_rich(
             self.file.to_str().unwrap_or_default(),
-            &self.function,
+            &function,
             self.line,
             direction,
             self.variable.as_deref(),
@@ -306,7 +321,7 @@ impl SliceArgs {
         let explanation = if lines.is_empty() {
             slice_oor_explanation(
                 self.file.to_str().unwrap_or_default(),
-                &self.function,
+                &function,
                 self.line,
                 language,
             )
@@ -316,7 +331,7 @@ impl SliceArgs {
 
         let output = SliceOutput {
             file: self.file.clone(),
-            function: self.function.clone(),
+            function: function.clone(),
             criterion_line: self.line,
             direction: direction_str.to_string(),
             variable: self.variable.clone(),
@@ -339,7 +354,7 @@ impl SliceArgs {
             let user_line = self.line;
             elixir_per_clause::for_each_body_bearing_clause(
                 &self.file,
-                &self.function,
+                &function,
                 language,
                 |tmp_path, clause, _offset| -> anyhow::Result<serde_json::Value> {
                     let line_for_clause = if user_line >= clause.start_line
@@ -355,7 +370,7 @@ impl SliceArgs {
                     };
                     let rich_sub = get_slice_rich(
                         tmp_path.to_str().unwrap_or_default(),
-                        &self.function,
+                        &function,
                         line_for_clause,
                         direction,
                         self.variable.as_deref(),
@@ -386,7 +401,7 @@ impl SliceArgs {
                         .collect();
                     let sub_output = SliceOutput {
                         file: self.file.clone(),
-                        function: self.function.clone(),
+                        function: function.clone(),
                         criterion_line: line_for_clause,
                         direction: direction_str.to_string(),
                         variable: self.variable.clone(),

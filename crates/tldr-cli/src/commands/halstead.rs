@@ -66,6 +66,13 @@ pub struct HalsteadArgs {
     /// Maximum files to process (0 = unlimited)
     #[arg(long, default_value = "0")]
     pub max_files: usize,
+
+    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt in to the
+    /// bare-name fallback for Rust / C / C++ `Class::method` inputs.
+    /// See `complexity.rs::ComplexityArgs::qualified` for the full
+    /// rationale.
+    #[arg(long)]
+    pub qualified: bool,
 }
 
 impl HalsteadArgs {
@@ -73,8 +80,22 @@ impl HalsteadArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
+        // m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt-in bare-name
+        // canonicalisation.
+        let function = self.function.as_deref().map(|raw| {
+            let lang = self
+                .lang
+                .or_else(|| Language::from_path(&self.path))
+                .unwrap_or(Language::Python);
+            tldr_core::ast::function_finder::resolve_qualified_function_name(
+                raw,
+                lang,
+                self.qualified,
+            )
+        });
+
         let options = HalsteadOptions {
-            function: self.function.clone(),
+            function: function.clone(),
             volume_threshold: self.threshold_volume,
             difficulty_threshold: self.threshold_difficulty,
             show_operators: self.show_operators,

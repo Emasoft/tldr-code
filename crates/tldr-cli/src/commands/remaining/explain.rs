@@ -57,6 +57,13 @@ pub struct ExplainArgs {
     /// Output file (stdout if not specified)
     #[arg(long, short = 'o')]
     pub output: Option<PathBuf>,
+
+    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt in to the
+    /// bare-name fallback for Rust / C / C++ `Class::method` inputs.
+    /// See `complexity.rs::ComplexityArgs::qualified` for the full
+    /// rationale.
+    #[arg(long)]
+    pub qualified: bool,
 }
 
 // =============================================================================
@@ -2608,12 +2615,6 @@ impl ExplainArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
-        writer.progress(&format!(
-            "Analyzing function {} in {}...",
-            self.function,
-            self.file.display()
-        ));
-
         // Check file exists
         if !self.file.exists() {
             return Err(RemainingError::file_not_found(&self.file).into());
@@ -2622,6 +2623,23 @@ impl ExplainArgs {
         // Detect language from file extension
         let language = Language::from_path(&self.file)
             .ok_or_else(|| RemainingError::parse_error(&self.file, "Unsupported language"))?;
+
+        // m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt-in bare-name
+        // canonicalisation. When --qualified is set, route `Class::method`
+        // through `resolve_qualified_function_name` so the rest of the
+        // dispatcher sees the bare last segment for Rust / C / C++.
+        // Default behaviour (flag absent) preserves the input verbatim.
+        let function = tldr_core::ast::function_finder::resolve_qualified_function_name(
+            &self.function,
+            language,
+            self.qualified,
+        );
+
+        writer.progress(&format!(
+            "Analyzing function {} in {}...",
+            function,
+            self.file.display()
+        ));
 
         // Get function node kinds for this language
         let func_kinds = get_function_node_kinds(language);
@@ -2648,13 +2666,13 @@ impl ExplainArgs {
         // failure to preserve any pattern the canonical impl doesn't handle yet.
         let canonical_node = tldr_core::ast::function_finder::find_function_node(
             root,
-            &self.function,
+            &function,
             language,
             &source,
         );
         let func_node = canonical_node
-            .or_else(|| find_function_node(root, source_bytes, &self.function, func_kinds))
-            .ok_or_else(|| RemainingError::symbol_not_found(&self.function, &self.file))?;
+            .or_else(|| find_function_node(root, source_bytes, &function, func_kinds))
+            .ok_or_else(|| RemainingError::symbol_not_found(&function, &self.file))?;
 
         // Get file path string
         let file_path = self.file.to_string_lossy().to_string();
@@ -2691,7 +2709,7 @@ impl ExplainArgs {
         let line_start = decl_keyword_line_from_node(&func_node);
         // Build report
         let mut report = ExplainReport::new(
-            &self.function,
+            &function,
             &file_path,
             line_start,
             get_end_line_number(func_node),
@@ -2715,7 +2733,7 @@ impl ExplainArgs {
         let mut complexity_info = compute_complexity(func_node);
         if let Ok(canonical) = tldr_core::calculate_complexity(
             self.file.to_str().unwrap_or_default(),
-            &self.function,
+            &function,
             language,
         ) {
             complexity_info.cyclomatic = canonical.cyclomatic;
@@ -2735,11 +2753,10 @@ impl ExplainArgs {
         // The lookup name is stripped of class prefix because
         // `get_cfg_context` matches by trailing identifier — same shape
         // as `get_cfg_metrics` in `tldr-core/src/context/builder.rs`.
-        let lookup_name = self
-            .function
+        let lookup_name = function
             .rsplit("::")
             .next()
-            .unwrap_or(&self.function);
+            .unwrap_or(&function);
         let lookup_name = lookup_name
             .rsplit('.')
             .next()
@@ -2795,7 +2812,7 @@ impl ExplainArgs {
         // analysis error so the additive field never breaks consumers
         // that don't reference it.
         let cog_options = tldr_core::metrics::CognitiveOptions {
-            function_filter: Some(self.function.clone()),
+            function_filter: Some(function.clone()),
             threshold: tldr_core::metrics::cognitive::DEFAULT_THRESHOLD,
             high_threshold: tldr_core::metrics::cognitive::DEFAULT_HIGH_THRESHOLD,
             show_contributors: false,
@@ -2816,11 +2833,11 @@ impl ExplainArgs {
             let by_line = cog_report
                 .functions
                 .iter()
-                .find(|f| f.line == want_line && (f.name == self.function || f.name == lookup_name));
+                .find(|f| f.line == want_line && (f.name == function || f.name == lookup_name));
             let by_name = cog_report
                 .functions
                 .iter()
-                .find(|f| f.name == self.function || f.name == lookup_name);
+                .find(|f| f.name == function || f.name == lookup_name);
             if let Some(fc) = by_line.or(by_name) {
                 complexity_info.cognitive = Some(fc.cognitive);
             }
@@ -2840,7 +2857,7 @@ impl ExplainArgs {
         );
 
         // Find callers
-        report.callers = find_callers(root, source_bytes, &self.function, &file_path, func_kinds);
+        report.callers = find_callers(root, source_bytes, &function, &file_path, func_kinds);
 
         // explain-cross-command-consistency-v1 (P11.BUG-AGG-1): the
         // per-file walker above only sees callers/callees defined in the
@@ -2849,7 +2866,7 @@ impl ExplainArgs {
         // `tldr references` / `tldr context` so the four commands agree
         // on relationships. Same-file results are preserved; only
         // additional cross-file edges get appended.
-        enrich_with_project_graph(&mut report, &self.file, &self.function, language);
+        enrich_with_project_graph(&mut report, &self.file, &function, language);
 
         // ux-and-explain-completeness-v1 (P12.AGG12-1): some languages
         // under-report call edges in the project call graph (e.g. C#,
@@ -2860,7 +2877,7 @@ impl ExplainArgs {
         // Path-aware dedup means same-file walker results and
         // call-graph results that already populated the list won't be
         // duplicated.
-        enrich_with_references(&mut report, &self.file, &self.function, language);
+        enrich_with_references(&mut report, &self.file, &function, language);
 
         // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): unify every
         // emitted `callers[].file` and `callees[].file` to the
@@ -2885,14 +2902,13 @@ impl ExplainArgs {
         let per_clause_array: Option<Vec<serde_json::Value>> = if writer.is_text() {
             None
         } else {
-            let lookup_name_outer = self
-                .function
+            let lookup_name_outer = function
                 .rsplit("::")
                 .next()
-                .unwrap_or(&self.function)
+                .unwrap_or(&function)
                 .rsplit('.')
                 .next()
-                .unwrap_or(&self.function)
+                .unwrap_or(&function)
                 .to_string();
             let lookup_name = lookup_name_outer.clone();
             crate::commands::elixir_per_clause::for_each_body_bearing_clause(

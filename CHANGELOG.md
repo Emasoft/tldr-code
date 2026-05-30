@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.4.2 (in progress)
+
+### M-117 deferred decisions (D7/D8/D9/D10)
+
+Closes Phase-22 iter-3 audit bundle of UX/ergonomics deferrals that
+were signed off in lieu of code refactors. None of these change
+existing behavior unless the user opts into a new flag.
+
+- **D7 — `tldr arch` remains archived.** The deep-dependency
+  architecture command was archived earlier in Phase-22 because the
+  underlying dependency graph confidence was insufficient for the
+  spec it claimed to satisfy. Re-enablement is **deferred to v0.4.3**,
+  contingent on iter-3 audit lifting dependency-graph confidence above
+  the current "informational only" tier. No action required from
+  callers; the command continues to be absent from the surface.
+- **D8 — `--qualified` opt-in flag** added to six per-function
+  commands (`explain`, `complexity`, `cognitive`, `slice`, `contracts`,
+  `halstead`). The seventh command in the original bundle (`purity`)
+  is archived and not wired into the CLI surface, so the flag is
+  silently dropped there. Default behavior is unchanged: callers pass
+  either bare or qualified names and the canonical
+  `find_function_node` resolver handles both. When the user explicitly
+  passes `--qualified`, the CLI pre-canonicalizes the input via
+  `qualified_name_fallback_bare` (the same helper M-013 wired into
+  `impact`/`whatbreaks`) so the lookup falls back to the rightmost
+  bare segment for Rust/C/C++. Documented in `docs/commands/ast.md`.
+- **D9 — `taint` vs `vuln` role split documented.** No code change;
+  the two security-flow engines have always been disjoint in scope
+  (per-function vs. project-wide) but the relationship was not
+  documented. `docs/commands/security.md` now carries a "When to use
+  which" decision table.
+- **D10 — `--all-langs` (`-A`) escape hatch** added to `structure`
+  (the canonical project-walk command). Default behavior is unchanged:
+  the project is scanned in its auto-detected dominant language only,
+  which silently drops files in secondary languages on polyglot
+  monorepos. When the user passes `--all-langs`, `structure` iterates
+  over every detected language and merges the per-language results
+  into one `CodeStructure`, with a `--all-langs: scanned N
+  language(s): …` entry appended to the `warnings` array so callers
+  can see which languages were covered. Wiring to additional
+  project-path commands is tracked for v0.4.3. Documented in
+  `docs/commands/ast.md`.
+
 ## v0.4.1 — 2026-05-13
 
 Mini-release closing 3 judgment-call carryovers from v0.4.0 plus 1 env-flaky

@@ -1,5 +1,77 @@
 # AST Analysis Commands (Layer 1)
 
+<!-- m117-deferred-decisions-v1 (v0.4.2 M-118): D8/D10 flag documentation -->
+
+## Cross-cutting flags
+
+### `--qualified` (D8)
+
+Available on the per-function analysis commands: `explain`,
+`complexity`, `cognitive`, `slice`, `contracts`, `halstead`.
+
+By default `tldr` accepts both bare names (`parse`) and qualified
+names (`ParserPool::parse`) on per-function commands; the canonical
+`find_function_node` resolver covers Rust / C / C++ `::`-qualified
+forms via M-013. **The default behaviour is strict-qualified** — if
+you typed `ParserPool::parse`, the lookup tries the qualified form
+first.
+
+Pass `--qualified` to opt INTO the bare-name fallback when you know
+the input is qualified. The flag pre-canonicalizes the input to the
+rightmost bare segment via
+`tldr_core::ast::function_finder::qualified_name_fallback_bare` —
+the same helper M-013 wired into `impact` / `whatbreaks`. This is
+useful when you have a copy-pasted module-prefixed path
+(`mod::Type::method`) and want to short-circuit any ambiguity in
+the class-scope resolver.
+
+```bash
+# Default — strict-qualified lookup.
+tldr complexity src/parser.rs ParserPool::parse
+
+# Opt in to bare-name fallback (here: equivalent to `parse`).
+tldr complexity src/parser.rs ParserPool::parse --qualified
+```
+
+The flag is a no-op for languages that don't use `::` for method
+paths (Python, Java, JS/TS, Go, etc.) — the helper returns the
+input unchanged.
+
+### `--all-langs` / `-A` (D10)
+
+Available on commands that take a project path. Currently wired
+end-to-end on `structure`; other project-path commands accept the
+flag for surface consistency.
+
+By default, `tldr` scans a project in its **auto-detected dominant
+language** only. This is fast and correct for monoglot repos but
+silently drops files in secondary languages on polyglot
+monorepos — a Python project with a `tools/` subtree of Rust
+helpers will not see those `.rs` files unless you pass `--lang
+rust` explicitly.
+
+Pass `--all-langs` (short: `-A`) to scan every detected language
+and merge the result:
+
+```bash
+# Default — dominant-language only (drops secondary-language files).
+tldr structure path/to/polyglot/repo
+
+# Scan every detected language and merge.
+tldr structure path/to/polyglot/repo --all-langs
+
+# Equivalent short form.
+tldr structure path/to/polyglot/repo -A
+```
+
+The merged output adds a `--all-langs: scanned N language(s): …`
+entry to the `warnings` array so you can see which languages were
+covered. The flag is mutually exclusive with `--lang` (passing
+`--lang` always wins and pins a single language).
+
+---
+
+
 Layer 1 commands extract structure from source code using tree-sitter AST parsing.
 
 ## tree

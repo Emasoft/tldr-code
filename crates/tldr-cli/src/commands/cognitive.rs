@@ -66,6 +66,13 @@ pub struct CognitiveArgs {
     /// Maximum files to process (0 = unlimited)
     #[arg(long, default_value = "0")]
     pub max_files: usize,
+
+    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt in to the
+    /// bare-name fallback for Rust / C / C++ `Class::method` inputs.
+    /// See `complexity.rs::ComplexityArgs::qualified` for the full
+    /// rationale.
+    #[arg(long)]
+    pub qualified: bool,
 }
 
 impl CognitiveArgs {
@@ -73,9 +80,27 @@ impl CognitiveArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
+        // m117-deferred-decisions-v1 (v0.4.2 M-118, D8): opt-in bare-name
+        // canonicalisation. When `--function` is provided AND
+        // `--qualified` is set, route through resolve_qualified_function_name.
+        // We need a language to canonicalise; pick the user's --lang if
+        // present, else best-effort from the path (file form) — the
+        // resolver returns the input verbatim when language doesn't use `::`.
+        let function = self.function.as_deref().map(|raw| {
+            let lang = self
+                .lang
+                .or_else(|| Language::from_path(&self.path))
+                .unwrap_or(Language::Python);
+            tldr_core::ast::function_finder::resolve_qualified_function_name(
+                raw,
+                lang,
+                self.qualified,
+            )
+        });
+
         // Build options
         let options = CognitiveOptions::new()
-            .with_function(self.function.clone())
+            .with_function(function.clone())
             .with_threshold(self.threshold)
             .with_high_threshold(self.high_threshold)
             .with_contributors(self.show_contributors)
