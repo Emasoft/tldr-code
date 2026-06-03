@@ -76,6 +76,8 @@ pub enum Language {
     Elixir,
     /// OCaml (.ml, .mli)
     Ocaml,
+    /// Solidity (.sol) — v0.5.0 SOL-001 foundation
+    Solidity,
 }
 
 impl Language {
@@ -108,6 +110,8 @@ impl Language {
             Language::Luau => &[".luau"],
             Language::Elixir => &[".ex", ".exs"],
             Language::Ocaml => &[".ml", ".mli"],
+            // v0.5.0 SOL-001: Solidity has a single canonical extension.
+            Language::Solidity => &[".sol"],
         }
     }
 
@@ -198,6 +202,9 @@ impl Language {
             ".luau" => Some(Language::Luau),
             ".ex" | ".exs" => Some(Language::Elixir),
             ".ml" | ".mli" => Some(Language::Ocaml),
+            // v0.5.0 SOL-001: classify `.sol` as Solidity. Single
+            // unambiguous extension — no sibling-widening needed.
+            ".sol" => Some(Language::Solidity),
             _ => None,
         }
     }
@@ -548,6 +555,8 @@ impl Language {
             Language::Luau => "luau",
             Language::Elixir => "elixir",
             Language::Ocaml => "ocaml",
+            // v0.5.0 SOL-001
+            Language::Solidity => "solidity",
         }
     }
 
@@ -585,6 +594,8 @@ impl Language {
             Language::Luau,
             Language::Elixir,
             Language::Ocaml,
+            // v0.5.0 SOL-001
+            Language::Solidity,
         ]
     }
 }
@@ -1114,6 +1125,9 @@ impl std::str::FromStr for Language {
             "luau" => Ok(Language::Luau),
             "elixir" | "ex" => Ok(Language::Elixir),
             "ocaml" | "ml" => Ok(Language::Ocaml),
+            // v0.5.0 SOL-001: "sol" matches the file extension; "solidity"
+            // is the canonical long name.
+            "solidity" | "sol" => Ok(Language::Solidity),
             _ => Err(format!("Unknown language: {}", s)),
         }
     }
@@ -3446,7 +3460,9 @@ mod tests {
 
     #[test]
     fn test_language_all_18_variants() {
-        assert_eq!(Language::all().len(), 18);
+        // v0.5.0 SOL-001 added Solidity → 19 variants total.
+        // (Test name kept for git-blame continuity; tracks total count.)
+        assert_eq!(Language::all().len(), 19);
     }
 
     #[test]

@@ -727,6 +727,23 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
                 | "block"
                 | "compilation_unit"
         ),
+        // v0.5.0 SOL-001: Solidity introduces scopes at every
+        // function-shape, contract/interface/library body, and any
+        // `block`. SOL-002 may refine this.
+        Language::Solidity => matches!(
+            kind,
+            "function_definition"
+                | "constructor_definition"
+                | "fallback_function_definition"
+                | "receive_function_definition"
+                | "modifier_definition"
+                | "contract_declaration"
+                | "interface_declaration"
+                | "library_declaration"
+                | "function_body"
+                | "block"
+                | "source_file"
+        ),
     }
 }
 
@@ -759,6 +776,11 @@ fn scan_scope_for_binding(
         Language::Elixir => scan_elixir_scope(node, bytes, symbol, file),
         Language::Ocaml => scan_ocaml_scope(node, bytes, symbol, file),
         Language::CSharp => scan_csharp_scope(node, bytes, symbol, file),
+        // v0.5.0 SOL-001 Solidity foundation: scope-binding scanner
+        // lands in SOL-002. None preserves "no definition found"
+        // semantics — the user just gets a clean miss instead of
+        // a crash.
+        Language::Solidity => None,
     }
 }
 
@@ -2580,6 +2602,10 @@ fn resolve_import_scope(
         // symbols at the language level. Ruby's `require` doesn't bind a
         // symbol either. They fall through to the file-scope pass.
         Language::C | Language::Cpp | Language::Ruby | Language::Go => None,
+        // v0.5.0 SOL-001 Solidity foundation. Import-scope resolution
+        // (5 import forms — bare, `as`, `* as`, `{ X, Y }`,
+        // `{ X as A }`) lands in SOL-002 with import extraction.
+        Language::Solidity => None,
     };
 
     let Some((line_no, col)) = line_idx else {

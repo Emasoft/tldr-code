@@ -119,6 +119,8 @@ fn language_to_string(lang: Language) -> String {
         Language::Luau => "luau".to_string(),
         Language::Elixir => "elixir".to_string(),
         Language::Ocaml => "ocaml".to_string(),
+        // v0.5.0 SOL-001
+        Language::Solidity => "solidity".to_string(),
     }
 }
 

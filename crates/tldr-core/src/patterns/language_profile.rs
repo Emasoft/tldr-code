@@ -1444,6 +1444,11 @@ pub fn language_profile(language: crate::types::Language) -> Option<LanguageProf
         crate::types::Language::Swift => Some(languages::swift::profile()),
         crate::types::Language::Scala => Some(languages::scala::profile()),
         crate::types::Language::Ocaml => Some(languages::ocaml::profile()),
+        // v0.5.0 SOL-001 Solidity foundation: design-pattern profile
+        // (per oracle: contract / interface / library / modifier
+        // semantics) lands in a later milestone. None = pattern miner
+        // skips Solidity files without crashing.
+        crate::types::Language::Solidity => None,
     }
 }
 

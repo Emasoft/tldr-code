@@ -754,6 +754,19 @@ lazy_static! {
         sinks: vec![],
         sanitizers: vec![],
     };
+
+    /// Solidity taint patterns — v0.5.0 SOL-001 foundation.
+    ///
+    /// Empty for now. Real Solidity-aware sources/sinks (tx.origin,
+    /// msg.sender, call/delegatecall return discard, selfdestruct
+    /// without access control, etc.) land in SOL-005 alongside the
+    /// detector suite described in the oracle research: tx-origin,
+    /// shadowing-state, suicidal, unchecked-lowlevel, locked-ether.
+    static ref SOLIDITY_PATTERNS: LanguagePatterns = LanguagePatterns {
+        sources: vec![],
+        sinks: vec![],
+        sanitizers: vec![],
+    };
 }
 
 /// Get taint analysis patterns for a given language.
@@ -778,6 +791,8 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         Language::Lua | Language::Luau => &LUA_PATTERNS,
         Language::Elixir => &ELIXIR_PATTERNS,
         Language::Ocaml => &OCAML_PATTERNS,
+        // v0.5.0 SOL-001 Solidity foundation
+        Language::Solidity => &SOLIDITY_PATTERNS,
     }
 }
 
@@ -3970,8 +3985,22 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
             sinks: OCAML_AST_SINKS,
             sanitizers: OCAML_AST_SANITIZERS,
         },
+        // v0.5.0 SOL-001 Solidity foundation. AST source/sink banks
+        // (tx.origin, msg.sender, .call{value}, selfdestruct, etc.)
+        // land in SOL-005.
+        Language::Solidity => AstLanguagePatterns {
+            sources: SOLIDITY_AST_SOURCES,
+            sinks: SOLIDITY_AST_SINKS,
+            sanitizers: SOLIDITY_AST_SANITIZERS,
+        },
     }
 }
+
+// v0.5.0 SOL-001 Solidity foundation: empty AST banks. SOL-005 will
+// populate these with the Top-5 detector patterns per oracle research.
+static SOLIDITY_AST_SOURCES: &[AstSourcePattern] = &[];
+static SOLIDITY_AST_SINKS: &[AstSinkPattern] = &[];
+static SOLIDITY_AST_SANITIZERS: &[AstSanitizerPattern] = &[];
 
 // ---------------------------------------------------------------------------
 // Fast-path substring prefilter (vuln-fastpath-substring-prefilter-v1)
@@ -4034,6 +4063,8 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         Language::Luau => fastpath_static!(LUAU, Language::Luau),
         Language::Elixir => fastpath_static!(EX, Language::Elixir),
         Language::Ocaml => fastpath_static!(OCAML, Language::Ocaml),
+        // v0.5.0 SOL-001 Solidity foundation
+        Language::Solidity => fastpath_static!(SOL, Language::Solidity),
     }
 }
 

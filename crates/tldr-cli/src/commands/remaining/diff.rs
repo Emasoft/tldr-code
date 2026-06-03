@@ -596,6 +596,12 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"],         // defmodule is a call
         Language::Lua | Language::Luau => &[], // Lua has no class syntax
         Language::Ocaml => &["module_definition", "type_definition"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &[
+            "contract_declaration",
+            "interface_declaration",
+            "library_declaration",
+        ],
     }
 }
 
@@ -617,6 +623,9 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["do_block"],
         Language::Lua | Language::Luau => &[],
         Language::Ocaml => &[],
+        // v0.5.0 SOL-001: Solidity uses `contract_body` to wrap
+        // members of contract / interface / library declarations.
+        Language::Solidity => &["contract_body"],
     }
 }
 
@@ -1586,6 +1595,21 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
             "match_expression",
             "application",
         ],
+        // v0.5.0 SOL-001
+        Language::Solidity => &[
+            "return_statement",
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "do_while_statement",
+            "try_statement",
+            "expression_statement",
+            "variable_declaration_statement",
+            "revert_statement",
+            "emit_statement",
+            "break_statement",
+            "continue_statement",
+        ],
     }
 }
 
@@ -1755,6 +1779,8 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         Language::Elixir => &["do_block"],
         Language::Lua | Language::Luau => &["block"],
         Language::Ocaml => &["let_binding"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["function_body"],
     };
 
     let mut cursor = func_node.walk();

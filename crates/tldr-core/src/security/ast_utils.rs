@@ -32,6 +32,10 @@ pub fn call_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_call"],
         Language::Elixir => &["call"],
         Language::Ocaml => &["application_expression"],
+        // v0.5.0 SOL-001: tree-sitter-solidity exposes call sites as
+        // `call_expression` and member-call sites are still call_expression
+        // wrapping a member_expression target.
+        Language::Solidity => &["call_expression"],
     }
 }
 
@@ -53,6 +57,8 @@ pub fn string_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["string"],
         Language::Elixir => &["string"],
         Language::Ocaml => &["string"],
+        // v0.5.0 SOL-001: Solidity string literals (single + hex literals).
+        Language::Solidity => &["string", "hex_string_literal"],
     }
 }
 
@@ -79,6 +85,13 @@ pub fn assignment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Luau => &["variable_declaration", "assignment_statement"],
         Language::Elixir => &["match_operator"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        // v0.5.0 SOL-001: Solidity assignments — both state-variable
+        // declarations and `=` expressions.
+        Language::Solidity => &[
+            "state_variable_declaration",
+            "variable_declaration_statement",
+            "assignment_expression",
+        ],
     }
 }
 
@@ -107,6 +120,8 @@ pub fn binary_expression_node_kinds(language: Language) -> &'static [&'static st
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Elixir => &["binary_operator"],
         Language::Ocaml => &["infix_expression"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["binary_expression"],
     }
 }
 
@@ -128,6 +143,8 @@ pub fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["comment"],
         Language::Elixir => &["comment"],
         Language::Ocaml => &["comment"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["comment"],
     }
 }
 
@@ -172,6 +189,12 @@ pub fn loop_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"],
         Language::Lua | Language::Luau => &["for_statement", "while_statement", "repeat_statement"],
         Language::Ocaml => &["for_expression", "while_expression"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &[
+            "for_statement",
+            "while_statement",
+            "do_while_statement",
+        ],
     }
 }
 
@@ -205,6 +228,13 @@ pub fn literal_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["integer", "float", "string"],
         Language::Lua | Language::Luau => &["number", "string"],
         Language::Ocaml => &["number", "string", "character"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &[
+            "number_literal",
+            "string",
+            "hex_string_literal",
+            "boolean_literal",
+        ],
     }
 }
 
@@ -229,6 +259,8 @@ pub fn identifier_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["identifier", "atom"],
         Language::Lua | Language::Luau => &["identifier"],
         Language::Ocaml => &["value_name", "module_name"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["identifier"],
     }
 }
 
@@ -253,6 +285,8 @@ pub fn unary_expression_node_kinds(language: Language) -> &'static [&'static str
         Language::Elixir => &["unary_operator"],
         Language::Lua | Language::Luau => &["unary_expression"],
         Language::Ocaml => &["prefix_expression"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["unary_expression", "update_expression"],
     }
 }
 
@@ -277,6 +311,8 @@ pub fn boolean_expression_node_kinds(language: Language) -> &'static [&'static s
         Language::Elixir => &["binary_operator"],
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Ocaml => &["infix_expression"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["binary_expression"],
     }
 }
 
@@ -301,6 +337,8 @@ pub fn comparison_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["binary_operator"],
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Ocaml => &["infix_expression"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["binary_expression"],
     }
 }
 
@@ -325,6 +363,8 @@ pub fn parenthesized_expression_node_kinds(language: Language) -> &'static [&'st
         Language::Elixir => &["block"],
         Language::Lua | Language::Luau => &["parenthesized_expression"],
         Language::Ocaml => &["parenthesized_expression"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &["parenthesized_expression", "tuple_expression"],
     }
 }
 
@@ -354,6 +394,17 @@ pub fn function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"],
         Language::Lua | Language::Luau => &["function_declaration", "local_function"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        // v0.5.0 SOL-001: All four Solidity function shapes plus
+        // modifier (per oracle: modifier_definition is also a callable
+        // declaration even though it is invoked positionally on
+        // functions, not called directly).
+        Language::Solidity => &[
+            "function_definition",
+            "constructor_definition",
+            "fallback_function_definition",
+            "receive_function_definition",
+            "modifier_definition",
+        ],
     }
 }
 
@@ -490,6 +541,17 @@ pub fn field_access_info(language: Language) -> &'static [FieldAccessPattern] {
                 self_keywords: &[],
             },
         ],
+        // v0.5.0 SOL-001: Solidity uses `member_expression` for both
+        // state-variable access (`this.balances[x]`) and contract
+        // member access. There is no implicit `self` — state vars
+        // are accessed bare. Until SOL-002 wires the cohesion adapter,
+        // we just declare the shape.
+        Language::Solidity => &[FieldAccessPattern {
+            node_kind: "member_expression",
+            object_field: Some("object"),
+            member_field: Some("property"),
+            self_keywords: &["this"],
+        }],
     }
 }
 
@@ -631,6 +693,11 @@ pub fn extract_call_name(node: &Node, source: &[u8], language: Language) -> Opti
         Language::Lua | Language::Luau => extract_call_name_lua(node, source),
         Language::Elixir => extract_call_name_elixir(node, source),
         Language::Ocaml => extract_call_name_ocaml(node, source),
+        // v0.5.0 SOL-001 Solidity foundation. Call-name extraction
+        // lands in SOL-003 (security/vuln integration). Returning None
+        // is the safe stub — taint analysis treats it as an unknown
+        // callee and skips it.
+        Language::Solidity => None,
     }
 }
 
@@ -1028,6 +1095,9 @@ fn extract_lhs_var(node: &Node, source: &[u8], language: Language) -> Option<Str
                 .or_else(|| node.child(0))
                 .map(|n| node_text(&n, source).to_string())
         }
+        // v0.5.0 SOL-001 Solidity foundation. LHS extraction lands in
+        // SOL-002. None preserves safety in taint analyses.
+        Language::Solidity => None,
     }
 }
 
@@ -1089,6 +1159,11 @@ fn find_arguments_node<'a>(node: &'a Node, language: Language) -> Option<Node<'a
         Language::Lua | Language::Luau => "arguments",
         Language::Elixir => "arguments",
         Language::Ocaml => return node.child(1), // OCaml: second child is the argument
+        // v0.5.0 SOL-001: Solidity call_expression wraps args in a
+        // `call_argument` / `arguments` child depending on grammar
+        // version. Use the canonical name; the fallback `arguments`
+        // field lookup below handles the field-vs-child split.
+        Language::Solidity => "call_argument",
     };
 
     node.child_by_field_name("arguments").or_else(|| {

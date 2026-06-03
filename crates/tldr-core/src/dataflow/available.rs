@@ -2365,6 +2365,12 @@ fn binary_expr_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Ocaml => &["infix_expression"],
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Swift => &["infix_expression"],
+        // v0.5.0 SOL-001 Solidity foundation. Solidity uses
+        // `binary_expression` for binary ops (verified on
+        // tree-sitter-solidity 1.2.13). Wired now so dataflow
+        // analyses don't crash on `.sol` inputs even before SOL-002
+        // adapters land.
+        Language::Solidity => &["binary_expression"],
     }
 }
 

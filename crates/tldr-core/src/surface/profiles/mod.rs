@@ -62,5 +62,9 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         Language::Swift => Some(&swift::PROFILE),
         Language::TypeScript => Some(&typescript::PROFILE),
         Language::Luau | Language::Ocaml => None,
+        // v0.5.0 SOL-001 Solidity foundation. Surface profile for
+        // Solidity (with builtins like msg.sender, block.timestamp,
+        // keccak256, etc.) lands in SOL-004.
+        Language::Solidity => None,
     }
 }

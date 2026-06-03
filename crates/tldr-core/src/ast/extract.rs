@@ -226,6 +226,12 @@ pub fn extract_function_params(
             }
             Vec::new()
         }
+        // v0.5.0 SOL-001 Solidity foundation: parser-only stub. Adapter
+        // (Kotlin-template per oracle) lands in SOL-002. Returning an
+        // empty param list here is safe: extract_function_params is
+        // only called when adapters exist for the language, and
+        // upstream callers tolerate empty results.
+        Language::Solidity => Vec::new(),
         Language::Elixir => {
             // explain identifies elixir function nodes as the outer `call`
             // node (def/defp ...). The actual params live inside
@@ -403,6 +409,11 @@ pub(crate) fn extract_functions_detailed(tree: &Tree, source: &str, language: La
         Language::Luau => extract_luau_functions_detailed(&root, source, &mut functions),
         Language::Swift => extract_swift_functions_detailed(&root, source, &mut functions),
         Language::Ocaml => extract_ocaml_functions_detailed(&root, source, &mut functions),
+        // v0.5.0 SOL-001 Solidity foundation: no-op adapter. Real
+        // adapter (`extract_solidity_functions_detailed`) lands in
+        // SOL-002 using the Kotlin-template per oracle research
+        // (modifiers > visibility_modifier shape maps 1:1).
+        Language::Solidity => { /* SOL-002 */ }
     }
 
     functions
@@ -436,6 +447,12 @@ pub(crate) fn extract_classes_detailed(tree: &Tree, source: &str, language: Lang
         Language::Go => extract_go_structs_detailed(&root, source, &mut classes),
         Language::Swift => extract_swift_classes_detailed(&root, source, &mut classes),
         Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
+        // v0.5.0 SOL-001 Solidity foundation: contract/interface/library
+        // extraction lands in SOL-002 with the ClassInfo `kind` schema
+        // extension (oracle decision: extend ClassInfo with optional
+        // `kind: Option<String>` so contract/interface/library share
+        // the shape without breaking serialization for non-Solidity langs).
+        Language::Solidity => { /* SOL-002 */ }
     }
 
     classes
@@ -974,6 +991,10 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         Language::Luau => extract_luau_module_constants(&root, source),
         Language::Elixir => extract_elixir_module_constants(&root, source),
         Language::Ocaml => extract_ocaml_module_constants(&root, source),
+        // v0.5.0 SOL-001 Solidity foundation: state-variable extraction
+        // (`state_variable_declaration` / `constant_variable_declaration`)
+        // lands in SOL-002.
+        Language::Solidity => Vec::new(),
     }
 }
 

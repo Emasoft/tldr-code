@@ -778,6 +778,14 @@ fn infer_visibility_from_name(
 
         // Swift: default is internal, not public
         Language::Swift => !bare_name.starts_with('_'),
+
+        // v0.5.0 SOL-001 Solidity foundation. Solidity has explicit
+        // visibility (public | external | internal | private) — see
+        // oracle research. Until SOL-002 wires extract_solidity_visibility,
+        // fall back to the leading-underscore convention; this aligns
+        // with Solidity style guides (`_internal` for module-private
+        // helpers).
+        Language::Solidity => !bare_name.starts_with('_'),
     }
 }
 

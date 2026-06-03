@@ -462,6 +462,12 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         Language::Lua | Language::Luau => trimmed.starts_with("--"),
         Language::Elixir => trimmed.starts_with('#'),
         Language::Ocaml => trimmed.starts_with("(*") || trimmed.starts_with('*'),
+        // v0.5.0 SOL-001 Solidity foundation. Solidity supports `//`
+        // line comments, `/* ... */` block comments, and NatSpec
+        // (`///` / `/** */`); the single-line classifier handles `//`
+        // and `///`. Block-comment continuation is already handled
+        // elsewhere via ParseState.
+        Language::Solidity => trimmed.starts_with("//"),
     }
 }
 

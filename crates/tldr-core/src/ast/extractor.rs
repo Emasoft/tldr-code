@@ -293,6 +293,9 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         Language::Elixir => extract_elixir_functions(&root, source, &mut functions),
         Language::Lua => extract_lua_functions(&root, source, &mut functions),
         Language::Luau => extract_luau_functions(&root, source, &mut functions),
+        // v0.5.0 SOL-001 Solidity foundation: function-name extraction
+        // lands in SOL-002.
+        Language::Solidity => { /* SOL-002 */ }
     }
 
     functions
@@ -2631,6 +2634,9 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         }
 
         Language::Lua | Language::Luau | Language::Ocaml => None,
+        // v0.5.0 SOL-001 Solidity foundation: constant_variable_declaration
+        // recognition lands in SOL-002.
+        Language::Solidity => None,
     }
 }
 

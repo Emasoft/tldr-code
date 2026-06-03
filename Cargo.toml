@@ -67,6 +67,9 @@ tree-sitter-luau = "=1.2.0"
 tree-sitter-elixir = "=0.3.4"
 # Note: tree-sitter-ocaml 0.24.2 - OCaml grammar
 tree-sitter-ocaml = "=0.24.2"
+# v0.5.0 SOL-001: Solidity grammar (single grammar handles all Solidity
+# versions per oracle research). Upstream: JoranHonig/tree-sitter-solidity.
+tree-sitter-solidity = "=1.2.13"
 
 # Async
 tokio = { version = "1.0", features = ["full", "sync"] }

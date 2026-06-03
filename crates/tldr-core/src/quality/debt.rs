@@ -614,7 +614,11 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
         | Language::Kotlin
         | Language::Swift
         | Language::CSharp
-        | Language::Scala => {
+        | Language::Scala
+        // v0.5.0 SOL-001: Solidity is a C-family comment syntax
+        // (`//`, `/* */`, NatSpec `///` / `/** */`). NatSpec `///`
+        // matches the `//` prefix test.
+        | Language::Solidity => {
             trimmed.starts_with("//")
                 || trimmed.starts_with("/*")
                 || trimmed.starts_with("*/")
@@ -644,6 +648,10 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["comment"],
         Language::Elixir => &["comment"],
         Language::Ocaml => &["comment"],
+        // v0.5.0 SOL-001: tree-sitter-solidity surfaces line and block
+        // comments under the same `comment` kind (verified node-types
+        // for 1.2.13). NatSpec comments share that kind.
+        Language::Solidity => &["comment"],
     }
 }
 
@@ -2142,6 +2150,18 @@ fn get_nesting_node_kinds(language: Language) -> Vec<&'static str> {
             "while_expression",
             "try_expression",
             "function_expression",
+        ],
+        // v0.5.0 SOL-001: Solidity nesting kinds — `if_statement`,
+        // `for_statement`, `while_statement`, `do_while_statement`,
+        // `try_statement` (0.6+), and inline assembly blocks contribute
+        // to nesting depth. Verified against tree-sitter-solidity 1.2.13.
+        Language::Solidity => vec![
+            "if_statement",
+            "for_statement",
+            "while_statement",
+            "do_while_statement",
+            "try_statement",
+            "assembly_statement",
         ],
     }
 }

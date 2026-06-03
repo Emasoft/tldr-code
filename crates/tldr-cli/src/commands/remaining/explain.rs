@@ -221,6 +221,14 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_declaration", "function_definition"],
         Language::Elixir => &["call"], // Elixir def/defp are call nodes
         Language::Ocaml => &["value_definition"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &[
+            "function_definition",
+            "constructor_definition",
+            "fallback_function_definition",
+            "receive_function_definition",
+            "modifier_definition",
+        ],
     }
 }
 
@@ -247,6 +255,8 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
         Language::Elixir => tree_sitter_elixir::LANGUAGE.into(),
         Language::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
         Language::Swift => tree_sitter_swift::LANGUAGE.into(),
+        // v0.5.0 SOL-001
+        Language::Solidity => tree_sitter_solidity::LANGUAGE.into(),
     };
 
     parser.set_language(&ts_language).map_err(|e| {
@@ -2697,6 +2707,8 @@ impl ExplainArgs {
             Language::Elixir => "elixir",
             Language::Ocaml => "ocaml",
             Language::Swift => "swift",
+            // v0.5.0 SOL-001
+            Language::Solidity => "solidity",
         };
 
         // extract-slice-explain-decl-keyword-span-v1 (v0.4.2 M-002):

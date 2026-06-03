@@ -890,6 +890,19 @@ pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         ],
         Language::Swift => &["function_declaration", "init_declaration"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        // v0.5.0 SOL-001 Solidity foundation. Per oracle:
+        // `function_definition`, plus the three special-purpose
+        // function shapes (constructor / fallback / receive) and
+        // `modifier_definition`. We include them now so
+        // function-finder lookups stop reporting "no matches" once
+        // SOL-002 adapters land.
+        Language::Solidity => &[
+            "function_definition",
+            "constructor_definition",
+            "fallback_function_definition",
+            "receive_function_definition",
+            "modifier_definition",
+        ],
     }
 }
 
@@ -957,6 +970,15 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
             "class_declaration",
             "protocol_declaration",
             "extension_declaration",
+        ],
+        // v0.5.0 SOL-001 Solidity foundation. Solidity's three
+        // class-shaped containers: contract / interface / library.
+        // Per oracle, they share the ClassInfo shape and will be
+        // disambiguated via the optional `kind` field (SOL-002).
+        Language::Solidity => &[
+            "contract_declaration",
+            "interface_declaration",
+            "library_declaration",
         ],
     }
 }

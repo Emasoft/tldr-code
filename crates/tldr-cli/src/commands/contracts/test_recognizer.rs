@@ -276,6 +276,15 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         Language::C | Language::Cpp | Language::Ocaml => {
             lower.contains("test") || lower.contains("spec")
         }
+        // v0.5.0 SOL-001: Solidity test convention per oracle —
+        // Foundry/Forge tests live under `test/**/*.sol` and contain
+        // `test*` / `fuzz*` / `invariant_*` functions. Files outside
+        // `test/` directories may also be tests; we use the same lax
+        // filename heuristic as C/C++ for now and refine in SOL-007.
+        Language::Solidity => {
+            path.components().any(|c| c.as_os_str() == "test" || c.as_os_str() == "tests")
+                || lower.contains("test")
+        }
     }
 }
 
@@ -328,6 +337,10 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         Language::Rust => rust_is_test_function(node, source),
         Language::CSharp => csharp_has_test_attribute(node, source),
         Language::C | Language::Cpp | Language::Ocaml => false,
+        // v0.5.0 SOL-001: per-function Foundry test detection
+        // (function names starting with `test`/`fuzz`/`invariant_`)
+        // lands in SOL-007. Returning false matches the C/C++ stub.
+        Language::Solidity => false,
     }
 }
 

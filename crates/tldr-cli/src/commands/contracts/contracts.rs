@@ -128,6 +128,59 @@ impl LanguageConfig {
             Language::Ocaml => Self::ocaml(),
             Language::Kotlin => Self::kotlin(),
             Language::Swift => Self::swift(),
+            // v0.5.0 SOL-001 Solidity foundation
+            Language::Solidity => Self::solidity(),
+        }
+    }
+
+    /// v0.5.0 SOL-001: Solidity contracts/specs config — initial node
+    /// kinds wired from oracle research (function_definition,
+    /// contract_declaration / interface_declaration / library_declaration
+    /// for class-shaped containers, modifier invocations applied at
+    /// declaration). `require` / `assert` / `revert` are intrinsic to
+    /// Solidity, so we list them as assert/error names. Detailed
+    /// pre/postcondition extraction lands in SOL-006.
+    fn solidity() -> Self {
+        Self {
+            function_kinds: &[
+                "function_definition",
+                "constructor_definition",
+                "fallback_function_definition",
+                "receive_function_definition",
+            ],
+            class_kinds: &[
+                "contract_declaration",
+                "interface_declaration",
+                "library_declaration",
+            ],
+            if_kinds: &["if_statement"],
+            assert_kinds: &[],
+            throw_kinds: &["revert_statement"],
+            return_kinds: &["return_statement"],
+            loop_kinds: &["for_statement", "while_statement", "do_while_statement"],
+            assignment_kinds: &[
+                "assignment_expression",
+                "variable_declaration_statement",
+                "state_variable_declaration",
+            ],
+            func_name_field: "name",
+            func_body_field: "body",
+            if_condition_field: "condition",
+            if_consequence_field: "consequence",
+            if_alternative_field: "alternative",
+            func_params_field: "parameters",
+            return_type_field: "return_parameters",
+            class_body_field: "body",
+            loop_body_field: "body",
+            negation_prefix: "!",
+            has_isinstance: false,
+            typed_param_kinds: &["parameter"],
+            assert_is_macro: false,
+            // Solidity uses `require(cond, msg)` for preconditions and
+            // `assert(cond)` for invariants; `revert(...)` raises.
+            assert_call_names: &["require", "assert"],
+            error_call_names: &["revert"],
+            call_kinds: &["call_expression"],
         }
     }
 

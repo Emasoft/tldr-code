@@ -658,6 +658,10 @@ pub(crate) fn get_thread_local_parser(language: &str) -> Result<Parser, BuildErr
         "luau" => tree_sitter_luau::LANGUAGE.into(),
         "elixir" => tree_sitter_elixir::LANGUAGE.into(),
         "ocaml" => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
+        // v0.5.0 SOL-001: Solidity foundation. Adapter-level callgraph
+        // builder lands in SOL-003+; parser dispatch is enabled now so
+        // downstream code can parse `.sol` files without panicking.
+        "solidity" => tree_sitter_solidity::LANGUAGE.into(),
         _ => return Err(BuildError::UnsupportedLanguage(language.to_string())),
     };
 

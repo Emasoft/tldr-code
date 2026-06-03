@@ -135,6 +135,10 @@ impl ParserPool {
             TldrLanguage::Ocaml => Some(tree_sitter_ocaml::LANGUAGE_OCAML.into()),
             TldrLanguage::Kotlin => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
             TldrLanguage::Swift => Some(tree_sitter_swift::LANGUAGE.into()),
+            // v0.5.0 SOL-001: Solidity foundation. Single upstream
+            // grammar (JoranHonig/tree-sitter-solidity) handles every
+            // Solidity version — no pragma-based dispatch needed.
+            TldrLanguage::Solidity => Some(tree_sitter_solidity::LANGUAGE.into()),
         }
     }
 

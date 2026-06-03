@@ -355,6 +355,13 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         (TaintSourceType::EnvVar, Language::Swift) => "Environment variable (ProcessInfo.environment)",
         (TaintSourceType::EnvVar, Language::Elixir) => "Environment variable (System.get_env)",
         (TaintSourceType::EnvVar, Language::Ocaml) => "Environment variable (Sys.getenv)",
+        // v0.5.0 SOL-001 Solidity foundation. Solidity has no
+        // environment-variable concept (no OS-level env access from
+        // the EVM), but tx.origin / msg.sender are the analogous
+        // untrusted inputs — SOL-005 will introduce a new
+        // TaintSourceType variant for those rather than abusing
+        // EnvVar. Until then, return a neutral description.
+        (TaintSourceType::EnvVar, Language::Solidity) => "Untrusted blockchain input",
 
         // File reads
         (TaintSourceType::FileRead, _) => "Untrusted file read",

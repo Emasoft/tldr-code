@@ -1472,6 +1472,12 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         Language::Lua => Some(ApiLanguage::Lua),
         Language::Luau => Some(ApiLanguage::Luau),
         Language::Ocaml => Some(ApiLanguage::Ocaml),
+        // v0.5.0 SOL-001 Solidity foundation. api-check (SARIF rule
+        // pack: deprecated patterns, abi.encodePacked + dynamic
+        // collision, etc.) lands in a later milestone. None preserves
+        // the "no rules, no filter applied" semantics for
+        // unsupported langs.
+        Language::Solidity => None,
     }
 }
 

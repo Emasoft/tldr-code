@@ -372,6 +372,10 @@ fn is_supported_secure_file(path: &std::path::Path, lang: Option<Language>) -> b
         Some(Language::Lua) => ext == "lua",
         Some(Language::Luau) => ext == "luau",
         Some(Language::Ocaml) => matches!(ext, "ml" | "mli"),
+        // v0.5.0 SOL-001 Solidity foundation: file is accepted; full
+        // security analyzer (Top-5 detector suite per oracle) lands in
+        // SOL-005. Until then, the entry-point returns no findings.
+        Some(Language::Solidity) => ext == "sol",
         None => matches!(ext, "py" | "rs"),
     }
 }

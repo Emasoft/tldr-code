@@ -2783,6 +2783,10 @@ fn extract_field_from_pattern(
         Language::Lua | Language::Luau => extract_lua_self_field_access(node, source),
         Language::Elixir => extract_elixir_module_attribute(node, source),
         Language::Ocaml => None,
+        // v0.5.0 SOL-001 Solidity foundation. Cohesion analysis
+        // (state-variable access tracking) lands with the adapter in
+        // SOL-002+.
+        Language::Solidity => None,
     }
 }
 

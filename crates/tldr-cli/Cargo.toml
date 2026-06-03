@@ -70,6 +70,8 @@ tree-sitter-elixir = { workspace = true }
 tree-sitter-ocaml = { workspace = true }
 tree-sitter-kotlin-ng = { workspace = true }
 tree-sitter-swift = { workspace = true }
+# v0.5.0 SOL-001: Solidity grammar (parser dispatch in explain.rs)
+tree-sitter-solidity = { workspace = true }
 streaming-iterator = "0.1"
 
 # Difftastic L1/L2 graft - Phase 1

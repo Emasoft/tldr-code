@@ -603,6 +603,31 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             try_kinds: &[],
             cleanup_block_kinds: &[],
         },
+        // v0.5.0 SOL-001: Solidity has no traditional file/socket
+        // resources — the EVM is a sandboxed VM. However the locked-
+        // ether vulnerability class IS a resource-leak shape (ether
+        // accepted via payable but never returned). Real adapter
+        // lands in SOL-005 with the vuln detector suite. Until then,
+        // an empty pattern set is safe: the resource-leak scanner
+        // will simply find no creators and report nothing.
+        Language::Solidity => LangResourcePatterns {
+            creators: &[],
+            closers: &[],
+            function_kinds: &[
+                "function_definition",
+                "constructor_definition",
+                "fallback_function_definition",
+                "receive_function_definition",
+            ],
+            name_field: "name",
+            body_kinds: &["function_body"],
+            assignment_kinds: &["assignment_expression", "variable_declaration_statement"],
+            return_kinds: &["return_statement", "revert_statement"],
+            if_kinds: &["if_statement"],
+            loop_kinds: &["for_statement", "while_statement", "do_while_statement"],
+            try_kinds: &["try_statement"],
+            cleanup_block_kinds: &[],
+        },
     }
 }
 

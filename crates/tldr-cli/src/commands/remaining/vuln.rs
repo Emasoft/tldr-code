@@ -564,6 +564,10 @@ fn is_supported_source_file(path: &Path, lang: Option<Language>) -> bool {
         Some(Language::Lua) => ext == "lua",
         Some(Language::Luau) => ext == "luau",
         Some(Language::Ocaml) => matches!(ext, "ml" | "mli"),
+        // v0.5.0 SOL-001 Solidity foundation: file is accepted; full
+        // vuln detector (tx-origin, shadowing-state, suicidal,
+        // unchecked-lowlevel, locked-ether per oracle) lands in SOL-005.
+        Some(Language::Solidity) => ext == "sol",
         // No --lang: preserve historical behavior of scanning py + rs
         // (the two languages the taint analyzer natively handles).
         None => matches!(ext, "py" | "rs"),

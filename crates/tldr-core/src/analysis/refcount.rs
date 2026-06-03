@@ -43,6 +43,11 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["identifier"],
         Language::Lua | Language::Luau => &["identifier"],
         Language::Ocaml => &["value_name", "type_constructor"],
+        // v0.5.0 SOL-001 Solidity foundation. Solidity uses a plain
+        // `identifier` for variable/function names and
+        // `type_identifier` for declared type names (verified via
+        // node-types.json on tree-sitter-solidity 1.2.13).
+        Language::Solidity => &["identifier", "type_identifier"],
     }
 }
 

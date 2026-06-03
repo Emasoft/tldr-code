@@ -85,6 +85,14 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         // real-repo-fixes-v1 (P9.BUG-R6/R7): wire kotlin/swift surface forms
         // for top-level/standalone function definitions.
         Language::Kotlin | Language::Swift => &["function_declaration"],
+        // v0.5.0 SOL-001
+        Language::Solidity => &[
+            "function_definition",
+            "constructor_definition",
+            "fallback_function_definition",
+            "receive_function_definition",
+            "modifier_definition",
+        ],
     }
 }
 
@@ -129,6 +137,13 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         // when files only contain extensions (e.g.
         // swift-collections/.../Span+Extras.swift).
         Language::Swift => &["class_declaration", "protocol_declaration"],
+        // v0.5.0 SOL-001: Solidity contract / interface / library are
+        // the three class-shaped containers.
+        Language::Solidity => &[
+            "contract_declaration",
+            "interface_declaration",
+            "library_declaration",
+        ],
     }
 }
 

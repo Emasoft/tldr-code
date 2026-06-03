@@ -1116,6 +1116,12 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         Language::Luau => classify_luau_reference(node, &parent, source),
         Language::Elixir => classify_elixir_reference(node, &parent, source),
         Language::Ocaml => classify_ocaml_reference(node, &parent, source),
+        // v0.5.0 SOL-001 Solidity foundation. Reference classification
+        // (call vs assignment vs read) lands in SOL-002. Returning
+        // ReferenceKind::Other is the safe stub: it preserves the
+        // reference's existence in the output without claiming a
+        // specific kind.
+        Language::Solidity => ReferenceKind::Other,
     }
 }
 

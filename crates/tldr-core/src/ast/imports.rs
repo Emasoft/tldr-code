@@ -59,6 +59,11 @@ pub fn extract_imports_from_tree(
         Language::Lua | Language::Luau => extract_lua_imports(&root, source),
         Language::Kotlin => extract_kotlin_imports(&root, source),
         Language::Swift => extract_swift_imports(&root, source),
+        // v0.5.0 SOL-001 Solidity foundation. Import extraction handles
+        // all 5 Solidity import forms (plain / `as` alias / `* as` /
+        // selective `{ X, Y }` / selective with alias) per oracle. The
+        // adapter lands in SOL-002.
+        Language::Solidity => Vec::new(),
     };
 
     Ok(imports)

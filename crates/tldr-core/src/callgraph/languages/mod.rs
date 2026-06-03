@@ -556,6 +556,9 @@ fn parse_file_for_language(language: &str, source: &str) -> Result<Tree, ParseEr
         "luau" => tree_sitter_luau::LANGUAGE,
         "elixir" => tree_sitter_elixir::LANGUAGE,
         "swift" => tree_sitter_swift::LANGUAGE,
+        // v0.5.0 SOL-001: Solidity foundation — parser-only wiring.
+        // Adapter-level call extraction lands in SOL-003+.
+        "solidity" => tree_sitter_solidity::LANGUAGE,
         _ => {
             return Err(ParseError::UnsupportedLanguage(language.to_string()));
         }

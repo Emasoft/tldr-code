@@ -345,7 +345,10 @@ fn count_loc(source: &str, language: Language) -> usize {
         | Language::Swift
         | Language::CSharp
         | Language::Scala
-        | Language::Php => vec!["//", "/*", "*"],
+        | Language::Php
+        // v0.5.0 SOL-001: Solidity uses C-family comments (`//`, `/* */`,
+        // NatSpec `///` and `/** */` — all match the same prefixes).
+        | Language::Solidity => vec!["//", "/*", "*"],
         Language::Ruby | Language::Elixir => vec!["#"],
         Language::Ocaml => vec!["(*", "*"],
         Language::Lua | Language::Luau => vec!["--"],
