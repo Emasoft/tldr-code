@@ -1992,6 +1992,9 @@ mod tests {
                 classes: vec![],
                 constants: vec![],
                 call_graph: IntraFileCallGraph::default(),
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
             },
         )];
 
@@ -2030,6 +2033,9 @@ mod tests {
                 classes: vec![],
                 constants: vec![],
                 call_graph: IntraFileCallGraph::default(),
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
             },
         )];
 
@@ -2075,6 +2081,10 @@ mod tests {
             decorators: decorators.into_iter().map(|s| s.to_string()).collect(),
             line_number: 1,
             line_end: 1,
+            kind: None,
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -2309,9 +2319,16 @@ mod tests {
                     decorators: vec!["interface".to_string()],
                     line_number: 3,
                     line_end: 3,
+                    kind: None,
+                    modifiers: Vec::new(),
+                    events: Vec::new(),
+                    errors: Vec::new(),
                 }],
                 constants: vec![],
                 call_graph: IntraFileCallGraph::default(),
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
             },
         )];
 
@@ -2615,6 +2632,9 @@ mod tests {
                 classes: vec![],
                 constants: vec![],
                 call_graph: IntraFileCallGraph::default(),
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
             },
         )];
 

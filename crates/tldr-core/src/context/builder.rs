@@ -189,6 +189,9 @@ pub fn get_relevant_context(
                     classes: vec![],
                     constants: vec![],
                     call_graph: Default::default(),
+                    modifiers: Vec::new(),
+                    events: Vec::new(),
+                    errors: Vec::new(),
                 }
             });
             seen_files.insert(file.clone(), info.clone());

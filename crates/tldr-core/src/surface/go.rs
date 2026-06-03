@@ -512,6 +512,10 @@ mod tests {
             bases: vec![],
             decorators: vec![],
             docstring: None,
+            kind: None,
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
         };
         let source = "package main\n\ntype Server struct {\n\tAddr string\n\tPort int\n}\n";
         assert_eq!(determine_go_type_kind(&class, source), ApiKind::Struct);
@@ -528,6 +532,10 @@ mod tests {
             bases: vec![],
             decorators: vec![],
             docstring: None,
+            kind: None,
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
         };
         let source = "package main\n\ntype Handler interface {\n\tServeHTTP(w ResponseWriter, r *Request)\n}\n";
         assert_eq!(determine_go_type_kind(&class, source), ApiKind::Interface);

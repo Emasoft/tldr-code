@@ -1203,6 +1203,10 @@ mod tests {
             bases: vec![],
             decorators: vec![],
             docstring: None,
+            kind: None,
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
         };
         let source = "export class MyClass {\n}\n";
         assert_eq!(determine_ts_class_kind(&class, source), ApiKind::Class);
@@ -1219,6 +1223,10 @@ mod tests {
             bases: vec![],
             decorators: vec![],
             docstring: None,
+            kind: None,
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
         };
         let source = "export interface MyInterface {\n}\n";
         assert_eq!(determine_ts_class_kind(&class, source), ApiKind::Interface);

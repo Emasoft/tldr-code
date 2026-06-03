@@ -142,6 +142,9 @@ pub fn extract_from_tree(
         classes,
         constants,
         call_graph,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     })
 }
 
@@ -770,6 +773,10 @@ fn extract_python_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -2541,6 +2548,10 @@ fn extract_ts_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Clas
                     decorators: Vec::new(),
                     line_number,
                     line_end,
+                    kind: None,
+                    modifiers: Vec::new(),
+                    events: Vec::new(),
+                    errors: Vec::new(),
                 });
             }
             _ => {
@@ -2596,6 +2607,10 @@ fn extract_ts_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -2867,6 +2882,10 @@ fn extract_go_types_pass1(node: &Node, source: &str, classes: &mut Vec<ClassInfo
                                 decorators: Vec::new(),
                                 line_number,
                                 line_end,
+                                kind: None,
+                                modifiers: Vec::new(),
+                                events: Vec::new(),
+                                errors: Vec::new(),
                             });
                         } else if tn.kind() == "interface_type" {
                             let line_number = spec.start_position().row as u32 + 1;
@@ -2881,6 +2900,10 @@ fn extract_go_types_pass1(node: &Node, source: &str, classes: &mut Vec<ClassInfo
                                 decorators: Vec::new(),
                                 line_number,
                                 line_end,
+                                kind: None,
+                                modifiers: Vec::new(),
+                                events: Vec::new(),
+                                errors: Vec::new(),
                             });
                         }
                     }
@@ -3019,6 +3042,10 @@ fn extract_go_methods_to_classes(node: &Node, source: &str, classes: &mut Vec<Cl
                         decorators: Vec::new(),
                         line_number: 0, // Unknown, defined elsewhere
                         line_end: 0,
+                        kind: None,
+                        modifiers: Vec::new(),
+                        events: Vec::new(),
+                        errors: Vec::new(),
                     });
                 }
             }
@@ -3377,6 +3404,10 @@ fn collect_rust_struct_defs(node: &Node, source: &str, classes: &mut Vec<ClassIn
                 decorators: Vec::new(),
                 line_number,
                 line_end,
+                kind: None,
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
             });
         }
         collect_rust_struct_defs(&child, source, classes);
@@ -3764,6 +3795,10 @@ fn extract_java_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Cl
                 decorators: Vec::new(),
                 line_number,
                 line_end,
+                kind: None,
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
             });
         }
         extract_java_classes_detailed(&child, source, classes);
@@ -4634,6 +4669,10 @@ fn extract_swift_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -5571,6 +5610,10 @@ fn extract_cpp_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Cla
                         decorators: Vec::new(),
                         line_number,
                         line_end,
+                        kind: None,
+                        modifiers: Vec::new(),
+                        events: Vec::new(),
+                        errors: Vec::new(),
                     });
                     // Recurse INTO the recovered body so inner classes
                     // (e.g. tinyxml2's `class DynArray` nested under
@@ -5631,6 +5674,10 @@ fn extract_cpp_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -5958,6 +6005,10 @@ fn extract_ruby_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -5986,6 +6037,10 @@ fn extract_ruby_module_info(node: &Node, source: &str) -> ClassInfo {
         decorators: vec!["module".to_string()],
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -6224,6 +6279,10 @@ fn extract_php_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -6251,6 +6310,10 @@ fn extract_php_interface_info(node: &Node, source: &str) -> ClassInfo {
         decorators: vec!["interface".to_string()],
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -6278,6 +6341,10 @@ fn extract_php_trait_info(node: &Node, source: &str) -> ClassInfo {
         decorators: vec!["trait".to_string()],
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -6574,6 +6641,10 @@ fn extract_csharp_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -6944,6 +7015,10 @@ fn extract_kotlin_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -7017,6 +7092,10 @@ fn extract_kotlin_object_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -7318,6 +7397,10 @@ fn extract_scala_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -7354,6 +7437,10 @@ fn extract_scala_object_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -7390,6 +7477,10 @@ fn extract_scala_trait_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -7703,6 +7794,10 @@ fn extract_elixir_module_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
+        kind: None,
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 

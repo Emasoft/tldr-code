@@ -1494,6 +1494,24 @@ pub struct ModuleInfo {
     pub constants: Vec<FieldInfo>,
     /// Intra-file call graph showing function call relationships within this module
     pub call_graph: IntraFileCallGraph,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): file-scope `modifier`
+    /// declarations. Solidity allows free-floating modifiers at file
+    /// scope (rare but valid). Always empty for non-Solidity langs;
+    /// the `skip_serializing_if = "Vec::is_empty"` guarantees the
+    /// key is OMITTED from JSON in that case — preserving the
+    /// pre-v1 schema shape for every existing consumer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modifiers: Vec<ModifierInfo>,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): file-scope `event`
+    /// declarations. See `modifiers` above for the
+    /// non-Solidity-omission contract.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventInfo>,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): file-scope `error`
+    /// declarations (Solidity 0.8.4+ custom errors). See
+    /// `modifiers` above for the non-Solidity-omission contract.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<ErrorInfo>,
 }
 
 /// Function information with full details
@@ -1641,11 +1659,40 @@ pub struct ClassInfo {
     /// have access to the AST node range.
     #[serde(default)]
     pub line_end: u32,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): Solidity class flavor.
+    ///
+    /// One of `"contract"`, `"interface"`, `"library"` for Solidity
+    /// extractor output. `None` for every other language — the
+    /// `skip_serializing_if = "Option::is_none"` guarantees the
+    /// `kind` key is OMITTED from JSON in that case, so non-Solidity
+    /// consumers see the exact pre-v1 schema shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): contract-scope
+    /// `modifier` declarations. Modifiers are declared on the
+    /// enclosing contract and applied by name to functions (e.g.
+    /// `function withdraw() onlyOwner { ... }`). They are NOT
+    /// directly callable, so they live in their own slot distinct
+    /// from `methods`. Empty / omitted for non-Solidity classes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modifiers: Vec<ModifierInfo>,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): contract-scope `event`
+    /// declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventInfo>,
+    /// solidity-schema-v1 (v0.5.0 SOL-002): contract-scope `error`
+    /// declarations (Solidity 0.8.4+).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<ErrorInfo>,
 }
 
 // schema-unification-v1 BUG-17 / schema-cleanup-v1 BUG-23: emits
 // `line` + `line_end`; intentionally OMITS `line_number` (which was a
 // redundant alias for `line`).
+//
+// solidity-schema-v1 (v0.5.0 SOL-002): extended to emit `kind`,
+// `modifiers`, `events`, `errors` only when populated — preserving
+// pre-v1 JSON shape for non-Solidity classes.
 impl Serialize for ClassInfo {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1665,8 +1712,27 @@ impl Serialize for ClassInfo {
         if !self.decorators.is_empty() {
             count += 1;
         }
+        // solidity-schema-v1 (v0.5.0 SOL-002): only count + emit the
+        // new optional/empty-skipped fields when populated, so
+        // non-Solidity ClassInfo output remains byte-identical to
+        // the pre-v1 schema.
+        if self.kind.is_some() {
+            count += 1;
+        }
+        if !self.modifiers.is_empty() {
+            count += 1;
+        }
+        if !self.events.is_empty() {
+            count += 1;
+        }
+        if !self.errors.is_empty() {
+            count += 1;
+        }
         let mut s = serializer.serialize_struct("ClassInfo", count)?;
         s.serialize_field("name", &self.name)?;
+        if let Some(k) = &self.kind {
+            s.serialize_field("kind", k)?;
+        }
         if !self.bases.is_empty() {
             s.serialize_field("bases", &self.bases)?;
         }
@@ -1679,6 +1745,15 @@ impl Serialize for ClassInfo {
         }
         if !self.decorators.is_empty() {
             s.serialize_field("decorators", &self.decorators)?;
+        }
+        if !self.modifiers.is_empty() {
+            s.serialize_field("modifiers", &self.modifiers)?;
+        }
+        if !self.events.is_empty() {
+            s.serialize_field("events", &self.events)?;
+        }
+        if !self.errors.is_empty() {
+            s.serialize_field("errors", &self.errors)?;
         }
         s.serialize_field("line", &self.line_number)?;
         s.serialize_field("line_end", &self.line_end)?;
@@ -1766,6 +1841,145 @@ impl Serialize for FieldInfo {
         s.serialize_field("line_end", &self.line_end)?;
         s.end()
     }
+}
+
+// =============================================================================
+// solidity-schema-v1 (v0.5.0 SOL-002): Solidity-specific structured types.
+//
+// These types are added to support Solidity's unique top-level constructs —
+// `modifier`, `event`, and 0.8.4+ `error` declarations — without touching
+// `FunctionInfo` (modifiers are NOT callable like functions) or `FieldInfo`
+// (events/errors have typed param lists, not single field types).
+//
+// All three are populated only by the Solidity adapter and surfaced via the
+// new `modifiers` / `events` / `errors` Vec<_> fields on `ModuleInfo` and
+// `ClassInfo`, both of which use `skip_serializing_if = "Vec::is_empty"` so
+// the JSON shape is unchanged for every existing language.
+// =============================================================================
+
+/// Parameter info for `ModifierInfo` and `ErrorInfo`.
+///
+/// Mirrors the shape needed for Solidity modifier params (e.g.
+/// `modifier onlyRole(bytes32 role)`) and custom error params
+/// (e.g. `error InsufficientBalance(uint256 available, uint256
+/// requested)`).
+///
+/// The JSON field name for the type is `"type"` (Rust reserved
+/// word, hence the `type_` Rust field name + `#[serde(rename =
+/// "type")]`). `default_value` is reserved for future use (e.g. if
+/// the Solidity grammar ever surfaces named-param defaults) and is
+/// omitted from JSON when `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParamInfo {
+    /// Parameter name. May be empty for anonymous params (Solidity
+    /// allows nameless params in some declaration positions).
+    pub name: String,
+    /// Type annotation. `None` is rare for Solidity (the grammar
+    /// requires a type) but kept optional for forward-compat with
+    /// other future adapters reusing this shape.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "type")]
+    pub type_: Option<String>,
+    /// Default value source text, if syntactically present. Solidity
+    /// does not currently support param defaults; reserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+}
+
+/// Solidity `modifier` declaration (e.g. `modifier onlyOwner() { _; }`).
+///
+/// Modifiers are NOT directly callable — they wrap function bodies
+/// via a name reference on the function declaration
+/// (`function withdraw() onlyOwner { ... }`). The `_;` placeholder
+/// inside the modifier body marks where the wrapped function body
+/// is spliced. Distinct from `FunctionInfo` so callers that walk
+/// `functions[]` / `methods[]` don't accidentally treat a modifier
+/// as a callable target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModifierInfo {
+    /// Modifier name (e.g. `"onlyOwner"`).
+    pub name: String,
+    /// 1-indexed line where the `modifier` keyword appears.
+    pub line_number: u32,
+    /// Parameter list (empty for the common `modifier x() { _; }`
+    /// form; populated for parameterized modifiers like
+    /// `modifier onlyRole(bytes32 role)`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ParamInfo>,
+    /// Whether the modifier carries the `virtual` keyword (overridable).
+    #[serde(default)]
+    pub is_virtual: bool,
+    /// Whether the modifier carries an `override` specifier.
+    #[serde(default)]
+    pub is_override: bool,
+    /// Whether a body block (`{ _; }`) is present. `false` for the
+    /// abstract form `modifier x() virtual;` allowed in interfaces /
+    /// abstract contracts.
+    #[serde(default)]
+    pub body_present: bool,
+}
+
+/// Parameter info specific to `EventInfo` (carries the `indexed`
+/// flag that other param shapes don't need).
+///
+/// Solidity allows up to 3 `indexed` params per event; indexed
+/// params are stored as topics (searchable from RPC log filters)
+/// while non-indexed params are stored in the log data blob.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventParamInfo {
+    /// Parameter name. May be empty (anonymous event params allowed).
+    pub name: String,
+    /// Type annotation (required by Solidity grammar; `String` not
+    /// `Option<String>` because events always have explicit types).
+    /// Serialized as `"type"` (Rust reserved word handled via rename).
+    #[serde(rename = "type")]
+    pub type_: String,
+    /// Whether this param carries the `indexed` keyword.
+    #[serde(default)]
+    pub indexed: bool,
+}
+
+/// Solidity `event` declaration (e.g.
+/// `event Transfer(address indexed from, address indexed to,
+/// uint256 value);`).
+///
+/// Events are emitted via `emit EventName(args);` and persisted to
+/// the transaction log. Distinct from functions: events have no
+/// body, no return type, and a per-param `indexed` flag.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventInfo {
+    /// Event name (e.g. `"Transfer"`).
+    pub name: String,
+    /// 1-indexed line where the `event` keyword appears.
+    pub line_number: u32,
+    /// Parameter list with per-param `indexed` annotation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<EventParamInfo>,
+    /// Whether the event carries the `anonymous` keyword. Anonymous
+    /// events skip the event signature topic, freeing one indexed
+    /// slot but losing filterability by event name.
+    #[serde(default)]
+    pub is_anonymous: bool,
+}
+
+/// Solidity 0.8.4+ `error` declaration (custom error type).
+///
+/// Custom errors are typed, gas-efficient alternatives to
+/// `revert("string")`. They appear in the contract ABI and can
+/// carry structured params for off-chain decoding. Triggered via
+/// `revert ErrorName(args);`.
+///
+/// Example: `error InsufficientBalance(uint256 available, uint256
+/// requested);`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ErrorInfo {
+    /// Error name (e.g. `"InsufficientBalance"`).
+    pub name: String,
+    /// 1-indexed line where the `error` keyword appears.
+    pub line_number: u32,
+    /// Parameter list (typed, like function params; empty for the
+    /// nullary form `error Unauthorized();`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ParamInfo>,
 }
 
 /// Intra-file call graph
