@@ -13,7 +13,10 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::error::TldrError;
-use crate::types::{ClassInfo, FieldInfo, FunctionInfo, IntraFileCallGraph, Language, ModuleInfo};
+use crate::types::{
+    ClassInfo, ErrorInfo, EventInfo, EventParamInfo, FieldInfo, FunctionInfo, IntraFileCallGraph,
+    Language, ModifierInfo, ModuleInfo, ParamInfo,
+};
 use crate::TldrResult;
 
 use super::imports::extract_imports_from_tree;
@@ -133,6 +136,22 @@ pub fn extract_from_tree(
     // Build intra-file call graph
     let call_graph = build_intra_file_call_graph(tree, source, language, &functions, &classes);
 
+    // solidity-ast-extract-v1 (v0.5.0 SOL-003): extract file-scope
+    // Solidity declarations. For non-Solidity languages these are
+    // always empty (preserving the pre-v1 JSON shape via
+    // `skip_serializing_if = "Vec::is_empty"` on each field).
+    let (modifiers, events, errors) = match language {
+        Language::Solidity => {
+            let root = tree.root_node();
+            (
+                extract_solidity_modifiers(&root, source, /* file_scope = */ true),
+                extract_solidity_events(&root, source, /* file_scope = */ true),
+                extract_solidity_errors(&root, source, /* file_scope = */ true),
+            )
+        }
+        _ => (Vec::new(), Vec::new(), Vec::new()),
+    };
+
     Ok(ModuleInfo {
         file_path: output_path,
         language,
@@ -142,9 +161,9 @@ pub fn extract_from_tree(
         classes,
         constants,
         call_graph,
-        modifiers: Vec::new(),
-        events: Vec::new(),
-        errors: Vec::new(),
+        modifiers,
+        events,
+        errors,
     })
 }
 
@@ -229,12 +248,14 @@ pub fn extract_function_params(
             }
             Vec::new()
         }
-        // v0.5.0 SOL-001 Solidity foundation: parser-only stub. Adapter
-        // (Kotlin-template per oracle) lands in SOL-002. Returning an
-        // empty param list here is safe: extract_function_params is
-        // only called when adapters exist for the language, and
-        // upstream callers tolerate empty results.
-        Language::Solidity => Vec::new(),
+        // solidity-ast-extract-v1 (v0.5.0 SOL-003): walk `parameter`
+        // children of a `function_definition` / `constructor_definition`
+        // / `fallback_receive_definition` / `modifier_definition` node
+        // and collect their `name` field values.
+        Language::Solidity => extract_solidity_params(func_node, source)
+            .into_iter()
+            .map(|p| p.name)
+            .collect(),
         Language::Elixir => {
             // explain identifies elixir function nodes as the outer `call`
             // node (def/defp ...). The actual params live inside
@@ -412,11 +433,15 @@ pub(crate) fn extract_functions_detailed(tree: &Tree, source: &str, language: La
         Language::Luau => extract_luau_functions_detailed(&root, source, &mut functions),
         Language::Swift => extract_swift_functions_detailed(&root, source, &mut functions),
         Language::Ocaml => extract_ocaml_functions_detailed(&root, source, &mut functions),
-        // v0.5.0 SOL-001 Solidity foundation: no-op adapter. Real
-        // adapter (`extract_solidity_functions_detailed`) lands in
-        // SOL-002 using the Kotlin-template per oracle research
-        // (modifiers > visibility_modifier shape maps 1:1).
-        Language::Solidity => { /* SOL-002 */ }
+        // solidity-ast-extract-v1 (v0.5.0 SOL-003): walk
+        // `function_definition` / `constructor_definition` /
+        // `fallback_receive_definition` at file scope. Functions
+        // inside contracts/interfaces/libraries are picked up by
+        // `extract_solidity_classes_detailed` via the
+        // `contract_body` walker.
+        Language::Solidity => {
+            extract_solidity_functions_detailed(&root, source, &mut functions, false);
+        }
     }
 
     functions
@@ -450,12 +475,13 @@ pub(crate) fn extract_classes_detailed(tree: &Tree, source: &str, language: Lang
         Language::Go => extract_go_structs_detailed(&root, source, &mut classes),
         Language::Swift => extract_swift_classes_detailed(&root, source, &mut classes),
         Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
-        // v0.5.0 SOL-001 Solidity foundation: contract/interface/library
-        // extraction lands in SOL-002 with the ClassInfo `kind` schema
-        // extension (oracle decision: extend ClassInfo with optional
-        // `kind: Option<String>` so contract/interface/library share
-        // the shape without breaking serialization for non-Solidity langs).
-        Language::Solidity => { /* SOL-002 */ }
+        // solidity-ast-extract-v1 (v0.5.0 SOL-003): walk
+        // `contract_declaration` / `interface_declaration` /
+        // `library_declaration` and emit `ClassInfo` with
+        // `kind: Some("contract"|"interface"|"library")`. Each
+        // class collects nested modifiers/events/errors/methods
+        // from the `contract_body`.
+        Language::Solidity => extract_solidity_classes_detailed(&root, source, &mut classes),
     }
 
     classes
@@ -998,10 +1024,12 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         Language::Luau => extract_luau_module_constants(&root, source),
         Language::Elixir => extract_elixir_module_constants(&root, source),
         Language::Ocaml => extract_ocaml_module_constants(&root, source),
-        // v0.5.0 SOL-001 Solidity foundation: state-variable extraction
-        // (`state_variable_declaration` / `constant_variable_declaration`)
-        // lands in SOL-002.
-        Language::Solidity => Vec::new(),
+        // solidity-ast-extract-v1 (v0.5.0 SOL-003): emit
+        // `constant_variable_declaration` at file-scope as a
+        // `FieldInfo` with `is_constant = true`. State variables
+        // inside contracts are collected per-contract by
+        // `extract_solidity_classes_detailed` into `ClassInfo.fields`.
+        Language::Solidity => extract_solidity_module_constants(&root, source),
     }
 }
 
@@ -7850,6 +7878,837 @@ fn extract_elixir_module_docstring(node: &Node, source: &str) -> Option<String> 
     }
 
     None
+}
+
+// =============================================================================
+// solidity-ast-extract-v1 (v0.5.0 SOL-003): Solidity detailed extraction.
+//
+// Modeled on the Kotlin extractor template (per oracle research): Solidity's
+// `function_definition` carries `visibility` / `state_mutability` /
+// `modifier_invocation` / `virtual` / `override_specifier` as named sibling
+// children of the decl node — the same shape Kotlin uses for its
+// `modifiers > visibility_modifier` + `modifiers > annotation` pattern.
+// Cross-references Java's `extract_java_class_bases` for the unified
+// inheritance-list flattening pattern (Solidity `is A, B` -> `bases =
+// ["A", "B"]`).
+//
+// AST node kinds covered:
+//   - `function_definition`, `constructor_definition`,
+//     `fallback_receive_definition`           (functions/methods)
+//   - `modifier_definition`                   (ModifierInfo)
+//   - `event_definition` / `event_parameter`  (EventInfo + indexed flag)
+//   - `error_declaration` / `error_parameter` (ErrorInfo)
+//   - `contract_declaration`, `interface_declaration`,
+//     `library_declaration`                   (ClassInfo with `kind`)
+//   - `inheritance_specifier > user_defined_type > identifier`
+//   - `state_variable_declaration`,
+//     `constant_variable_declaration`         (FieldInfo / FieldInfo[is_constant])
+//   - `parameter` / `return_parameter`        (name/type field walk)
+//   - `visibility`, `state_mutability`        (named keyword nodes — text IS the keyword)
+//   - `modifier_invocation`                   (first identifier child IS the modifier name)
+//
+// NatSpec docstring handling: NatSpec comments (`///` single-line and `/** */`
+// block) are emitted as `comment` nodes inside `source_file` or
+// `contract_body`. We walk preceding sibling `comment` nodes upward, joining
+// consecutive `///` lines into one docstring; `/**` block comments are
+// delivered verbatim (Phase 10 will further structure `@notice` / `@param`).
+// =============================================================================
+
+/// Walk `node` (typically `source_file` or `contract_body`) collecting
+/// `function_definition` / `constructor_definition` /
+/// `fallback_receive_definition` children. When `is_method` is `true`,
+/// the produced `FunctionInfo` will be tagged accordingly.
+///
+/// This is called both at file-scope (`source_file`, `is_method=false`)
+/// and inside contract/interface/library bodies (via
+/// `extract_solidity_classes_detailed`, `is_method=true`).
+fn extract_solidity_functions_detailed(
+    node: &Node,
+    source: &str,
+    functions: &mut Vec<FunctionInfo>,
+    is_method: bool,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                let info = extract_solidity_function_info(&child, source, is_method);
+                functions.push(info);
+            }
+            "constructor_definition" => {
+                let info = extract_solidity_constructor_info(&child, source, is_method);
+                functions.push(info);
+            }
+            "fallback_receive_definition" => {
+                let info = extract_solidity_fallback_info(&child, source, is_method);
+                functions.push(info);
+            }
+            // Stop at contract-like boundaries when walking file scope —
+            // their member functions are emitted via class extraction.
+            "contract_declaration"
+            | "interface_declaration"
+            | "library_declaration"
+            | "contract_body" => { /* handled by class extractor */ }
+            _ => {
+                // Recurse to find functions nested under non-decl wrappers.
+                extract_solidity_functions_detailed(&child, source, functions, is_method);
+            }
+        }
+    }
+}
+
+fn extract_solidity_function_info(node: &Node, source: &str, is_method: bool) -> FunctionInfo {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_default();
+
+    let param_infos = extract_solidity_params(node, source);
+    let params: Vec<String> = param_infos.into_iter().map(|p| p.name).collect();
+    let return_type = extract_solidity_return_type(node, source);
+    let docstring = extract_solidity_docstring(node, source);
+    let visibility = extract_solidity_visibility(node, source);
+    let mut decorators = Vec::new();
+    // State mutability is grammatically a "function modifier" in Solidity
+    // (the grammar slots it alongside `visibility` / `modifier_invocation`),
+    // so we surface it as a leading decorator so downstream consumers
+    // (`tldr explain` signatures, vuln rules looking for `payable`) can
+    // discover it without a Solidity-specific accessor. Kotlin uses the
+    // same pattern for `suspend` (via `is_async`); Solidity has no
+    // dedicated FunctionInfo slot for pure/view/payable.
+    if let Some(sm) = extract_solidity_state_mutability(node, source) {
+        decorators.push(sm);
+    }
+    decorators.extend(extract_solidity_modifier_invocations(node, source));
+
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    FunctionInfo {
+        name,
+        params,
+        return_type,
+        docstring,
+        is_method,
+        is_async: false, // Solidity has no async keyword
+        decorators,
+        visibility,
+        line_number,
+        line_end,
+    }
+}
+
+fn extract_solidity_constructor_info(node: &Node, source: &str, is_method: bool) -> FunctionInfo {
+    let param_infos = extract_solidity_params(node, source);
+    let params: Vec<String> = param_infos.into_iter().map(|p| p.name).collect();
+    let docstring = extract_solidity_docstring(node, source);
+    let modifier_invocations = extract_solidity_modifier_invocations(node, source);
+
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    FunctionInfo {
+        name: "constructor".to_string(),
+        params,
+        return_type: None,
+        docstring,
+        is_method,
+        is_async: false,
+        decorators: modifier_invocations,
+        visibility: extract_solidity_visibility(node, source),
+        line_number,
+        line_end,
+    }
+}
+
+fn extract_solidity_fallback_info(node: &Node, source: &str, is_method: bool) -> FunctionInfo {
+    // `fallback_receive_definition` covers both `fallback() external` and
+    // `receive() external payable`. The keyword (`fallback` / `receive`)
+    // is the first unnamed child token; use it as the function name.
+    let mut name = String::from("fallback");
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "fallback" || kind == "receive" {
+            name = kind.to_string();
+            break;
+        }
+        let txt = get_node_text(&child, source);
+        if txt == "fallback" || txt == "receive" {
+            name = txt;
+            break;
+        }
+    }
+
+    let param_infos = extract_solidity_params(node, source);
+    let params: Vec<String> = param_infos.into_iter().map(|p| p.name).collect();
+    let docstring = extract_solidity_docstring(node, source);
+    let mut decorators = Vec::new();
+    if let Some(sm) = extract_solidity_state_mutability(node, source) {
+        decorators.push(sm);
+    }
+    decorators.extend(extract_solidity_modifier_invocations(node, source));
+
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    FunctionInfo {
+        name,
+        params,
+        return_type: None,
+        docstring,
+        is_method,
+        is_async: false,
+        decorators,
+        visibility: extract_solidity_visibility(node, source),
+        line_number,
+        line_end,
+    }
+}
+
+/// Walk `parameter` children of a Solidity decl node. Each `parameter`
+/// has a `type` field and an optional `name` field. Returns one
+/// `ParamInfo` per parameter (preserving anonymous params with empty
+/// names).
+fn extract_solidity_params(node: &Node, source: &str) -> Vec<ParamInfo> {
+    let mut params = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source))
+                .unwrap_or_default();
+            let type_ = child
+                .child_by_field_name("type")
+                .map(|n| get_node_text(&n, source));
+            params.push(ParamInfo {
+                name,
+                type_,
+                default_value: None,
+            });
+        }
+    }
+    params
+}
+
+/// Walk `event_parameter` children of an `event_definition`. Each carries
+/// a `type` field, an optional `name` field, AND an unnamed `indexed`
+/// keyword token between the type and name when the param is indexed.
+fn extract_solidity_event_params(node: &Node, source: &str) -> Vec<EventParamInfo> {
+    let mut params = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "event_parameter" {
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source))
+                .unwrap_or_default();
+            let type_ = child
+                .child_by_field_name("type")
+                .map(|n| get_node_text(&n, source))
+                .unwrap_or_default();
+            // `indexed` is an anonymous (unnamed) child token. Look for
+            // a child whose text equals "indexed".
+            let mut indexed = false;
+            let mut ec = child.walk();
+            for ec_child in child.children(&mut ec) {
+                if ec_child.kind() == "indexed"
+                    || get_node_text(&ec_child, source) == "indexed"
+                {
+                    indexed = true;
+                    break;
+                }
+            }
+            params.push(EventParamInfo {
+                name,
+                type_,
+                indexed,
+            });
+        }
+    }
+    params
+}
+
+/// Walk `error_parameter` children of an `error_declaration`. Like
+/// `extract_solidity_params` but for the slightly different
+/// `error_parameter` node kind (same field shape: `name` + `type`).
+fn extract_solidity_error_params(node: &Node, source: &str) -> Vec<ParamInfo> {
+    let mut params = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "error_parameter" {
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source))
+                .unwrap_or_default();
+            let type_ = child
+                .child_by_field_name("type")
+                .map(|n| get_node_text(&n, source));
+            params.push(ParamInfo {
+                name,
+                type_,
+                default_value: None,
+            });
+        }
+    }
+    params
+}
+
+/// Extract the return type as joined `parameter` type-text from the
+/// `return_type_definition` child of a `function_definition`. Returns
+/// `None` when no `returns (...)` clause is present.
+fn extract_solidity_return_type(node: &Node, source: &str) -> Option<String> {
+    let rt = node.child_by_field_name("return_type")?;
+    let mut parts = Vec::new();
+    let mut cursor = rt.walk();
+    for child in rt.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            if let Some(t) = child.child_by_field_name("type") {
+                parts.push(get_node_text(&t, source));
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else if parts.len() == 1 {
+        Some(parts.into_iter().next().unwrap())
+    } else {
+        Some(format!("({})", parts.join(", ")))
+    }
+}
+
+/// Scan the `visibility` named child of a Solidity decl. The grammar
+/// emits a `visibility` node whose text IS the keyword
+/// (`public` / `external` / `internal` / `private`).
+fn extract_solidity_visibility(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "visibility" {
+            let t = get_node_text(&child, source);
+            let t = t.trim();
+            if matches!(t, "public" | "external" | "internal" | "private") {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Scan the `state_mutability` named child of a Solidity function decl.
+/// Returns `"pure"` / `"view"` / `"payable"` when present. `None` means
+/// the default (`nonpayable`) was used — we don't synthesize the
+/// default so callers can distinguish "unspecified" from "explicit".
+fn extract_solidity_state_mutability(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "state_mutability" {
+            let t = get_node_text(&child, source);
+            let t = t.trim();
+            if matches!(t, "pure" | "view" | "payable") {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Walk `modifier_invocation` children of a Solidity function/constructor/
+/// fallback/receive decl and collect the modifier names. Each
+/// `modifier_invocation` has the modifier name as its first
+/// `identifier` child (e.g. `onlyOwner`, `nonReentrant`) plus optional
+/// `call_argument` children we ignore for v1.
+fn extract_solidity_modifier_invocations(node: &Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifier_invocation" {
+            let mut mc = child.walk();
+            for mc_child in child.children(&mut mc) {
+                if mc_child.kind() == "identifier" {
+                    names.push(get_node_text(&mc_child, source));
+                    break;
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Whether `node` carries the `virtual` keyword as a named child.
+fn solidity_has_virtual(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "virtual" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `node` carries an `override_specifier` named child.
+fn solidity_has_override(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "override_specifier" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Walk preceding sibling `comment` nodes and collect contiguous NatSpec
+/// comments. Returns `None` when no NatSpec is present. Preserves leading
+/// `///`-stripped lines verbatim (per Phase 10 plan; structured `@notice`
+/// / `@param` parsing is downstream).
+///
+/// - `///` (single-line NatSpec): walk back, accept consecutive lines.
+/// - `/** ... */` (block NatSpec): single comment, return verbatim
+///   (preserving `@notice`/`@param`/`@dev` markup).
+fn extract_solidity_docstring(node: &Node, source: &str) -> Option<String> {
+    let mut prev = node.prev_sibling();
+    let mut single_line_docs: Vec<String> = Vec::new();
+
+    while let Some(sib) = prev {
+        if sib.kind() == "comment" {
+            let text = get_node_text(&sib, source);
+            let trimmed = text.trim_start();
+            if trimmed.starts_with("/**") {
+                // Block NatSpec: if we already collected single-line
+                // docs, the block predates them — those single-line docs
+                // win (they're closer to the decl). Otherwise return the
+                // block comment verbatim.
+                if single_line_docs.is_empty() {
+                    return Some(text);
+                } else {
+                    break;
+                }
+            }
+            if trimmed.starts_with("///") {
+                // Strip the leading `///` and one space.
+                let stripped = trimmed.trim_start_matches("///");
+                let stripped = stripped.strip_prefix(' ').unwrap_or(stripped);
+                single_line_docs.push(stripped.to_string());
+                prev = sib.prev_sibling();
+                continue;
+            }
+            // Plain `//` comment — not NatSpec, stop.
+            break;
+        }
+        // Skip non-comment whitespace / inheritance markers that may
+        // appear between the decl and its docstring (defensive — the
+        // grammar generally doesn't emit such nodes here).
+        break;
+    }
+
+    if single_line_docs.is_empty() {
+        None
+    } else {
+        // We walked backward, so reverse to source order.
+        single_line_docs.reverse();
+        Some(single_line_docs.join("\n"))
+    }
+}
+
+/// Walk a Solidity scope (`source_file` or `contract_body`) and emit
+/// `ModifierInfo` for every `modifier_definition` child. When
+/// `file_scope = true` ONLY top-level modifiers are emitted (skipping
+/// contract bodies, which are handled by `extract_solidity_classes_detailed`).
+fn extract_solidity_modifiers(node: &Node, source: &str, file_scope: bool) -> Vec<ModifierInfo> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "modifier_definition" => {
+                out.push(build_solidity_modifier_info(&child, source));
+            }
+            "contract_declaration" | "interface_declaration" | "library_declaration" => {
+                // At file scope, do not descend into contract bodies —
+                // their member modifiers belong to the ClassInfo.
+                if !file_scope {
+                    extract_solidity_modifiers_into(&child, source, &mut out);
+                }
+            }
+            _ => {
+                // Recurse into other wrappers (rare).
+                extract_solidity_modifiers_into(&child, source, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn extract_solidity_modifiers_into(node: &Node, source: &str, out: &mut Vec<ModifierInfo>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifier_definition" {
+            out.push(build_solidity_modifier_info(&child, source));
+        } else {
+            extract_solidity_modifiers_into(&child, source, out);
+        }
+    }
+}
+
+fn build_solidity_modifier_info(node: &Node, source: &str) -> ModifierInfo {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_default();
+    let params = extract_solidity_params(node, source);
+    let is_virtual = solidity_has_virtual(node);
+    let is_override = solidity_has_override(node);
+    let body_present = node.child_by_field_name("body").is_some();
+    let line_number = node.start_position().row as u32 + 1;
+
+    ModifierInfo {
+        name,
+        line_number,
+        params,
+        is_virtual,
+        is_override,
+        body_present,
+    }
+}
+
+/// Walk a Solidity scope and emit `EventInfo` for every `event_definition`.
+fn extract_solidity_events(node: &Node, source: &str, file_scope: bool) -> Vec<EventInfo> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "event_definition" => {
+                out.push(build_solidity_event_info(&child, source));
+            }
+            "contract_declaration" | "interface_declaration" | "library_declaration" => {
+                if !file_scope {
+                    extract_solidity_events_into(&child, source, &mut out);
+                }
+            }
+            _ => {
+                extract_solidity_events_into(&child, source, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn extract_solidity_events_into(node: &Node, source: &str, out: &mut Vec<EventInfo>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "event_definition" {
+            out.push(build_solidity_event_info(&child, source));
+        } else {
+            extract_solidity_events_into(&child, source, out);
+        }
+    }
+}
+
+fn build_solidity_event_info(node: &Node, source: &str) -> EventInfo {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_default();
+    let params = extract_solidity_event_params(node, source);
+    // `anonymous` is an unnamed token child when present.
+    let mut is_anonymous = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "anonymous" || get_node_text(&child, source) == "anonymous" {
+            is_anonymous = true;
+            break;
+        }
+    }
+    let line_number = node.start_position().row as u32 + 1;
+
+    EventInfo {
+        name,
+        line_number,
+        params,
+        is_anonymous,
+    }
+}
+
+/// Walk a Solidity scope and emit `ErrorInfo` for every `error_declaration`.
+fn extract_solidity_errors(node: &Node, source: &str, file_scope: bool) -> Vec<ErrorInfo> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "error_declaration" => {
+                out.push(build_solidity_error_info(&child, source));
+            }
+            "contract_declaration" | "interface_declaration" | "library_declaration" => {
+                if !file_scope {
+                    extract_solidity_errors_into(&child, source, &mut out);
+                }
+            }
+            _ => {
+                extract_solidity_errors_into(&child, source, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn extract_solidity_errors_into(node: &Node, source: &str, out: &mut Vec<ErrorInfo>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "error_declaration" {
+            out.push(build_solidity_error_info(&child, source));
+        } else {
+            extract_solidity_errors_into(&child, source, out);
+        }
+    }
+}
+
+fn build_solidity_error_info(node: &Node, source: &str) -> ErrorInfo {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_default();
+    let params = extract_solidity_error_params(node, source);
+    let line_number = node.start_position().row as u32 + 1;
+
+    ErrorInfo {
+        name,
+        line_number,
+        params,
+    }
+}
+
+/// Walk a Solidity source file and emit `ClassInfo` for every
+/// `contract_declaration` / `interface_declaration` /
+/// `library_declaration`. Each `ClassInfo` gets:
+/// - `kind = Some("contract" | "interface" | "library")`
+/// - `bases = [...]` flattened from `inheritance_specifier` children
+///   (Java-template pattern: the unified base list).
+/// - `methods` from `function_definition` / `constructor_definition` /
+///   `fallback_receive_definition` children of `contract_body`.
+/// - `modifiers`, `events`, `errors` from the same scope.
+/// - `fields` from `state_variable_declaration` and
+///   `constant_variable_declaration` children.
+fn extract_solidity_classes_detailed(node: &Node, source: &str, classes: &mut Vec<ClassInfo>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "contract_declaration" => {
+                let info = build_solidity_class_info(&child, source, "contract");
+                classes.push(info);
+            }
+            "interface_declaration" => {
+                let info = build_solidity_class_info(&child, source, "interface");
+                classes.push(info);
+            }
+            "library_declaration" => {
+                let info = build_solidity_class_info(&child, source, "library");
+                classes.push(info);
+            }
+            _ => {
+                // Recurse to find nested or wrapped decls (rare).
+                extract_solidity_classes_detailed(&child, source, classes);
+            }
+        }
+    }
+}
+
+fn build_solidity_class_info(node: &Node, source: &str, kind: &str) -> ClassInfo {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_default();
+
+    let bases = extract_solidity_class_bases(node, source);
+    let docstring = extract_solidity_docstring(node, source);
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    let mut methods = Vec::new();
+    let mut modifiers = Vec::new();
+    let mut events = Vec::new();
+    let mut errors = Vec::new();
+    let mut fields = Vec::new();
+
+    if let Some(body) = node.child_by_field_name("body") {
+        // Collect methods directly from the contract body. `is_method=true`
+        // because they are class members.
+        extract_solidity_functions_detailed(&body, source, &mut methods, true);
+        // Collect contract-scope modifiers/events/errors. `file_scope=false`
+        // is the wrong term here — we just want to harvest direct children
+        // of this body. Use the `_into` helpers which collect from a
+        // specific scope without the file/contract dispatch.
+        let mut bc = body.walk();
+        for body_child in body.children(&mut bc) {
+            match body_child.kind() {
+                "modifier_definition" => {
+                    modifiers.push(build_solidity_modifier_info(&body_child, source));
+                }
+                "event_definition" => {
+                    events.push(build_solidity_event_info(&body_child, source));
+                }
+                "error_declaration" => {
+                    errors.push(build_solidity_error_info(&body_child, source));
+                }
+                "state_variable_declaration" => {
+                    if let Some(f) = build_solidity_state_variable_field(&body_child, source) {
+                        fields.push(f);
+                    }
+                }
+                "constant_variable_declaration" => {
+                    if let Some(f) = build_solidity_constant_field(&body_child, source) {
+                        fields.push(f);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    ClassInfo {
+        name,
+        bases,
+        docstring,
+        methods,
+        fields,
+        decorators: Vec::new(),
+        line_number,
+        line_end,
+        kind: Some(kind.to_string()),
+        modifiers,
+        events,
+        errors,
+    }
+}
+
+/// Flatten `is A, B` inheritance into `Vec<String>`, modeled on Java's
+/// `extract_java_class_bases` (which similarly unifies superclass +
+/// implements into a single list). For Solidity each
+/// `inheritance_specifier` has an `ancestor` field of type
+/// `user_defined_type`; we walk inside to find the bare identifier.
+fn extract_solidity_class_bases(node: &Node, source: &str) -> Vec<String> {
+    let mut bases = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "inheritance_specifier" {
+            if let Some(ancestor) = child.child_by_field_name("ancestor") {
+                if let Some(name) = solidity_user_defined_type_name(&ancestor, source) {
+                    bases.push(name);
+                }
+            } else {
+                // Fallback: scan for user_defined_type child directly.
+                let mut ic = child.walk();
+                for ichild in child.children(&mut ic) {
+                    if ichild.kind() == "user_defined_type" {
+                        if let Some(name) = solidity_user_defined_type_name(&ichild, source) {
+                            bases.push(name);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    bases
+}
+
+/// Extract the bare identifier of a `user_defined_type` node. The grammar
+/// wraps the name in an identifier child (possibly `member_expression`
+/// for namespaced types like `OpenZeppelin.Ownable` — for v1 we surface
+/// just the leaf name when nested, or the full text otherwise).
+fn solidity_user_defined_type_name(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => return Some(get_node_text(&child, source)),
+            "member_expression" => return Some(get_node_text(&child, source)),
+            _ => {}
+        }
+    }
+    // Fallback to the whole node text.
+    Some(get_node_text(node, source))
+}
+
+/// Build a `FieldInfo` for a contract-scope `state_variable_declaration`.
+fn build_solidity_state_variable_field(node: &Node, source: &str) -> Option<FieldInfo> {
+    let name = node.child_by_field_name("name")?;
+    let name = get_node_text(&name, source);
+    let field_type = node
+        .child_by_field_name("type")
+        .map(|n| get_node_text(&n, source));
+    let default_value = node
+        .child_by_field_name("value")
+        .map(|n| get_node_text(&n, source));
+    let visibility = node
+        .child_by_field_name("visibility")
+        .map(|n| {
+            let t = get_node_text(&n, source);
+            t.trim().to_string()
+        })
+        .filter(|s| matches!(s.as_str(), "public" | "external" | "internal" | "private"));
+
+    // `immutable` is a child token. Treat immutable state vars as
+    // constants for downstream consumers (they cannot be reassigned).
+    let mut is_immutable = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "immutable" {
+            is_immutable = true;
+            break;
+        }
+    }
+
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    Some(FieldInfo {
+        name,
+        field_type,
+        default_value,
+        is_static: false,
+        is_constant: is_immutable,
+        visibility,
+        line_number,
+        line_end,
+    })
+}
+
+/// Build a `FieldInfo` for `constant_variable_declaration` (top-level
+/// or contract-scope `uint256 constant FOO = 1`).
+fn build_solidity_constant_field(node: &Node, source: &str) -> Option<FieldInfo> {
+    let name = node.child_by_field_name("name")?;
+    let name = get_node_text(&name, source);
+    let field_type = node
+        .child_by_field_name("type")
+        .map(|n| get_node_text(&n, source));
+    let default_value = node
+        .child_by_field_name("value")
+        .map(|n| get_node_text(&n, source));
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    Some(FieldInfo {
+        name,
+        field_type,
+        default_value,
+        is_static: true,
+        is_constant: true,
+        visibility: None,
+        line_number,
+        line_end,
+    })
+}
+
+/// Extract file-scope `constant_variable_declaration` as module constants.
+fn extract_solidity_module_constants(root: &Node, source: &str) -> Vec<FieldInfo> {
+    let mut out = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "constant_variable_declaration" {
+            if let Some(f) = build_solidity_constant_field(&child, source) {
+                out.push(f);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
