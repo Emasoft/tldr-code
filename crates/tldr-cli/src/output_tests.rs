@@ -1728,6 +1728,13 @@ fn make_module_info() -> ModuleInfo {
             decorators: vec![],
             line_number: 30,
             line_end: 30,
+            // solidity-schema-v1 (v0.5.0 SOL-002): non-Solidity test
+            // fixture — empty/None for Python ClassInfo; skip_serializing_if
+            // guarantees JSON shape matches pre-v1 schema.
+            kind: None,
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
         }],
         constants: vec![FieldInfo {
             name: "MAX_RETRIES".to_string(),
@@ -1759,6 +1766,12 @@ fn make_module_info() -> ModuleInfo {
                 m
             },
         },
+        // solidity-schema-v1 (v0.5.0 SOL-002): file-scope Solidity slots
+        // — empty for Python fixture. skip_serializing_if guarantees these
+        // keys are OMITTED from JSON, preserving pre-v1 schema shape.
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -1915,6 +1928,11 @@ fn test_module_info_text_empty() {
         classes: vec![],
         constants: vec![],
         call_graph: IntraFileCallGraph::default(),
+        // solidity-schema-v1 (v0.5.0 SOL-002): file-scope Solidity slots
+        // — empty for the empty-Python fixture.
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     };
     let text = format_module_info_text(&info);
     let plain = strip_ansi_codes(&text);
