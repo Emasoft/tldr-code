@@ -452,7 +452,8 @@ fn extract_function_chunks(
         | Language::Elixir
         | Language::Scala
         | Language::CSharp
-        | Language::Ruby => {
+        | Language::Ruby
+        | Language::Solidity => {
             extract_generic_all_functions(&root, source, language, &mut functions)
         }
     }
