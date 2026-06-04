@@ -42,6 +42,8 @@ const SUPPORTED_LANGUAGES: &[&str] = &[
     "luau",
     "elixir",
     "ocaml",
+    // v0.5.0 SOL-005a: Solidity per-language callgraph adapter.
+    "solidity",
 ];
 
 pub(crate) fn normalize_language_string(language: &str) -> String {
@@ -57,6 +59,8 @@ pub(crate) fn normalize_language_string(language: &str) -> String {
         "c#" | "cs" => "csharp".to_string(),
         "ex" => "elixir".to_string(),
         "ml" => "ocaml".to_string(),
+        // v0.5.0 SOL-005a: accept "sol" as a short form.
+        "sol" => "solidity".to_string(),
         other => other.to_string(),
     }
 }
@@ -518,6 +522,8 @@ pub(crate) fn get_language_extensions(language: &str) -> Result<Vec<&'static str
         "luau" => Language::Luau,
         "elixir" => Language::Elixir,
         "ocaml" => Language::Ocaml,
+        // v0.5.0 SOL-005a: Solidity per-language callgraph adapter.
+        "solidity" => Language::Solidity,
         _ => return Err(BuildError::UnsupportedLanguage(language.to_string())),
     };
 

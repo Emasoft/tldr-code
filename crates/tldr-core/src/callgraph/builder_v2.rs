@@ -368,6 +368,11 @@ fn resolve_super_constructor_call(
             | "javascript"
             | "js"
             | "csharp"
+            // v0.5.0 SOL-005a: Solidity dispatches `super.foo()` to a
+            // parent contract's method via the linearised inheritance
+            // chain. The Solidity adapter emits these as CallType::Method
+            // with receiver="super", same as the other JVM-family langs.
+            | "solidity"
     );
     if !supports_super_ctor
         || !matches!(call_site.call_type, CallType::Direct | CallType::Intra)

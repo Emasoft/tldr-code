@@ -35,6 +35,7 @@ pub mod python;
 pub mod ruby;
 pub mod rust_lang;
 pub mod scala;
+pub mod solidity;
 pub mod swift;
 pub mod typescript;
 
@@ -56,6 +57,7 @@ pub use python::PythonHandler;
 pub use ruby::RubyHandler;
 pub use rust_lang::RustLangHandler;
 pub use scala::ScalaHandler;
+pub use solidity::SolidityHandler;
 pub use swift::SwiftHandler;
 pub use typescript::TypeScriptHandler;
 
@@ -443,6 +445,10 @@ impl LanguageRegistry {
         registry.register(Arc::new(ElixirHandler::new()));
         registry.register(Arc::new(OcamlHandler::new()));
 
+        // v0.5.0 SOL-005a: Solidity per-language callgraph adapter.
+        // Routes `Language::Solidity` (".sol") to `SolidityHandler`.
+        registry.register(Arc::new(SolidityHandler::new()));
+
         registry
     }
 }
@@ -803,10 +809,12 @@ mod tests {
             // Tier 1: Python, Go, C, C++
             // Tier 2: TypeScript, Rust, Ruby, Java
             // Tier 3: C#, Kotlin, Swift
-            // Tier 4: Scala, PHP (added more recently)
+            // Tier 4: Scala, PHP, Lua, Luau, Elixir, OCaml
+            // v0.5.0 SOL-005a: Solidity
             let registry = LanguageRegistry::with_defaults();
             assert!(!registry.is_empty());
-            assert_eq!(registry.len(), 17); // All registered handlers (13 + 4 Tier 4)
+            // 4 Tier1 + 4 Tier2 + 3 Tier3 + 6 Tier4 + 1 Solidity = 18.
+            assert_eq!(registry.len(), 18);
 
             // Verify Tier 1 handlers are registered
             assert!(registry.get("python").is_some());
@@ -825,6 +833,9 @@ mod tests {
             assert!(registry.get("kotlin").is_some());
             assert!(registry.get("swift").is_some());
 
+            // v0.5.0 SOL-005a: Solidity handler registered.
+            assert!(registry.get("solidity").is_some());
+
             // Verify extension lookups work
             assert!(registry.get_by_extension(".py").is_some());
             assert!(registry.get_by_extension(".pyi").is_some());
@@ -838,6 +849,7 @@ mod tests {
             assert!(registry.get_by_extension(".rake").is_some());
             assert!(registry.get_by_extension(".java").is_some());
             assert!(registry.get_by_extension(".swift").is_some());
+            assert!(registry.get_by_extension(".sol").is_some());
         }
 
         #[test]
