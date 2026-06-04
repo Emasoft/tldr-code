@@ -55,6 +55,7 @@ pub mod resolve;
 pub mod ruby;
 pub mod rust;
 pub mod scala;
+pub mod solidity; // v0.5.0 SOL-005c: Solidity contract/interface/library inheritance
 pub mod swift;
 pub mod typescript;
 
@@ -174,6 +175,11 @@ pub fn extract_inheritance(
             // inheritance-walker-per-lang-v1 (M-039)
             Language::Elixir => elixir::extract_classes(&source, file_path, &parser_pool)?,
             Language::Lua => lua::extract_classes(&source, file_path, &parser_pool)?,
+            // v0.5.0 SOL-005c (solidity-inheritance-v1): contract /
+            // interface / library declarations with flattened
+            // `is A, B` bases list. Declared order preserved; no C3
+            // linearization in v1.
+            Language::Solidity => solidity::extract_classes(&source, file_path, &parser_pool)?,
             _ => Vec::new(), // Unsupported language
         };
 
