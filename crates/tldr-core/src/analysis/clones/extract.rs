@@ -197,6 +197,25 @@ fn collect_function_nodes(
             }
         }
         "ocaml" => matches!(kind, "let_binding" | "value_definition"),
+        // v0.5.0 SOL-015b M10 (solidity-sol015b-health-clones-smells-v1):
+        // Solidity contract members are `function_definition` /
+        // `constructor_definition` / `fallback_receive_definition` /
+        // `modifier_definition` (per the tree-sitter-solidity grammar
+        // shapes used in SOL-003 / SOL-004). All are first-class
+        // function-shaped nodes for clone-fragment purposes. The
+        // `depth <= 2` cap matches `python`'s rationale (skip
+        // arbitrarily-nested inner closures that aren't standalone
+        // clone candidates) — Solidity members nest one level deep
+        // under `contract_body`.
+        "solidity" => {
+            matches!(
+                kind,
+                "function_definition"
+                    | "constructor_definition"
+                    | "fallback_receive_definition"
+                    | "modifier_definition"
+            )
+        }
         _ => false,
     };
 
@@ -431,6 +450,10 @@ fn is_import_node(kind: &str, language: &str) -> bool {
         "kotlin" => kind == "import_header",
         "php" => kind == "namespace_use_declaration",
         "ocaml" => kind == "open_statement",
+        // v0.5.0 SOL-015b M10 (solidity-sol015b-health-clones-smells-v1):
+        // Solidity has 5 import forms, all parsed as `import_directive`
+        // by tree-sitter-solidity (see `ast/imports.rs` SOL-007).
+        "solidity" => kind == "import_directive",
         _ => false,
     }
 }

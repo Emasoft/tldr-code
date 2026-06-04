@@ -1280,6 +1280,16 @@ fn resolve_language(lang_str: &str) -> Option<Language> {
         "lua" => Some(Language::Lua),
         "kotlin" | "kt" => Some(Language::Kotlin),
         "elixir" | "ex" => Some(Language::Elixir),
+        // v0.5.0 SOL-015b M11 (solidity-sol015b-health-clones-smells-v1):
+        // Register Solidity so all Tier-1 AST smell detectors
+        // (deep nesting, data class, lazy element, message chain,
+        // primitive obsession) can parse `.sol` source. Without this,
+        // `parse_source` returned `None` and every Tier-1 detector
+        // short-circuited, leaving the smells JSON for `.sol` files
+        // empty (or, for the few legacy detectors that don't gate on
+        // `resolve_language`, emitting findings with an empty/unknown
+        // `smell_type`).
+        "solidity" | "sol" => Some(Language::Solidity),
         _ => None,
     }
 }
@@ -1387,6 +1397,14 @@ fn find_functions_and_measure_nesting(
             | "generator_function"
             | "async_function"
             | "function_def"
+            // v0.5.0 SOL-015b M11 (solidity-sol015b-health-clones-smells-v1):
+            // Solidity-specific function-shaped nodes. `function_definition`
+            // already covers the common case, but constructors / fallback /
+            // receive / modifiers can also exhibit deep nesting and must be
+            // surveyed individually.
+            | "constructor_definition"
+            | "fallback_receive_definition"
+            | "modifier_definition"
     );
 
     if is_function {
@@ -1423,6 +1441,11 @@ fn find_functions_and_measure_nesting(
                     | "function_item"
                     | "method_definition"
                     | "method_declaration"
+                    // v0.5.0 SOL-015b M11: Solidity-specific function-shaped
+                    // nodes mirror the top-of-fn `is_function` matrix.
+                    | "constructor_definition"
+                    | "fallback_receive_definition"
+                    | "modifier_definition"
             )
         {
             find_functions_and_measure_nesting(child, source, findings);
@@ -1909,6 +1932,12 @@ fn find_functions_and_check_primitives(
             | "method_declaration"
             | "arrow_function"
             | "function"
+            // v0.5.0 SOL-015b M11 (solidity-sol015b-health-clones-smells-v1):
+            // Solidity constructors / fallback / modifiers also accept
+            // parameters and need primitive-obsession checks.
+            | "constructor_definition"
+            | "fallback_receive_definition"
+            | "modifier_definition"
     );
 
     if is_function {

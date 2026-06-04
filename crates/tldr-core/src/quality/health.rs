@@ -1158,13 +1158,41 @@ fn canonicalize_counters_from_structure(
     };
 
     let classes_total: usize = structure.files.iter().map(|f| f.classes.len()).sum();
+
+    // v0.5.0 SOL-015b M9 (solidity-sol015b-health-clones-smells-v1):
+    // Solidity emits contract/interface/library member functions as
+    // `kind="method"` (see `collect_definitions` in
+    // `ast/extractor.rs`) AND `extract_solidity_functions` routes
+    // contract members through `extract_methods` rather than
+    // `extract_functions`. Counting only `kind=="function"` here
+    // caused `health.summary.functions_analyzed` to report 0 for
+    // every Solidity file whose functions all live inside a contract
+    // — even though the underlying complexity sub-analyzer happily
+    // computed cyclomatic / cognitive metrics for each one. Walk
+    // ClassInfo.methods (surfaced as kind="method" definitions) so
+    // contract members count toward the corpus-wide function total.
+    //
+    // For non-Solidity languages the previous (function-only) count
+    // is preserved verbatim — the Phase-22 health-dashboard-v1
+    // invariant `summary.functions_analyzed == sum(files[].functions.len())`
+    // continues to hold across the kotlin / swift / typescript / cpp /
+    // java / go / javascript corpora pinned by `health_dashboard_v1.rs`.
     let functions_total: usize = structure
         .files
         .iter()
         .map(|f| {
             f.definitions
                 .iter()
-                .filter(|d| d.kind == "function")
+                .filter(|d| {
+                    if matches!(language, Language::Solidity) {
+                        // Contract members appear as `method` and free
+                        // functions as `function`. Both contribute to
+                        // the function-axis count.
+                        d.kind == "function" || d.kind == "method"
+                    } else {
+                        d.kind == "function"
+                    }
+                })
                 .count()
         })
         .sum();

@@ -122,13 +122,18 @@ fn is_source_file_for_clones(path: &Path, language: Option<&str>) -> bool {
         (Some("kt" | "kts"), Some("kotlin")) => true,
         (Some("cpp" | "cc" | "cxx" | "hpp"), Some("cpp")) => true,
         (Some("luau"), Some("luau")) => true,
+        // v0.5.0 SOL-015b M10 (solidity-sol015b-health-clones-smells-v1):
+        // Register `.sol` so `tldr clones <dir>` includes Solidity files
+        // in fragment discovery instead of silently dropping them at
+        // the extension filter.
+        (Some("sol"), Some("solidity")) => true,
 
         // If no language specified, accept common source files
         (
             Some(
                 "py" | "ts" | "tsx" | "js" | "jsx" | "go" | "rs" | "java" | "c" | "h" | "cs" | "ex"
                 | "exs" | "lua" | "ml" | "mli" | "php" | "rb" | "scala" | "swift" | "kt" | "kts"
-                | "cpp" | "cc" | "cxx" | "hpp" | "luau",
+                | "cpp" | "cc" | "cxx" | "hpp" | "luau" | "sol",
             ),
             None,
         ) => true,
@@ -159,6 +164,11 @@ pub fn get_language_from_path(path: &Path) -> Option<&'static str> {
         "scala" => Some("scala"),
         "swift" => Some("swift"),
         "kt" | "kts" => Some("kotlin"),
+        // v0.5.0 SOL-015b M10 (solidity-sol015b-health-clones-smells-v1):
+        // `.sol` maps to "solidity" so the dominant-language resolver
+        // (`resolve_dominant_language`) emits the correct top-level
+        // `language` field on the clones report.
+        "sol" => Some("solidity"),
         _ => None,
     }
 }

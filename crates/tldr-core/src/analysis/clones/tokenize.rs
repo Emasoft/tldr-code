@@ -133,6 +133,9 @@ fn is_import_node(kind: &str, language: &str) -> bool {
         "kotlin" => kind == "import_header",
         "php" => kind == "namespace_use_declaration",
         "ocaml" => kind == "open_statement",
+        // v0.5.0 SOL-015b M10 (solidity-sol015b-health-clones-smells-v1):
+        // Mirror the dispatch in `clones/extract.rs::is_import_node`.
+        "solidity" => kind == "import_directive",
         _ => false,
     }
 }
