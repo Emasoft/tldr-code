@@ -183,6 +183,94 @@ fn find_child_by_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     None
 }
 
+/// solidity-cfg-v1 (v0.5.0 SOL-005b): For a Solidity `expression_statement`,
+/// return `Some("require")` / `Some("assert")` if the wrapped expression is a
+/// direct call to the `require` or `assert` builtin. Both are user-callable
+/// intrinsics that branch on their condition and halt the function on the
+/// false side — for CFG purposes they are first-class control-flow.
+///
+/// Returns `None` for any other call (ordinary user functions, library calls,
+/// etc.) so the generic expression-statement path keeps handling them.
+fn solidity_guard_call_name<'a>(node: Node<'a>, source: &'a str) -> Option<&'static str> {
+    fn find_call_target<'b>(n: Node<'b>, src: &'b str, depth: usize) -> Option<&'static str> {
+        if depth > 6 {
+            return None;
+        }
+        if n.kind() == "call_expression" {
+            if let Some(func) = n.child_by_field_name("function") {
+                let mut cur = func;
+                for _ in 0..6 {
+                    if cur.kind() == "identifier" {
+                        let name = cur.utf8_text(src.as_bytes()).unwrap_or("");
+                        return match name {
+                            "require" => Some("require"),
+                            "assert" => Some("assert"),
+                            _ => None,
+                        };
+                    }
+                    let mut walker = cur.walk();
+                    let mut next = None;
+                    for child in cur.children(&mut walker) {
+                        if child.is_named() {
+                            next = Some(child);
+                            break;
+                        }
+                    }
+                    cur = match next {
+                        Some(c) => c,
+                        None => return None,
+                    };
+                }
+            }
+            return None;
+        }
+        let mut walker = n.walk();
+        for child in n.children(&mut walker) {
+            if child.is_named() {
+                if let Some(name) = find_call_target(child, src, depth + 1) {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+    find_call_target(node, source, 0)
+}
+
+/// solidity-cfg-v1 (v0.5.0 SOL-005b): Collect both `body` field children of a
+/// Solidity `if_statement`. tree-sitter-solidity reuses the `body` field name
+/// for BOTH the then-branch and the else-branch (the else-branch appears as
+/// a second `body=statement` child positioned after the `else` token).
+///
+/// `tree_sitter::Node::child_by_field_name` returns only the first match, so
+/// without this helper the else-branch was invisible to `process_if_statement`.
+///
+/// Returns `(then, else)`. `else` is `None` when the if has no else clause.
+fn solidity_if_branches<'a>(node: Node<'a>) -> (Option<Node<'a>>, Option<Node<'a>>) {
+    let mut then_branch = None;
+    let mut else_branch = None;
+    let mut saw_else_token = false;
+    for i in 0..node.child_count() {
+        let child = match node.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        if child.kind() == "else" {
+            saw_else_token = true;
+            continue;
+        }
+        let field = node.field_name_for_child(i as u32);
+        if field == Some("body") {
+            if !saw_else_token && then_branch.is_none() {
+                then_branch = Some(child);
+            } else if saw_else_token {
+                else_branch = Some(child);
+            }
+        }
+    }
+    (then_branch, else_branch)
+}
+
 /// cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): Kotlin `if_expression` has
 /// no named "consequence" field (node-types.json verified). The consequence body
 /// is the first named child AFTER the "condition" field's end position.
@@ -443,6 +531,81 @@ impl<'a> CfgBuilder<'a> {
             }
         }
 
+        // solidity-cfg-v1 (v0.5.0 SOL-005b): tree-sitter-solidity wraps every
+        // body statement in a `statement` named container whose single named
+        // child is the actual `if_statement` / `for_statement` / etc. Without
+        // descending through this wrapper, the generic dispatch below would
+        // route `statement` into the catch-all `_` arm and the entire function
+        // body would collapse to a flat entry/exit pair.
+        //
+        // Also dispatch Solidity-specific bare nodes:
+        //   * `block_statement`  — the actual `{ ... }` container
+        //     (function bodies use `function_body { statement* }`; catch /
+        //     if-body / while-body wrap their contents in `block_statement`).
+        //   * `unchecked_block`  — `unchecked { ... }`; transparent w.r.t.
+        //     control flow but contains nested statements that must be walked.
+        //   * `do_while_statement` — handled by `process_do_while_loop`
+        //     (body-first loop; not covered by the generic `for/while` arms).
+        //   * `revert_statement` — terminates the function (mirrors `return`).
+        //   * `emit_statement`   — treated as an expression with side effects.
+        if matches!(self.language, Language::Solidity) {
+            match kind {
+                "statement" => {
+                    // The `statement` wrapper has a single named child that
+                    // carries the actual control-flow / expression node.
+                    let mut cursor = node.walk();
+                    if cursor.goto_first_child() {
+                        loop {
+                            let child = cursor.node();
+                            if child.is_named() {
+                                return self.process_statement(child, depth);
+                            }
+                            if !cursor.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+                "block_statement" | "unchecked_block" => {
+                    return self.process_block(node, depth);
+                }
+                "do_while_statement" => {
+                    return self.process_do_while_loop(node, depth);
+                }
+                "revert_statement" => {
+                    // revert(...) halts the function. Model it as a Return-like
+                    // exit so taint / reachability / cyclomatic all see the
+                    // function's terminal points.
+                    return self.process_return_statement(node, start_line, end_line);
+                }
+                "emit_statement" => {
+                    return self.process_expression(node, start_line, end_line);
+                }
+                "expression_statement" => {
+                    // Detect `require(cond, ...)` / `assert(cond)` calls. Both
+                    // are intrinsic Solidity guard primitives that branch on the
+                    // condition and halt the function on the false side. Model
+                    // as branch + exit so cyclomatic / reachability metrics
+                    // count them as decision points. Falls through to the
+                    // generic expression_statement arm otherwise so ordinary
+                    // calls keep their current call-extraction behaviour.
+                    if let Some(guard_name) =
+                        solidity_guard_call_name(node, self.source)
+                    {
+                        return self.process_solidity_guard_call(
+                            node,
+                            depth,
+                            start_line,
+                            end_line,
+                            guard_name,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): tree-sitter-kotlin-ng
         // emits `continue` / `break` / `return` as bare `identifier` nodes (not
         // `jump_expression` as the grammar spec suggests for newer versions).
@@ -641,12 +804,20 @@ impl<'a> CfgBuilder<'a> {
         // has NO named "consequence" field — the body is an unnamed child after the
         // closing `)` paren (node-types.json: only field is "condition").
         // Fall back to scanning named children after the condition position.
-        let consequence = node
-            .child_by_field_name("consequence")
+        // solidity-cfg-v1 (v0.5.0 SOL-005b): Solidity uses the SAME `body`
+        // field name for both then and else children — extract via the
+        // dedicated helper before falling back to the generic accessors.
+        let (sol_then, sol_else) = if matches!(self.language, Language::Solidity) {
+            solidity_if_branches(node)
+        } else {
+            (None, None)
+        };
+        let consequence = sol_then
+            .or_else(|| node.child_by_field_name("consequence"))
             .or_else(|| find_child_by_kind(node, "then_clause"))
             .or_else(|| kotlin_if_consequence(node));
-        let alternative = node
-            .child_by_field_name("alternative")
+        let alternative = sol_else
+            .or_else(|| node.child_by_field_name("alternative"))
             .or_else(|| find_child_by_kind(node, "else_clause"))
             .or_else(|| kotlin_if_alternative(node));
 
@@ -883,6 +1054,142 @@ impl<'a> CfgBuilder<'a> {
         Ok(())
     }
 
+    /// solidity-cfg-v1 (v0.5.0 SOL-005b): Process a Solidity `do { ... } while (cond);`
+    /// loop.
+    ///
+    /// Semantics: the body runs once unconditionally, THEN the condition is
+    /// evaluated. If true the loop iterates again; if false control exits.
+    ///
+    /// CFG shape (body-first loop with a header at the tail):
+    /// ```text
+    ///   current ── unconditional ──▶ body
+    ///                                 │
+    ///                                 │ unconditional
+    ///                                 ▼
+    ///                                header (LoopHeader on the condition)
+    ///                                 │       │
+    ///                                 │ True  │ False
+    ///                                 ▼       ▼
+    ///                              (back to body)  exit
+    /// ```
+    fn process_do_while_loop(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let condition = node.child_by_field_name("condition").map(|n| {
+            n.utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string()
+        });
+
+        // Header carries the condition check; placed at end-of-loop line so
+        // metric tools picking up the header line surface the `while (...)` row.
+        let header_block = self.new_block(BlockType::LoopHeader, end_line, end_line);
+        let exit_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let body = node.child_by_field_name("body");
+        if let Some(body_node) = body {
+            let body_start = body_node.start_position().row as u32 + 1;
+            let body_end = body_node.end_position().row as u32 + 1;
+            let body_block = self.new_block(BlockType::LoopBody, body_start, body_end);
+
+            // Unconditional entry into body (do-while body runs at least once).
+            self.add_edge(
+                self.current_block_id,
+                body_block,
+                EdgeType::Unconditional,
+                None,
+            );
+
+            self.current_block_id = body_block;
+            self.process_block(body_node, depth + 1)?;
+
+            // From end-of-body, fall into the header (condition check).
+            if !self.exit_blocks.contains(&self.current_block_id)
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
+                self.add_edge(
+                    self.current_block_id,
+                    header_block,
+                    EdgeType::Unconditional,
+                    None,
+                );
+            }
+
+            // True → back-edge to the body. False → exit.
+            self.add_edge(header_block, body_block, EdgeType::BackEdge, condition);
+            self.add_edge(header_block, exit_block, EdgeType::False, None);
+        } else {
+            // Defensive: no body → degenerate flow current ⇒ exit.
+            self.add_edge(
+                self.current_block_id,
+                exit_block,
+                EdgeType::Unconditional,
+                None,
+            );
+        }
+
+        // Suppress the unused warning in the body=None branch.
+        let _ = start_line;
+
+        self.current_block_id = exit_block;
+        Ok(())
+    }
+
+    /// solidity-cfg-v1 (v0.5.0 SOL-005b): Process a Solidity `require(cond, ...)`
+    /// or `assert(cond)` call wrapped in an `expression_statement`.
+    ///
+    /// Both intrinsics evaluate the condition and halt the function on the
+    /// false side (revert / panic). Model as a Branch block with a True edge
+    /// continuing to the next statement and a False edge into a Return ⇒ Exit
+    /// pair — mirrors the CFG shape that Java's `Objects.requireNonNull` /
+    /// Python's `assert` would produce for any equivalent grammar that
+    /// surfaced them as dedicated statement nodes.
+    fn process_solidity_guard_call(
+        &mut self,
+        node: Node,
+        _depth: usize,
+        start_line: u32,
+        end_line: u32,
+        guard_name: &'static str,
+    ) -> TldrResult<()> {
+        // Surface any nested calls inside the condition arguments for the
+        // call-graph / data-flow consumers BEFORE the branch is created.
+        self.extract_calls_from_node(node);
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, end_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+
+        // False side: condition violated → halt the function.
+        let fail_block = self.new_block(BlockType::Return, start_line, end_line);
+        self.add_edge(
+            branch_block,
+            fail_block,
+            EdgeType::False,
+            Some(format!("{} failed", guard_name)),
+        );
+        let exit_block = self.new_block(BlockType::Exit, end_line, end_line);
+        self.add_edge(fail_block, exit_block, EdgeType::Unconditional, None);
+        self.exit_blocks.push(exit_block);
+
+        // True side: condition held → continue.
+        let ok_block = self.new_block(BlockType::Body, start_line, end_line);
+        self.add_edge(
+            branch_block,
+            ok_block,
+            EdgeType::True,
+            Some(guard_name.to_string()),
+        );
+
+        self.current_block_id = ok_block;
+        Ok(())
+    }
+
     /// Process Rust `?` operator (try_expression).
     ///
     /// The `?` creates a hidden branch in the control flow:
@@ -1036,7 +1343,14 @@ impl<'a> CfgBuilder<'a> {
                 loop {
                     let child = cursor.node();
                     match child.kind() {
-                        "block" => {
+                        // solidity-cfg-v1 (v0.5.0 SOL-005b): tree-sitter-solidity
+                        // exposes the try-block body as `block_statement` (not
+                        // `block`), as the value of the `body` field. Match it
+                        // alongside the generic `block` kind so the try-body
+                        // statements are walked and any nested control-flow is
+                        // registered. The `catch_clause` arm below already
+                        // matches the catch siblings without modification.
+                        "block" | "block_statement" => {
                             // Try block body
                             self.current_block_id = try_block;
                             self.process_block(child, depth + 1)?;
