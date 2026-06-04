@@ -337,10 +337,16 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         Language::Rust => rust_is_test_function(node, source),
         Language::CSharp => csharp_has_test_attribute(node, source),
         Language::C | Language::Cpp | Language::Ocaml => false,
-        // v0.5.0 SOL-001: per-function Foundry test detection
-        // (function names starting with `test`/`fuzz`/`invariant_`)
-        // lands in SOL-007. Returning false matches the C/C++ stub.
-        Language::Solidity => false,
+        // solidity-test-recognizer-v1 (v0.5.0 SOL-009): Foundry/Forge test
+        // convention. A function is a test if it is a `function_definition`
+        // whose name starts with `test`, `fuzz`, or `invariant_`. The
+        // file-level filter (`is_candidate_test_file`) already gates
+        // whether we even reach this predicate, so `test*` functions in
+        // `src/` files won't be visited.
+        //
+        // Forge hooks (`setUp`, `setUpAll`, etc.) are intentionally NOT
+        // matched — they don't start with `test`/`fuzz`/`invariant_`.
+        Language::Solidity => solidity_is_forge_test_function(node, source),
     }
 }
 
@@ -680,6 +686,40 @@ fn lua_is_test_call(node: &Node, source: &[u8]) -> bool {
         }
     }
     false
+}
+
+// -- Solidity: Foundry/Forge `function test*`/`fuzz*`/`invariant_*` -----------
+//
+// solidity-test-recognizer-v1 (v0.5.0 SOL-009): Foundry/Forge test convention.
+//
+// Tree-sitter-solidity emits Solidity functions as `function_definition`
+// nodes with a `name` field (an `identifier`). Foundry's test discovery
+// picks up any function whose name starts with `test`, `fuzz`, or
+// `invariant_`. Hooks like `setUp` are intentionally excluded.
+//
+// File-path gating (must live in `test/`, `tests/`, or have a filename
+// containing `test`) is handled upstream by `is_candidate_test_file`, so
+// this predicate purely filters on the function name. A `function testFoo`
+// inside `src/Main.sol` therefore never reaches this code — the
+// recognise() short-circuit returns `is_test_file = false` first.
+//
+// We deliberately do NOT (yet) check inheritance from `Test` / `forge-std`
+// transitively — that's a Phase-2 refinement. The file-path heuristic is
+// sufficient for v1 per the oracle research and the standard Foundry layout.
+fn solidity_is_forge_test_function(node: &Node, source: &[u8]) -> bool {
+    if node.kind() != "function_definition" {
+        return false;
+    }
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, source))
+        .unwrap_or_default();
+    // Foundry conventions:
+    //   - `test*`         → unit test (the default `forge test` discovery).
+    //   - `fuzz*`         → property test (fuzz inputs).
+    //   - `invariant_*`   → invariant test (stateful fuzzing).
+    // Hooks like `setUp` / `setUpAll` / `afterInvariant` do NOT match.
+    name.starts_with("test") || name.starts_with("fuzz") || name.starts_with("invariant_")
 }
 
 // -- Helpers ------------------------------------------------------------------
