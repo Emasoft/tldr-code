@@ -800,6 +800,18 @@ impl<'a> CognitiveCalculator<'a> {
                     return true;
                 }
             }
+            // solidity-metrics-v1 (v0.5.0 SOL-008): tree-sitter-solidity
+            // exposes do-while loops as `do_while_statement` (same kind as
+            // Kotlin). The generic arm in `increases_nesting` covers
+            // `if_statement` / `for_statement` / `while_statement` /
+            // `try_statement` / `catch_clause`, so those are already
+            // nesting-counted; we only need to add `do_while_statement`
+            // here so the inner-of-do-while body gets a nesting penalty.
+            Language::Solidity => {
+                if matches!(kind, "do_while_statement") {
+                    return true;
+                }
+            }
             Language::Ocaml => {
                 if matches!(
                     kind,
@@ -909,8 +921,13 @@ impl<'a> CognitiveCalculator<'a> {
             {
                 Some((1, "for"))
             }
-            // Kotlin do-while
-            "do_while_statement" if matches!(self.language, Language::Kotlin) => {
+            // Kotlin do-while; Solidity also exposes `do_while_statement`.
+            // solidity-metrics-v1 (v0.5.0 SOL-008): credit Solidity do-while
+            // as a +1 cognitive base + nesting penalty (matches the loop
+            // construct semantics).
+            "do_while_statement"
+                if matches!(self.language, Language::Kotlin | Language::Solidity) =>
+            {
                 Some((1, "while"))
             }
             // catch/except add +1 base + nesting
@@ -1185,7 +1202,9 @@ impl<'a> CognitiveCalculator<'a> {
             "when_expression" if matches!(self.language, Language::Kotlin) => {
                 self.cyclomatic += 1
             }
-            "do_while_statement" if matches!(self.language, Language::Kotlin) => {
+            "do_while_statement"
+                if matches!(self.language, Language::Kotlin | Language::Solidity) =>
+            {
                 self.cyclomatic += 1
             }
             // Ruby AST kinds (P12.AGG12-10 + cognitive-else-counting-fix-v1).

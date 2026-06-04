@@ -1015,6 +1015,79 @@ fn is_operator_node(kind: &str, text: &str, language: Language) -> bool {
             "function", "if", "then", "elseif", "else", "for", "while", "do", "repeat", "until",
             "return", "break", "local", "end", "in", "and", "or", "not",
         ],
+        // solidity-metrics-v1 (v0.5.0 SOL-008): tree-sitter-solidity exposes
+        // Solidity keywords as bare-token children of the surrounding
+        // definition/statement nodes. Without this arm the operator set was
+        // empty save for arithmetic/comparison/call_expression tokens, which
+        // collapsed Halstead vocabulary / length / volume on every Solidity
+        // function. Mirrors the Java / Kotlin arms in shape.
+        Language::Solidity => vec![
+            // Top-level declarations
+            "contract",
+            "interface",
+            "library",
+            "is",
+            "import",
+            "using",
+            "pragma",
+            "function",
+            "modifier",
+            "constructor",
+            "fallback",
+            "receive",
+            "event",
+            "error",
+            "struct",
+            "enum",
+            "mapping",
+            "type",
+            // Visibility + state mutability
+            "public",
+            "external",
+            "internal",
+            "private",
+            "pure",
+            "view",
+            "payable",
+            "constant",
+            "immutable",
+            "virtual",
+            "override",
+            "abstract",
+            "anonymous",
+            "indexed",
+            // Storage location keywords
+            "memory",
+            "storage",
+            "calldata",
+            // Control flow
+            "if",
+            "else",
+            "for",
+            "while",
+            "do",
+            "try",
+            "catch",
+            "return",
+            "returns",
+            "break",
+            "continue",
+            "throw",
+            "revert",
+            "emit",
+            "require",
+            "assert",
+            // Inline assembly + Yul
+            "assembly",
+            "let",
+            // Misc keywords / built-in operators
+            "new",
+            "delete",
+            "this",
+            "super",
+            "unchecked",
+            "as",
+        ],
         Language::Ocaml => vec![
             "let",
             "in",
@@ -1093,7 +1166,7 @@ fn is_operator_node(kind: &str, text: &str, language: Language) -> bool {
 }
 
 /// Normalize operator representation
-fn normalize_operator(kind: &str, text: &str, _language: Language) -> String {
+fn normalize_operator(kind: &str, text: &str, language: Language) -> String {
     // For node types that represent operators, use the kind
     // For actual operator tokens, use the text
     match kind {
@@ -1103,6 +1176,18 @@ fn normalize_operator(kind: &str, text: &str, _language: Language) -> String {
         | "boolean_operator"
         | "assignment" => text.to_string(),
         _ => {
+            // solidity-metrics-v1 (v0.5.0 SOL-008): Solidity exposes
+            // `require` / `assert` / `revert` builtins as plain `identifier`
+            // nodes inside a `call_expression`. The default branch falls
+            // back to `kind` (= "identifier") when text is > 3 chars and
+            // NOT in the global `is_keyword` list — collapsing every
+            // Solidity intrinsic into a single "identifier" operator and
+            // destroying the operator vocabulary. Preserve the text when
+            // the language is Solidity AND the text was classified as a
+            // language keyword operator earlier in `is_operator_node`.
+            if matches!(language, Language::Solidity) && is_solidity_keyword_text(text) {
+                return text.to_string();
+            }
             if text.len() <= 3 || is_keyword(text) {
                 text.to_string()
             } else {
@@ -1110,6 +1195,47 @@ fn normalize_operator(kind: &str, text: &str, _language: Language) -> String {
             }
         }
     }
+}
+
+/// solidity-metrics-v1 (v0.5.0 SOL-008): Whitelist of Solidity keyword /
+/// builtin-call names whose text should be preserved by
+/// `normalize_operator` even when they appear under an `identifier` node
+/// (e.g. `require(cond, msg)` — `require` is an `identifier` token of a
+/// `call_expression`, not a dedicated keyword kind). Without this the
+/// operator collapses to the bare `"identifier"` kind.
+fn is_solidity_keyword_text(text: &str) -> bool {
+    matches!(
+        text,
+        // Intrinsic guard / control-effect builtins.
+        "require"
+            | "assert"
+            | "revert"
+            | "emit"
+            | "selfdestruct"
+            | "suicide"
+            // Declaration / control-flow keywords that may surface here
+            // when the grammar uses an `identifier` wrapper.
+            | "function"
+            | "modifier"
+            | "constructor"
+            | "fallback"
+            | "receive"
+            | "returns"
+            | "payable"
+            | "external"
+            | "internal"
+            | "public"
+            | "private"
+            | "virtual"
+            | "override"
+            | "unchecked"
+            | "assembly"
+            | "memory"
+            | "storage"
+            | "calldata"
+            | "indexed"
+            | "anonymous"
+    )
 }
 
 /// Check if text is a keyword

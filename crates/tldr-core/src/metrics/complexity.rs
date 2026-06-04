@@ -285,6 +285,16 @@ impl<'a> ComplexityCalculator<'a> {
             return true;
         }
 
+        // solidity-metrics-v1 (v0.5.0 SOL-008): Solidity exposes do-while
+        // as `do_while_statement` (same kind as Kotlin). Treat it as a
+        // nesting structure so the body gets a nesting penalty in cognitive
+        // (the cognitive walker re-uses this kind via its own
+        // `increases_nesting`). Gating on Solidity avoids touching grammars
+        // where the same kind name might collide.
+        if matches!(self.language, Language::Solidity) && kind == "do_while_statement" {
+            return true;
+        }
+
         matches!(
             kind,
             "if_statement"
@@ -413,6 +423,14 @@ impl<'a> ComplexityCalculator<'a> {
             "conditional_expression" | "ternary_expression" => {
                 self.cyclomatic += 1;
             }
+            // solidity-metrics-v1 (v0.5.0 SOL-008): Solidity has both
+            // `do_while_statement` (like Kotlin) and the standard
+            // `if_statement` / `for_statement` / `while_statement` /
+            // `try_statement` / `catch_clause` which are already
+            // credited by the generic arms above. Credit do_while here.
+            "do_while_statement" if matches!(self.language, Language::Solidity) => {
+                self.cyclomatic += 1;
+            }
             _ => {}
         }
 
@@ -426,8 +444,17 @@ impl<'a> ComplexityCalculator<'a> {
             }
         }
 
-        // Also check for && and || as direct node kinds
-        if kind == "&&" || kind == "||" || kind == "and" || kind == "or" {
+        // Also check for && and || as direct node kinds.
+        // solidity-metrics-v1 (v0.5.0 SOL-008): tree-sitter-solidity exposes
+        // each `binary_expression` operator as a CHILD node whose KIND is the
+        // operator token itself (`&&` / `||`). Without gating, every Solidity
+        // `&&`/`||` would be credited TWICE — once via the field-name check
+        // above on `binary_expression`, and once again as the bare-token
+        // node. Skip the bare-token credit for Solidity so the field-name
+        // arm remains the single source of truth.
+        if (kind == "&&" || kind == "||" || kind == "and" || kind == "or")
+            && !matches!(self.language, Language::Solidity)
+        {
             self.cyclomatic += 1;
         }
     }
