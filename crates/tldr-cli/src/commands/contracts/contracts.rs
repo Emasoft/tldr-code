@@ -166,7 +166,12 @@ impl LanguageConfig {
             func_name_field: "name",
             func_body_field: "body",
             if_condition_field: "condition",
-            if_consequence_field: "consequence",
+            // v0.5.0 SOL-CONV-R1-2 (M14b): the tree-sitter-solidity grammar
+            // names the then-branch field `body`, not `consequence`. With
+            // the wrong field name the per-language guard-precondition
+            // walker treated every `if (cond) revert Err()` as if it had
+            // no throw in the consequence and dropped it from the surface.
+            if_consequence_field: "body",
             if_alternative_field: "alternative",
             func_params_field: "parameters",
             return_type_field: "return_parameters",
@@ -2197,11 +2202,17 @@ fn body_contains_throw(if_stmt: Node, source: &[u8], config: &LanguageConfig) ->
         if config.is_throw(child.kind()) {
             return true;
         }
-        // Check inside blocks/compound statements
-        if child.kind() == "block"
+        // v0.5.0 SOL-CONV-R1-2 (M14b): tree-sitter-solidity uses
+        // `block_statement` for the braced consequence and wraps EVERY
+        // statement (including the if's own body) in a `statement` node.
+        // Both need recursion to find a deeper throw.
+        if (child.kind() == "block"
             || child.kind() == "compound_statement"
             || child.kind() == "function_body"
-            || child.kind() == "statements" && node_tree_contains_throw(child, source, config)
+            || child.kind() == "statements"
+            || child.kind() == "block_statement"
+            || child.kind() == "statement")
+            && node_tree_contains_throw(child, source, config)
         {
             return true;
         }
@@ -2264,10 +2275,13 @@ fn node_tree_contains_throw(node: Node, source: &[u8], config: &LanguageConfig) 
             }
         }
         // Recurse into blocks, statements, and other containers
-        if child.kind() == "block"
+        if (child.kind() == "block"
             || child.kind() == "compound_statement"
             || child.kind() == "function_body"
-            || child.kind() == "statements" && node_tree_contains_throw(child, source, config)
+            || child.kind() == "statements"
+            || child.kind() == "block_statement"
+            || child.kind() == "statement")
+            && node_tree_contains_throw(child, source, config)
         {
             return true;
         }
@@ -2358,8 +2372,29 @@ fn precondition_from_guard(
         return None;
     }
 
-    let condition_node = if_stmt.child_by_field_name(config.if_condition_field)?;
+    let raw_condition_node = if_stmt.child_by_field_name(config.if_condition_field)?;
     let line = if_stmt.start_position().row as u32 + 1;
+
+    // v0.5.0 SOL-CONV-R1-2 (M14b): the tree-sitter-solidity grammar wraps
+    // every if-condition expression in an `expression` named node, e.g.
+    //   if_statement.condition = expression > binary_expression
+    // Peel that wrapper so the kind dispatch below sees the concrete
+    // comparison kind (binary_expression / comparison_operator) and
+    // produces a high-confidence negated precondition rather than the
+    // generic `!(expr)` fallback.
+    let condition_node = if raw_condition_node.kind() == "expression" {
+        let mut cursor = raw_condition_node.walk();
+        let mut inner = raw_condition_node;
+        for child in raw_condition_node.children(&mut cursor) {
+            if child.is_named() {
+                inner = child;
+                break;
+            }
+        }
+        inner
+    } else {
+        raw_condition_node
+    };
     let condition_text = get_node_text(condition_node, source);
 
     match condition_node.kind() {
