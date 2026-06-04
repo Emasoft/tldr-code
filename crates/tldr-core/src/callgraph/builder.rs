@@ -203,6 +203,7 @@ mod tests {
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         };
         assert!(is_entry_point(&main_func));
 
@@ -217,6 +218,7 @@ mod tests {
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         };
         assert!(is_entry_point(&test_func));
 
@@ -231,6 +233,7 @@ mod tests {
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         };
         assert!(is_entry_point(&route_func));
 
@@ -245,6 +248,7 @@ mod tests {
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         };
         assert!(!is_entry_point(&normal_func));
     }

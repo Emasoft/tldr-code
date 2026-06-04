@@ -1988,6 +1988,7 @@ mod tests {
                     visibility: None,
                     line_number: 42,
                     line_end: 42,
+                    state_mutability: None,
                 }],
                 classes: vec![],
                 constants: vec![],
@@ -2029,6 +2030,7 @@ mod tests {
                     visibility: None,
                     line_number: 10,
                     line_end: 10,
+                    state_mutability: None,
                 }],
                 classes: vec![],
                 constants: vec![],
@@ -2314,6 +2316,7 @@ mod tests {
                         visibility: None,
                         line_number: 5,
                         line_end: 5,
+                        state_mutability: None,
                     }],
                     fields: vec![],
                     decorators: vec!["interface".to_string()],
@@ -2602,6 +2605,7 @@ mod tests {
                         visibility: None,
                         line_number: 5,
                         line_end: 5,
+                        state_mutability: None,
                     },
                     FunctionInfo {
                         name: "generateMetadata".to_string(),
@@ -2614,6 +2618,7 @@ mod tests {
                         visibility: None,
                         line_number: 20,
                         line_end: 20,
+                        state_mutability: None,
                     },
                     // Private function should NOT get framework treatment
                     FunctionInfo {
@@ -2627,6 +2632,7 @@ mod tests {
                         visibility: None,
                         line_number: 30,
                         line_end: 30,
+                        state_mutability: None,
                     },
                 ],
                 classes: vec![],

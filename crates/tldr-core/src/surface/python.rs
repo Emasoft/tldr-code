@@ -1280,6 +1280,7 @@ mod tests {
             visibility: None,
             line_number: 10,
             line_end: 10,
+            state_mutability: None,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::Property);
     }
@@ -1297,6 +1298,7 @@ mod tests {
             visibility: None,
             line_number: 10,
             line_end: 10,
+            state_mutability: None,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::StaticMethod);
     }
@@ -1314,6 +1316,7 @@ mod tests {
             visibility: None,
             line_number: 10,
             line_end: 10,
+            state_mutability: None,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::ClassMethod);
     }
@@ -1331,6 +1334,7 @@ mod tests {
             visibility: None,
             line_number: 10,
             line_end: 10,
+            state_mutability: None,
         };
         assert_eq!(determine_method_kind(&method), ApiKind::Method);
     }

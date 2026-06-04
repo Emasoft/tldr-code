@@ -1671,6 +1671,7 @@ fn make_module_info() -> ModuleInfo {
                 visibility: None,
                 line_number: 10,
                 line_end: 10,
+                state_mutability: None,
             },
             FunctionInfo {
                 name: "helper".to_string(),
@@ -1683,6 +1684,7 @@ fn make_module_info() -> ModuleInfo {
                 visibility: None,
                 line_number: 25,
                 line_end: 25,
+                state_mutability: None,
             },
         ],
         classes: vec![ClassInfo {
@@ -1701,6 +1703,7 @@ fn make_module_info() -> ModuleInfo {
                     visibility: None,
                     line_number: 32,
                     line_end: 32,
+                    state_mutability: None,
                 },
                 FunctionInfo {
                     name: "run".to_string(),
@@ -1713,6 +1716,7 @@ fn make_module_info() -> ModuleInfo {
                     visibility: None,
                     line_number: 40,
                     line_end: 40,
+                    state_mutability: None,
                 },
             ],
             fields: vec![FieldInfo {

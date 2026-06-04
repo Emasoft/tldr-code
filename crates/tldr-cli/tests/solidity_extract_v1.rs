@@ -120,11 +120,18 @@ fn extract_emits_function_with_visibility_state_mutability_and_modifiers() {
         Some("external"),
         "deposit declared `external`"
     );
-    // state_mutability is encoded into decorators (leading slot), then
-    // the modifier-invocations follow.
+    // solidity-sol013-cluster-v1 (v0.5.0 SOL-013 M3): state_mutability
+    // is now its OWN field on FunctionInfo, NOT mixed into decorators.
+    // `decorators` carries only user-defined modifier invocations.
+    assert_eq!(
+        f.state_mutability.as_deref(),
+        Some("payable"),
+        "expected state_mutability=`payable` on its own field; got: {:?}",
+        f.state_mutability
+    );
     assert!(
-        f.decorators.contains(&"payable".to_string()),
-        "expected state_mutability=`payable` in decorators; got: {:?}",
+        !f.decorators.contains(&"payable".to_string()),
+        "state_mutability MUST NOT leak into decorators after SOL-013 M3; got: {:?}",
         f.decorators
     );
     assert!(
@@ -293,17 +300,339 @@ library Util {}
     assert_eq!(by_name.get("Bar"), Some(&"contract"));
     assert_eq!(by_name.get("Util"), Some(&"library"));
 
-    // The interface's `ping` should be a method with view state_mutability
-    // in decorators.
+    // The interface's `ping` should be a method with `view`
+    // state_mutability on its own field after SOL-013 M3.
     let i_foo = m.classes.iter().find(|c| c.name == "IFoo").unwrap();
     assert_eq!(i_foo.methods.len(), 1);
     let ping = &i_foo.methods[0];
     assert_eq!(ping.name, "ping");
     assert_eq!(ping.visibility.as_deref(), Some("external"));
+    assert_eq!(
+        ping.state_mutability.as_deref(),
+        Some("view"),
+        "expected state_mutability=`view` on its own field; got: {:?}",
+        ping.state_mutability
+    );
     assert!(
-        ping.decorators.contains(&"view".to_string()),
-        "expected `view` state_mutability in decorators; got: {:?}",
+        !ping.decorators.contains(&"view".to_string()),
+        "state_mutability MUST NOT leak into decorators; got: {:?}",
         ping.decorators
+    );
+}
+
+// ---------------------------------------------------------------------------
+// solidity-sol013-cluster-v1 (v0.5.0 SOL-013): M2 + M3 regression tests.
+// ---------------------------------------------------------------------------
+
+/// SOL-013 M2: a `error InsufficientBalance(uint256 x);` declared at file
+/// scope (Solidity 0.8.4+ free-standing errors) must populate
+/// `ModuleInfo.errors`, not be silently dropped.
+#[test]
+fn extract_sol013_m2_file_scope_error_populates_module_errors() {
+    let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+error InsufficientBalance(uint256 available, uint256 required);
+
+contract Vault {
+    function withdraw(uint256 amount) external {
+        revert InsufficientBalance(0, amount);
+    }
+}
+";
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("FreeError.sol");
+    fs::write(&file, src).unwrap();
+    let m = extract_file_with_lang(&file, None, Some(Language::Solidity)).unwrap();
+
+    assert_eq!(
+        m.errors.len(),
+        1,
+        "expected 1 file-scope error in ModuleInfo.errors; got: {:?}",
+        m.errors.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    let er = &m.errors[0];
+    assert_eq!(er.name, "InsufficientBalance");
+    assert_eq!(er.params.len(), 2);
+    assert_eq!(er.params[0].name, "available");
+    assert_eq!(er.params[0].type_.as_deref(), Some("uint256"));
+    assert_eq!(er.params[1].name, "required");
+    assert_eq!(er.params[1].type_.as_deref(), Some("uint256"));
+
+    // The contract-scope errors list must remain empty — the error lives
+    // at file scope, not inside Vault.
+    let vault = m.classes.iter().find(|c| c.name == "Vault").unwrap();
+    assert!(
+        vault.errors.is_empty(),
+        "file-scope error MUST NOT leak into ClassInfo.errors; got: {:?}",
+        vault.errors.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+}
+
+/// SOL-013 M2: a `event TopLevelEvent(...)` declared at file scope
+/// (Solidity 0.8.22+ free-standing events) must populate
+/// `ModuleInfo.events`, not be silently dropped.
+#[test]
+fn extract_sol013_m2_file_scope_event_populates_module_events() {
+    let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+event GlobalLog(address indexed who, uint256 amount);
+
+contract Emitter {
+    function ping() external {
+        emit GlobalLog(msg.sender, 1);
+    }
+}
+";
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("FreeEvent.sol");
+    fs::write(&file, src).unwrap();
+    let m = extract_file_with_lang(&file, None, Some(Language::Solidity)).unwrap();
+
+    assert_eq!(
+        m.events.len(),
+        1,
+        "expected 1 file-scope event in ModuleInfo.events; got: {:?}",
+        m.events.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    let ev = &m.events[0];
+    assert_eq!(ev.name, "GlobalLog");
+    assert!(!ev.is_anonymous);
+    assert_eq!(ev.params.len(), 2);
+    assert_eq!(ev.params[0].name, "who");
+    assert_eq!(ev.params[0].type_, "address");
+    assert!(ev.params[0].indexed);
+    assert_eq!(ev.params[1].name, "amount");
+    assert_eq!(ev.params[1].type_, "uint256");
+    assert!(!ev.params[1].indexed);
+
+    // The contract-scope events list must remain empty — the event lives
+    // at file scope, not inside Emitter.
+    let emitter = m.classes.iter().find(|c| c.name == "Emitter").unwrap();
+    assert!(
+        emitter.events.is_empty(),
+        "file-scope event MUST NOT leak into ClassInfo.events; got: {:?}",
+        emitter.events.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+}
+
+/// SOL-013 M2: a file with file-scope errors AND a contract that has its
+/// own contract-scope errors must produce both lists correctly — neither
+/// list bleeds into the other.
+#[test]
+fn extract_sol013_m2_file_scope_and_contract_scope_errors_independent() {
+    let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+error FileLevelErr(uint256 x);
+
+contract C {
+    error ContractLevelErr(address a);
+    function f() external {
+        revert ContractLevelErr(address(0));
+    }
+}
+";
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("BothScopeErrors.sol");
+    fs::write(&file, src).unwrap();
+    let m = extract_file_with_lang(&file, None, Some(Language::Solidity)).unwrap();
+
+    // Module-scope list has only the file-level error.
+    let module_names: Vec<&str> = m.errors.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        module_names,
+        vec!["FileLevelErr"],
+        "ModuleInfo.errors should contain ONLY file-scope errors; got: {:?}",
+        module_names
+    );
+
+    // Contract-scope list has only the contract-level error.
+    let c = m.classes.iter().find(|c| c.name == "C").unwrap();
+    let class_names: Vec<&str> = c.errors.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        class_names,
+        vec!["ContractLevelErr"],
+        "ClassInfo.errors should contain ONLY contract-scope errors; got: {:?}",
+        class_names
+    );
+}
+
+/// SOL-013 M3: a function declared `public payable onlyOwner nonReentrant`
+/// must surface state_mutability=`payable` on its OWN field and
+/// `decorators=[onlyOwner, nonReentrant]` — `payable` must NOT appear in
+/// `decorators`.
+#[test]
+fn extract_sol013_m3_state_mutability_separated_from_decorators() {
+    let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract Pay {
+    modifier onlyOwner() { _; }
+    modifier nonReentrant() { _; }
+
+    function buy() public payable onlyOwner nonReentrant returns (uint256) {
+        return 0;
+    }
+
+    function peek() public view returns (uint256) { return 1; }
+    function constFn() public pure returns (uint256) { return 2; }
+    function mutate(uint256 x) public { _ = x; }
+}
+";
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("StateMut.sol");
+    fs::write(&file, src).unwrap();
+    let m = extract_file_with_lang(&file, None, Some(Language::Solidity)).unwrap();
+
+    let c = m.classes.iter().find(|c| c.name == "Pay").unwrap();
+    let by_name: std::collections::HashMap<&str, &_> =
+        c.methods.iter().map(|f| (f.name.as_str(), f)).collect();
+
+    // buy: state_mutability=payable, decorators=[onlyOwner, nonReentrant]
+    let buy = by_name.get("buy").expect("missing buy");
+    assert_eq!(
+        buy.state_mutability.as_deref(),
+        Some("payable"),
+        "buy.state_mutability should be `payable`; got: {:?}",
+        buy.state_mutability
+    );
+    assert!(
+        !buy.decorators.contains(&"payable".to_string()),
+        "buy.decorators MUST NOT contain `payable`; got: {:?}",
+        buy.decorators
+    );
+    assert!(
+        buy.decorators.contains(&"onlyOwner".to_string()),
+        "buy.decorators should contain user modifier `onlyOwner`; got: {:?}",
+        buy.decorators
+    );
+    assert!(
+        buy.decorators.contains(&"nonReentrant".to_string()),
+        "buy.decorators should contain user modifier `nonReentrant`; got: {:?}",
+        buy.decorators
+    );
+
+    // peek: state_mutability=view, decorators=[]
+    let peek = by_name.get("peek").expect("missing peek");
+    assert_eq!(peek.state_mutability.as_deref(), Some("view"));
+    assert!(
+        !peek.decorators.contains(&"view".to_string()),
+        "peek.decorators MUST NOT contain `view`; got: {:?}",
+        peek.decorators
+    );
+
+    // constFn: state_mutability=pure
+    let cfn = by_name.get("constFn").expect("missing constFn");
+    assert_eq!(cfn.state_mutability.as_deref(), Some("pure"));
+    assert!(
+        !cfn.decorators.contains(&"pure".to_string()),
+        "constFn.decorators MUST NOT contain `pure`; got: {:?}",
+        cfn.decorators
+    );
+
+    // mutate: no state_mutability keyword present in source — must be None.
+    let mutate = by_name.get("mutate").expect("missing mutate");
+    assert!(
+        mutate.state_mutability.is_none(),
+        "mutate has no explicit state_mutability; got: {:?}",
+        mutate.state_mutability
+    );
+}
+
+/// SOL-013 M3: a `receive() external payable` falls through the fallback
+/// extractor — state_mutability must still surface on its own field, not
+/// in decorators.
+#[test]
+fn extract_sol013_m3_receive_state_mutability_separated() {
+    let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract Receiver {
+    receive() external payable {}
+    fallback() external payable {}
+}
+";
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("Receive.sol");
+    fs::write(&file, src).unwrap();
+    let m = extract_file_with_lang(&file, None, Some(Language::Solidity)).unwrap();
+
+    let c = m.classes.iter().find(|c| c.name == "Receiver").unwrap();
+    let recv = c
+        .methods
+        .iter()
+        .find(|f| f.name == "receive")
+        .expect("missing receive");
+    assert_eq!(
+        recv.state_mutability.as_deref(),
+        Some("payable"),
+        "receive.state_mutability should be `payable`; got: {:?}",
+        recv.state_mutability
+    );
+    assert!(
+        !recv.decorators.contains(&"payable".to_string()),
+        "receive.decorators MUST NOT contain `payable`; got: {:?}",
+        recv.decorators
+    );
+
+    let fb = c
+        .methods
+        .iter()
+        .find(|f| f.name == "fallback")
+        .expect("missing fallback");
+    assert_eq!(
+        fb.state_mutability.as_deref(),
+        Some("payable"),
+        "fallback.state_mutability should be `payable`; got: {:?}",
+        fb.state_mutability
+    );
+    assert!(
+        !fb.decorators.contains(&"payable".to_string()),
+        "fallback.decorators MUST NOT contain `payable`; got: {:?}",
+        fb.decorators
+    );
+}
+
+/// SOL-013 M3: a `constructor() payable` must surface payable on the
+/// state_mutability field (the constructor extractor takes a separate
+/// path from regular functions).
+#[test]
+fn extract_sol013_m3_constructor_payable_state_mutability() {
+    let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract C {
+    constructor() payable {}
+}
+";
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("CtorPayable.sol");
+    fs::write(&file, src).unwrap();
+    let m = extract_file_with_lang(&file, None, Some(Language::Solidity)).unwrap();
+    let c = m.classes.iter().find(|c| c.name == "C").unwrap();
+    let ctor = c
+        .methods
+        .iter()
+        .find(|f| f.name == "constructor")
+        .expect("missing constructor");
+    assert_eq!(
+        ctor.state_mutability.as_deref(),
+        Some("payable"),
+        "constructor.state_mutability should be `payable`; got: {:?}",
+        ctor.state_mutability
+    );
+    assert!(
+        !ctor.decorators.contains(&"payable".to_string()),
+        "constructor.decorators MUST NOT contain `payable`; got: {:?}",
+        ctor.decorators
     );
 }
 

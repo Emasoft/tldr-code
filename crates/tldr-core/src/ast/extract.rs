@@ -679,6 +679,7 @@ fn extract_python_function_info(node: &Node, source: &str, is_method: bool) -> F
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -2247,6 +2248,7 @@ fn extract_ts_assignment_function(
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     });
 }
 
@@ -2366,6 +2368,7 @@ fn extract_ts_pair_function(pair: &Node, source: &str, functions: &mut Vec<Funct
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     });
 }
 
@@ -2418,6 +2421,7 @@ fn extract_ts_variable_functions(node: &Node, source: &str, functions: &mut Vec<
                         visibility: None,
                         line_number,
                         line_end,
+                        state_mutability: None,
                     });
                 }
             }
@@ -2489,6 +2493,7 @@ fn extract_ts_function_info(node: &Node, source: &str, is_method: bool) -> Funct
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -2774,6 +2779,7 @@ fn extract_go_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -3022,6 +3028,7 @@ fn extract_go_interface_methods_recursive(
                     visibility,
                     line_number,
                     line_end,
+                    state_mutability: None,
                 });
             }
         } else {
@@ -3214,6 +3221,7 @@ fn extract_rust_function_info(node: &Node, source: &str, is_method: bool) -> Fun
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -3488,6 +3496,7 @@ fn extract_methods_from_trait_body(trait_node: &Node, source: &str) -> Vec<Funct
                             visibility: None,
                             line_number,
                             line_end,
+                            state_mutability: None,
                         });
                     }
                 }
@@ -3696,6 +3705,7 @@ fn extract_java_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -4067,6 +4077,7 @@ fn extract_lua_assignment_functions(node: &Node, source: &str, functions: &mut V
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     });
 }
 
@@ -4118,6 +4129,7 @@ fn extract_lua_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -4273,6 +4285,7 @@ fn extract_luau_assignment_functions(node: &Node, source: &str, functions: &mut 
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     });
 }
 
@@ -4299,6 +4312,7 @@ fn extract_luau_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -4430,6 +4444,7 @@ fn extract_swift_function_info(node: &Node, source: &str, is_method: bool) -> Fu
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -4818,6 +4833,7 @@ fn extract_ocaml_function_info(binding: &Node, definition: &Node, source: &str) 
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -5293,6 +5309,7 @@ fn extract_c_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -5575,6 +5592,7 @@ fn extract_cpp_function_info(node: &Node, source: &str, is_method: bool) -> Func
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -5842,6 +5860,7 @@ fn extract_ruby_function_info(node: &Node, source: &str, is_method: bool) -> Fun
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -6170,6 +6189,7 @@ fn extract_php_function_info(node: &Node, source: &str, is_method: bool) -> Func
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -6513,6 +6533,7 @@ fn extract_csharp_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -6813,6 +6834,7 @@ fn extract_kotlin_function_info(node: &Node, source: &str, is_method: bool) -> F
         visibility,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -7252,6 +7274,7 @@ fn extract_scala_function_info(node: &Node, source: &str, is_method: bool) -> Fu
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -7680,6 +7703,7 @@ fn extract_elixir_function_info(node: &Node, source: &str) -> FunctionInfo {
         visibility: None,
         line_number,
         line_end,
+        state_mutability: None,
     }
 }
 
@@ -7968,18 +7992,17 @@ fn extract_solidity_function_info(node: &Node, source: &str, is_method: bool) ->
     let return_type = extract_solidity_return_type(node, source);
     let docstring = extract_solidity_docstring(node, source);
     let visibility = extract_solidity_visibility(node, source);
-    let mut decorators = Vec::new();
-    // State mutability is grammatically a "function modifier" in Solidity
-    // (the grammar slots it alongside `visibility` / `modifier_invocation`),
-    // so we surface it as a leading decorator so downstream consumers
-    // (`tldr explain` signatures, vuln rules looking for `payable`) can
-    // discover it without a Solidity-specific accessor. Kotlin uses the
-    // same pattern for `suspend` (via `is_async`); Solidity has no
-    // dedicated FunctionInfo slot for pure/view/payable.
-    if let Some(sm) = extract_solidity_state_mutability(node, source) {
-        decorators.push(sm);
-    }
-    decorators.extend(extract_solidity_modifier_invocations(node, source));
+    // solidity-sol013-cluster-v1 (v0.5.0 SOL-013 M3): state_mutability
+    // (pure/view/payable) is grammatically a Solidity "function modifier"
+    // (slotted alongside `visibility` / `modifier_invocation` in the
+    // tree-sitter grammar), but semantically distinct from user-defined
+    // modifier invocations like `onlyOwner` / `nonReentrant`. SOL-003
+    // originally stuffed it into `decorators` alongside modifier
+    // invocations, conflating two distinct concepts. Now we populate
+    // `FunctionInfo.state_mutability` as its own slot and `decorators`
+    // carries ONLY the user-defined modifier invocations.
+    let state_mutability = extract_solidity_state_mutability(node, source);
+    let decorators = extract_solidity_modifier_invocations(node, source);
 
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
@@ -7995,6 +8018,7 @@ fn extract_solidity_function_info(node: &Node, source: &str, is_method: bool) ->
         visibility,
         line_number,
         line_end,
+        state_mutability,
     }
 }
 
@@ -8003,6 +8027,10 @@ fn extract_solidity_constructor_info(node: &Node, source: &str, is_method: bool)
     let params: Vec<String> = param_infos.into_iter().map(|p| p.name).collect();
     let docstring = extract_solidity_docstring(node, source);
     let modifier_invocations = extract_solidity_modifier_invocations(node, source);
+    // solidity-sol013-cluster-v1 M3: a constructor may be `payable`
+    // (`constructor() payable { ... }`). Surface that as
+    // state_mutability rather than letting it leak into decorators.
+    let state_mutability = extract_solidity_state_mutability(node, source);
 
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
@@ -8018,6 +8046,7 @@ fn extract_solidity_constructor_info(node: &Node, source: &str, is_method: bool)
         visibility: extract_solidity_visibility(node, source),
         line_number,
         line_end,
+        state_mutability,
     }
 }
 
@@ -8043,11 +8072,12 @@ fn extract_solidity_fallback_info(node: &Node, source: &str, is_method: bool) ->
     let param_infos = extract_solidity_params(node, source);
     let params: Vec<String> = param_infos.into_iter().map(|p| p.name).collect();
     let docstring = extract_solidity_docstring(node, source);
-    let mut decorators = Vec::new();
-    if let Some(sm) = extract_solidity_state_mutability(node, source) {
-        decorators.push(sm);
-    }
-    decorators.extend(extract_solidity_modifier_invocations(node, source));
+    // solidity-sol013-cluster-v1 M3: separate state_mutability (typically
+    // `payable` on `receive() external payable { ... }`) from user-defined
+    // modifier invocations. See `extract_solidity_function_info` for the
+    // rationale.
+    let state_mutability = extract_solidity_state_mutability(node, source);
+    let decorators = extract_solidity_modifier_invocations(node, source);
 
     let line_number = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
@@ -8063,6 +8093,7 @@ fn extract_solidity_fallback_info(node: &Node, source: &str, is_method: bool) ->
         visibility: extract_solidity_visibility(node, source),
         line_number,
         line_end,
+        state_mutability,
     }
 }
 
@@ -8199,14 +8230,34 @@ fn extract_solidity_visibility(node: &Node, source: &str) -> Option<String> {
 /// Returns `"pure"` / `"view"` / `"payable"` when present. `None` means
 /// the default (`nonpayable`) was used — we don't synthesize the
 /// default so callers can distinguish "unspecified" from "explicit".
+///
+/// solidity-sol013-cluster-v1 (v0.5.0 SOL-013 M3): the tree-sitter-solidity
+/// 1.2.13 grammar emits a named `state_mutability` child for
+/// `function_definition` and `fallback_receive_definition` but NOT for
+/// `constructor_definition` — there `payable` appears as an unnamed
+/// terminal token child with `kind() == "payable"` directly under the
+/// `constructor_definition` node (s-expr: `(constructor_definition body:
+/// (function_body))` with `payable` consumed silently). We therefore
+/// also accept the unnamed-token form so `constructor() payable {}`
+/// surfaces `state_mutability="payable"`. This is still AST-driven —
+/// we read the kinds the grammar produces, no regex over source text.
 fn extract_solidity_state_mutability(node: &Node, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        // Named-child form: function_definition, fallback_receive_definition
         if child.kind() == "state_mutability" {
             let t = get_node_text(&child, source);
             let t = t.trim();
             if matches!(t, "pure" | "view" | "payable") {
                 return Some(t.to_string());
+            }
+        }
+        // Unnamed-token form: constructor_definition swallows the keyword
+        // as a terminal child whose `kind()` is the keyword itself.
+        if !child.is_named() {
+            let k = child.kind();
+            if matches!(k, "pure" | "view" | "payable") {
+                return Some(k.to_string());
             }
         }
     }

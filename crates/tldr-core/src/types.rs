@@ -1574,6 +1574,25 @@ pub struct FunctionInfo {
     /// have access to the AST node range.
     #[serde(default)]
     pub line_end: u32,
+    /// solidity-sol013-cluster-v1 (v0.5.0 SOL-013 M3): Solidity
+    /// `state_mutability` modifier — one of `"pure"`, `"view"`,
+    /// `"payable"`, or `None`. Grammatically a function modifier in
+    /// Solidity (slotted alongside `visibility` / `modifier_invocation`),
+    /// but semantically distinct from user-defined modifier
+    /// invocations like `onlyOwner` / `nonReentrant`. SOL-003
+    /// originally stuffed it into `decorators` alongside modifier
+    /// invocations, conflating two distinct concepts; this field
+    /// separates them so downstream consumers (vuln rules looking
+    /// for `payable`, explain signatures) can read it without
+    /// string-matching against the `decorators` list.
+    ///
+    /// `None` for every non-Solidity language and for Solidity
+    /// functions that omit the state-mutability keyword (the
+    /// default is "nonpayable"); `skip_serializing_if =
+    /// "Option::is_none"` keeps the JSON shape unchanged for
+    /// non-Solidity consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_mutability: Option<String>,
 }
 
 // schema-unification-v1 BUG-17 / schema-cleanup-v1 BUG-23: manual
@@ -1601,6 +1620,9 @@ impl Serialize for FunctionInfo {
         if self.visibility.is_some() {
             count += 1;
         }
+        if self.state_mutability.is_some() {
+            count += 1;
+        }
         let mut s = serializer.serialize_struct("FunctionInfo", count)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("params", &self.params)?;
@@ -1617,6 +1639,9 @@ impl Serialize for FunctionInfo {
         }
         if let Some(vis) = &self.visibility {
             s.serialize_field("visibility", vis)?;
+        }
+        if let Some(sm) = &self.state_mutability {
+            s.serialize_field("state_mutability", sm)?;
         }
         s.serialize_field("line", &self.line_number)?;
         s.serialize_field("line_end", &self.line_end)?;

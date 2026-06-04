@@ -1144,6 +1144,7 @@ def helper(n):
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         };
 
         let sig = build_signature(&func, Language::Python);
@@ -1163,6 +1164,7 @@ def helper(n):
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         };
 
         let sig = build_signature(&func, Language::Python);

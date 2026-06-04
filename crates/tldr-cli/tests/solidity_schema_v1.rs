@@ -687,6 +687,7 @@ fn solidity_module_full_shape() {
             visibility: Some("public".to_string()),
             line_number: 50,
             line_end: 55,
+            state_mutability: None,
         }],
         fields: vec![],
         decorators: vec![],
