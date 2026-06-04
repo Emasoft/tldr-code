@@ -8257,6 +8257,14 @@ fn solidity_has_override(node: &Node) -> bool {
     false
 }
 
+/// Public re-export of [`extract_solidity_docstring`] so downstream
+/// crates (e.g. `tldr-cli`'s contracts command) can re-collect the raw
+/// NatSpec text from a Solidity function/contract node before feeding it
+/// to [`parse_solidity_natspec`].
+pub fn collect_solidity_natspec_text(node: &Node, source: &str) -> Option<String> {
+    extract_solidity_docstring(node, source)
+}
+
 /// Walk preceding sibling `comment` nodes and collect contiguous NatSpec
 /// comments. Returns `None` when no NatSpec is present. Preserves leading
 /// `///`-stripped lines verbatim (per Phase 10 plan; structured `@notice`
@@ -8308,6 +8316,251 @@ fn extract_solidity_docstring(node: &Node, source: &str) -> Option<String> {
         single_line_docs.reverse();
         Some(single_line_docs.join("\n"))
     }
+}
+
+// =============================================================================
+// solidity-natspec-v1 (v0.5.0 SOL-010): NatSpec doc-comment parser.
+//
+// NatSpec lives in regular `comment` nodes (`///` single-line or `/** */`
+// block). This module converts the *text* of one such comment block into
+// a structured `NatSpecDoc` so downstream consumers (e.g. the contracts
+// command) can map `@param NAME text` onto preconditions and
+// `@return [NAME] text` onto postconditions without re-implementing the
+// comment-text grammar.
+//
+// Reference: https://docs.soliditylang.org/en/latest/natspec-format.html
+// Supported tags (v1):
+//   - `@title <text>`         → metadata
+//   - `@author <text>`        → metadata
+//   - `@notice <text>`        → user-facing notice
+//   - `@dev <text>`           → developer-facing notes
+//   - `@param NAME <text>`    → parameter doc (precondition material)
+//   - `@return [NAME] <text>` → return doc (postcondition material)
+//   - `@inheritdoc CONTRACT`  → inherits docs from `CONTRACT`
+//   - `@custom:KEY <text>`    → arbitrary custom tag
+// =============================================================================
+
+/// A NatSpec `@param NAME text` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatSpecParam {
+    /// Parameter name (token after `@param`).
+    pub name: String,
+    /// Free-form description text following the name.
+    pub text: String,
+}
+
+/// A NatSpec `@return [NAME] text` entry.
+///
+/// The `name` slot is optional: `@return result The product` carries
+/// `name = Some("result")` and `text = "The product"`, while
+/// `@return The product` carries `name = None` and `text = "The product"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NatSpecReturn {
+    /// Optional return-value name (when the function declares named returns).
+    pub name: Option<String>,
+    /// Free-form description text.
+    pub text: String,
+}
+
+/// Structured representation of a Solidity NatSpec doc-comment block.
+///
+/// Multi-line tag values are joined with single spaces. Tags appearing
+/// multiple times for the same key (e.g. `@param`) produce one entry per
+/// occurrence; `@custom:KEY` aggregates multiple values under the same
+/// key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NatSpecDoc {
+    /// `@title <text>`
+    pub title: Option<String>,
+    /// `@author <text>`
+    pub author: Option<String>,
+    /// `@notice <text>` (user-facing).
+    pub notice: Option<String>,
+    /// `@dev <text>` (developer-facing).
+    pub dev: Option<String>,
+    /// All `@param NAME <text>` entries in source order.
+    pub params: Vec<NatSpecParam>,
+    /// All `@return [NAME] <text>` entries in source order.
+    pub returns: Vec<NatSpecReturn>,
+    /// `@inheritdoc CONTRACT` target (when present).
+    pub inheritdoc: Option<String>,
+    /// `@custom:KEY <text>` entries — KEY → list of texts.
+    pub custom_tags: std::collections::HashMap<String, Vec<String>>,
+}
+
+/// Parse a Solidity NatSpec doc-comment text block into a [`NatSpecDoc`].
+///
+/// Accepts both `///`-stripped single-line accumulations (one tag per
+/// line) and verbatim `/** ... */` block-comment text. For block text,
+/// the parser strips the surrounding `/**` / `*/` markers and the
+/// leading `*` / `* ` per-line continuation marker before scanning for
+/// `@tag` lines.
+///
+/// Continuation lines (lines that do not start with `@`) are appended to
+/// the previous tag's text with a single space separator.
+pub fn parse_solidity_natspec(text: &str) -> NatSpecDoc {
+    let mut doc = NatSpecDoc::default();
+
+    // Normalize: strip block comment markers and `*` line prefixes so
+    // both `///`-stripped accumulations and verbatim `/** */` blocks
+    // produce the same line set.
+    let normalized = normalize_natspec_text(text);
+
+    // Walk lines, collecting tag → text pairs. Continuation lines (lines
+    // not starting with `@`) extend the previous tag's text.
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for raw in normalized.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('@') {
+            // New tag. Split on the first whitespace into (tag_key, body).
+            let (tag_key, body) = match rest.find(char::is_whitespace) {
+                Some(idx) => (rest[..idx].to_string(), rest[idx + 1..].trim().to_string()),
+                None => (rest.to_string(), String::new()),
+            };
+            entries.push((tag_key, body));
+        } else if let Some(last) = entries.last_mut() {
+            // Continuation: append to previous tag's body.
+            if !last.1.is_empty() {
+                last.1.push(' ');
+            }
+            last.1.push_str(line);
+        }
+        // Lines before the first tag are ignored (free-form prose).
+    }
+
+    // Dispatch tag → field. Order matters for first-wins semantics on
+    // singleton tags (title/author/notice/dev/inheritdoc).
+    for (tag, body) in entries {
+        match tag.as_str() {
+            "title" => {
+                if doc.title.is_none() {
+                    doc.title = Some(body);
+                }
+            }
+            "author" => {
+                if doc.author.is_none() {
+                    doc.author = Some(body);
+                }
+            }
+            "notice" => {
+                if doc.notice.is_none() {
+                    doc.notice = Some(body);
+                }
+            }
+            "dev" => {
+                if doc.dev.is_none() {
+                    doc.dev = Some(body);
+                }
+            }
+            "param" => {
+                // `@param NAME rest...` — split on first whitespace.
+                let (name, text) = match body.find(char::is_whitespace) {
+                    Some(idx) => (body[..idx].to_string(), body[idx + 1..].trim().to_string()),
+                    None => (body, String::new()),
+                };
+                if !name.is_empty() {
+                    doc.params.push(NatSpecParam { name, text });
+                }
+            }
+            "return" => {
+                // `@return NAME text...` OR `@return text...` (no name).
+                // Heuristic: if the first whitespace-delimited token is a
+                // valid identifier (starts with letter or `_`, followed
+                // by alphanumerics/underscore) AND there is more text
+                // after it, treat as named. Otherwise, no name.
+                let (maybe_name, rest) = match body.find(char::is_whitespace) {
+                    Some(idx) => (
+                        body[..idx].to_string(),
+                        body[idx + 1..].trim().to_string(),
+                    ),
+                    None => (body.clone(), String::new()),
+                };
+                if is_natspec_identifier(&maybe_name) && !rest.is_empty() {
+                    doc.returns.push(NatSpecReturn {
+                        name: Some(maybe_name),
+                        text: rest,
+                    });
+                } else {
+                    doc.returns.push(NatSpecReturn {
+                        name: None,
+                        text: body,
+                    });
+                }
+            }
+            "inheritdoc" => {
+                if doc.inheritdoc.is_none() && !body.is_empty() {
+                    // `@inheritdoc CONTRACT` — first token is the contract name.
+                    let target = body
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    if !target.is_empty() {
+                        doc.inheritdoc = Some(target);
+                    }
+                }
+            }
+            other => {
+                // `@custom:KEY value` aggregates under custom_tags["KEY"].
+                if let Some(key) = other.strip_prefix("custom:") {
+                    if !key.is_empty() {
+                        doc.custom_tags
+                            .entry(key.to_string())
+                            .or_default()
+                            .push(body);
+                    }
+                }
+                // Unknown tags are dropped silently in v1 (consistent with
+                // the JSDoc / Sphinx parsers above).
+            }
+        }
+    }
+
+    doc
+}
+
+/// Strip block-comment markers (`/**`, `*/`) and leading `*` / `* `
+/// continuation markers from a NatSpec text block. Single-line `///`
+/// accumulations pass through untouched.
+fn normalize_natspec_text(text: &str) -> String {
+    // Strip `/**` opener and `*/` closer if present.
+    let trimmed = text.trim();
+    let inner = trimmed
+        .strip_prefix("/**")
+        .map(|s| s.strip_suffix("*/").unwrap_or(s))
+        .unwrap_or(trimmed);
+
+    let mut out = String::new();
+    for line in inner.lines() {
+        let t = line.trim();
+        // Block-comment continuation: lines often start with `* ` or `*`.
+        let t = t.strip_prefix("* ").unwrap_or(t.strip_prefix('*').unwrap_or(t));
+        out.push_str(t);
+        out.push('\n');
+    }
+    out
+}
+
+/// Return `true` if `s` is a *likely* Solidity return-value name (used
+/// to decide whether `@return TOKEN rest...` carries a name slot).
+///
+/// We cannot resolve this perfectly from text alone — the NatSpec spec
+/// says the first token is the name iff the function declares named
+/// returns, which the parser does not see. We approximate with: starts
+/// with `_` or an ASCII lowercase letter (Solidity camelCase / snake_case
+/// convention) AND every subsequent char is alphanumeric or `_`. This
+/// rejects English prose tokens like `"The"` while accepting `result`,
+/// `out_`, `_x`, etc.
+fn is_natspec_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Walk a Solidity scope (`source_file` or `contract_body`) and emit

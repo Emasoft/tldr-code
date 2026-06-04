@@ -3289,10 +3289,83 @@ fn extract_docstring_contracts(
                 );
             }
         }
+        // solidity-natspec-v1 (v0.5.0 SOL-010): NatSpec `///` / `/** */`
+        // comments are sibling `comment` nodes preceding the function
+        // declaration. `tldr_core::ast::extract::collect_solidity_natspec_text`
+        // collects the raw comment text exactly as `extract_solidity_docstring`
+        // does for FunctionInfo, then `parse_solidity_natspec` returns a
+        // structured `NatSpecDoc`. We then map `@param NAME text` onto
+        // low-confidence preconditions and `@return [NAME] text` onto
+        // low-confidence postconditions, mirroring the JSDoc/Sphinx wiring.
+        Language::Solidity => {
+            // The Solidity helper takes &str; safe to convert because
+            // `read_file_safe` already validated UTF-8.
+            if let Ok(source_str) = std::str::from_utf8(source) {
+                if let Some(doc_text) =
+                    tldr_core::ast::extract::collect_solidity_natspec_text(&func, source_str)
+                {
+                    extract_natspec_params(
+                        &doc_text,
+                        preconditions,
+                        postconditions,
+                        line,
+                        &existing_pre_vars,
+                        &existing_post_vars,
+                    );
+                }
+            }
+        }
         _ => {}
     }
 
     Ok(())
+}
+
+/// solidity-natspec-v1 (v0.5.0 SOL-010): Map a NatSpec doc-comment block
+/// onto pre/postconditions.
+///
+/// - `@param NAME text` → low-confidence precondition with variable=NAME
+///   and constraint = "NAME: text" (matches the JSDoc shape so downstream
+///   consumers don't need a Solidity-specific code path).
+/// - `@return NAME text` → low-confidence postcondition with variable=NAME
+///   (when named-returns are declared) or `"return"` (when unnamed) and
+///   constraint = "returns: text" (matches JSDoc/Sphinx return shape).
+fn extract_natspec_params(
+    natspec: &str,
+    preconditions: &mut Vec<Condition>,
+    postconditions: &mut Vec<Condition>,
+    line: u32,
+    existing_pre_vars: &HashSet<String>,
+    existing_post_vars: &HashSet<String>,
+) {
+    let doc = tldr_core::ast::extract::parse_solidity_natspec(natspec);
+
+    for param in doc.params {
+        if existing_pre_vars.contains(&param.name) {
+            continue;
+        }
+        let constraint = if param.text.is_empty() {
+            format!("parameter {} is required", param.name)
+        } else {
+            format!("{}: {}", param.name, param.text)
+        };
+        preconditions.push(Condition::low(param.name, constraint, line));
+    }
+
+    for ret in doc.returns {
+        // Pick the variable label: named-return name when present, else
+        // the generic `"return"` slot used by JSDoc/Sphinx.
+        let var = ret.name.clone().unwrap_or_else(|| "return".to_string());
+        if existing_post_vars.contains(&var) {
+            continue;
+        }
+        let constraint = if ret.text.is_empty() {
+            format!("returns: {}", var)
+        } else {
+            format!("returns: {}", ret.text)
+        };
+        postconditions.push(Condition::low(var, constraint, line));
+    }
 }
 
 /// Extract a Python docstring from a function definition.
