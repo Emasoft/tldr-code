@@ -154,7 +154,7 @@ fn extract_from_solidity_file(
         let params = convert_solidity_params(&func.params);
         let return_type = func.return_type.clone();
         apis.push(ApiEntry {
-            qualified_name: format!("{}.{}", module_path, func.name),
+            qualified_name: join_qualified(&module_path, &func.name),
             kind: ApiKind::Function,
             module: module_path.clone(),
             signature: Some(Signature {
@@ -186,7 +186,7 @@ fn extract_from_solidity_file(
         } else {
             class.name.clone()
         };
-        let qualified_name = format!("{}.{}", module_path, class_name);
+        let qualified_name = join_qualified(&module_path, &class_name);
         let kind = determine_solidity_kind(class.kind.as_deref());
 
         // Surface the contract/interface/library itself.
@@ -325,13 +325,14 @@ fn extract_from_solidity_file(
 
     // File-scope constants (`uint256 constant FOO = 1` at top level).
     for constant in &module_info.constants {
+        let const_qualified = join_qualified(&module_path, &constant.name);
         apis.push(ApiEntry {
-            qualified_name: format!("{}.{}", module_path, constant.name),
+            qualified_name: const_qualified.clone(),
             kind: ApiKind::Constant,
             module: module_path.clone(),
             signature: None,
             docstring: None,
-            example: Some(format!("{}.{}", module_path, constant.name)),
+            example: Some(const_qualified.clone()),
             triggers: extract_triggers(&constant.name, None),
             is_property: false,
             return_type: constant.field_type.clone(),
@@ -349,19 +350,47 @@ fn extract_from_solidity_file(
 /// Compute the module path for a Solidity file. Solidity has no module
 /// system, so we use the path-as-module convention: relative directory
 /// segments joined with `.`, prefixed by the package name.
+///
+/// v0.5.0 SOL-015a (M8): when `package_name` is empty (e.g. a target
+/// path whose `file_name()` resolves to empty) we must NOT prepend a
+/// leading `.` segment. Empty parts are filtered and the join skips
+/// empty prefixes entirely, so a contract at the file scope of a
+/// nameless target surfaces as `<ContractName>` rather than `.<Name>`
+/// (or, in the qualified_name slot, `..<Name>`).
 fn compute_solidity_module_path(file_path: &Path, root_dir: &Path, package_name: &str) -> String {
     let relative = file_path.strip_prefix(root_dir).unwrap_or(file_path);
     let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-    let parts: Vec<String> = parent
+    let dir_parts: Vec<String> = parent
         .iter()
         .map(|part| part.to_string_lossy().to_string())
         .filter(|p| !p.is_empty())
         .collect();
 
-    if parts.is_empty() {
-        package_name.to_string()
+    let mut all_parts: Vec<&str> = Vec::new();
+    let pkg = package_name.trim();
+    if !pkg.is_empty() {
+        all_parts.push(pkg);
+    }
+    for part in &dir_parts {
+        if !part.is_empty() {
+            all_parts.push(part.as_str());
+        }
+    }
+    all_parts.join(".")
+}
+
+/// v0.5.0 SOL-015a (M8): join a parent qualifier and a leaf name into a
+/// dotted qualified name without producing a leading `.` when the parent
+/// is empty. Without this, file-scope items in nameless targets emitted
+/// qualified names like `..TokenVault` (one dot from the empty
+/// module_path-class join, another from a downstream concat). Mirrors
+/// the Kotlin / Java surface adapters which already short-circuit on
+/// empty parents.
+fn join_qualified(parent: &str, name: &str) -> String {
+    if parent.is_empty() {
+        name.to_string()
     } else {
-        format!("{}.{}", package_name, parts.join("."))
+        format!("{}.{}", parent, name)
     }
 }
 
@@ -527,6 +556,63 @@ mod tests {
         assert!(out.contains("@dev bar"));
         assert!(!out.contains("/**"));
         assert!(!out.contains("*/"));
+    }
+
+    // v0.5.0 SOL-015a (M8): empty-parent join must not produce a
+    // leading `.` segment.
+    #[test]
+    fn join_qualified_empty_parent_emits_bare_name() {
+        assert_eq!(join_qualified("", "TokenVault"), "TokenVault");
+    }
+
+    #[test]
+    fn join_qualified_nonempty_parent_emits_dotted_pair() {
+        assert_eq!(join_qualified("pkg", "TokenVault"), "pkg.TokenVault");
+        assert_eq!(
+            join_qualified("pkg.contracts", "TokenVault"),
+            "pkg.contracts.TokenVault"
+        );
+    }
+
+    // v0.5.0 SOL-015a (M8): compute_solidity_module_path with empty
+    // package_name must not synthesize a leading-dot module path. A
+    // downstream concat would otherwise turn into `..TokenVault`.
+    #[test]
+    fn compute_module_path_empty_package_no_leading_dot() {
+        use std::path::PathBuf;
+        let root = PathBuf::from("/tmp/anon");
+        let file = root.join("TokenVault.sol");
+        let module_path = compute_solidity_module_path(&file, &root, "");
+        // With no package name and a file at the root, the module path
+        // must be empty — definitely NOT ".".
+        assert_eq!(module_path, "");
+        let joined = join_qualified(&module_path, "TokenVault");
+        assert_eq!(joined, "TokenVault");
+        assert!(
+            !joined.starts_with(".."),
+            "qualified_name must not start with `..`, got: {:?}",
+            joined
+        );
+        assert!(
+            !joined.starts_with('.'),
+            "qualified_name must not start with `.`, got: {:?}",
+            joined
+        );
+    }
+
+    // v0.5.0 SOL-015a (M8): even when package_name is empty but the
+    // file sits in a subdirectory, the module path uses only the dir
+    // parts (no spurious leading dot).
+    #[test]
+    fn compute_module_path_empty_package_with_subdir_has_no_leading_dot() {
+        use std::path::PathBuf;
+        let root = PathBuf::from("/tmp/anon");
+        std::fs::create_dir_all(root.join("contracts")).ok();
+        let file = root.join("contracts/TokenVault.sol");
+        let module_path = compute_solidity_module_path(&file, &root, "");
+        assert_eq!(module_path, "contracts");
+        let joined = join_qualified(&module_path, "TokenVault");
+        assert_eq!(joined, "contracts.TokenVault");
     }
 
     #[test]

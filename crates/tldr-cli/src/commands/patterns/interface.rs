@@ -189,6 +189,20 @@ fn method_node_kinds(lang: Language) -> &'static [&'static str] {
         // this entry, every Kotlin class and every Swift class /
         // extension reported `methods: []`.
         Language::Kotlin | Language::Swift => &["function_declaration"],
+        // v0.5.0 SOL-015a (M7): Solidity contract/interface/library
+        // bodies (`contract_body`) hold methods as
+        // `function_definition` / `constructor_definition` /
+        // `fallback_function_definition` / `receive_function_definition`
+        // / `modifier_definition` nodes. Without this arm,
+        // `tldr interface TokenVault.sol` reported `methods: []` for
+        // every contract.
+        Language::Solidity => &[
+            "function_definition",
+            "constructor_definition",
+            "fallback_function_definition",
+            "receive_function_definition",
+            "modifier_definition",
+        ],
         _ => &[],
     }
 }
@@ -1744,8 +1758,33 @@ fn is_method_public(name: &str, node: Node, source: &[u8], lang: Language) -> bo
         // interface-per-lang-v1 (v0.4.2 M-022): exclude scala `private`
         // / `protected` methods from the public method list.
         Language::Scala => !is_scala_non_public(node, source),
+        // v0.5.0 SOL-015a (M7): exclude Solidity contract methods marked
+        // `internal` or `private`. Methods without a visibility keyword
+        // surface (legacy pre-0.5 Solidity defaulted to `public`).
+        // `fallback_function_definition` / `receive_function_definition`
+        // / `constructor_definition` are always externally observable
+        // (constructor is one-time but is part of the contract's typed
+        // ABI for deployment, which differs from the runtime-surface
+        // semantics in `surface/solidity.rs`).
+        Language::Solidity => !solidity_method_is_internal_or_private(node, source),
         _ => true,
     }
+}
+
+/// v0.5.0 SOL-015a (M7): inspect a Solidity function/modifier definition's
+/// `visibility` child. Returns true if the function is declared
+/// `internal` or `private`. Functions with no `visibility` child OR with
+/// `public`/`external` return false (i.e. they remain in the public
+/// method list).
+fn solidity_method_is_internal_or_private(node: Node, source: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "visibility" {
+            let t = node_text(child, source).trim();
+            return matches!(t, "internal" | "private");
+        }
+    }
+    false
 }
 
 /// Extract base classes / superclasses / implemented interfaces.
@@ -1827,10 +1866,58 @@ fn extract_base_classes(class_node: Node, source: &[u8], lang: Language) -> Vec<
                 bases.push(node_text(extends, source).to_string());
             }
         }
+        // v0.5.0 SOL-015a (M7): Solidity inheritance is flattened from
+        // `inheritance_specifier` children. Each specifier has an
+        // `ancestor` field of kind `user_defined_type` (which itself
+        // wraps an `identifier` or `member_expression`). Mirrors the
+        // extractor's `extract_solidity_class_bases` semantics
+        // (see crates/tldr-core/src/ast/extract.rs) so that
+        // `tldr interface` and the schema extractor agree on `bases`.
+        Language::Solidity => {
+            let mut cursor = class_node.walk();
+            for child in class_node.children(&mut cursor) {
+                if child.kind() == "inheritance_specifier" {
+                    if let Some(ancestor) = child.child_by_field_name("ancestor") {
+                        if let Some(name) = solidity_user_defined_type_leaf(ancestor, source) {
+                            bases.push(name);
+                        }
+                    } else {
+                        // Fallback: scan for a `user_defined_type` child directly.
+                        let mut ic = child.walk();
+                        for ichild in child.children(&mut ic) {
+                            if ichild.kind() == "user_defined_type" {
+                                if let Some(name) = solidity_user_defined_type_leaf(ichild, source)
+                                {
+                                    bases.push(name);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
 
     bases
+}
+
+/// v0.5.0 SOL-015a (M7): extract the leaf identifier of a
+/// `user_defined_type` node. The grammar wraps the name in either an
+/// `identifier` (bare `Ownable`) or a `member_expression` (namespaced
+/// `OpenZeppelin.Ownable`). Mirrors `solidity_user_defined_type_name`
+/// in `crates/tldr-core/src/ast/extract.rs`.
+fn solidity_user_defined_type_leaf<'a>(node: Node<'a>, source: &'a [u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => return Some(node_text(child, source).to_string()),
+            "member_expression" => return Some(node_text(child, source).to_string()),
+            _ => {}
+        }
+    }
+    Some(node_text(node, source).to_string())
 }
 
 /// Find a function/class definition inside a decorated_definition node.
