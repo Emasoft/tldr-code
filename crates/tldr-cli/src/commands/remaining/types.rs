@@ -1674,6 +1674,16 @@ pub enum VulnType {
     OpenRedirect,
     LdapInjection,
     XpathInjection,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Solidity tx.origin authorization
+    TxOrigin,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Solidity state-variable shadowing
+    ShadowingState,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Solidity unprotected selfdestruct
+    Suicidal,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Solidity unchecked low-level call
+    UncheckedLowlevel,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Solidity locked ether
+    LockedEther,
 }
 
 impl VulnType {
@@ -1693,6 +1703,12 @@ impl VulnType {
             Self::OpenRedirect => "CWE-601",
             Self::LdapInjection => "CWE-90",
             Self::XpathInjection => "CWE-643",
+            // v0.5.0 SOL-011 solidity-vuln-v1
+            Self::TxOrigin => "CWE-477",
+            Self::ShadowingState => "CWE-1109",
+            Self::Suicidal => "CWE-284",
+            Self::UncheckedLowlevel => "CWE-252",
+            Self::LockedEther => "CWE-664",
         }
     }
 
@@ -1711,6 +1727,9 @@ impl VulnType {
             | Self::XpathInjection
             | Self::UnsafeCode => Severity::High,
             Self::OpenRedirect | Self::Panic => Severity::Medium,
+            // v0.5.0 SOL-011 solidity-vuln-v1
+            Self::ShadowingState | Self::Suicidal => Severity::High,
+            Self::TxOrigin | Self::UncheckedLowlevel | Self::LockedEther => Severity::Medium,
         }
     }
 }

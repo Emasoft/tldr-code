@@ -748,6 +748,12 @@ fn map_core_vuln_type(core_ty: tldr_core::security::vuln::VulnType) -> VulnType 
         CoreVulnType::Ssrf => VulnType::Ssrf,
         CoreVulnType::Deserialization => VulnType::Deserialization,
         CoreVulnType::OpenRedirect => VulnType::OpenRedirect,
+        // v0.5.0 SOL-011 solidity-vuln-v1
+        CoreVulnType::TxOrigin => VulnType::TxOrigin,
+        CoreVulnType::ShadowingState => VulnType::ShadowingState,
+        CoreVulnType::Suicidal => VulnType::Suicidal,
+        CoreVulnType::UncheckedLowlevel => VulnType::UncheckedLowlevel,
+        CoreVulnType::LockedEther => VulnType::LockedEther,
     }
 }
 
@@ -1235,6 +1241,12 @@ fn vuln_type_name(vt: VulnType) -> &'static str {
         VulnType::OpenRedirect => "Open Redirect",
         VulnType::LdapInjection => "LDAP Injection",
         VulnType::XpathInjection => "XPath Injection",
+        // v0.5.0 SOL-011 solidity-vuln-v1
+        VulnType::TxOrigin => "tx.origin Authorization",
+        VulnType::ShadowingState => "State Variable Shadowing",
+        VulnType::Suicidal => "Unprotected Selfdestruct",
+        VulnType::UncheckedLowlevel => "Unchecked Low-Level Call",
+        VulnType::LockedEther => "Locked Ether",
     }
 }
 

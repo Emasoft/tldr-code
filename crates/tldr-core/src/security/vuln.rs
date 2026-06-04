@@ -73,6 +73,34 @@ pub enum VulnType {
     /// Open Redirect (CWE-601) — HTTP redirect target controllable by user input.
     /// (M3 detection-accuracy-v1 BUG-16)
     OpenRedirect,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Use of `tx.origin` for authorization
+    /// (CWE-477 / SWC-115). Phishing-prone: `tx.origin` is the EOA at the
+    /// root of the call chain, so any contract the EOA has authorized can
+    /// invoke privileged operations on behalf of the user.
+    TxOrigin,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) State-variable shadowing
+    /// (CWE-1109 / SWC-119). A local variable or parameter shares a name
+    /// with a contract state variable, masking the storage variable inside
+    /// the function and seeding silent assignment bugs.
+    ShadowingState,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Unprotected `selfdestruct` call
+    /// (CWE-284 / SWC-106). Public/external function calls `selfdestruct`
+    /// (or legacy `suicide`) without an access-control modifier or
+    /// `require(msg.sender == ...)` guard. EIP-6780 changed runtime
+    /// semantics on mainnet but the pattern remains a hard-to-recover
+    /// anti-pattern.
+    Suicidal,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Unchecked low-level call return
+    /// value (CWE-252 / SWC-104). The boolean (and bytes-data) returned by
+    /// `address.call(...)`, `.send(...)`, or `.delegatecall(...)` is
+    /// discarded; failures silently pass.
+    UncheckedLowlevel,
+    /// (v0.5.0 SOL-011 solidity-vuln-v1) Locked ether (CWE-664 / SWC-132).
+    /// A contract accepts ether via at least one `payable` function or
+    /// `receive` / `fallback` but provides NO withdraw path
+    /// (`.transfer`, `.send`, `.call{value:...}`, `selfdestruct`),
+    /// permanently trapping funds.
+    LockedEther,
 }
 
 impl std::fmt::Display for VulnType {
@@ -85,6 +113,12 @@ impl std::fmt::Display for VulnType {
             VulnType::Ssrf => write!(f, "Server-Side Request Forgery"),
             VulnType::Deserialization => write!(f, "Unsafe Deserialization"),
             VulnType::OpenRedirect => write!(f, "Open Redirect"),
+            // v0.5.0 SOL-011 solidity-vuln-v1
+            VulnType::TxOrigin => write!(f, "tx.origin Authorization"),
+            VulnType::ShadowingState => write!(f, "State Variable Shadowing"),
+            VulnType::Suicidal => write!(f, "Unprotected Selfdestruct"),
+            VulnType::UncheckedLowlevel => write!(f, "Unchecked Low-Level Call"),
+            VulnType::LockedEther => write!(f, "Locked Ether"),
         }
     }
 }
@@ -237,6 +271,25 @@ fn severity_for(_vuln_type: VulnType) -> &'static str {
     "HIGH"
 }
 
+/// (v0.5.0 SOL-011 solidity-vuln-v1) Get severity string for a Solidity
+/// vulnerability type, with detector-specific overrides for the AST
+/// pattern detectors that intentionally vary severity by category.
+///
+/// Pre-Solidity callers go through `severity_for` which hard-codes
+/// "HIGH"; this is the new dispatcher for the AST-pattern detectors so
+/// the JSON `severity` field carries detector-specific information
+/// (HIGH for shadowing / suicidal, MEDIUM for tx.origin / unchecked /
+/// locked-ether) instead of unconditional HIGH.
+pub(crate) fn severity_for_vuln_type(vuln_type: VulnType) -> &'static str {
+    match vuln_type {
+        VulnType::ShadowingState | VulnType::Suicidal => "HIGH",
+        VulnType::TxOrigin
+        | VulnType::UncheckedLowlevel
+        | VulnType::LockedEther => "MEDIUM",
+        _ => severity_for(vuln_type),
+    }
+}
+
 /// TAINT-FINDING-DEDUPE-V1: rank a `TaintSinkType` by specificity for the
 /// per-call-site dedupe in `scan_file_vulns`.
 ///
@@ -369,7 +422,7 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
 }
 
 /// Get remediation advice for a vulnerability type
-fn get_remediation(vuln_type: VulnType) -> &'static str {
+pub(crate) fn get_remediation(vuln_type: VulnType) -> &'static str {
     match vuln_type {
         VulnType::SqlInjection =>
             "Use parameterized queries or prepared statements instead of string concatenation",
@@ -385,11 +438,22 @@ fn get_remediation(vuln_type: VulnType) -> &'static str {
             "Avoid deserializing untrusted data, or use safer formats like JSON",
         VulnType::OpenRedirect =>
             "Validate redirect targets against an allowlist of trusted URLs/origins; do not concatenate user input into the redirect target",
+        // v0.5.0 SOL-011 solidity-vuln-v1
+        VulnType::TxOrigin =>
+            "Use msg.sender for authorization checks instead of tx.origin; tx.origin is vulnerable to phishing via intermediate contracts",
+        VulnType::ShadowingState =>
+            "Rename the local variable or parameter so it does not collide with a contract state variable; consider underscore-suffix conventions",
+        VulnType::Suicidal =>
+            "Guard selfdestruct with an access-control modifier (onlyOwner / AccessControl) or remove the selfdestruct path entirely (EIP-6780 makes recovery impossible)",
+        VulnType::UncheckedLowlevel =>
+            "Check the boolean return value of .call / .send / .delegatecall via require(ok, ...) or an if-revert pattern; prefer .transfer for fixed-gas ether sends when applicable",
+        VulnType::LockedEther =>
+            "Add a withdraw function callable by authorized parties (using .transfer, .send, or .call{value: ...}) so accepted ether can be retrieved",
     }
 }
 
 /// Get CWE ID for a vulnerability type
-fn get_cwe_id(vuln_type: VulnType) -> &'static str {
+pub(crate) fn get_cwe_id(vuln_type: VulnType) -> &'static str {
     match vuln_type {
         VulnType::SqlInjection => "CWE-89",
         VulnType::Xss => "CWE-79",
@@ -398,6 +462,12 @@ fn get_cwe_id(vuln_type: VulnType) -> &'static str {
         VulnType::Ssrf => "CWE-918",
         VulnType::Deserialization => "CWE-502",
         VulnType::OpenRedirect => "CWE-601",
+        // v0.5.0 SOL-011 solidity-vuln-v1
+        VulnType::TxOrigin => "CWE-477",
+        VulnType::ShadowingState => "CWE-1109",
+        VulnType::Suicidal => "CWE-284",
+        VulnType::UncheckedLowlevel => "CWE-252",
+        VulnType::LockedEther => "CWE-664",
     }
 }
 
@@ -592,6 +662,21 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
                 .to_string(),
         )
     })?;
+
+    // (v0.5.0 SOL-011 solidity-vuln-v1) Solidity uses dedicated AST-pattern
+    // detectors instead of the taint engine — the top-5 anti-patterns
+    // (tx.origin, shadowing-state, suicidal, unchecked-lowlevel,
+    // locked-ether) are language-shape properties, not source-to-sink
+    // flows. We dispatch to `solidity_vuln::scan_solidity_vulns` and
+    // return early; the per-function CFG/DFG/taint pipeline below would
+    // produce no findings for these patterns.
+    if matches!(language, Language::Solidity) {
+        return Ok(crate::security::solidity_vuln::scan_solidity_vulns(
+            path,
+            &content,
+            vuln_filter,
+        ));
+    }
 
     // Parse ONCE — reused across per-function CFG/DFG/taint passes.
     let tree = match parse(&content, language) {
