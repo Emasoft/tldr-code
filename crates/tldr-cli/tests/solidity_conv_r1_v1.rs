@@ -167,50 +167,22 @@ contract C {
 }
 
 // ==========================================================================
-// M15 — taint tainted_vars dict key uses identifier name (not SSA index)
-// ==========================================================================
+// M15 — DESIGN JUDGEMENT (not mechanical): the `tainted_vars` map is
+// declared as `HashMap<usize, HashSet<String>>` and is keyed by CFG
+// **block id** (not SSA version or identifier). The audit-time
+// observation that the JSON keys were `"0"`, `"1"` was correct, but the
+// keys are not SSA numbers — they're block IDs, which is the
+// documented schema (see `TaintInfo` in
+// `crates/tldr-core/src/security/taint.rs:258` and the spec test
+// `test_taint_info_struct_fields` in `security/taint_tests.rs:234`).
+// Identifier-name flow info is already preserved on `sources[].var` and
+// `sinks[].var`. Switching the dict-key shape would break the
+// documented schema and the existing block-keyed `is_tainted(block_id,
+// var)` query API across the codebase. Flagged in `new_gaps[]` for
+// human review.
+//
+// (No test asserts in this section — see report design_gaps[].)
 
-#[test]
-fn m15_taint_tainted_vars_keys_are_identifier_names_not_ssa_numbers() {
-    let (_tmp, file) = write_sol(
-        "Taintkeys.sol",
-        r#"
-contract C {
-    function f(address to) external payable {
-        // assignment that should propagate taint to `dest`
-        address dest = to;
-        // tainted call
-        (bool ok, ) = dest.call{value: msg.value}("");
-        ok;
-    }
-}
-"#,
-    );
-
-    let report = run_cli_json(&[
-        "taint",
-        file.to_str().unwrap(),
-        "f",
-        "--format",
-        "json",
-    ]);
-
-    let tv = report["tainted_vars"]
-        .as_object()
-        .expect("tainted_vars must be an object");
-
-    // The fix: keys are identifier names — never bare SSA-number strings.
-    for k in tv.keys() {
-        let trimmed = k.trim();
-        assert!(
-            !trimmed.chars().all(|c| c.is_ascii_digit()),
-            "tainted_vars key {:?} looks like a raw SSA index; expected identifier name. \
-             Full map: {:#?}",
-            trimmed,
-            tv
-        );
-    }
-}
 
 // ==========================================================================
 // M17 — explain: Solidity `summary` defaults to NatSpec @notice
@@ -218,6 +190,11 @@ contract C {
 
 #[test]
 fn m17_explain_summary_defaults_to_natspec_notice_for_solidity() {
+    // The audit referred to `summary` as "the user-facing one-line
+    // description on the explain surface". The schema field is
+    // `signature.docstring` (no top-level `summary` exists on
+    // ExplainReport). When a Solidity function carries a NatSpec
+    // `@notice` it MUST appear on `signature.docstring`.
     let (_tmp, file) = write_sol(
         "Explainnotice.sol",
         r#"
@@ -239,16 +216,56 @@ contract C {
         "json",
     ]);
 
-    let summary = report["summary"].as_str().unwrap_or("");
+    let docstring = report["signature"]["docstring"].as_str().unwrap_or("");
     assert!(
-        !summary.is_empty(),
-        "expected explain.summary to default to NatSpec @notice on Solidity; got: {:#?}",
-        report["summary"]
+        !docstring.is_empty(),
+        "expected signature.docstring to default to NatSpec @notice on Solidity; got: {:#?}",
+        report["signature"]["docstring"]
     );
     assert!(
-        summary.contains("doubled"),
-        "expected summary to reflect @notice content 'doubled'; got: {:?}",
-        summary
+        docstring.contains("doubled"),
+        "expected docstring to reflect @notice content 'doubled'; got: {:?}",
+        docstring
+    );
+}
+
+// v0.5.0 SOL-CONV-R1-3 (M17): when @notice is absent (the OZ ERC20
+// `_transfer` shape), the @dev text becomes the fallback summary so
+// internal functions documented only with `@dev` still surface a
+// human-readable docstring.
+#[test]
+fn m17_explain_summary_falls_back_to_natspec_dev_when_notice_missing() {
+    let (_tmp, file) = write_sol(
+        "Explaindev.sol",
+        r#"
+contract C {
+    /// @dev Internal helper that doubles its input.
+    /// @param x the input
+    function _double(uint x) internal pure returns (uint) {
+        return x * 2;
+    }
+}
+"#,
+    );
+
+    let report = run_cli_json(&[
+        "explain",
+        file.to_str().unwrap(),
+        "_double",
+        "--format",
+        "json",
+    ]);
+
+    let docstring = report["signature"]["docstring"].as_str().unwrap_or("");
+    assert!(
+        !docstring.is_empty(),
+        "expected signature.docstring to fall back to NatSpec @dev when @notice is absent; got: {:#?}",
+        report["signature"]["docstring"]
+    );
+    assert!(
+        docstring.contains("Internal helper") || docstring.contains("doubles"),
+        "expected docstring to reflect @dev content; got: {:?}",
+        docstring
     );
 }
 
@@ -328,35 +345,35 @@ contract C {
         "json",
     ]);
 
-    // The contracts step should emit at least one item (the per-function
-    // contract surface), not be empty.
-    let contracts = &report["contracts"];
-    // Accept either a `total` field or array shape. Fail when empty.
-    let empty = match contracts {
-        serde_json::Value::Object(map) => {
-            let total = map
-                .get("total")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let items_len = map
-                .get("items")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len() as u64)
-                .unwrap_or(0);
-            let funcs_len = map
-                .get("functions")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len() as u64)
-                .unwrap_or(0);
-            total == 0 && items_len == 0 && funcs_len == 0
-        }
-        serde_json::Value::Array(a) => a.is_empty(),
-        _ => true,
-    };
+    // The contracts step lives at `sub_results.contracts.data` (an
+    // array of per-function `ContractsReport` objects). The
+    // project-scan must emit one entry per documented function — pre-fix
+    // the array was empty for Solidity because the extractor harvested
+    // only file-scope free functions, skipping contract members.
+    let data = &report["sub_results"]["contracts"]["data"];
+    let arr = data
+        .as_array()
+        .unwrap_or_else(|| panic!("expected sub_results.contracts.data to be an array; got: {:#?}", data));
     assert!(
-        !empty,
-        "expected verify.contracts to enumerate per-function NatSpec data on multi-file Solidity \
-         project-scan; got empty: {:#?}",
-        contracts
+        !arr.is_empty(),
+        "expected verify.sub_results.contracts.data to enumerate per-function reports on \
+         Solidity project-scan; got empty array (full report: {:#?})",
+        report
+    );
+
+    // Both functions must appear: `a` and `b`.
+    let function_names: Vec<&str> = arr
+        .iter()
+        .filter_map(|item| item["function"].as_str())
+        .collect();
+    assert!(
+        function_names.contains(&"a"),
+        "expected function `a` in verify contracts.data; got: {:?}",
+        function_names
+    );
+    assert!(
+        function_names.contains(&"b"),
+        "expected function `b` in verify contracts.data; got: {:?}",
+        function_names
     );
 }

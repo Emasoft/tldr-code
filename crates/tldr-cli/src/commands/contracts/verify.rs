@@ -501,7 +501,27 @@ fn extract_function_names(source: &str, language: Language) -> ContractsResult<V
         Ok(t) => t,
         Err(_) => return Ok(Vec::new()),
     };
-    Ok(extract_functions(&tree, source, language))
+    let mut names = extract_functions(&tree, source, language);
+
+    // v0.5.0 SOL-CONV-R1-5 (V11): Solidity wraps every concrete function
+    // inside a contract/interface/library, so `extract_functions`
+    // (which is configured for `methods_only=false`) returns ZERO names
+    // for typical .sol files. The verify project-scan then invokes
+    // `run_contracts` zero times and the aggregator's `contracts`
+    // sub-result reports `items_found = 0` even when the source has
+    // multiple documented functions (e.g., OpenZeppelin ERC20). Extend
+    // with the contract-member method names so per-function NatSpec /
+    // require / if-revert extraction runs across the whole file.
+    if language == Language::Solidity {
+        let methods =
+            tldr_core::ast::extractor::extract_solidity_methods_for_verify(&tree, source);
+        for m in methods {
+            if !names.contains(&m) {
+                names.push(m);
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// Sweep specs extraction from test directory.

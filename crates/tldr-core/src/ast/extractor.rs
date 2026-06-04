@@ -1602,6 +1602,18 @@ fn is_inside_kotlin_class_or_object(node: &Node) -> bool {
 /// interface / library body).
 /// `methods_only = true`: members only (must be inside a contract /
 /// interface / library body).
+/// v0.5.0 SOL-CONV-R1-5 (V11): collect Solidity contract / interface /
+/// library member function names (i.e., `methods_only=true`). The
+/// general `extract_functions` entrypoint passes `methods_only=false`
+/// because the public API focuses on free functions; the verify
+/// aggregator needs the full surface so its per-function contract /
+/// NatSpec extraction covers contract members too.
+pub fn extract_solidity_methods_for_verify(tree: &tree_sitter::Tree, source: &str) -> Vec<String> {
+    let mut functions = Vec::new();
+    extract_solidity_functions(&tree.root_node(), source, &mut functions, true);
+    functions
+}
+
 fn extract_solidity_functions(
     node: &Node,
     source: &str,

@@ -280,8 +280,19 @@ fn find_call_graph_key(
             _ => false,
         }
     };
+    // v0.5.0 SOL-CONV-R1-4 (C20): allow `Class::method` to match the
+    // call-graph adapter's canonical `Class.method` form (and vice
+    // versa), so that scanner-returned keys typed in the user's
+    // preferred separator still resolve to the adapter's canonical key.
+    let normalize_separator = |s: &str| s.replace("::", ".");
+    let func_target_normalized = normalize_separator(func_name);
     let func_matches = |edge_func: &str| -> bool {
-        edge_func == func_name || edge_func.ends_with(&format!(".{}", func_name))
+        if edge_func == func_name || edge_func.ends_with(&format!(".{}", func_name)) {
+            return true;
+        }
+        let edge_norm = normalize_separator(edge_func);
+        edge_norm == func_target_normalized
+            || edge_norm.ends_with(&format!(".{}", func_target_normalized))
     };
     for edge in call_graph.edges() {
         if file_matches(&edge.src_file) && func_matches(&edge.src_func) {
@@ -478,6 +489,30 @@ fn find_function_in_graph(
     // If not in call graph, it might be a standalone function
     // Try to find it by scanning project files
     if let Some(location) = scan_project_for_function(project, func_name, file_filter)? {
+        // v0.5.0 SOL-CONV-R1-4 (C20): the project scanner returns the
+        // function key in whatever shape the caller typed it
+        // (`Class::method`, `bare_name`, or `Class.method`). But the
+        // language call-graph adapters use one canonical shape per
+        // language (Solidity: `Class.method`, C++: `Class::method`,
+        // Python: bare name). When the scanner-returned key disagrees
+        // with the adapter's canonical key, the downstream BFS
+        // forward-graph lookup misses, depth expansion stops at the
+        // entry point, and the result collapses to a single function.
+        //
+        // Probe the call graph for an edge whose source / destination
+        // matches the resolved (file, function) under the adapter's
+        // shape (suffix-match) and prefer the canonical edge key. Falls
+        // back to the scanner's raw key when no edge matches (covers
+        // leaf functions that have no outgoing edges).
+        let (loc_file, loc_func) = &location;
+        let abs_file = if loc_file.is_relative() {
+            project.join(loc_file)
+        } else {
+            loc_file.clone()
+        };
+        if let Some(canonical) = find_call_graph_key(call_graph, &abs_file, loc_func, project) {
+            return Ok(canonical);
+        }
         return Ok(location);
     }
 

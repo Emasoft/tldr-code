@@ -694,15 +694,29 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     // behaviour (the body-leading expression-string heuristic, which
     // Solidity does not use) so the JSON surface is empty when no
     // NatSpec is present — matching the existing Solidity behaviour.
+    //
+    // v0.5.0 SOL-CONV-R1-3 (M17): when `@notice` is absent (as on
+    // OpenZeppelin's `_transfer`, which carries only `@dev`), fall back
+    // to the trimmed `@dev` text so internal functions still surface a
+    // human-readable summary. This eliminates the `signature.docstring
+    // == null` outcome on documented-but-`@notice`-less functions.
     if matches!(language, Language::Solidity) {
         if let Ok(source_str) = std::str::from_utf8(source) {
             if let Some(natspec_text) =
                 tldr_core::ast::extract::collect_solidity_natspec_text(&func_node, source_str)
             {
                 let doc = tldr_core::ast::extract::parse_solidity_natspec(&natspec_text);
-                if let Some(notice) = doc.notice {
+                if let Some(notice) = doc.notice.as_ref() {
                     if !notice.is_empty() {
-                        sig.docstring = Some(notice);
+                        sig.docstring = Some(notice.clone());
+                    }
+                }
+                // Fall back to @dev when no @notice is present.
+                if sig.docstring.is_none() {
+                    if let Some(dev) = doc.dev.as_ref() {
+                        if !dev.is_empty() {
+                            sig.docstring = Some(dev.clone());
+                        }
                     }
                 }
             }
