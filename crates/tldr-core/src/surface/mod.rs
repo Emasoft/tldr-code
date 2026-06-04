@@ -44,6 +44,7 @@ pub mod resolve;
 pub mod ruby;
 pub mod rust_lang;
 pub mod scala;
+pub mod solidity;
 pub mod swift;
 pub mod triggers;
 pub mod types;
@@ -136,6 +137,7 @@ pub fn extract_api_surface(
         "ocaml" => ocaml::extract_ocaml_api_surface(&resolved, include_private, limit)?,
         "php" => php::extract_php_api_surface(&resolved, include_private, limit)?,
         "scala" => scala::extract_scala_api_surface(&resolved, include_private, limit)?,
+        "solidity" => solidity::extract_solidity_api_surface(&resolved, include_private, limit)?,
         "swift" => swift::extract_swift_api_surface(&resolved, include_private, limit)?,
         "ruby" => ruby::extract_ruby_api_surface(&resolved, include_private, limit)?,
         other => {
@@ -271,6 +273,8 @@ fn detect_lang_from_filename(target: &str) -> Option<&'static str> {
         "swift" => Some("swift"),
         "rb" => Some("ruby"),
         "ex" | "exs" => Some("elixir"),
+        // solidity-surface-v1 (v0.5.0 SOL-006a): wire `.sol` → solidity.
+        "sol" => Some("solidity"),
         _ => None,
     }
 }
