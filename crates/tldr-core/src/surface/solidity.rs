@@ -368,11 +368,18 @@ fn compute_solidity_module_path(file_path: &Path, root_dir: &Path, package_name:
 
     let mut all_parts: Vec<&str> = Vec::new();
     let pkg = package_name.trim();
-    if !pkg.is_empty() {
+    // v0.5.0 SOL-CONV-R1-1 (M8): a `package_name` of literally `"."` is a
+    // path-anchor sentinel produced by the resolver when the CLI runs as
+    // `tldr surface .` — `Path::new(".").file_name()` returns `None`, so
+    // `resolve_target` falls back to the raw target string. We MUST treat
+    // it as empty, otherwise the dotted-join below emits leading-dot
+    // module paths and downstream `join_qualified` produces `..ClassName`
+    // (the double-dot bug on the OpenZeppelin ERC20 corpus, 83 entries).
+    if !pkg.is_empty() && pkg != "." {
         all_parts.push(pkg);
     }
     for part in &dir_parts {
-        if !part.is_empty() {
+        if !part.is_empty() && part != "." {
             all_parts.push(part.as_str());
         }
     }
@@ -613,6 +620,43 @@ mod tests {
         assert_eq!(module_path, "contracts");
         let joined = join_qualified(&module_path, "TokenVault");
         assert_eq!(joined, "contracts.TokenVault");
+    }
+
+    // v0.5.0 SOL-CONV-R1-1 (M8): when the CLI is invoked with `--project .`
+    // the resolver hands surface a `package_name` of literally `"."`. The
+    // module-path builder must NOT treat `.` as a real segment (joining
+    // `"."` with `"ERC20"` would yield `..ERC20`, the double-dot bug
+    // observed on the OpenZeppelin ERC20 corpus across all 83 entries).
+    #[test]
+    fn compute_module_path_dot_package_name_treated_as_empty() {
+        use std::path::PathBuf;
+        let root = PathBuf::from("/tmp/anon-dot");
+        let file = root.join("ERC20.sol");
+        let module_path = compute_solidity_module_path(&file, &root, ".");
+        // `.` is a path-anchor sentinel, not a real package segment.
+        assert_eq!(module_path, "");
+        let joined = join_qualified(&module_path, "ERC20");
+        assert_eq!(joined, "ERC20");
+        assert!(
+            !joined.starts_with('.'),
+            "qualified_name must not start with `.`, got: {:?}",
+            joined
+        );
+    }
+
+    // v0.5.0 SOL-CONV-R1-1 (M8): same rule when there is a subdir under
+    // the `.` project root — the package sentinel is dropped, but the
+    // subdir segments survive.
+    #[test]
+    fn compute_module_path_dot_package_name_with_subdir() {
+        use std::path::PathBuf;
+        let root = PathBuf::from("/tmp/anon-dot2");
+        std::fs::create_dir_all(root.join("contracts")).ok();
+        let file = root.join("contracts/ERC20.sol");
+        let module_path = compute_solidity_module_path(&file, &root, ".");
+        assert_eq!(module_path, "contracts");
+        let joined = join_qualified(&module_path, "ERC20");
+        assert_eq!(joined, "contracts.ERC20");
     }
 
     #[test]
