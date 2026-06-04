@@ -719,6 +719,8 @@ fn is_source_file(path: &Path, language: Option<&str>) -> bool {
                         "luau" => matches!(detected, Language::Luau),
                         "elixir" => matches!(detected, Language::Elixir),
                         "ocaml" => matches!(detected, Language::Ocaml),
+                        // solidity-sol015c-cohesion-references-v1 (v0.5.0 SOL-015c M13).
+                        "solidity" => matches!(detected, Language::Solidity),
                         _ => false,
                     }
                 }
@@ -745,10 +747,11 @@ fn is_comment_line(line: &str, language: Option<&str>) -> bool {
                 || trimmed.starts_with("/*")
                 || trimmed.starts_with('*')
         }
-        // C-style comments: TypeScript, JavaScript, Go, Rust, Java, C, C++, C#, Kotlin, Scala, Swift
+        // C-style comments: TypeScript, JavaScript, Go, Rust, Java, C, C++, C#, Kotlin, Scala, Swift, Solidity.
+        // solidity-sol015c-cohesion-references-v1 (v0.5.0 SOL-015c M13).
         Some("typescript") | Some("javascript") | Some("go") | Some("rust") | Some("java")
         | Some("c") | Some("cpp") | Some("csharp") | Some("kotlin") | Some("scala")
-        | Some("swift") => {
+        | Some("swift") | Some("solidity") => {
             trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*')
         }
         // Lua / Luau: -- comments
@@ -1116,13 +1119,187 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         Language::Luau => classify_luau_reference(node, &parent, source),
         Language::Elixir => classify_elixir_reference(node, &parent, source),
         Language::Ocaml => classify_ocaml_reference(node, &parent, source),
-        // v0.5.0 SOL-001 Solidity foundation. Reference classification
-        // (call vs assignment vs read) lands in SOL-002. Returning
-        // ReferenceKind::Other is the safe stub: it preserves the
-        // reference's existence in the output without claiming a
-        // specific kind.
-        Language::Solidity => ReferenceKind::Other,
+        // solidity-sol015c-cohesion-references-v1 (v0.5.0 SOL-015c M13):
+        // classify Solidity references. The grammar uses `call_expression`
+        // with a `function` field whose subtree is either a bare
+        // identifier (direct call), a `member_expression` (qualified
+        // call like `this.foo()` / `super.foo()` / `receiver.foo()`),
+        // or a more complex form. Definition / assignment / type /
+        // import shapes are handled below.
+        Language::Solidity => classify_solidity_reference(node, &parent, source),
     }
+}
+
+/// Classify a Solidity reference's [`ReferenceKind`].
+///
+/// Grammar reference (tree-sitter-solidity 1.2.x):
+///   - Expressions are wrapped in an `expression` super-node (a union
+///     node whose single named child is the actual operand). The
+///     `function` field of a `call_expression` is of type `expression`
+///     and wraps either an `identifier`, a `member_expression`, etc.
+///     This means the immediate AST parent of `foo` in `foo(args)` is
+///     an `expression`, NOT the `call_expression` — we therefore walk
+///     UP through `expression` wrappers when deciding the semantic
+///     parent of the identifier.
+///   - `call_expression` → Call (when we are the function expression).
+///   - `member_expression`'s `property` segment is a Call iff the
+///     enclosing `call_expression`'s `function` is the member_expression
+///     itself; otherwise it is a Read.
+///   - `assignment_expression` / `augmented_assignment_expression` left
+///     side → Write.
+///   - `function_definition` / `modifier_definition` /
+///     `contract_declaration` / etc. `name` slot → Definition.
+///   - `user_defined_type` / `type_name` → Type.
+///   - `import_directive` / `import_clause` → Import.
+fn classify_solidity_reference(node: &Node, parent: &Node, _source: &[u8]) -> ReferenceKind {
+    // Step 1: walk up through `expression` wrappers — the union node
+    // shape means the *semantic* parent of `foo` in `foo(args)` is the
+    // `call_expression`, not the wrapper `expression`.
+    let (effective_parent, child_through_wrappers) =
+        solidity_skip_expression_wrappers(node, parent);
+
+    let parent_kind = effective_parent.kind();
+
+    match parent_kind {
+        // Direct call: foo(args). The `function` field is an
+        // `expression` wrapping our identifier (or wrapping a
+        // member_expression). Check by id.
+        "call_expression" => {
+            if let Some(func) = effective_parent.child_by_field_name("function") {
+                if func.id() == child_through_wrappers.id() {
+                    return ReferenceKind::Call;
+                }
+            }
+            ReferenceKind::Read
+        }
+
+        // Qualified call: receiver.method(args).
+        "member_expression" => {
+            // We are either the `object` (receiver — Read) or the
+            // `property` (the method/field name).
+            let property = effective_parent.child_by_field_name("property");
+            let is_property = property.map(|p| p.id() == node.id()).unwrap_or(false);
+            if is_property {
+                // Walk past the wrapping expression(s) above the
+                // member_expression to see if its container is a
+                // call_expression whose `function` is this member.
+                let mut anc = effective_parent.parent();
+                let mut last = effective_parent;
+                while let Some(a) = anc {
+                    if a.kind() == "expression" {
+                        last = a;
+                        anc = a.parent();
+                        continue;
+                    }
+                    if a.kind() == "call_expression" {
+                        if let Some(func) = a.child_by_field_name("function") {
+                            if func.id() == last.id() {
+                                return ReferenceKind::Call;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            ReferenceKind::Read
+        }
+
+        // Assignment: target = value
+        "assignment_expression" => {
+            if let Some(left) = effective_parent.child_by_field_name("left") {
+                if left.id() == child_through_wrappers.id()
+                    || node_contains(node, &left)
+                {
+                    return ReferenceKind::Write;
+                }
+            }
+            ReferenceKind::Read
+        }
+
+        // Augmented update: x += 1 / x -= 1
+        "augmented_assignment_expression" => {
+            if let Some(left) = effective_parent.child_by_field_name("left") {
+                if left.id() == child_through_wrappers.id()
+                    || node_contains(node, &left)
+                {
+                    return ReferenceKind::Write;
+                }
+            }
+            ReferenceKind::Read
+        }
+
+        // Definitions — names being introduced.
+        "function_definition"
+        | "modifier_definition"
+        | "constructor_definition"
+        | "fallback_receive_definition"
+        | "contract_declaration"
+        | "interface_declaration"
+        | "library_declaration"
+        | "event_definition"
+        | "error_declaration"
+        | "struct_declaration"
+        | "enum_declaration" => {
+            if let Some(name) = effective_parent.child_by_field_name("name") {
+                if node.id() == name.id() {
+                    return ReferenceKind::Definition;
+                }
+            }
+            ReferenceKind::Read
+        }
+
+        // Parameters / variables — the `name` slot is a Definition.
+        "parameter" | "variable_declaration" | "state_variable_declaration"
+        | "constant_variable_declaration" => {
+            if let Some(name) = effective_parent.child_by_field_name("name") {
+                if node.id() == name.id() {
+                    return ReferenceKind::Definition;
+                }
+            }
+            ReferenceKind::Read
+        }
+
+        // Type slot. tree-sitter-solidity wraps named types in
+        // `user_defined_type` / `type_name`.
+        "user_defined_type" | "type_name" => ReferenceKind::Type,
+
+        // Import statements.
+        "import_directive" | "import_clause" | "source_import"
+        | "named_imports" | "import_alias" => ReferenceKind::Import,
+
+        // Default: treat as a value read.
+        _ => ReferenceKind::Read,
+    }
+}
+
+/// Walk up through the tree-sitter-solidity `expression` union wrappers
+/// to find the first ancestor whose kind is NOT `expression`.
+///
+/// Returns `(effective_parent, immediate_child_below_effective_parent)`:
+///   - The first element is the first non-`expression` ancestor (the
+///     semantic parent of the identifier).
+///   - The second is the descendant *just below* that effective parent —
+///     equivalent to the value that would be returned by
+///     `effective_parent.child_by_field_name("function")` /
+///     `child_by_field_name("left")` when the identifier sits inside a
+///     stack of `expression` wrappers. Comparing by `Node::id()` against
+///     that child lets us positively identify which slot we occupy.
+fn solidity_skip_expression_wrappers<'a>(
+    node: &Node<'a>,
+    parent: &Node<'a>,
+) -> (Node<'a>, Node<'a>) {
+    let mut effective = *parent;
+    let mut child_under_effective = *node;
+    while effective.kind() == "expression" {
+        match effective.parent() {
+            Some(next) => {
+                child_under_effective = effective;
+                effective = next;
+            }
+            None => break,
+        }
+    }
+    (effective, child_under_effective)
 }
 
 /// Classify Python reference kind
@@ -2872,8 +3049,68 @@ fn check_definition_node(
         // already enumerate references, so this only fills the
         // `definitions[]` array.
         Language::Cpp | Language::C => check_cpp_definition(node, symbol, source, file_path),
+        // solidity-sol015c-cohesion-references-v1 (v0.5.0 SOL-015c M13):
+        // Solidity definition detection. Symbols of interest:
+        //   - `function_definition`        (with `name` field)
+        //   - `modifier_definition`        (with `name` field)
+        //   - `event_definition`           (with `name` field)
+        //   - `error_declaration`          (with `name` field)
+        //   - `contract_declaration`       (with `name` field)
+        //   - `interface_declaration`      (with `name` field)
+        //   - `library_declaration`        (with `name` field)
+        //   - `struct_declaration`         (with `name` field)
+        //   - `enum_declaration`           (with `name` field)
+        //   - `state_variable_declaration` / `constant_variable_declaration`
+        //
+        // Without this arm, Solidity references previously returned
+        // empty `definitions[]` because the symbol resolver fell
+        // through to the `_ => Ok(None)` branch.
+        Language::Solidity => check_solidity_definition(node, symbol, source, file_path),
         _ => Ok(None),
     }
+}
+
+/// Check if a Solidity node is a definition of the target symbol.
+fn check_solidity_definition(
+    node: &Node,
+    symbol: &str,
+    source: &[u8],
+    file_path: &Path,
+) -> TldrResult<Option<Definition>> {
+    let kind = node.kind();
+    let (def_kind, name_field) = match kind {
+        "function_definition" | "modifier_definition" => {
+            (DefinitionKind::Function, Some("name"))
+        }
+        "constructor_definition" => (DefinitionKind::Function, None),
+        "event_definition" | "error_declaration" => {
+            (DefinitionKind::Other, Some("name"))
+        }
+        "contract_declaration" => (DefinitionKind::Class, Some("name")),
+        "interface_declaration" => (DefinitionKind::Class, Some("name")),
+        "library_declaration" => (DefinitionKind::Class, Some("name")),
+        "struct_declaration" => (DefinitionKind::Type, Some("name")),
+        "enum_declaration" => (DefinitionKind::Type, Some("name")),
+        "state_variable_declaration" => (DefinitionKind::Property, Some("name")),
+        "constant_variable_declaration" => (DefinitionKind::Constant, Some("name")),
+        _ => return Ok(None),
+    };
+
+    let Some(field) = name_field else { return Ok(None) };
+    let Some(name_node) = node.child_by_field_name(field) else {
+        return Ok(None);
+    };
+    if name_node.utf8_text(source).unwrap_or("") != symbol {
+        return Ok(None);
+    }
+    let signature = extract_signature(node, source, Language::Solidity);
+    Ok(Some(Definition {
+        file: file_path.to_path_buf(),
+        line: node.start_position().row + 1,
+        column: name_node.start_position().column + 1,
+        kind: def_kind,
+        signature,
+    }))
 }
 
 /// Check if a Python node is a definition of the target symbol

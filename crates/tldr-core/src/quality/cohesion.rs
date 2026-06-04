@@ -596,6 +596,19 @@ fn extract_file_method_fields(
 
     let tree = parse(&source, language)?;
     let root = tree.root_node();
+
+    // solidity-sol015c-cohesion-references-v1 (v0.5.0 SOL-015c M12):
+    // Solidity needs cross-method state-var awareness — the LCOM4
+    // "fields" are bare identifiers (no `this`/`self`), so the per-method
+    // `extract_field_accesses(method_source, …)` helper cannot determine
+    // what is a state-var reference vs. a local variable. We re-walk the
+    // file here, collecting per-class state-var names, and look for
+    // matching identifiers inside each method's body. The result feeds
+    // the existing `cohesion_from_method_fields` aggregator unchanged.
+    if matches!(language, Language::Solidity) {
+        return Ok(extract_file_method_fields_solidity(&root, &source, file_path));
+    }
+
     let class_infos = extract_classes(root, &source, language);
 
     let cpp_drop_methodless = matches!(language, Language::Cpp);
@@ -627,6 +640,81 @@ fn extract_file_method_fields(
         });
     }
     Ok(out)
+}
+
+/// Solidity-specific `MethodFieldsExtraction` walker. Mirrors the generic
+/// `extract_file_method_fields` flow, but threads each class's state-var
+/// name set through to the per-method field-access scan so that bare
+/// state-var references (the Solidity "field access" idiom) are correctly
+/// classified.
+fn extract_file_method_fields_solidity(
+    root: &tree_sitter::Node,
+    source: &str,
+    file_path: &Path,
+) -> Vec<MethodFieldsExtraction> {
+    let mut out = Vec::new();
+    collect_solidity_method_fields(root, source, file_path, &mut out);
+    out
+}
+
+fn collect_solidity_method_fields(
+    node: &tree_sitter::Node,
+    source: &str,
+    file_path: &Path,
+    out: &mut Vec<MethodFieldsExtraction>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "contract_declaration"
+            | "interface_declaration"
+            | "library_declaration" => {
+                if let Some(info) = build_solidity_cohesion_class_info(&child, source) {
+                    let state_var_names = solidity_state_var_names(&child, source);
+                    let mut methods: Vec<MethodFields> =
+                        Vec::with_capacity(info.methods.len());
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut bc = body.walk();
+                        for member in body.children(&mut bc) {
+                            let mname = match member.kind() {
+                                "function_definition" | "modifier_definition" => {
+                                    member
+                                        .child_by_field_name("name")
+                                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                                        .map(|s| s.to_string())
+                                }
+                                "constructor_definition" => {
+                                    Some("constructor".to_string())
+                                }
+                                "fallback_receive_definition" => {
+                                    Some(solidity_fallback_or_receive_keyword(
+                                        &member, source,
+                                    ))
+                                }
+                                _ => None,
+                            };
+                            if let Some(name) = mname {
+                                let fields = solidity_field_accesses_in_method(
+                                    &member,
+                                    source,
+                                    &state_var_names,
+                                );
+                                methods.push(MethodFields { name, fields });
+                            }
+                        }
+                    }
+                    out.push(MethodFieldsExtraction {
+                        name: info.name,
+                        file_path: file_path.to_path_buf(),
+                        line: info.line,
+                        is_partial: info.is_partial,
+                        methods,
+                    });
+                }
+            }
+            _ => collect_solidity_method_fields(&child, source, file_path, out),
+        }
+    }
 }
 
 /// Compute the LCOM4 result for a class given its precomputed method
@@ -810,7 +898,239 @@ fn extract_classes(root: tree_sitter::Node, source: &str, language: Language) ->
         // exists; we synthesise one per `local X = {}` whose name is
         // referenced by `function X.m()` / `function X:m()` bindings.
         Language::Lua | Language::Luau => extract_lua_classes_cohesion(root, source),
+        // solidity-sol015c-cohesion-references-v1 (v0.5.0 SOL-015c M12):
+        // walk `contract_declaration` / `interface_declaration` /
+        // `library_declaration` and emit a `ClassInfo` per declaration.
+        // Each class's methods are the `function_definition` /
+        // `modifier_definition` / `constructor_definition` /
+        // `fallback_receive_definition` children of its body. State
+        // variables — the LCOM4 "fields" for Solidity — are NOT carried
+        // through `ClassInfo` (which has no `fields` slot for the
+        // cohesion path); instead `extract_file_method_fields` /
+        // `analyze_file_cohesion` route Solidity through a dedicated
+        // branch that knows how to identify bare state-var references
+        // inside method bodies (state vars are accessed without any
+        // `self`/`this` prefix in Solidity, unlike every other supported
+        // language).
+        Language::Solidity => extract_solidity_classes_cohesion(root, source),
         _ => vec![], // Unsupported language
+    }
+}
+
+// =============================================================================
+// Solidity Class Extraction (v0.5.0 SOL-015c M12)
+// =============================================================================
+
+/// Extract Solidity contract / library / interface declarations as
+/// `ClassInfo` entries for the cohesion pipeline.
+///
+/// Grammar reference (tree-sitter-solidity):
+///   - `contract_declaration` / `interface_declaration` / `library_declaration`
+///     each carry a `name` field (identifier) and a `body` field
+///     (`contract_body`).
+///   - Method-like members inside the body: `function_definition`,
+///     `modifier_definition`, `constructor_definition`,
+///     `fallback_receive_definition` — each has a `name` field
+///     (except constructor/fallback/receive, which we synthesize as
+///     "constructor" / "fallback" / "receive").
+///
+/// State variables are intentionally NOT collected here. The companion
+/// Solidity branch in `extract_file_method_fields` walks `contract_body`
+/// children to collect state-variable names and uses them to drive the
+/// per-method field-access detection.
+fn extract_solidity_classes_cohesion(
+    root: tree_sitter::Node,
+    source: &str,
+) -> Vec<ClassInfo> {
+    let mut classes = Vec::new();
+    walk_solidity_decls(&root, source, &mut classes);
+    classes
+}
+
+fn walk_solidity_decls(
+    node: &tree_sitter::Node,
+    source: &str,
+    classes: &mut Vec<ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "contract_declaration"
+            | "interface_declaration"
+            | "library_declaration" => {
+                if let Some(info) = build_solidity_cohesion_class_info(&child, source) {
+                    classes.push(info);
+                }
+            }
+            _ => walk_solidity_decls(&child, source, classes),
+        }
+    }
+}
+
+fn build_solidity_cohesion_class_info(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<ClassInfo> {
+    let name_node = node.child_by_field_name("name")?;
+    let name = name_node
+        .utf8_text(source.as_bytes())
+        .ok()?
+        .to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let line = node.start_position().row + 1;
+
+    let mut methods: Vec<MethodInfo> = Vec::new();
+
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut bc = body.walk();
+        for member in body.children(&mut bc) {
+            match member.kind() {
+                "function_definition" | "modifier_definition" => {
+                    if let Some(name_node) = member.child_by_field_name("name") {
+                        if let Ok(mname) = name_node.utf8_text(source.as_bytes()) {
+                            methods.push(MethodInfo {
+                                name: mname.to_string(),
+                                start_byte: member.start_byte(),
+                                end_byte: member.end_byte(),
+                            });
+                        }
+                    }
+                }
+                "constructor_definition" => {
+                    methods.push(MethodInfo {
+                        name: "constructor".to_string(),
+                        start_byte: member.start_byte(),
+                        end_byte: member.end_byte(),
+                    });
+                }
+                "fallback_receive_definition" => {
+                    // tree-sitter-solidity collapses fallback() and
+                    // receive() into a single node kind; the discriminator
+                    // is the leading keyword child. We synthesise a
+                    // stable name for each so the LCOM4 component list
+                    // can refer to them.
+                    let kw = solidity_fallback_or_receive_keyword(&member, source);
+                    methods.push(MethodInfo {
+                        name: kw,
+                        start_byte: member.start_byte(),
+                        end_byte: member.end_byte(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Some(ClassInfo {
+        name,
+        line,
+        methods,
+        is_partial: false,
+    })
+}
+
+/// Distinguish `fallback() external` from `receive() external payable` —
+/// both share the `fallback_receive_definition` node kind in the
+/// upstream grammar. We scan the children for the leading keyword.
+fn solidity_fallback_or_receive_keyword(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> String {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "fallback" {
+            return "fallback".to_string();
+        }
+        if kind == "receive" {
+            return "receive".to_string();
+        }
+        // Some grammar versions emit the keyword as raw text inside a
+        // sibling anonymous node; fall back to the source-text scan.
+        if let Ok(text) = child.utf8_text(source.as_bytes()) {
+            let t = text.trim();
+            if t == "fallback" {
+                return "fallback".to_string();
+            }
+            if t == "receive" {
+                return "receive".to_string();
+            }
+        }
+    }
+    // Defensive default — should never trigger in practice.
+    "fallback".to_string()
+}
+
+/// Collect bare state-variable names declared at the body scope of a
+/// Solidity `contract_declaration` / `library_declaration` /
+/// `interface_declaration`. Both `state_variable_declaration` and
+/// `constant_variable_declaration` carry a `name` field.
+fn solidity_state_var_names(node: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        let mut bc = body.walk();
+        for member in body.children(&mut bc) {
+            match member.kind() {
+                "state_variable_declaration" | "constant_variable_declaration" => {
+                    if let Some(name_node) = member.child_by_field_name("name") {
+                        if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                            out.insert(name.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Walk a Solidity method/function body and return the set of identifier
+/// references whose text matches a declared state-variable name.
+///
+/// Solidity does NOT use `this.`/`self.` for state-variable access — the
+/// names appear bare. We collect every `identifier` leaf in the body and
+/// intersect with `state_var_names`. This is robust under aliasing
+/// (`uint256 x = balances[msg.sender]`), assignment (`balances[to] += amount`),
+/// and conditional access. Local variables and parameters that happen to
+/// shadow a state-var name are not filtered out — that's a degenerate
+/// case that's both rare in real Solidity AND captured deterministically
+/// from the AST. (Per the project's AST-only-fixes rule, we accept this
+/// classification rather than reach for a regex bodge.)
+fn solidity_field_accesses_in_method(
+    method_node: &tree_sitter::Node,
+    source: &str,
+    state_var_names: &HashSet<String>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if state_var_names.is_empty() {
+        return out;
+    }
+    let body = method_node
+        .child_by_field_name("body")
+        .unwrap_or(*method_node);
+    solidity_collect_identifier_hits(&body, source, state_var_names, &mut out);
+    out
+}
+
+fn solidity_collect_identifier_hits(
+    node: &tree_sitter::Node,
+    source: &str,
+    state_var_names: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "identifier" {
+        if let Ok(text) = node.utf8_text(source.as_bytes()) {
+            if state_var_names.contains(text) {
+                out.insert(text.to_string());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        solidity_collect_identifier_hits(&child, source, state_var_names, out);
     }
 }
 
