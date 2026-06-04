@@ -293,9 +293,10 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         Language::Elixir => extract_elixir_functions(&root, source, &mut functions),
         Language::Lua => extract_lua_functions(&root, source, &mut functions),
         Language::Luau => extract_luau_functions(&root, source, &mut functions),
-        // v0.5.0 SOL-001 Solidity foundation: function-name extraction
-        // lands in SOL-002.
-        Language::Solidity => { /* SOL-002 */ }
+        // v0.5.0 SOL-004 (solidity-ast-extractor-v1): free-function
+        // names at file scope. Contract/interface/library members are
+        // emitted by `extract_methods` instead.
+        Language::Solidity => extract_solidity_functions(&root, source, &mut functions, false),
     }
 
     functions
@@ -338,6 +339,11 @@ pub fn extract_classes(tree: &Tree, source: &str, language: Language) -> Vec<Str
         Language::Elixir => extract_elixir_classes(&root, source, &mut classes),
         Language::Lua => {}  // Lua has no native classes
         Language::Luau => {} // Luau has no native classes
+        // v0.5.0 SOL-004 (solidity-ast-extractor-v1): treat
+        // contract/interface/library declarations as the "class" axis.
+        // Differentiation between the three kinds is preserved in
+        // `collect_definitions` / `extract_classes_detailed`.
+        Language::Solidity => extract_solidity_classes(&root, source, &mut classes),
         _ => {}
     }
 
@@ -368,6 +374,12 @@ pub fn extract_methods(tree: &Tree, source: &str, language: Language) -> Vec<Str
         Language::Elixir => {} // Elixir has no methods (modules are not OOP classes)
         Language::Lua => {}    // Lua has no methods
         Language::Luau => {}   // Luau has no methods
+        // v0.5.0 SOL-004 (solidity-ast-extractor-v1): methods are
+        // `function_definition` / `constructor_definition` /
+        // `fallback_receive_definition` nodes whose ancestor chain
+        // includes a `contract_body` (i.e. contract/interface/library
+        // members).
+        Language::Solidity => extract_solidity_functions(&root, source, &mut methods, true),
         _ => {}
     }
 
@@ -1557,6 +1569,141 @@ fn is_inside_kotlin_class_or_object(node: &Node) -> bool {
 }
 
 // =============================================================================
+// Solidity extraction (v0.5.0 SOL-004 — solidity-ast-extractor-v1)
+//
+// Wire the structure/definition/cohesion fast-path. SOL-003 already
+// owns `extract.rs` (detailed FunctionInfo/ClassInfo/EventInfo/ErrorInfo
+// shapes); this layer surfaces *names only* for the lightweight
+// `tldr structure` / `tldr definition` / `tldr cohesion` consumers.
+//
+// Modeled on the Kotlin template (per oracle research):
+//   `extract_kotlin_functions` ↔ `extract_solidity_functions`
+//   `extract_kotlin_classes`   ↔ `extract_solidity_classes`
+//   `is_inside_kotlin_class_or_object` ↔ `is_inside_solidity_contract`
+//
+// Solidity AST shape (per tree-sitter-solidity 1.2.13 node-types.json):
+//   - `source_file` root
+//   - `contract_declaration` / `interface_declaration` /
+//     `library_declaration` — own a `body` field of kind `contract_body`
+//   - `function_definition` / `constructor_definition` /
+//     `fallback_receive_definition` / `modifier_definition` /
+//     `event_definition` / `error_declaration` /
+//     `struct_declaration` / `enum_declaration` —
+//     emitted both at file scope and as direct children of `contract_body`.
+//   - `function_definition` carries a `name` field. The
+//     `constructor_definition` / `fallback_receive_definition` nodes
+//     have no `name` field — we synthesize `constructor` / `fallback`
+//     / `receive` keyword strings to match the SOL-003 extract layer.
+// =============================================================================
+
+/// Extract Solidity function/method names from AST.
+///
+/// `methods_only = false`: free functions only (NOT inside any contract /
+/// interface / library body).
+/// `methods_only = true`: members only (must be inside a contract /
+/// interface / library body).
+fn extract_solidity_functions(
+    node: &Node,
+    source: &str,
+    functions: &mut Vec<String>,
+    methods_only: bool,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                let is_method = is_inside_solidity_contract(&child);
+                if methods_only == is_method {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        functions.push(get_node_text(&name_node, source));
+                    }
+                }
+            }
+            "constructor_definition" => {
+                // Constructors are always inside a contract body.
+                if methods_only {
+                    functions.push("constructor".to_string());
+                }
+            }
+            "fallback_receive_definition" => {
+                // Fallback/receive are always inside a contract body.
+                if methods_only {
+                    functions.push(solidity_fallback_receive_keyword(&child, source));
+                }
+            }
+            "contract_declaration"
+            | "interface_declaration"
+            | "library_declaration" => {
+                // Recurse into the contract body so its members are
+                // discovered when `methods_only == true`.
+                if let Some(body) = child.child_by_field_name("body") {
+                    extract_solidity_functions(&body, source, functions, methods_only);
+                }
+            }
+            _ => {
+                extract_solidity_functions(&child, source, functions, methods_only);
+            }
+        }
+    }
+}
+
+/// Extract Solidity contract / interface / library names.
+fn extract_solidity_classes(node: &Node, source: &str, classes: &mut Vec<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "contract_declaration"
+            | "interface_declaration"
+            | "library_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    classes.push(get_node_text(&name_node, source));
+                }
+            }
+            _ => {}
+        }
+        extract_solidity_classes(&child, source, classes);
+    }
+}
+
+/// Return `true` if `node` has an ancestor `contract_declaration` /
+/// `interface_declaration` / `library_declaration` (or their
+/// `contract_body` container). Used to distinguish free functions from
+/// contract members. Modeled on `is_inside_kotlin_class_or_object`.
+fn is_inside_solidity_contract(node: &Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "contract_declaration"
+            | "interface_declaration"
+            | "library_declaration"
+            | "contract_body" => return true,
+            "source_file" => return false, // Top-level
+            _ => {}
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Find the `fallback` / `receive` keyword token under a
+/// `fallback_receive_definition` node. Falls back to `"fallback"` when
+/// the grammar emits no distinguishable keyword (defensive).
+fn solidity_fallback_receive_keyword(node: &Node, source: &str) -> String {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "fallback" || kind == "receive" {
+            return kind.to_string();
+        }
+        let txt = get_node_text(&child, source);
+        if txt == "fallback" || txt == "receive" {
+            return txt;
+        }
+    }
+    "fallback".to_string()
+}
+
+// =============================================================================
 // OCaml extraction
 // =============================================================================
 
@@ -2239,7 +2386,17 @@ fn collect_definitions(
             // bare node start line elsewhere and the test
             // `m002_java_cross_pipeline_v1` pins their pre-fix behavior
             // so we don't widen the gate unintentionally.
-            let line_start = if language == Language::Java {
+            //
+            // v0.5.0 SOL-004 (solidity-ast-extractor-v1): also enable
+            // `decl_keyword_line_from_node` for Solidity. NatSpec
+            // comments (`///` and `/** */`) and `override_specifier` /
+            // `virtual` are siblings of the decl keyword in the
+            // tree-sitter-solidity grammar — when present in some
+            // shapes they can shift the bare `node.start_position()`
+            // line away from the keyword. Routing through the shared
+            // helper preserves the M-109 cross-pipeline invariant
+            // (structure ↔ extract / explain / slice agree on line).
+            let line_start = if matches!(language, Language::Java | Language::Solidity) {
                 decl_keyword_line_from_node(&node)
             } else {
                 node.start_position().row as u32 + 1 // 1-indexed
@@ -2259,22 +2416,43 @@ fn collect_definitions(
                     "trait_item" => "trait",
                     "interface_declaration" => "interface",
                     "module" => "module",
+                    // v0.5.0 SOL-004 (solidity-ast-extractor-v1):
+                    // Solidity-specific class-axis kinds.
+                    "contract_declaration" => "contract",
+                    "library_declaration" => "library",
+                    "struct_declaration" => "struct",
+                    "enum_declaration" => "enum",
                     _ => "class",
                 }
             } else {
-                // Check if inside a class/impl => method
-                if is_inside_class_or_impl(&node, language) {
-                    "method"
-                } else if is_go_method_with_receiver(&node, language) {
-                    // cross-language-extraction-v2 P2.BUG-1: Go methods are
-                    // declared with a receiver (`func (r *T) Foo()`), not
-                    // lexically inside a class/struct body. Detect via the
-                    // tree-sitter `method_declaration` node kind which is only
-                    // emitted when a receiver is present (regular functions
-                    // emit `function_declaration`).
-                    "method"
-                } else {
-                    "function"
+                // v0.5.0 SOL-004: Solidity-specific function-axis kinds.
+                // `modifier_definition` / `event_definition` /
+                // `error_declaration` are surfaced as first-class
+                // definition kinds so downstream commands can find
+                // them by name without a Solidity-specific accessor.
+                match kind {
+                    "modifier_definition" => "modifier",
+                    "event_definition" => "event",
+                    "error_declaration" => "error",
+                    "constructor_definition" | "fallback_receive_definition" => "method",
+                    _ => {
+                        // Check if inside a class/impl => method
+                        if is_inside_class_or_impl(&node, language) {
+                            "method"
+                        } else if is_go_method_with_receiver(&node, language) {
+                            // cross-language-extraction-v2 P2.BUG-1:
+                            // Go methods are declared with a receiver
+                            // (`func (r *T) Foo()`), not lexically
+                            // inside a class/struct body. Detect via
+                            // the tree-sitter `method_declaration` node
+                            // kind which is only emitted when a
+                            // receiver is present (regular functions
+                            // emit `function_declaration`).
+                            "method"
+                        } else {
+                            "function"
+                        }
+                    }
                 }
             };
 
@@ -2634,9 +2812,22 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         }
 
         Language::Lua | Language::Luau | Language::Ocaml => None,
-        // v0.5.0 SOL-001 Solidity foundation: constant_variable_declaration
-        // recognition lands in SOL-002.
-        Language::Solidity => None,
+        // v0.5.0 SOL-004 (solidity-ast-extractor-v1):
+        // `constant_variable_declaration` (file scope or contract scope).
+        // The grammar always exposes a `name` field; the SOL-003 extract
+        // layer already emits these as FieldInfo with is_constant=true.
+        // Here we surface them in the lightweight DefinitionInfo channel
+        // as `kind:"constant"` so `tldr structure` / `tldr definition`
+        // can list them by name.
+        Language::Solidity => {
+            if kind != "constant_variable_declaration" {
+                return None;
+            }
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source))?;
+            Some(make_constant_def(node, name, source))
+        }
     }
 }
 
@@ -2685,6 +2876,15 @@ fn try_field_definition(
         Language::TypeScript | Language::JavaScript => {
             matches!(kind, "public_field_definition" | "field_definition")
         }
+        // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity
+        // contract-scope `state_variable_declaration` becomes a
+        // `kind:"field"` entry — mirroring the SOL-003 extract layer
+        // which puts them in `ClassInfo.fields`. The parent gate below
+        // (must be `contract_body`) ensures file-scope variables —
+        // which the grammar parses as `constant_variable_declaration`
+        // and which are surfaced via `try_constant_definition` — don't
+        // double-emit here.
+        Language::Solidity => matches!(kind, "state_variable_declaration"),
         _ => false,
     };
     if !kind_matches {
@@ -2703,6 +2903,7 @@ fn try_field_definition(
             | "annotation_type_body" // Java
             | "protocol_body"  // Swift
             | "struct_body" // (reserved)
+            | "contract_body" // v0.5.0 SOL-004 (Solidity)
     );
     if !parent_is_class_body {
         return None;
@@ -2839,6 +3040,24 @@ fn try_field_definition(
                 });
             }
         }
+        // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity
+        // `state_variable_declaration` always exposes a `name` field
+        // (per tree-sitter-solidity 1.2.13 grammar — verified against
+        // src/node-types.json).
+        Language::Solidity => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                    defs.push(DefinitionInfo {
+                        name: name.to_string(),
+                        kind: "field".to_string(),
+                        line_start,
+                        line_end,
+                        signature,
+                        is_test: false,
+                    });
+                }
+            }
+        }
         _ => {}
     }
 
@@ -2939,8 +3158,8 @@ fn is_inside_elixir_defmodule(node: &Node, source: &str) -> bool {
 
 /// Classify a tree-sitter node kind as function-like or class-like.
 /// Mirrors `search/enriched.rs::classify_node`.
-fn classify_definition_node(kind: &str, _language: Language) -> (bool, bool) {
-    let is_func = matches!(
+fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
+    let mut is_func = matches!(
         kind,
         "function_definition"
             | "function_declaration"
@@ -2961,7 +3180,7 @@ fn classify_definition_node(kind: &str, _language: Language) -> (bool, bool) {
             | "constructor_declaration" // Java / C# constructor (VAL-003)
     );
 
-    let is_class = matches!(
+    let mut is_class = matches!(
         kind,
         "class_definition"
             | "class_declaration"
@@ -2981,6 +3200,42 @@ fn classify_definition_node(kind: &str, _language: Language) -> (bool, bool) {
             | "module_definition"  // OCaml module definition
             | "companion_object" // Kotlin companion object (name: "Companion" by convention)
     );
+
+    // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity-specific
+    // node kinds. Gated on the language so that other grammars that
+    // happen to reuse the names (`struct_declaration` / `enum_declaration`
+    // exist in the C# grammar too, and are handled by the dedicated
+    // C# extractors at the `extract_classes` layer) are not affected.
+    if matches!(language, Language::Solidity) {
+        // Functions: free functions + members + ctors + fallback/receive
+        // + modifiers (modifiers are callable-shaped — a name + params +
+        // body — and `tldr structure` / `tldr definition` want them in
+        // the same listing as functions so taint / impact / dead-code
+        // can find them by name).
+        if matches!(
+            kind,
+            "constructor_definition"
+                | "fallback_receive_definition"
+                | "modifier_definition"
+                | "event_definition"
+                | "error_declaration"
+        ) {
+            is_func = true;
+        }
+        // Classes: contract / library (interface already in the shared
+        // is_class list above). Plus struct/enum declarations which are
+        // type-defining and surface as `kind:"struct"` / `kind:"enum"`
+        // in `collect_definitions` (the entry_kind mapping below).
+        if matches!(
+            kind,
+            "contract_declaration"
+                | "library_declaration"
+                | "struct_declaration"
+                | "enum_declaration"
+        ) {
+            is_class = true;
+        }
+    }
 
     (is_func, is_class)
 }
@@ -3062,6 +3317,19 @@ fn get_definition_node_name(node: Node, source: &str) -> Option<String> {
         return Some("Companion".to_string());
     }
 
+    // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity
+    // `constructor_definition` and `fallback_receive_definition` have no
+    // `name` field. Mirror the SOL-003 extract layer:
+    //   - `constructor_definition` → name = "constructor"
+    //   - `fallback_receive_definition` → name = "fallback" / "receive"
+    //     based on the keyword token that opens the node.
+    if node.kind() == "constructor_definition" {
+        return Some("constructor".to_string());
+    }
+    if node.kind() == "fallback_receive_definition" {
+        return Some(solidity_fallback_receive_keyword(&node, source));
+    }
+
     None
 }
 
@@ -3135,6 +3403,15 @@ fn is_inside_class_or_impl(node: &Node, language: Language) -> bool {
                 | "interface_body"         // TS body wrapper (VAL-001)
                 | "companion_object"  // Kotlin
                 | "object_declaration" // Kotlin
+                // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity
+                // contract / library declarations and their
+                // `contract_body` container are class-scope. Methods
+                // (function_definition / constructor_definition /
+                // fallback_receive_definition) inside them must classify
+                // as `kind:"method"` to mirror the SOL-003 extract layer.
+                | "contract_declaration"
+                | "library_declaration"
+                | "contract_body"
         ) || (kind == "module" && module_is_class)
         // Ruby module
         {
