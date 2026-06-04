@@ -593,6 +593,15 @@ impl<'a> DfgBuilder<'a> {
                 .find(|child| child.kind() == "parameters"),
             Language::Lua | Language::Luau => func_node.child_by_field_name("parameters"),
             Language::Swift => None, // Swift parameters are direct children (handled below)
+            // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): tree-sitter-solidity
+            // emits `parameter` nodes as direct children of
+            // `function_definition` / `constructor_definition` /
+            // `modifier_definition` / `fallback_receive_definition` —
+            // there is no enclosing `parameters` field. Return `None`
+            // here and use `extract_solidity_parameters` (called after
+            // the generic `if let Some(params) = ...` block, mirroring
+            // Swift's pattern) to walk the direct children.
+            Language::Solidity => None,
             _ => None,
         };
 
@@ -615,6 +624,14 @@ impl<'a> DfgBuilder<'a> {
         // Each parameter has a simple_identifier child (the param name)
         if matches!(self.language, Language::Swift) {
             self.extract_swift_parameters(func_node)?;
+        }
+
+        // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): Solidity `parameter` nodes
+        // are direct children of the function/modifier/constructor decl
+        // (no enclosing `parameters` wrapper). Each `parameter` has a
+        // `name` field whose value is an `identifier`.
+        if matches!(self.language, Language::Solidity) {
+            self.extract_solidity_parameters(func_node)?;
         }
 
         Ok(())
@@ -645,6 +662,7 @@ impl<'a> DfgBuilder<'a> {
             Language::Php => self.extract_php_param(child),
             Language::Lua | Language::Luau => self.extract_lua_param(child),
             Language::Swift => self.extract_swift_param(child),
+            Language::Solidity => self.extract_solidity_param(child),
             _ => {}
         }
     }
@@ -834,6 +852,37 @@ impl<'a> DfgBuilder<'a> {
         }
     }
 
+    /// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): walk direct `parameter`
+    /// children of a Solidity function/constructor/modifier/fallback
+    /// definition and register each parameter's `name` field as a
+    /// `Definition`. Anonymous params (return-position `parameter`
+    /// nodes with no `name` field) are intentionally skipped — they
+    /// have no local binding.
+    fn extract_solidity_parameters(&mut self, func_node: Node) -> TldrResult<()> {
+        let mut cursor = func_node.walk();
+        for child in func_node.children(&mut cursor) {
+            if child.kind() == "parameter" {
+                self.extract_solidity_param(child);
+            }
+        }
+        Ok(())
+    }
+
+    /// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): a Solidity `parameter`
+    /// has the shape `(type) (data_location)? (name)?`. The `name`
+    /// field — when present — is an `identifier` that introduces a
+    /// local binding usable inside the function body.
+    fn extract_solidity_param(&mut self, child: Node) {
+        if child.kind() != "parameter" {
+            return;
+        }
+        if let Some(name) = child.child_by_field_name("name") {
+            if name.kind() == "identifier" {
+                self.add_ref_from_node(name, RefType::Definition);
+            }
+        }
+    }
+
     /// Add a variable reference from an AST node
     fn add_ref_from_node(&mut self, node: Node, ref_type: RefType) {
         let name = node
@@ -931,14 +980,42 @@ impl<'a> DfgBuilder<'a> {
             // a def (it writes back the result). Match `process_augmented_
             // assignment`'s pattern.
             // =================================================================
-            "update_expression" if matches!(self.language, Language::Php) => {
+            "update_expression"
+                if matches!(self.language, Language::Php | Language::Solidity) =>
+            {
                 if let Some(arg) = node.child_by_field_name("argument") {
-                    if arg.kind() == "variable_name" {
-                        self.add_ref_from_node(arg, RefType::Update);
-                    } else {
-                        // For subscript/member access targets, still walk
-                        // the rhs for nested uses so analyzers see them.
-                        self.extract_refs_from_node(arg, depth + 1)?;
+                    match arg.kind() {
+                        "variable_name" => {
+                            // PHP: $n++ / ++$n
+                            self.add_ref_from_node(arg, RefType::Update);
+                        }
+                        // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): the M-114
+                        // PHP analog for Solidity. Solidity's `update_expression`
+                        // has the shape `[argument] expression > identifier`
+                        // (`expression` is a wrapper named child). When the
+                        // operand is a bare identifier wrapped in `expression`,
+                        // emit `RefType::Update` on the underlying identifier
+                        // so SSA construction sees it as USE-then-DEF and
+                        // emits a fresh version for the next use.
+                        "identifier" => {
+                            self.add_ref_from_node(arg, RefType::Update);
+                        }
+                        "expression" if matches!(self.language, Language::Solidity) => {
+                            if let Some(ident) = solidity_unwrap_expression(arg) {
+                                if ident.kind() == "identifier" {
+                                    self.add_ref_from_node(ident, RefType::Update);
+                                } else {
+                                    // Non-identifier targets (subscript /
+                                    // member access). Walk for nested uses.
+                                    self.extract_refs_from_node(ident, depth + 1)?;
+                                }
+                            }
+                        }
+                        _ => {
+                            // For subscript/member access targets, still walk
+                            // the rhs for nested uses so analyzers see them.
+                            self.extract_refs_from_node(arg, depth + 1)?;
+                        }
                     }
                 }
             }
@@ -986,6 +1063,27 @@ impl<'a> DfgBuilder<'a> {
             // =================================================================
             "local_variable_declaration" => {
                 self.process_java_local_var(node, depth)?;
+            }
+
+            // =================================================================
+            // Solidity local variable declaration: `uint256 y = ...;`
+            //
+            // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): tree-sitter-solidity
+            // wraps a local in `statement > variable_declaration_statement`
+            // whose layout is:
+            //   variable_declaration_statement
+            //     variable_declaration       -- has [type] and [name]
+            //     '='
+            //     [value] expression         -- RHS, optional
+            //     ';'
+            // The `variable_declaration` shape is shared with state-var
+            // decls, but only the `_statement` wrapper appears inside a
+            // function body.
+            // =================================================================
+            "variable_declaration_statement"
+                if matches!(self.language, Language::Solidity) =>
+            {
+                self.process_solidity_variable_declaration(node, depth)?;
             }
 
             // =================================================================
@@ -1230,6 +1328,17 @@ impl<'a> DfgBuilder<'a> {
 
     /// Extract assignment targets (definitions)
     fn extract_assignment_targets(&mut self, target: Node) -> TldrResult<()> {
+        // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): Solidity wraps every
+        // operand in a named `expression` node. The actual target
+        // (identifier / array_access / member_expression / tuple) lives
+        // one level deeper. Unwrap once before dispatching so the rest
+        // of this function can match on the concrete kind.
+        if matches!(self.language, Language::Solidity) && target.kind() == "expression" {
+            if let Some(inner) = solidity_unwrap_expression(target) {
+                return self.extract_assignment_targets(inner);
+            }
+            return Ok(());
+        }
         match target.kind() {
             "identifier" => {
                 self.add_ref_from_node(target, RefType::Definition);
@@ -1264,10 +1373,28 @@ impl<'a> DfgBuilder<'a> {
                 }
             }
             // TS/JS/Java: x.field = ...
+            // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): tree-sitter-solidity
+            // also uses `member_expression` with `[object]` and `[property]`
+            // fields, but the `[object]` child is wrapped in a named
+            // `expression` node. Unwrap it before checking for the
+            // identifier so Solidity `msg.sender.x = 1;` registers
+            // `msg` as the Update target (matches the receiver-as-update
+            // semantics of TS/JS/Java).
             "member_expression" => {
                 if let Some(obj) = target.child_by_field_name("object") {
-                    if obj.kind() == "identifier" {
-                        self.add_ref_from_node(obj, RefType::Update);
+                    let obj_inner = if obj.kind() == "expression"
+                        && matches!(self.language, Language::Solidity)
+                    {
+                        solidity_unwrap_expression(obj).unwrap_or(obj)
+                    } else {
+                        obj
+                    };
+                    if obj_inner.kind() == "identifier" {
+                        self.add_ref_from_node(obj_inner, RefType::Update);
+                    } else if matches!(self.language, Language::Solidity) {
+                        // Nested member/array on the LHS — recurse so the
+                        // outermost identifier registers.
+                        self.extract_assignment_targets(obj_inner)?;
                     }
                 }
             }
@@ -1314,6 +1441,36 @@ impl<'a> DfgBuilder<'a> {
             // PHP variable name
             "variable_name" => {
                 self.add_ref_from_node(target, RefType::Definition);
+            }
+            // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): Solidity uses
+            // `array_access` (with `[base]` and `[index]` fields) for
+            // mapping/array writes like `balances[user] = y;`. The
+            // base identifier is the storage location being updated
+            // (RefType::Update — read-then-write), and the index is a
+            // Use (extracted by walking into [index] via the main
+            // dispatch in process_c_style_assignment's RHS path; we
+            // don't need to manually emit it here, but we DO walk it
+            // so nested identifiers in complex indexes register).
+            "array_access" => {
+                if let Some(base) = target.child_by_field_name("base") {
+                    // Unwrap the `expression` wrapper.
+                    let base_inner = if base.kind() == "expression" {
+                        solidity_unwrap_expression(base).unwrap_or(base)
+                    } else {
+                        base
+                    };
+                    if base_inner.kind() == "identifier" {
+                        self.add_ref_from_node(base_inner, RefType::Update);
+                    } else {
+                        // Nested array_access / member_expression — recurse
+                        // so the outermost identifier gets the Update.
+                        self.extract_assignment_targets(base_inner)?;
+                    }
+                }
+                // The index is a Use; descend into it.
+                if let Some(index) = target.child_by_field_name("index") {
+                    self.extract_refs_from_node(index, 1)?;
+                }
             }
             _ => {}
         }
@@ -1852,6 +2009,43 @@ impl<'a> DfgBuilder<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    /// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): process a Solidity
+    /// local variable declaration statement.
+    ///
+    /// AST shape:
+    /// ```text
+    /// variable_declaration_statement
+    ///   variable_declaration         -- [type] type_name, [name] identifier
+    ///   '='                          -- optional (absent for `uint256 y;`)
+    ///   [value] expression           -- optional RHS
+    ///   ';'
+    /// ```
+    /// The `name` field of `variable_declaration` is the binding; emit it
+    /// as `RefType::Definition`. The optional `[value]` field is the
+    /// initializer — walk it for nested uses (calls, identifiers, ...).
+    fn process_solidity_variable_declaration(
+        &mut self,
+        node: Node,
+        depth: usize,
+    ) -> TldrResult<()> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "variable_declaration" {
+                if let Some(name) = child.child_by_field_name("name") {
+                    if name.kind() == "identifier" {
+                        self.add_ref_from_node(name, RefType::Definition);
+                    }
+                }
+            }
+        }
+        // The initializer is in the `value` field on the OUTER
+        // variable_declaration_statement, not on the inner declaration.
+        if let Some(value) = node.child_by_field_name("value") {
+            self.extract_refs_from_node(value, depth + 1)?;
+        }
         Ok(())
     }
 
@@ -2833,6 +3027,20 @@ impl<'a> DfgBuilder<'a> {
             }
         }
 
+        // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): Solidity classification.
+        // The grammar wraps every operand in a named `expression` node, so
+        // standard use-context heuristics that test `parent.kind()`
+        // against `assignment_expression` / `variable_declaration` /
+        // `member_expression` would see only the wrapper and classify
+        // every identifier as a use. Walk through the wrapper to find
+        // the actual semantic parent, then suppress in the LHS / member
+        // / callee / type-position cases.
+        if matches!(self.language, Language::Solidity) {
+            if let Some(is_use) = self.solidity_use_context(node) {
+                return is_use;
+            }
+        }
+
         if let Some(parent) = node.parent() {
             if let Some(is_use) = self.parent_use_context(parent, node) {
                 return is_use;
@@ -2842,6 +3050,163 @@ impl<'a> DfgBuilder<'a> {
             return is_use;
         }
         true
+    }
+
+    /// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): centralised use-context
+    /// classifier for Solidity identifiers.
+    ///
+    /// Returns:
+    ///   * `Some(false)` — identifier is NOT a use (LHS of assignment,
+    ///     member property, callee, type position, variable_declaration
+    ///     name, parameter name).
+    ///   * `Some(true)`  — identifier IS a use (RHS / inside expression
+    ///     context that explicitly classifies as a read).
+    ///   * `None`        — no Solidity-specific decision; fall through
+    ///     to the generic classifier.
+    fn solidity_use_context(&self, node: Node) -> Option<bool> {
+        let parent = node.parent()?;
+        let pkind = parent.kind();
+
+        // member_expression: `obj.field` — `[object]` is a use, `[property]`
+        // is a static field-access name and never a local variable use.
+        if pkind == "member_expression" {
+            if let Some(prop) = parent.child_by_field_name("property") {
+                if prop.id() == node.id() {
+                    return Some(false);
+                }
+            }
+            // `[object] identifier` — the receiver IS a use.
+            return None;
+        }
+
+        // variable_declaration: `[name] identifier` — Definition, not Use.
+        if pkind == "variable_declaration" {
+            if let Some(name) = parent.child_by_field_name("name") {
+                if name.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+
+        // parameter: `[name] identifier` — Definition, not Use.
+        if pkind == "parameter" || pkind == "event_parameter"
+            || pkind == "error_parameter"
+        {
+            if let Some(name) = parent.child_by_field_name("name") {
+                if name.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+
+        // function_definition / modifier_definition: `[name] identifier`
+        // — declaration name, never a local use.
+        if matches!(
+            pkind,
+            "function_definition"
+                | "modifier_definition"
+                | "constructor_definition"
+                | "event_definition"
+                | "error_declaration"
+                | "contract_declaration"
+                | "interface_declaration"
+                | "library_declaration"
+                | "struct_declaration"
+                | "enum_declaration"
+        ) {
+            if let Some(name) = parent.child_by_field_name("name") {
+                if name.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+
+        // type_name / user_defined_type / primitive_type: identifiers
+        // here are type references, not variable uses.
+        if matches!(
+            pkind,
+            "type_name" | "user_defined_type" | "primitive_type"
+        ) {
+            return Some(false);
+        }
+
+        // The grammar wraps every operand in `expression`. Look at the
+        // grandparent to learn the SEMANTIC context of this identifier.
+        if pkind == "expression" {
+            let grand = parent.parent()?;
+            let gkind = grand.kind();
+
+            // assignment_expression: `[left] expression > identifier` is
+            // the assignment target — Definition, not Use. `[right]` is a
+            // Use (None → fall through).
+            if gkind == "assignment_expression"
+                || gkind == "augmented_assignment_expression"
+            {
+                if let Some(left) = grand.child_by_field_name("left") {
+                    if left.id() == parent.id() {
+                        return Some(false);
+                    }
+                }
+            }
+
+            // update_expression: `[argument] expression > identifier` is
+            // the operand — handled by the update_expression arm itself
+            // (it emits an Update). Suppress here so we don't also emit
+            // a duplicate Use.
+            if gkind == "update_expression" {
+                if let Some(arg) = grand.child_by_field_name("argument") {
+                    if arg.id() == parent.id() {
+                        return Some(false);
+                    }
+                }
+            }
+
+            // member_expression as grandparent: `[object] expression >
+            // identifier` is a USE (receiver). `[property]` was handled
+            // above (its grandparent is also `member_expression` but
+            // through `[property] identifier` directly, not via
+            // `expression`).
+            if gkind == "member_expression" {
+                // object is a use — leave decision to fallthrough (None).
+                if let Some(obj) = grand.child_by_field_name("object") {
+                    if obj.id() == parent.id() {
+                        return None;
+                    }
+                }
+            }
+
+            // emit_statement: `[name] expression > identifier` is the
+            // event name — not a local variable use.
+            if gkind == "emit_statement" {
+                if let Some(name) = grand.child_by_field_name("name") {
+                    if name.id() == parent.id() {
+                        return Some(false);
+                    }
+                }
+            }
+
+            // call_expression: `[function] expression > identifier` is
+            // the callee name. For Solidity, bare callees are typically
+            // free functions, contract methods, or builtins (keccak256,
+            // require, etc.) — none are local variable uses.
+            if gkind == "call_expression" {
+                if let Some(func) = grand.child_by_field_name("function") {
+                    if func.id() == parent.id() {
+                        return Some(false);
+                    }
+                }
+            }
+
+            // array_access: `[base] expression > identifier` IS a use
+            // (the storage location being read or the storage target on
+            // LHS — both register reads of the base name). `[index]` is
+            // also a use. Fall through.
+            if gkind == "array_access" {
+                return None;
+            }
+        }
+
+        None
     }
 
     fn parent_use_context(&self, parent: Node, node: Node) -> Option<bool> {
@@ -3115,6 +3480,22 @@ fn first_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     for i in 0..node.child_count() {
         let child = node.child(i)?;
         if child.kind() == kind {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): tree-sitter-solidity wraps
+/// every operand in a named `expression` node whose single named child
+/// carries the actual semantic content (identifier / binary_expression
+/// / call_expression / array_access / etc.). Return that inner named
+/// child so callers can dispatch on the real kind. Returns `None` if
+/// the node has no named children.
+fn solidity_unwrap_expression<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_named() {
             return Some(child);
         }
     }
@@ -4025,6 +4406,91 @@ fn is_keyword(name: &str, language: Language) -> bool {
                 | "while"
                 | "with"
                 | "yield"
+        ),
+        // solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): Solidity keyword set so
+        // language tokens (`this`, `super`, type names, control-flow
+        // words) are not flagged by reaching-defs as uninitialized local
+        // uses. List restricted to the actual keywords reserved by the
+        // Solidity grammar — `msg`/`block`/`tx` are NOT keywords (they
+        // are intrinsic globals carried by `imported_type_names` policy
+        // and the AST classifier handles them via the member_expression
+        // receiver path). Including them here would mask legitimate
+        // local-variable shadows.
+        Language::Solidity => matches!(
+            name,
+            "abstract"
+                | "address"
+                | "anonymous"
+                | "as"
+                | "assembly"
+                | "bool"
+                | "break"
+                | "byte"
+                | "bytes"
+                | "calldata"
+                | "case"
+                | "catch"
+                | "constant"
+                | "constructor"
+                | "continue"
+                | "contract"
+                | "default"
+                | "delete"
+                | "do"
+                | "else"
+                | "emit"
+                | "enum"
+                | "event"
+                | "external"
+                | "fallback"
+                | "false"
+                | "final"
+                | "for"
+                | "from"
+                | "function"
+                | "global"
+                | "if"
+                | "immutable"
+                | "import"
+                | "indexed"
+                | "interface"
+                | "internal"
+                | "is"
+                | "library"
+                | "mapping"
+                | "memory"
+                | "modifier"
+                | "new"
+                | "null"
+                | "of"
+                | "override"
+                | "payable"
+                | "pragma"
+                | "private"
+                | "public"
+                | "pure"
+                | "receive"
+                | "return"
+                | "returns"
+                | "revert"
+                | "self"
+                | "Self"
+                | "storage"
+                | "string"
+                | "struct"
+                | "super"
+                | "switch"
+                | "this"
+                | "throw"
+                | "true"
+                | "try"
+                | "type"
+                | "unchecked"
+                | "using"
+                | "var"
+                | "view"
+                | "virtual"
+                | "while"
         ),
         _ => false,
     }

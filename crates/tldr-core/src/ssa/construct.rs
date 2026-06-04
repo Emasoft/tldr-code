@@ -1027,6 +1027,7 @@ pub fn filter_ssa_by_variable(mut ssa: SsaFunction, variable: &str) -> SsaFuncti
 // - TypeScript: S10-P2-R13 through R21
 // - Go: S10-P2-R22 through R29
 // - Rust: S10-P2-R30 through R36
+// - Solidity: see Solidity-Specific Handlers below (v0.5.0 SOL-006b)
 
 use crate::types::VarRefContext;
 
@@ -1039,6 +1040,76 @@ pub struct LanguageConstructResult {
     pub uses: Vec<SsaNameId>,
     /// Instructions to emit
     pub instructions: Vec<SsaInstruction>,
+}
+
+// =============================================================================
+// Solidity-Specific Handlers (v0.5.0 SOL-006b)
+// =============================================================================
+//
+// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): Solidity does NOT need any new
+// language-specific SSA renaming handlers — every Solidity construct that
+// requires special SSA semantics is already covered by the universal
+// dispatch in `rename_variables_recursive`:
+//
+// 1. Local variable declarations (`uint256 y = ...;`) — the DFG extractor
+//    emits a single `RefType::Definition` for the LHS plus `RefType::Use`s
+//    for every identifier in the RHS. The universal pipeline emits one
+//    `SsaInstruction` per Definition, sourcing the RHS uses from
+//    `resolve_uses_on_line`.
+//
+// 2. Simple assignment (`y = 10;`) — `RefType::Definition` on the LHS.
+//    Universal pipeline emits a new version. Same shape as Java / Go / TS.
+//
+// 3. Augmented assignment (`y += 5;`) — the DFG extractor emits
+//    `RefType::Update` for the LHS via the `augmented_assignment_expression`
+//    arm. The universal pipeline (the `RefType::Update` branch in
+//    `rename_variables_recursive`) treats Update as USE-then-DEF and emits
+//    a fresh version that incorporates the prior version as a use.
+//
+// 4. Update expression (`y++` / `y--`) — the DFG extractor's
+//    `update_expression` arm (M-114 PHP analog) emits a single
+//    `RefType::Update` on the operand. Same universal Update branch as
+//    augmented assignment.
+//
+// 5. Mapping/array writes (`balances[user] = y;`) — the DFG extractor
+//    emits `RefType::Update` on `balances` and `RefType::Use` on `user`
+//    via `extract_assignment_targets`. The universal pipeline handles
+//    Update identically; the mapping slot's read-then-write semantics
+//    are preserved.
+//
+// 6. Function parameters — emitted as `RefType::Definition` on the
+//    signature line via `extract_solidity_parameters`. The orphaned-def
+//    recovery in `rename_variables_recursive` attributes them to the
+//    entry block when their line falls outside every CFG block (this is
+//    the same path Java/Kotlin use for parameter renaming).
+//
+// 7. State variables on the LHS — the DFG extractor emits
+//    `RefType::Update` for `balance = y;` (member-less LHS), so the
+//    universal pipeline records each state-var assignment as a new
+//    SSA version of the state name. Cross-function state aliasing is
+//    out of scope for v1 and would require MemorySSA.
+//
+// No `VarRefContext` flags are set for Solidity refs, so
+// `process_var_ref_with_context` falls through to
+// `process_normal_var_ref`, which is exactly what we want for the v1
+// Solidity adapter.
+
+/// solidity-dfg-ssa-v1 (v0.5.0 SOL-006b): explicit dispatch helper for
+/// Solidity SSA construction. The implementation simply delegates to
+/// `construct_ssa` — every Solidity construct uses the universal
+/// renaming pipeline (see the comment block above for why none of the
+/// Python/TS/Go/Rust-style handlers are needed).
+///
+/// This wrapper exists primarily as documentation of the per-language
+/// arm shape: future Solidity-specific semantics (e.g. modifier-body
+/// inlining for `_;` expansion) would land here without disturbing
+/// the universal pipeline.
+pub fn construct_ssa_solidity(
+    source: &str,
+    function: &str,
+    ssa_type: SsaType,
+) -> TldrResult<SsaFunction> {
+    construct_ssa(source, function, Language::Solidity, ssa_type)
 }
 
 // =============================================================================
