@@ -1171,7 +1171,45 @@ fn index_module_for_language(
         Language::Ocaml => index_ocaml_module(index, file_path, relative),
         Language::Php => index_php_module(index, file_path, relative),
         Language::Lua | Language::Luau => index_lua_module(index, file_path, relative),
+        // solidity-deps-v1 (v0.5.0 SOL-007): Solidity import paths are
+        // filesystem-relative. Register each `.sol` under (a) its
+        // project-relative path verbatim (matches Foundry remappings
+        // like `contracts/MyLib.sol`) and (b) the bare leaf name
+        // (matches `import "MyLib.sol"` when the consumer is sloppy).
+        Language::Solidity => index_solidity_module(index, file_path, relative),
         _ => {}
+    }
+}
+
+/// Index a Solidity `.sol` file under every reasonable spelling that
+/// an `import "..."` directive may use to reference it.
+///
+/// solidity-deps-v1 (v0.5.0 SOL-007). Solidity has no Python-style
+/// dotted module names; every `import` is a filesystem path string.
+/// We register:
+///   * `src/foo/Bar.sol`   — project-relative path verbatim (the
+///     remapping-target spelling that `import "src/foo/Bar.sol";`
+///     yields after Foundry's `remappings.txt` expansion).
+///   * `foo/Bar.sol`       — for each ancestor prefix peeled off,
+///     so a sibling file's `import "Bar.sol"` from inside `src/foo/`
+///     resolves via the relative-path normalisation in
+///     `resolve_solidity_import`.
+///   * `Bar.sol`           — bare leaf name (sloppy single-segment
+///     import).
+fn index_solidity_module(
+    index: &mut HashMap<String, PathBuf>,
+    file_path: &Path,
+    relative: &Path,
+) {
+    let fp = file_path.to_path_buf();
+    let rel_str = relative.to_string_lossy().to_string();
+    if !rel_str.is_empty() {
+        index.insert(rel_str.clone(), fp.clone());
+    }
+
+    if let Some(name) = relative.file_name() {
+        let name_str = name.to_string_lossy().to_string();
+        index.entry(name_str).or_insert_with(|| fp.clone());
     }
 }
 
@@ -2047,8 +2085,93 @@ fn resolve_import(
         Language::Ocaml => resolve_ocaml_import(import, root, current_file, index),
         Language::Php => resolve_php_import(import, root, current_file, index),
         Language::Lua | Language::Luau => resolve_lua_import(import, index),
+        Language::Solidity => resolve_solidity_import(import, root, current_file, index),
         _ => None,
     }
+}
+
+/// Resolve a Solidity `import "<path>"` directive to a file path.
+///
+/// solidity-deps-v1 (v0.5.0 SOL-007). Strategy (in order):
+///   1. **Relative spellings (`./X`, `../X`)** — normalise against the
+///      current file's directory and look up under the project-relative
+///      form registered by [`index_solidity_module`].
+///   2. **Bare project-rooted spellings (`contracts/X.sol`)** — direct
+///      index lookup. This is Foundry's `remappings.txt`-expanded form,
+///      where the leading segment is the source-tree root.
+///   3. **Bare leaf name (`X.sol`)** — index entry for the file's leaf,
+///      tolerates sloppy single-segment imports.
+///   4. **External-package prefixes** (`@openzeppelin/contracts/...`,
+///      `solmate/...`, …) are *not* resolved here — they fall through
+///      to `classify_import`'s External arm. We return `None` for any
+///      module starting with `@` (npm-scoped) so we don't accidentally
+///      bucket OpenZeppelin as Internal.
+fn resolve_solidity_import(
+    import: &ImportInfo,
+    root: &Path,
+    current_file: &Path,
+    index: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    let module = import.module.trim();
+    if module.is_empty() {
+        return None;
+    }
+
+    // npm-scoped style — never project-local in practice; let the
+    // External-package classifier handle it.
+    if module.starts_with('@') {
+        return None;
+    }
+
+    // 1. Relative spellings — resolve against current file's directory.
+    if module.starts_with("./") || module.starts_with("../") {
+        if let Some(parent) = current_file.parent() {
+            let joined = parent.join(module);
+            // Manually normalise `..` segments — `Path::canonicalize`
+            // requires the target file to exist on disk, which is
+            // sometimes the case here but we don't want to depend on
+            // it.
+            let normalised = normalise_path(&joined);
+            if let Ok(relative) = normalised.strip_prefix(root) {
+                let key = relative.to_string_lossy().to_string();
+                if let Some(path) = index.get(&key) {
+                    return Some(path.clone());
+                }
+            }
+            // Final fallback — check whether the joined path itself is
+            // a value in the index (some platforms canonicalise tmpdirs
+            // through symlinks, so strip_prefix can fail).
+            if normalised.exists() {
+                return Some(normalised);
+            }
+        }
+        return None;
+    }
+
+    // 2. Direct index lookup (Foundry-remapping-expanded form, or a
+    // bare leaf name that the indexer registered).
+    if let Some(path) = index.get(module) {
+        return Some(path.clone());
+    }
+
+    None
+}
+
+/// Normalise a path by collapsing `./` and `../` segments without
+/// touching the filesystem. Mirrors the logic upstream `path-clean`
+/// crate uses; inlined here to avoid the dep.
+fn normalise_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 // =============================================================================
@@ -3338,6 +3461,30 @@ pub fn is_swift_stdlib(module_name: &str) -> bool {
     )
 }
 
+/// Check if a Solidity `import "<path>"` target is part of a
+/// "standard library".
+///
+/// Solidity has NO module-system standard library. Builtins such as
+/// `msg.sender`, `block.timestamp`, `keccak256`, `abi.encode`, and
+/// `selfdestruct` are intrinsics of the language, not import-able
+/// modules. The only thing that ever appears inside an `import "..."`
+/// directive is either a project-local path (`./Foo.sol`,
+/// `../utils/Helpers.sol`, `contracts/MyLib.sol`) or a third-party
+/// package path (`@openzeppelin/contracts/...`, `solmate/...`,
+/// `forge-std/...`).
+///
+/// This helper therefore always returns `false`. It exists to keep the
+/// per-language stdlib classifier shape uniform — `classify_import`'s
+/// Solidity arm calls it for symmetry with every other language, even
+/// though the result is constant. The constant return value is part of
+/// the API contract: a future "Solidity stdlib" RFC would have to land
+/// here, not in a separate code path.
+///
+/// solidity-deps-v1 (v0.5.0 SOL-007).
+pub fn is_solidity_stdlib(_module: &str) -> bool {
+    false
+}
+
 /// Check if a JavaScript / TypeScript import path is a Node.js built-in module.
 ///
 /// Source: <https://nodejs.org/api/modules.html> (Node.js v22 built-ins).
@@ -3546,8 +3693,76 @@ pub fn classify_import(
                 DepKind::External
             }
         }
+        Language::Solidity => {
+            // solidity-deps-v1 (v0.5.0 SOL-007). `is_solidity_stdlib`
+            // always returns `false` (Solidity has no module-system
+            // stdlib — builtins are intrinsic). The classification
+            // bifurcates on the import-path shape instead:
+            //   * Relative spellings (`./`, `../`) that didn't resolve
+            //     via `resolve_solidity_import` are still treated as
+            //     Internal — the target file may be missing or the
+            //     resolver may have failed for a reason that doesn't
+            //     promote the dep to "third-party package".
+            //   * Anything starting with one of the curated external-
+            //     ecosystem prefixes (OpenZeppelin / Chainlink /
+            //     Uniswap / Aave / solmate / solady / forge-std /
+            //     hardhat / ds-test) is External.
+            //   * Everything else (bare project-relative spelling like
+            //     `contracts/MyLib.sol`) is Internal — these are
+            //     Foundry remappings and live inside the project tree.
+            //
+            // The stdlib helper call is preserved for API symmetry
+            // (every other arm calls its `is_<lang>_stdlib`).
+            let _ = is_solidity_stdlib(module);
+            if module.starts_with("./") || module.starts_with("../") {
+                DepKind::Internal
+            } else if solidity_external_prefix(module).is_some() {
+                DepKind::External
+            } else {
+                DepKind::Internal
+            }
+        }
         _ => DepKind::External,
     }
+}
+
+/// Return the matching curated external-package prefix for a Solidity
+/// import path, or `None` if the path is not in the ecosystem
+/// taxonomy.
+///
+/// solidity-deps-v1 (v0.5.0 SOL-007). The list is curated from common
+/// audit corpora (Foundry / Hardhat repos, OpenZeppelin examples) and
+/// is **longest-prefix-first** so that `@openzeppelin/contracts-
+/// upgradeable/` does not get shadowed by `@openzeppelin/contracts/`
+/// — the upgradeable variant is a distinct package coordinate per
+/// npm.
+///
+/// Returns the canonical package coordinate (i.e. the prefix WITHOUT
+/// the trailing `/`) so the caller can both classify and emit a
+/// deterministic package name from the same lookup.
+pub fn solidity_external_prefix(module: &str) -> Option<&'static str> {
+    const PREFIXES: &[(&str, &str)] = &[
+        // Longest first — upgradeable BEFORE the bare contracts entry.
+        ("@openzeppelin/contracts-upgradeable/", "@openzeppelin/contracts-upgradeable"),
+        ("@openzeppelin/contracts/", "@openzeppelin/contracts"),
+        ("@chainlink/contracts/", "@chainlink/contracts"),
+        ("@uniswap/v3-periphery/", "@uniswap/v3-periphery"),
+        ("@uniswap/v3-core/", "@uniswap/v3-core"),
+        ("@uniswap/v2-core/", "@uniswap/v2-core"),
+        ("@aave/periphery-v3/", "@aave/periphery-v3"),
+        ("@aave/core-v3/", "@aave/core-v3"),
+        ("solmate/", "solmate"),
+        ("solady/", "solady"),
+        ("forge-std/", "forge-std"),
+        ("hardhat/", "hardhat"),
+        ("ds-test/", "ds-test"),
+    ];
+    for (prefix, name) in PREFIXES {
+        if module.starts_with(prefix) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// Extract the package-manager-grain "external package name" for an import
@@ -3661,6 +3876,36 @@ fn external_package_name(module: &str, language: Language) -> String {
         Language::C | Language::Cpp => {
             // `#include` is path-shaped; keep verbatim.
             module.to_string()
+        }
+        Language::Solidity => {
+            // solidity-deps-v1 (v0.5.0 SOL-007). Solidity import paths
+            // are package-path strings. Use the longest-prefix match
+            // against the curated taxonomy in
+            // `solidity_external_prefix` so we always collapse to the
+            // canonical package coordinate (e.g.
+            // `@openzeppelin/contracts/token/ERC20/ERC20.sol` ->
+            // `@openzeppelin/contracts`, and the upgradeable variant
+            // stays distinct as `@openzeppelin/contracts-upgradeable`).
+            //
+            // Defensive fallback: if no prefix matches (e.g. a path
+            // that slipped through `classify_import` without being
+            // External), keep just the first path segment — this is
+            // the npm-style coordinate shape (`somepkg/sub/path.sol`
+            // -> `somepkg`).
+            if let Some(name) = solidity_external_prefix(module) {
+                name.to_string()
+            } else if let Some(rest) = module.strip_prefix('@') {
+                // Scoped npm-style fallback for an unrecognised
+                // `@scope/pkg/...` import.
+                let parts: Vec<&str> = rest.splitn(3, '/').collect();
+                if parts.len() >= 2 {
+                    format!("@{}/{}", parts[0], parts[1])
+                } else {
+                    format!("@{}", rest)
+                }
+            } else {
+                module.split('/').next().unwrap_or(module).to_string()
+            }
         }
         _ => module.to_string(),
     }

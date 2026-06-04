@@ -59,11 +59,13 @@ pub fn extract_imports_from_tree(
         Language::Lua | Language::Luau => extract_lua_imports(&root, source),
         Language::Kotlin => extract_kotlin_imports(&root, source),
         Language::Swift => extract_swift_imports(&root, source),
-        // v0.5.0 SOL-001 Solidity foundation. Import extraction handles
-        // all 5 Solidity import forms (plain / `as` alias / `* as` /
-        // selective `{ X, Y }` / selective with alias) per oracle. The
-        // adapter lands in SOL-002.
-        Language::Solidity => Vec::new(),
+        // v0.5.0 SOL-007 solidity-deps-v1: extract all 5 Solidity
+        // import forms (plain / `as` alias / `* as` /
+        // selective `{ X, Y }` / selective with alias). Source path
+        // comes from the `source` field (a `string` literal); aliases
+        // are surfaced via `alias` (whole-file `as` form) or `names`
+        // (selective form, including `X as Y`).
+        Language::Solidity => extract_solidity_imports(&root, source),
     };
 
     Ok(imports)
@@ -1923,6 +1925,177 @@ fn parse_swift_import_text(raw: &str) -> Option<ImportInfo> {
         is_from: None,
         alias: None,
                     line: 0,
+    })
+}
+
+// =============================================================================
+// Solidity imports
+// =============================================================================
+//
+// solidity-deps-v1 (v0.5.0 SOL-007): Solidity `import_directive`
+// recognition. tree-sitter-solidity 1.2.13 exposes the AST shape:
+//
+//   import_directive
+//     ├─ "import"                  (keyword)
+//     ├─ source: string            (path literal, REQUIRED)
+//     │    └─ "<path>"             (one leaf `string` token, quoted)
+//     ├─ alias?: identifier        (whole-file `as <X>` form)
+//     └─ import_name?: identifier  (selective `{ A, B }` names; repeated)
+//
+// Solidity has 5 import forms, all mapped to one `import_directive`:
+//   1. `import "./Foo.sol";`
+//   2. `import "./Foo.sol" as Foo;`
+//   3. `import * as Foo from "./Foo.sol";`
+//   4. `import { A, B } from "./Foo.sol";`
+//   5. `import { A as Alias, B } from "./Foo.sol";`
+//
+// We surface:
+//   * `module` -> the unquoted source path (used by the deps classifier
+//     for Internal vs External routing).
+//   * `alias`  -> the whole-file alias if present (forms 2 and 3).
+//   * `names`  -> the selective name list (form 4 and 5). Renames in
+//     form 5 are surfaced as `Original as Alias` to preserve the
+//     original-name link required by `importers` / surface graph.
+//   * `is_from` -> `None`; Solidity has no static-vs-dynamic distinction
+//     that maps onto this field.
+//   * `line`   -> 1-indexed line of the `import_directive`.
+
+fn extract_solidity_imports(node: &Node, source: &str) -> Vec<ImportInfo> {
+    let mut imports = Vec::new();
+    extract_solidity_imports_recursive(node, source, &mut imports);
+    imports
+}
+
+fn extract_solidity_imports_recursive(node: &Node, source: &str, imports: &mut Vec<ImportInfo>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "import_directive" {
+            if let Some(info) = parse_solidity_import_directive(&child, source) {
+                imports.push(info);
+            }
+        } else {
+            extract_solidity_imports_recursive(&child, source, imports);
+        }
+    }
+}
+
+/// Parse a single `import_directive` node into an `ImportInfo`.
+///
+/// Uses the grammar field names where possible (`source`) and falls
+/// back to a child-walk for repeated fields (`alias`, `import_name`)
+/// that tree-sitter exposes as `child_by_field_name` returning only
+/// the first match. For renames inside a selective import
+/// (`{ Original as Alias }`), the grammar emits paired
+/// `import_name` + `alias` children in source order — we walk them
+/// pairwise and emit `Original as Alias` so the `as`-link survives
+/// into downstream `names` consumers.
+fn parse_solidity_import_directive(node: &Node, source: &str) -> Option<ImportInfo> {
+    // Extract the source path (REQUIRED per grammar). The `source`
+    // field points at a `string` node whose text includes the quotes.
+    let source_node = node.child_by_field_name("source")?;
+    let module = get_string_content(&source_node, source);
+    if module.is_empty() {
+        return None;
+    }
+
+    // Collect import_name + alias children in source order so we can
+    // pair them up for the selective `{ A as Alias }` form.
+    let mut import_names: Vec<(usize, String)> = Vec::new(); // (byte_offset, text)
+    let mut aliases: Vec<(usize, String)> = Vec::new();
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => {
+                // tree-sitter-solidity 1.2.13 surfaces both `alias` and
+                // `import_name` children as bare `identifier` nodes.
+                // Disambiguate by checking which field the node belongs
+                // to (parent's field name).
+                //
+                // The simplest robust check: re-query the parent via
+                // child_by_field_name on each field and compare
+                // identity. We instead use the byte range pairing
+                // below.
+                let text = get_node_text(&child, source);
+                let off = child.start_byte();
+                // Heuristic — we'll classify after the loop using
+                // the parent field name iteration.
+                // For now, push to both lists with a marker; resolve
+                // after the loop.
+                let _ = (text, off);
+            }
+            _ => {}
+        }
+    }
+
+    // Resolve `alias` field children — tree-sitter exposes this as
+    // a `multiple: true` field, so we iterate child indices and
+    // match by field name using `field_name_for_child`.
+    let mut walk = node.walk();
+    let mut idx = 0u32;
+    for child in node.children(&mut walk) {
+        if let Some(field_name) = node.field_name_for_child(idx) {
+            match field_name {
+                "alias" => {
+                    aliases.push((child.start_byte(), get_node_text(&child, source)));
+                }
+                "import_name" => {
+                    import_names.push((child.start_byte(), get_node_text(&child, source)));
+                }
+                _ => {}
+            }
+        }
+        idx += 1;
+    }
+
+    // Sort by byte offset so we preserve source order.
+    import_names.sort_by_key(|(off, _)| *off);
+    aliases.sort_by_key(|(off, _)| *off);
+
+    let line = node_line(node);
+
+    // Form 4 / 5: selective import — at least one `import_name`.
+    if !import_names.is_empty() {
+        // Pair each import_name with the alias whose byte offset
+        // immediately follows it (and precedes the next import_name).
+        // If `aliases.len() == import_names.len()`, that's form 5 with
+        // every name renamed; otherwise renames are partial.
+        let mut names: Vec<String> = Vec::new();
+        for (i, (name_off, name)) in import_names.iter().enumerate() {
+            let next_name_off = import_names
+                .get(i + 1)
+                .map(|(off, _)| *off)
+                .unwrap_or(usize::MAX);
+            let alias = aliases
+                .iter()
+                .find(|(off, _)| *off > *name_off && *off < next_name_off)
+                .map(|(_, a)| a.clone());
+            if let Some(a) = alias {
+                names.push(format!("{} as {}", name, a));
+            } else {
+                names.push(name.clone());
+            }
+        }
+        return Some(ImportInfo {
+            module,
+            names,
+            is_from: None,
+            alias: None,
+            line,
+        });
+    }
+
+    // Form 2 / 3: whole-file alias — exactly one `alias` and no
+    // `import_name`. (Form 3 `* as Bar from "./X"` parses with the
+    // same alias child on tree-sitter-solidity 1.2.13.)
+    let alias = aliases.first().map(|(_, a)| a.clone());
+
+    Some(ImportInfo {
+        module,
+        names: Vec::new(),
+        is_from: None,
+        alias,
+        line,
     })
 }
 
