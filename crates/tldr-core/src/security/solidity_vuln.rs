@@ -39,6 +39,58 @@ use crate::types::Language;
 // Public entry — invoked by scan_file_vulns when language == Solidity.
 // =============================================================================
 
+/// v0.5.0 SOL-014 M6: detector-specific human-readable message for each
+/// Solidity vuln type.
+///
+/// The CLI `VulnFinding.description` (rendered as `message` in
+/// SARIF/JSON) is populated from this string instead of the generic
+/// taint-style suffix `"… with unsanitized input"` which makes no sense
+/// for AST-pattern detectors that have no source/sink flow.
+///
+/// Messages are intentionally verbose so consumers (humans + LLMs) can
+/// reason about the finding without cross-referencing CWE/SWC tables.
+/// Each message:
+///   1. States the anti-pattern in one sentence,
+///   2. Names the security-impact / why it's dangerous, and
+///   3. Names the canonical remediation in passing.
+///
+/// Callers that need MORE detail should join with `get_remediation` for
+/// the full remediation text.
+pub fn solidity_finding_message(vuln_type: VulnType) -> &'static str {
+    match vuln_type {
+        VulnType::TxOrigin =>
+            "Use of tx.origin for authorization is unsafe; tx.origin refers to the externally-owned account that initiated the transaction chain, not the immediate caller, which makes the check vulnerable to phishing via intermediate contracts. Use msg.sender instead.",
+        VulnType::ShadowingState =>
+            "Local variable or parameter shadows a contract state variable; the local binding masks the storage variable inside the function body, silently breaking reads/writes that intended to refer to state. Rename the local to avoid shadowing.",
+        VulnType::Suicidal =>
+            "selfdestruct is callable without an access-control modifier or msg.sender guard, allowing an unauthorized caller to destroy the contract. Note that EIP-6780 changed selfdestruct's runtime semantics in Cancun (storage is no longer cleared, only the balance is forwarded), but the unguarded-public-callable pattern is still a hard-to-recover anti-pattern. Guard with onlyOwner / msg.sender == admin / equivalent.",
+        VulnType::UncheckedLowlevel =>
+            "Return value of a low-level call (.call / .send / .delegatecall) is discarded; failures of the external call will silently pass and subsequent code will proceed as if the call succeeded. Capture the boolean return and require(ok) before continuing.",
+        VulnType::LockedEther =>
+            "Contract accepts ether (via payable function, receive, fallback, or payable constructor) but provides no withdraw path (no .transfer / .send / .call{value:...} / selfdestruct call reachable from within the contract). Funds sent to this contract are permanently trapped.",
+        // Non-Solidity vuln types should never reach this dispatcher; we
+        // return an empty string rather than panicking so a misuse only
+        // surfaces as a generic CLI description (the existing fallback).
+        _ => "",
+    }
+}
+
+/// Whether a `VulnType` is one of the Solidity AST-pattern detectors
+/// implemented in this module. Used by the CLI mapping path to decide
+/// between the Solidity-specific message (above) and the canonical
+/// taint-style `"… with unsanitized input"` suffix used for the
+/// data-flow vuln types.
+pub fn is_solidity_vuln_type(vuln_type: VulnType) -> bool {
+    matches!(
+        vuln_type,
+        VulnType::TxOrigin
+            | VulnType::ShadowingState
+            | VulnType::Suicidal
+            | VulnType::UncheckedLowlevel
+            | VulnType::LockedEther
+    )
+}
+
 /// Run all Solidity AST-pattern detectors on `source` (already read by the
 /// caller) and return the per-file findings, filtered by `vuln_filter` when
 /// `Some`.
@@ -252,10 +304,30 @@ fn has_msg_sender_require_guard(node: &Node, source: &str) -> bool {
 }
 
 /// Whether the function decl has state mutability `payable`.
+///
+/// v0.5.0 SOL-014 M5: tree-sitter-solidity emits the `payable` mutability
+/// in two distinct shapes depending on the decl kind:
+///
+/// 1. **function_definition** / **fallback_receive_definition** wrap the
+///    keyword in a `state_mutability` node, e.g.
+///    `state_mutability: "payable" -> payable: "payable"`.
+/// 2. **constructor_definition** carries the keyword as a BARE child node
+///    of kind `"payable"` directly under the constructor (no
+///    `state_mutability` wrapper).
+///
+/// Pre-fix, this routine only matched shape (1), so a payable constructor
+/// was treated as non-payable and the locked-ether detector missed
+/// `constructor() public payable {}` shapes. Now we accept BOTH shapes.
 fn is_payable(node: &Node, source: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        // Shape (1): function / receive / fallback.
         if child.kind() == "state_mutability" && node_text(&child, source).trim() == "payable" {
+            return true;
+        }
+        // Shape (2): constructor — `payable` keyword is a direct child of
+        // the constructor_definition with no wrapper node.
+        if child.kind() == "payable" {
             return true;
         }
     }

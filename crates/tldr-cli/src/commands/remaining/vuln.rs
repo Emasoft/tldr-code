@@ -531,6 +531,14 @@ pub(super) fn is_natively_analyzed(lang: Language) -> bool {
             | Language::Luau
             | Language::Elixir
             | Language::Ocaml
+            // v0.5.0 SOL-014 M4: route `.sol` through autodetect so
+            // `tldr vuln <file>.sol` (no --lang) reaches the dedicated
+            // Solidity AST-pattern detectors in
+            // `solidity_vuln::scan_solidity_vulns`. The dispatch already
+            // exists at `tldr_core::security::vuln::scan_vulnerabilities`
+            // (matches Language::Solidity and forwards), so the only gate
+            // standing between autodetect and the detectors was this set.
+            | Language::Solidity
     )
 }
 
@@ -666,12 +674,28 @@ fn analyze_file(path: &Path) -> Result<Vec<VulnFinding>, RemainingError> {
                             },
                         ]
                     };
+                    // v0.5.0 SOL-014 M6: Solidity AST-pattern detectors
+                    // (tx-origin / shadowing-state / suicidal /
+                    // unchecked-lowlevel / locked-ether) have NO source-to-
+                    // sink flow, so the generic taint-style suffix
+                    // "… with unsanitized input" is semantically wrong for
+                    // them. Route Solidity vuln_types through the
+                    // detector-specific message in
+                    // `tldr_core::security::solidity_vuln::solidity_finding_message`,
+                    // and keep the existing taint-style format for the six
+                    // data-flow vuln_types (SqlInjection, Xss, etc.).
+                    let description: String = if tldr_core::security::solidity_vuln::is_solidity_vuln_type(f.vuln_type) {
+                        tldr_core::security::solidity_vuln::solidity_finding_message(f.vuln_type)
+                            .to_string()
+                    } else {
+                        format!("{} with unsanitized input", f.sink.sink_type)
+                    };
                     VulnFinding {
                         vuln_type,
                         severity,
                         cwe_id: f.cwe_id.unwrap_or_default(),
                         title: format!("{:?}", f.vuln_type),
-                        description: format!("{} with unsanitized input", f.sink.sink_type),
+                        description,
                         file: file_str,
                         line: f.sink.line,
                         column: 0,

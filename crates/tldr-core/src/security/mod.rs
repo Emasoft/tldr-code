@@ -12,8 +12,11 @@ pub mod ast_utils;
 pub mod secrets;
 // v0.5.0 SOL-011 solidity-vuln-v1: AST-pattern detectors for top-5 Solidity
 // vulnerabilities (tx.origin, shadowing-state, suicidal, unchecked-lowlevel,
-// locked-ether). Crate-internal — surfaced via `vuln::scan_file_vulns`.
-pub(crate) mod solidity_vuln;
+// locked-ether). Originally crate-internal; SOL-014 M6 promoted to `pub`
+// so the CLI mapping layer can read the per-detector finding messages
+// (`solidity_finding_message`, `is_solidity_vuln_type`) without re-importing
+// the message text on the CLI side.
+pub mod solidity_vuln;
 pub mod taint;
 pub mod vuln;
 
