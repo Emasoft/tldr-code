@@ -1793,6 +1793,36 @@ fn get_node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
 }
 
 /// Get the function body node.
+/// solidity-sol016-cluster-v1 M14: peel a Solidity `statement` wrapper.
+///
+/// The tree-sitter-solidity grammar wraps every concrete statement
+/// (expression_statement, if_statement, revert_statement, ...) inside a
+/// `statement` named node. The contracts extractor's per-language `kind`
+/// dispatch checks the concrete kind, so we must unwrap before
+/// inspecting. For all other languages, function-body children are
+/// already the concrete statement nodes and this helper is a no-op.
+fn unwrap_solidity_statement(node: Node<'_>) -> Node<'_> {
+    if node.kind() != "statement" {
+        return node;
+    }
+    // Solidity `statement` is required to have exactly one named child
+    // (the concrete statement). Walk named children; if exactly one
+    // exists, return it; else fall back to the wrapper to remain a
+    // no-op on grammar drift.
+    let mut cursor = node.walk();
+    let mut found: Option<Node<'_>> = None;
+    for child in node.children(&mut cursor) {
+        if !child.is_named() {
+            continue;
+        }
+        if found.is_some() {
+            return node;
+        }
+        found = Some(child);
+    }
+    found.unwrap_or(node)
+}
+
 fn get_function_body<'a>(func: Node<'a>, config: &LanguageConfig) -> Option<Node<'a>> {
     // Try the configured field name first
     if let Some(body) = func.child_by_field_name(config.func_body_field) {
@@ -1848,7 +1878,16 @@ fn extract_preconditions(
     };
 
     let mut cursor = body.walk();
-    for stmt in body.children(&mut cursor) {
+    for raw_stmt in body.children(&mut cursor) {
+        // solidity-sol016-cluster-v1 M14: Solidity wraps every concrete
+        // statement (expression_statement, if_statement, return_statement,
+        // revert_statement, ...) inside a `statement` named node. Peel
+        // that wrapper here so the downstream `kind` checks see the
+        // concrete statement kind. For other languages the wrapper does
+        // not exist; `unwrap_solidity_statement` is a no-op when there
+        // is exactly zero or more than one named child or the node kind
+        // is not `statement`.
+        let stmt = unwrap_solidity_statement(raw_stmt);
         let line = stmt.start_position().row as u32 + 1;
 
         // Skip lines already used for postconditions
@@ -1899,11 +1938,26 @@ fn extract_preconditions(
                 conditions.push(cond);
             }
         } else if config.has_assert_calls() && kind == "expression_statement" {
-            // Call expressions may be wrapped in expression_statement
+            // Call expressions may be wrapped in expression_statement.
+            // For Solidity the wrapping is two-deep:
+            //   expression_statement > expression > call_expression
+            // The walk below unwraps one extra `expression` layer when
+            // present.
             let mut inner = stmt.walk();
             for child in stmt.children(&mut inner) {
-                if config.is_call(child.kind()) {
-                    if let Some(cond) = precondition_from_assert_call(child, source, config) {
+                let candidate = if child.kind() == "expression" {
+                    // Solidity: peel the `expression` wrapper to find
+                    // the inner call_expression.
+                    let mut inner_cursor = child.walk();
+                    let found = child
+                        .children(&mut inner_cursor)
+                        .find(|c| config.is_call(c.kind()));
+                    found.unwrap_or(child)
+                } else {
+                    child
+                };
+                if config.is_call(candidate.kind()) {
+                    if let Some(cond) = precondition_from_assert_call(candidate, source, config) {
                         conditions.push(cond);
                     }
                 }
@@ -1919,6 +1973,8 @@ fn extract_preconditions(
 /// Pattern: `require(x >= 0)` -> precondition: `x >= 0` (Kotlin)
 /// Pattern: `precondition(x >= 0, "msg")` -> precondition: `x >= 0` (Swift)
 /// Pattern: `assert(x >= 0, "msg")` -> precondition: `x >= 0` (Luau)
+/// Pattern: `require(x >= 0, "Positive only")` -> precondition with
+///   variable=`x >= 0`, constraint=`"x >= 0: Positive only"` (Solidity).
 fn precondition_from_assert_call(
     call_node: Node,
     source: &[u8],
@@ -1938,7 +1994,66 @@ fn precondition_from_assert_call(
         return None;
     }
 
-    Some(Condition::high(arg_text.clone(), arg_text, line))
+    // solidity-sol016-cluster-v1 M14: when a second string-literal
+    // argument is present (Solidity `require(cond, "msg")`), splice
+    // the message text into the constraint so the human-readable
+    // reason is preserved on the precondition surface.
+    let message = extract_second_call_string_argument(call_node, source);
+    let constraint = match message {
+        Some(msg) if !msg.is_empty() => format!("{}: {}", arg_text, msg),
+        _ => arg_text.clone(),
+    };
+
+    Some(Condition::high(arg_text, constraint, line))
+}
+
+/// solidity-sol016-cluster-v1 M14: extract the second argument's
+/// string-literal text from a call expression, with surrounding quotes
+/// stripped. Returns `None` when the second argument is absent or is
+/// not a string literal.
+fn extract_second_call_string_argument(call_node: Node, source: &[u8]) -> Option<String> {
+    // Solidity: call_expression has direct `call_argument` named
+    // children. Walk and return the second one's inner literal text.
+    let mut cursor = call_node.walk();
+    let mut idx = 0;
+    for child in call_node.children(&mut cursor) {
+        if child.kind() == "call_argument" {
+            idx += 1;
+            if idx == 2 {
+                // Walk the call_argument's children for a string-shaped node.
+                let mut inner = child.walk();
+                for inner_child in child.children(&mut inner) {
+                    let txt = get_node_text(inner_child, source);
+                    if inner_child.kind() == "string"
+                        || inner_child.kind() == "string_literal"
+                        || (txt.starts_with('"') && txt.ends_with('"'))
+                        || (txt.starts_with('\'') && txt.ends_with('\''))
+                    {
+                        return Some(
+                            txt.trim_matches('"')
+                                .trim_matches('\'')
+                                .to_string(),
+                        );
+                    }
+                }
+                // Otherwise: try the call_argument text directly.
+                let txt = get_node_text(child, source);
+                let trimmed = txt.trim();
+                if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+                    || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+                {
+                    return Some(
+                        trimmed
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string(),
+                    );
+                }
+                return None;
+            }
+        }
+    }
+    None
 }
 
 /// Extract the name of a function being called.
@@ -1979,6 +2094,25 @@ fn extract_first_call_argument(call_node: Node, source: &[u8]) -> Option<String>
             if kind != "(" && kind != ")" && kind != "," && kind != "{" && kind != "}" {
                 return Some(get_node_text(arg, source).to_string());
             }
+        }
+    }
+
+    // solidity-sol016-cluster-v1 M14: Solidity call_expression has
+    // direct named `call_argument` children (not a wrapper arguments
+    // node). Walk the call_node's children and return the first
+    // `call_argument`'s inner expression.
+    let mut cursor = call_node.walk();
+    for child in call_node.children(&mut cursor) {
+        if child.kind() == "call_argument" {
+            // call_argument wraps an `expression` named child.
+            let mut inner = child.walk();
+            for inner_child in child.children(&mut inner) {
+                if inner_child.is_named() {
+                    return Some(get_node_text(inner_child, source).to_string());
+                }
+            }
+            // Fallback to raw text of the call_argument
+            return Some(get_node_text(child, source).to_string());
         }
     }
 
@@ -3366,6 +3500,110 @@ fn extract_natspec_params(
         };
         postconditions.push(Condition::low(var, constraint, line));
     }
+
+    // solidity-sol016-cluster-v1 M14: parse "Requirements:" /
+    // "Conditions:" sections nested inside `@notice` / `@dev` bodies.
+    // Each bulleted line ("- ..." or "* ...") becomes a low-confidence
+    // precondition with variable=`"requirement"` so callers can
+    // distinguish from `@param`-derived entries.
+    for body in [doc.notice.as_deref(), doc.dev.as_deref()].iter().flatten() {
+        for bullet in extract_natspec_requirement_bullets(body) {
+            preconditions.push(Condition::low(
+                "requirement",
+                bullet,
+                line,
+            ));
+        }
+    }
+}
+
+/// solidity-sol016-cluster-v1 M14: extract bullet-listed requirements
+/// from a NatSpec `@notice`/`@dev` body.
+///
+/// Recognises a "Requirements:" or "Conditions:" marker (case
+/// insensitive) and collects every following whitespace-separated
+/// bullet (`- text`, `* text`, `• text`) until the next non-bullet
+/// line. NatSpec normalisation already concatenates continuation lines
+/// with single spaces, so the marker and bullets appear here as a flat
+/// string. We split on the marker then look for bullet shapes.
+fn extract_natspec_requirement_bullets(body: &str) -> Vec<String> {
+    let lower = body.to_lowercase();
+    let marker_idx = lower
+        .find("requirements:")
+        .or_else(|| lower.find("conditions:"));
+    let Some(idx) = marker_idx else {
+        return Vec::new();
+    };
+    // Slice the tail starting AFTER the marker (which is 13 or 11 chars).
+    let marker_len = if lower[idx..].starts_with("requirements:") {
+        "requirements:".len()
+    } else {
+        "conditions:".len()
+    };
+    let tail = &body[idx + marker_len..];
+
+    let mut bullets = Vec::new();
+    // Bullets can be separated by " - " or " * " or " • " after
+    // NatSpec normalisation collapsed line breaks into single spaces.
+    // Split on whitespace boundaries followed by a bullet marker.
+    let mut remaining = tail.trim_start();
+    while let Some(b_idx) = first_bullet_index(remaining) {
+        // Trim everything before the bullet marker (free-form prose).
+        remaining = &remaining[b_idx..];
+        // Strip the leading bullet character ("- ", "* ", "• ").
+        let after_marker = remaining
+            .trim_start_matches('-')
+            .trim_start_matches('*')
+            .trim_start_matches('•')
+            .trim_start();
+        // Find the next bullet (or end of string).
+        let next = first_bullet_index(after_marker).unwrap_or(after_marker.len());
+        let bullet_text = after_marker[..next].trim();
+        if !bullet_text.is_empty() {
+            bullets.push(bullet_text.to_string());
+        }
+        if next >= after_marker.len() {
+            break;
+        }
+        remaining = &after_marker[next..];
+    }
+    bullets
+}
+
+/// Find the byte index of the next bullet marker (`-`, `*`, or `•`)
+/// that is either at the start of `s` or follows whitespace. Returns
+/// `None` if no such marker exists.
+fn first_bullet_index(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'-' || *b == b'*' {
+            // Must be at start or preceded by whitespace.
+            if i == 0 || bytes[i - 1].is_ascii_whitespace() {
+                // Must be followed by whitespace (avoid matching
+                // negation operators like `-1`).
+                if bytes
+                    .get(i + 1)
+                    .copied()
+                    .is_some_and(|c| c.is_ascii_whitespace())
+                {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    // Also try the UTF-8 bullet character `•` (E2 80 A2).
+    if let Some(idx) = s.find('•') {
+        // Must be at start or preceded by whitespace.
+        let before_ok = idx == 0
+            || s[..idx]
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_whitespace());
+        if before_ok {
+            return Some(idx);
+        }
+    }
+    None
 }
 
 /// Extract a Python docstring from a function definition.

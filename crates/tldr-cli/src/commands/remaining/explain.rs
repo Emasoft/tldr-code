@@ -688,6 +688,27 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     // Extract docstring
     sig.docstring = extract_docstring(func_node, source);
 
+    // solidity-sol016-cluster-v1 M17: For Solidity, prefer the NatSpec
+    // `@notice` tag (user-facing description) attached to the function
+    // declaration as the docstring default. Falls back to the previous
+    // behaviour (the body-leading expression-string heuristic, which
+    // Solidity does not use) so the JSON surface is empty when no
+    // NatSpec is present — matching the existing Solidity behaviour.
+    if matches!(language, Language::Solidity) {
+        if let Ok(source_str) = std::str::from_utf8(source) {
+            if let Some(natspec_text) =
+                tldr_core::ast::extract::collect_solidity_natspec_text(&func_node, source_str)
+            {
+                let doc = tldr_core::ast::extract::parse_solidity_natspec(&natspec_text);
+                if let Some(notice) = doc.notice {
+                    if !notice.is_empty() {
+                        sig.docstring = Some(notice);
+                    }
+                }
+            }
+        }
+    }
+
     sig
 }
 

@@ -693,12 +693,83 @@ pub fn extract_call_name(node: &Node, source: &[u8], language: Language) -> Opti
         Language::Lua | Language::Luau => extract_call_name_lua(node, source),
         Language::Elixir => extract_call_name_elixir(node, source),
         Language::Ocaml => extract_call_name_ocaml(node, source),
-        // v0.5.0 SOL-001 Solidity foundation. Call-name extraction
-        // lands in SOL-003 (security/vuln integration). Returning None
-        // is the safe stub — taint analysis treats it as an unknown
-        // callee and skips it.
-        Language::Solidity => None,
+        // solidity-sol016-cluster-v1 M16: Solidity `call_expression`
+        // exposes the callee under the `function` field. The function
+        // child is typically a `member_expression` (`msg.sender.call`)
+        // or an `expression > <identifier>` wrapper. We return the
+        // full textual form so downstream code can split on `.` to
+        // recover the receiver / field pair (e.g.,
+        // `msg.sender.call` → `("msg.sender", "call")`).
+        Language::Solidity => extract_call_name_solidity(node, source),
     }
+}
+
+/// solidity-sol016-cluster-v1 M16: extract the textual call-name from a
+/// Solidity `call_expression`.
+///
+/// The grammar puts the callee under the `function` field. Solidity
+/// wraps most operand positions in a redundant `expression` named
+/// node; we peel that to surface the underlying identifier or
+/// member-expression text.
+fn extract_call_name_solidity(node: &Node, source: &[u8]) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    // Peel a single `expression` wrapper if present.
+    let inner = if func.kind() == "expression" {
+        let mut cursor = func.walk();
+        let found = func.children(&mut cursor).find(|c| c.is_named());
+        found.unwrap_or(func)
+    } else {
+        func
+    };
+    let text = node_text(&inner, source);
+    // Solidity allows `obj.call{value: x}(...)` — the call options
+    // (`{value: x}`) appear inside the function-position text. Strip
+    // any `{...}` segment so the name reduces to the dotted member
+    // access (`obj.call`) which is what the downstream `rsplit('.')`
+    // pattern matcher expects.
+    let cleaned = strip_solidity_call_options(text);
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Remove `{key: value, ...}` call-options segments from a Solidity
+/// callee text. Returns a trimmed owned String. The segment is always
+/// a balanced brace pair; we strip the FIRST such segment found
+/// (multiple option blocks are not idiomatic but the strip is
+/// idempotent w.r.t. successive calls).
+fn strip_solidity_call_options(text: &str) -> String {
+    let bytes = text.as_bytes();
+    if let Some(open) = text.find('{') {
+        // Walk forward to find the matching close brace.
+        let mut depth = 0i32;
+        let mut close = None;
+        for (i, &b) in bytes.iter().enumerate().skip(open) {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(close_idx) = close {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..open]);
+            out.push_str(&text[close_idx + 1..]);
+            return out.trim().to_string();
+        }
+    }
+    text.trim().to_string()
 }
 
 fn extract_call_name_python(node: &Node, source: &[u8]) -> Option<String> {

@@ -3996,10 +3996,75 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
     }
 }
 
-// v0.5.0 SOL-001 Solidity foundation: empty AST banks. SOL-005 will
-// populate these with the Top-5 detector patterns per oracle research.
-static SOLIDITY_AST_SOURCES: &[AstSourcePattern] = &[];
-static SOLIDITY_AST_SINKS: &[AstSinkPattern] = &[];
+// solidity-sol016-cluster-v1 M16: Solidity AST sources & sinks.
+//
+// Sources (where tainted data enters):
+//   - `msg.sender`, `msg.value`, `msg.data`, `msg.sig`
+//     (caller-controlled fields on the implicit `msg` global)
+//   - `tx.origin`, `tx.gasprice`
+//     (transaction-root EOA fields — also caller-controlled)
+//   - Return values of low-level external calls are handled separately
+//     via the function-parameter / external-call pass; we keep them
+//     out of the substring-prefilter to avoid degrading the fast path
+//     on every Solidity file.
+//
+// Sinks (dangerous operations on tainted data):
+//   - `.transfer(...)`, `.send(...)`, `.call(...)`, `.delegatecall(...)`,
+//     `.staticcall(...)` — value-transfer / code-execution sinks via
+//     wildcard receiver member access.
+//   - `selfdestruct(...)`, `suicide(...)` — destruction sinks via
+//     call_names.
+//
+// Source/sink type mapping:
+//   - msg.sender, tx.origin, msg.* → UserInput (no closer match in the
+//     existing TaintSourceType enum; semantically these are the
+//     analogue of HTTP-request fields for an on-chain caller).
+//   - `.transfer` / `.send` / `selfdestruct` / `.call` family → ShellExec
+//     (closest existing TaintSinkType: an operation that can be
+//     hijacked by attacker-controlled data, with destruction or
+//     arbitrary-code-execution semantics).
+static SOLIDITY_AST_SOURCES: &[AstSourcePattern] = &[
+    AstSourcePattern {
+        call_names: &[],
+        member_patterns: &[
+            ("msg", "sender"),
+            ("msg", "value"),
+            ("msg", "data"),
+            ("msg", "sig"),
+        ],
+        source_type: TaintSourceType::UserInput,
+    },
+    AstSourcePattern {
+        call_names: &[],
+        member_patterns: &[("tx", "origin"), ("tx", "gasprice")],
+        source_type: TaintSourceType::UserInput,
+    },
+];
+
+static SOLIDITY_AST_SINKS: &[AstSinkPattern] = &[
+    // Value-transfer sinks: any-receiver.transfer / .send / .call /
+    // .delegatecall / .staticcall. The wildcard receiver `*` matches
+    // every member-access target so `msg.sender.call{value:...}(...)`
+    // and `payable(to).transfer(...)` both fire.
+    AstSinkPattern {
+        call_names: &[],
+        member_patterns: &[
+            ("*", "transfer"),
+            ("*", "send"),
+            ("*", "call"),
+            ("*", "delegatecall"),
+            ("*", "staticcall"),
+        ],
+        sink_type: TaintSinkType::ShellExec,
+    },
+    // Destruction sinks: bare-call selfdestruct / legacy suicide.
+    AstSinkPattern {
+        call_names: &["selfdestruct", "suicide"],
+        member_patterns: &[],
+        sink_type: TaintSinkType::ShellExec,
+    },
+];
+
 static SOLIDITY_AST_SANITIZERS: &[AstSanitizerPattern] = &[];
 
 // ---------------------------------------------------------------------------
@@ -4702,6 +4767,236 @@ fn extract_assignment_rhs_ident(
 /// Unlike regex-based detection, this correctly skips matches inside
 /// comments and string literals.
 ///
+/// solidity-sol016-cluster-v1 M16: detect Solidity reentrancy-shape
+/// sinks.
+///
+/// The reentrancy anti-pattern is: an external call (`.call{value:}`,
+/// `.transfer`, `.send`, `.delegatecall`, ...) is invoked, and AFTER the
+/// call returns, the function writes to a state variable. Because the
+/// external callee can re-enter via a fallback / receive function
+/// before the state write commits, the contract's invariants can be
+/// violated. The classic case is the "withdraw" pattern: send ether to
+/// `msg.sender` then decrement `balances[msg.sender]`.
+///
+/// This helper walks the Solidity AST rooted at `root` for each
+/// function-shaped node, finds the FIRST external-call line per
+/// function, then emits a synthetic [`TaintSink`] (sink_type:
+/// ShellExec, var: the state-variable name, statement:
+/// `"post-external-call write: <code>"`) for every subsequent state
+/// write within the same function. The existing call/transfer/etc.
+/// sinks are already produced by `detect_sinks_ast`; the existing
+/// `existing_sinks` set is consulted to avoid duplicate emission for
+/// lines that the canonical pass already covered.
+///
+/// State writes recognised:
+///   - `assignment_expression` (e.g. `balances[user] = 0`,
+///     `balances[user] -= amount`, `total = x`).
+///   - `update_expression` (`balances[user]++`).
+///
+/// External-call lines are identified by the same call_expression
+/// member-access shapes used by `SOLIDITY_AST_SINKS` (`.transfer`,
+/// `.send`, `.call`, `.delegatecall`, `.staticcall`) plus the
+/// destruction calls (`selfdestruct`, `suicide`).
+fn detect_solidity_reentrancy_sinks(
+    root: &tree_sitter::Node,
+    source: &[u8],
+    existing_sinks: &[TaintSink],
+) -> Vec<TaintSink> {
+    let mut out: Vec<TaintSink> = Vec::new();
+    let existing_lines: HashSet<u32> = existing_sinks.iter().map(|s| s.line).collect();
+
+    // Walk every function-shaped node. The Solidity grammar
+    // distinguishes `function_definition`, `constructor_definition`,
+    // `fallback_receive_definition`, and `modifier_definition`; we
+    // scan all of them.
+    let function_kinds: &[&str] = &[
+        "function_definition",
+        "constructor_definition",
+        "fallback_receive_definition",
+        "modifier_definition",
+    ];
+    let mut funcs: Vec<tree_sitter::Node> = Vec::new();
+    collect_descendants_by_kind(*root, function_kinds, &mut funcs);
+
+    for func in &funcs {
+        // Locate the function's body. The grammar uses field `body`
+        // pointing at a `function_body` node containing `statement`
+        // children.
+        let body = match func.child_by_field_name("body") {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Find the FIRST external-call line in this function. We only
+        // care about the EARLIEST call because every later state
+        // write within the function is then post-external-call.
+        let mut first_ext_call_line: Option<u32> = None;
+        let mut ext_call_lines: Vec<u32> = Vec::new();
+        collect_solidity_external_call_lines(body, source, &mut ext_call_lines);
+        if let Some(min_line) = ext_call_lines.iter().min().copied() {
+            first_ext_call_line = Some(min_line);
+        }
+        let Some(call_line) = first_ext_call_line else {
+            continue;
+        };
+
+        // Collect every state-write line after the call.
+        let mut writes: Vec<(u32, String, String)> = Vec::new();
+        collect_solidity_state_writes(body, source, call_line, &mut writes);
+
+        for (write_line, var_name, stmt_text) in writes {
+            if existing_lines.contains(&write_line) {
+                // Already emitted by canonical pass; avoid duplicate.
+                continue;
+            }
+            let note = format!("post-external-call write: {}", stmt_text.trim());
+            out.push(TaintSink {
+                var: var_name,
+                line: write_line,
+                sink_type: TaintSinkType::ShellExec,
+                tainted: false,
+                statement: Some(note),
+            });
+        }
+    }
+    out
+}
+
+/// Recursively collect every descendant of `root` whose `kind()` is
+/// contained in `kinds`. Used by the Solidity reentrancy detector to
+/// enumerate function-shaped nodes.
+fn collect_descendants_by_kind<'a>(
+    root: tree_sitter::Node<'a>,
+    kinds: &[&str],
+    out: &mut Vec<tree_sitter::Node<'a>>,
+) {
+    if kinds.contains(&root.kind()) {
+        out.push(root);
+    }
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        collect_descendants_by_kind(child, kinds, out);
+    }
+}
+
+/// Walk `body` (a Solidity `function_body` or other compound) and push
+/// the source line of every external-call shape onto `out`.
+fn collect_solidity_external_call_lines(
+    body: tree_sitter::Node<'_>,
+    source: &[u8],
+    out: &mut Vec<u32>,
+) {
+    let mut stack = vec![body];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "call_expression" {
+            // Inspect the call's function — is it one of the
+            // member-access call shapes (.transfer/.send/.call/...)?
+            // or one of the destruction bare-calls (selfdestruct,
+            // suicide)?
+            if let Some(func_child) = node.child_by_field_name("function") {
+                let func_txt = source[func_child.byte_range()].to_vec();
+                let func_str = String::from_utf8_lossy(&func_txt);
+                if is_solidity_external_call_name(&func_str) {
+                    out.push(node.start_position().row as u32 + 1);
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+/// Return true if `name` is the function-position text of an external
+/// call shape (`*.transfer`, `*.send`, `*.call`, `*.delegatecall`,
+/// `*.staticcall`, `selfdestruct`, `suicide`). The check is anchored
+/// on the trailing identifier so any receiver — including
+/// `payable(to)`, `msg.sender`, `address(this)`, ... — is accepted.
+fn is_solidity_external_call_name(name: &str) -> bool {
+    // Solidity call-options may embed a `{...}` segment in the
+    // function-position text (e.g., `msg.sender.call{value: x}`).
+    // Strip everything from the first `{` onward so the trailing
+    // identifier check sees `msg.sender.call` not `msg.sender.call{value: x}`.
+    let cleaned = name.split('{').next().unwrap_or(name).trim();
+    // Strip `.value(...)` / `.gas(...)` qualifier suffixes (legacy
+    // Solidity syntax before `{value:}`).
+    let cleaned = cleaned
+        .split(".value(")
+        .next()
+        .unwrap_or(cleaned)
+        .split(".gas(")
+        .next()
+        .unwrap_or(cleaned)
+        .trim();
+    let trail = cleaned.rsplit('.').next().unwrap_or("");
+    matches!(
+        trail,
+        "transfer" | "send" | "call" | "delegatecall" | "staticcall"
+    ) || cleaned == "selfdestruct"
+        || cleaned == "suicide"
+}
+
+/// Walk `body` for state-variable writes that occur AFTER
+/// `call_line`. Each write is recorded as `(line, var, statement
+/// text)`. A "state write" is any `assignment_expression` or
+/// `update_expression` whose left-hand side references either a bare
+/// identifier (could be a state variable) or a subscript /
+/// member-access (`balances[msg.sender]`, `this.total`).
+fn collect_solidity_state_writes(
+    body: tree_sitter::Node<'_>,
+    source: &[u8],
+    call_line: u32,
+    out: &mut Vec<(u32, String, String)>,
+) {
+    let mut stack = vec![body];
+    while let Some(node) = stack.pop() {
+        let kind = node.kind();
+        let line = node.start_position().row as u32 + 1;
+        let is_write_kind = matches!(
+            kind,
+            "assignment_expression" | "augmented_assignment_expression" | "update_expression"
+        );
+        if line > call_line && is_write_kind {
+            // LHS is either field `left` or the first named child.
+            let lhs = node.child_by_field_name("left").or_else(|| {
+                let mut named_cursor = node.walk();
+                let found = node
+                    .children(&mut named_cursor)
+                    .find(|c| c.is_named());
+                found
+            });
+            if let Some(lhs_node) = lhs {
+                let lhs_text = String::from_utf8_lossy(&source[lhs_node.byte_range()]).to_string();
+                let var_name = solidity_extract_lhs_var(&lhs_text);
+                let stmt_text =
+                    String::from_utf8_lossy(&source[node.byte_range()]).to_string();
+                out.push((line, var_name, stmt_text));
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+/// Reduce a LHS expression text to a representative variable name.
+///
+/// - `balances[msg.sender]` → `balances`
+/// - `this.total` → `total`
+/// - `total` → `total`
+fn solidity_extract_lhs_var(lhs: &str) -> String {
+    // Strip subscript: `name[...]` → `name`.
+    let stripped = lhs.split('[').next().unwrap_or(lhs).trim();
+    // Strip `this.` prefix.
+    let cleaned = stripped.trim_start_matches("this.");
+    // Take the leading identifier from a chained access like
+    // `foo.bar`. We want the FIRST segment so a state-var named
+    // `balances` is captured even when accessed via `balances.length`.
+    cleaned.split('.').next().unwrap_or(cleaned).to_string()
+}
+
 /// # Arguments
 /// * `root` - Root node of the function/file to analyze
 /// * `source` - Source code bytes
@@ -5490,7 +5785,18 @@ pub fn compute_taint_with_tree(
         let root = tree.root_node();
 
         let all_ast_sources = detect_sources_ast(&root, src, language, None);
-        let all_ast_sinks = detect_sinks_ast(&root, src, language, None);
+        let mut all_ast_sinks = detect_sinks_ast(&root, src, language, None);
+
+        // solidity-sol016-cluster-v1 M16: post-external-call write
+        // reentrancy detection. After collecting the canonical AST
+        // sinks, scan the Solidity tree for state-variable assignments
+        // that occur AFTER an external call within the same function.
+        // Each such write is emitted as a sink with statement note
+        // `post-external-call write` so JSON consumers can distinguish
+        // a reentrancy-shaped write from any other detected sink.
+        if language == Language::Solidity {
+            all_ast_sinks.extend(detect_solidity_reentrancy_sinks(&root, src, &all_ast_sinks));
+        }
 
         // Index AST results by line for fast lookup
         let mut ast_sources_by_line: HashMap<u32, Vec<TaintSource>> = HashMap::new();
@@ -5693,7 +5999,26 @@ pub fn compute_taint_with_tree(
         result.convergence = Some("iteration_limit_reached".to_string());
     }
 
-    result.tainted_vars = tainted.clone();
+    // solidity-sol016-cluster-v1 M15: strip any `_<digits>` SSA-version
+    // suffix from variable names before they are emitted on the
+    // `tainted_vars` JSON surface. Under the canonical path this is a
+    // no-op because the worklist already uses the bare `n.variable`
+    // name; the strip step is defensive against grammar/SSA frontend
+    // drift that could let a formatted name (`x_1`, `x_2`, ...) leak
+    // through (especially on Solidity which has its own SSA frontend
+    // per solidity-dfg-ssa-v1). The strip is applied uniformly across
+    // all languages so the JSON surface is consistent.
+    let stripped: HashMap<usize, HashSet<String>> = tainted
+        .iter()
+        .map(|(block, vars)| {
+            let cleaned: HashSet<String> = vars
+                .iter()
+                .map(|v| strip_ssa_version_suffix(v))
+                .collect();
+            (*block, cleaned)
+        })
+        .collect();
+    result.tainted_vars = stripped;
 
     // Phase 5: Detect vulnerabilities
     for sink in &mut result.sinks {
@@ -6208,6 +6533,25 @@ struct SsaPropagateCtx<'a> {
 /// renaming state's `next_id` starts at 1, with `0` reserved for the
 /// "undefined" marker), but `ssa.ssa_names` is a 0-indexed `Vec` sorted
 /// by id. Direct indexing via `ssa_names.get(id.0 as usize)` produces
+/// solidity-sol016-cluster-v1 M15: strip a trailing `_<digits>` SSA
+/// version suffix from a variable name.
+///
+/// Defensive normalisation applied to the `tainted_vars` JSON surface so
+/// downstream consumers always see clean identifiers (e.g. `"x"`
+/// instead of `"x_1"`, `"x_2"`). When the trailing segment after the
+/// last underscore is not entirely digits, or when there is no
+/// underscore at all, the input is returned unchanged. The strip is
+/// idempotent.
+fn strip_ssa_version_suffix(name: &str) -> String {
+    if let Some(idx) = name.rfind('_') {
+        let tail = &name[idx + 1..];
+        if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) {
+            return name[..idx].to_string();
+        }
+    }
+    name.to_string()
+}
+
 /// an off-by-one error that silently returned the wrong SsaName and
 /// broke source-seeding / use-checking throughout the SSA-aware taint
 /// propagation. This helper performs a correct id-based lookup.
