@@ -1760,8 +1760,23 @@ pub fn extract_expressions_full_with_lang(
             std::collections::HashSet::new()
         };
 
-    // If we have source lines, use them for accurate expression parsing
+    // If we have source lines, use them for accurate expression parsing.
+    //
+    // CL-5 (cl5-available-v1): the text-based `parse_expression_from_line`
+    // splits on `BINARY_OPS` substrings and over-reads to the statement
+    // boundary, leaking `;`, `)`, `{`, `++`, `--` into operands (e.g.
+    // `"NULL) return NULL;"`, `"+;"`, `"addlen) return s;"`). When the
+    // language is known we instead derive every binary-expression operand
+    // from tree-sitter `binary_expression` operand child nodes via the
+    // AST extraction pass below (`extract_binary_exprs_from_ast`), which
+    // produces structurally-clean operands. The text parser only runs as
+    // a fallback when no language is available (`lang == None`), where no
+    // AST can be built. The uncertain-expression (function-call) detection
+    // is orthogonal — it never leaks operators — so it always runs when we
+    // have source lines.
     if let Some(lines) = source_lines {
+        let text_based_binary_extraction = lang.is_none();
+
         for (line_num, line_text) in lines.iter().enumerate() {
             let line = (line_num + 1) as u32; // 1-indexed
 
@@ -1782,7 +1797,17 @@ pub fn extract_expressions_full_with_lang(
                 continue;
             }
 
-            if let Some((left, op, right)) = parse_expression_from_line(line_text) {
+            // CL-5: only attempt text-based binary-expression extraction
+            // when no language is available for AST extraction. With a
+            // language, the AST pass below is authoritative and produces
+            // clean operands.
+            let parsed = if text_based_binary_extraction {
+                parse_expression_from_line(line_text)
+            } else {
+                None
+            };
+
+            if let Some((left, op, right)) = parsed {
                 // Validate operands from DFG
                 let refs_on_line: Vec<_> = dfg.refs.iter().filter(|r| r.line == line).collect();
 
@@ -1814,7 +1839,9 @@ pub fn extract_expressions_full_with_lang(
                 }
             } else {
                 // Check if this line was skipped because it contains a function call
-                // If so, collect it as an uncertain finding
+                // If so, collect it as an uncertain finding. This detection runs
+                // regardless of `lang` (it does not depend on operand text
+                // splitting and never leaks operators).
                 if let Some(uncertain) = detect_uncertain_expression(line_text, line as usize) {
                     // Only include if this line is within the function's CFG range
                     // (CLUSTER-M-009: strict — no nearest-block fallback)
