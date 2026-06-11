@@ -264,8 +264,176 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
                 .unwrap_or(target);
             import_basename == target_basename
         }
+        // cl9-importers-v1 (GH #79, v0.5.0 CL-9): PHP `use` directives
+        // capture the FQ namespace the AST extractor pinned, e.g.
+        // `Symfony\Component\Console\Command\Command`. The catch-all
+        // `_ => import_module == target` arm only matched the full FQ
+        // string, so a query for the class basename `Command` returned
+        // zero importers even though the project imports it everywhere.
+        //
+        // PHP namespaces are `\`-separated. Mirror the spellings that
+        // `index_php_module` registers in the deps resolver:
+        //   * full FQ namespace verbatim (`A\B\Command`)
+        //   * a sub-namespace suffix query (`B\Command` → `A\B\Command`)
+        //   * the bare class basename (`Command`)
+        // plus the reverse direction (FQ target matched by a shorter
+        // captured module), so the rule is symmetric like Python's.
+        Language::Php => {
+            if import_module == target {
+                return true;
+            }
+            // Normalise both sides on `\` and compare last segments /
+            // suffixes. A leading `\` (fully-qualified absolute form,
+            // `\App\Foo`) is cosmetic for matching purposes.
+            let import_norm = import_module.trim_start_matches('\\');
+            let target_norm = target.trim_start_matches('\\');
+            if import_norm == target_norm {
+                return true;
+            }
+            // Suffix match: target is a trailing namespace segment-run of
+            // the captured module. `B\Command` matches `A\B\Command`;
+            // `Command` matches `A\B\Command`.
+            if import_norm.ends_with(&format!("\\{}", target_norm)) {
+                return true;
+            }
+            // Reverse suffix: the captured module is a trailing run of a
+            // longer FQ target query (`A\B` matches a query for
+            // `Root\A\B`). Mirrors Python's bidirectional submodule rule.
+            if target_norm.ends_with(&format!("\\{}", import_norm)) {
+                return true;
+            }
+            false
+        }
+        // cl9-importers-v1 (GH #79, v0.5.0 CL-9): Solidity `import`
+        // directives capture the literal source path string the AST
+        // extractor pinned, e.g. `../utils/Context.sol` or
+        // `@openzeppelin/contracts/utils/Context.sol`. The exact-match-
+        // only fallback meant a query for the file basename `Context.sol`
+        // (or a relative spelling) returned zero importers.
+        //
+        // Solidity import paths are filesystem-relative `/`-separated
+        // strings. Mirror the spellings `index_solidity_module` /
+        // `resolve_solidity_import` accept in the deps resolver:
+        //   * the path verbatim (`../utils/Context.sol`)
+        //   * a trailing-path-segment suffix (`utils/Context.sol`)
+        //   * the bare leaf filename (`Context.sol`)
+        // Relative-prefix noise (`./`, `../`) is stripped from both sides
+        // before the suffix/leaf comparison so `./Context.sol`,
+        // `../utils/Context.sol`, and `Context.sol` all resolve.
+        Language::Solidity => path_module_matches(import_module, target),
+        // cl9-importers-v1 (GH #79, v0.5.0 CL-9): Lua/Luau `require()`
+        // calls capture either a dotted module path (`foo.bar`) or a
+        // filesystem-relative path (`./foo/bar`, `../foo/bar`). The
+        // exact-match-only fallback missed a basename / sub-path query.
+        // Mirror `index_lua_module`: normalise the dotted form to slashes
+        // and compare leaf names / suffixes. A `.lua`/`.luau` extension on
+        // either side is stripped so `foo/bar`, `foo.bar`, and `bar` all
+        // resolve to the same module.
+        Language::Lua | Language::Luau => {
+            if import_module == target {
+                return true;
+            }
+            // Lua's idiom maps dot-separated module paths to filesystem
+            // `/`-separated paths (`require("foo.bar")` ⇒ `foo/bar.lua`),
+            // so canonicalise dots to slashes on both sides first.
+            let import_norm = import_module.replace('.', "/");
+            let target_norm = target.replace('.', "/");
+            if import_norm == target_norm {
+                return true;
+            }
+            path_module_matches(&import_norm, &target_norm)
+        }
+        // cl9-importers-v1 (GH #79, v0.5.0 CL-9): Ruby `require` /
+        // `require_relative` calls capture the literal path string the AST
+        // extractor pinned, e.g. `rubocop/server`, `../../lsp/server`, or
+        // `rubocop/cop/util`. The exact-match-only fallback meant a query
+        // for the basename `server` returned zero importers.
+        //
+        // Ruby require paths are `/`-separated. Mirror the spellings
+        // `index_ruby_module` registers (full path, `lib/`/`app/`-stripped
+        // path, bare leaf name): match on path suffix or leaf basename,
+        // with leading `./`/`../` relative noise stripped from both sides.
+        Language::Ruby => path_module_matches(import_module, target),
         _ => import_module == target,
     }
+}
+
+/// Match a captured filesystem-style module path against a target query,
+/// tolerating relative-path noise and basename / sub-path spellings.
+///
+/// cl9-importers-v1 (GH #79, v0.5.0 CL-9). Used by the Solidity, Ruby and
+/// Lua/Luau arms of [`module_matches`]. The captured `import_module` is the
+/// literal path the AST extractor pinned (`../utils/Context.sol`,
+/// `rubocop/server`, `foo/bar`); `target` is the user's query, which may be
+/// the full path, a trailing sub-path, or the bare leaf filename.
+///
+/// A match succeeds when, after stripping leading `./` and `../` segments
+/// and any trailing path separators from both sides:
+///   * the normalised paths are equal, OR
+///   * one is a trailing path-segment-run suffix of the other (so
+///     `utils/Context.sol` and `Context.sol` both match
+///     `../utils/Context.sol`), OR
+///   * the bare leaf segments are equal (basename query).
+///
+/// The suffix comparison is segment-anchored (it requires a `/` boundary or
+/// full-string equality) so a query for `text.sol` does NOT spuriously match
+/// `Context.sol` — only `Context.sol` matches `Context.sol`.
+fn path_module_matches(import_module: &str, target: &str) -> bool {
+    if import_module == target {
+        return true;
+    }
+
+    // Strip leading relative-path segments (`./`, `../`, repeated) and any
+    // trailing slash. The relative prefix is positional noise — the module
+    // identity lives in the trailing path segments.
+    fn strip_relative(s: &str) -> &str {
+        let mut rest = s.trim_end_matches('/');
+        loop {
+            if let Some(r) = rest.strip_prefix("../") {
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix("./") {
+                rest = r;
+            } else {
+                break;
+            }
+        }
+        rest
+    }
+
+    let import_norm = strip_relative(import_module);
+    let target_norm = strip_relative(target);
+
+    if import_norm == target_norm {
+        return true;
+    }
+
+    // Segment-anchored suffix match in both directions. `ends_with` alone is
+    // too loose (`Context.sol` would match `ERC2771Context.sol`); requiring a
+    // preceding `/` (or full equality, handled above) keeps it segment-clean.
+    if import_norm.ends_with(&format!("/{}", target_norm))
+        || target_norm.ends_with(&format!("/{}", import_norm))
+    {
+        return true;
+    }
+
+    // Bare leaf-name (basename) match: only when one side is a *single*
+    // path segment (no `/`). This is the basename-query case
+    // (`Context.sol`, `server`). We deliberately do NOT leaf-match two
+    // multi-segment paths against each other — a query for
+    // `other/Context.sol` must NOT match an import of `utils/Context.sol`
+    // (different files); that case is already covered by the
+    // segment-anchored suffix rules above.
+    let import_is_leaf = !import_norm.contains('/');
+    let target_is_leaf = !target_norm.contains('/');
+    if target_is_leaf {
+        let import_leaf = import_norm.rsplit('/').next().unwrap_or(import_norm);
+        return import_leaf == target_norm;
+    }
+    if import_is_leaf {
+        let target_leaf = target_norm.rsplit('/').next().unwrap_or(target_norm);
+        return target_leaf == import_norm;
+    }
+    false
 }
 
 /// Find the line number and text of an import statement.
