@@ -3768,6 +3768,27 @@ pub fn find_references(
         references.retain(|r| kinds.contains(&r.kind));
     }
 
+    // CL-1 / GH #74: sort references into a stable total order BEFORE the
+    // truncation below. The reference list is assembled from a directory
+    // walk and per-file line scan; even with the walker now yielding files
+    // in path order, an explicit sort on the reference identity tuple is
+    // the contract that guarantees:
+    //   1. byte-identical output run-to-run, and
+    //   2. `--limit N` drops the TAIL of a fixed ordering rather than
+    //      returning a different SUBSET each run (the silent-data-loss
+    //      bug — two runs previously surfaced disjoint references for the
+    //      same symbol under the same cap).
+    // A reference is uniquely located by (file, line, column); we add
+    // `end_column` purely as a final deterministic tiebreaker for the
+    // pathological case of two zero-width matches at the same position.
+    references.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.column.cmp(&b.column))
+            .then(a.end_column.cmp(&b.end_column))
+    });
+
     // Capture the full verified count BEFORE truncation so callers/UI can
     // report "showing 20 of 337" honestly. Pre-`references-canonical-def-v1`
     // `total_references` was set to the truncated length, which made the

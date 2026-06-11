@@ -236,6 +236,19 @@ impl ProjectWalker {
             .git_global(self.respect_gitignore)
             .git_exclude(self.respect_gitignore)
             .parents(self.respect_gitignore)
+            // CL-1 / GH #74: the `ignore` crate's single-threaded walk does
+            // NOT yield entries in any defined order — it surfaces them in
+            // filesystem readdir order, which varies by platform and even
+            // between runs on the same machine. Every downstream consumer
+            // (references, hubs, cohesion, complexity, health, …) that
+            // collects walk results into a Vec and later truncates or
+            // serializes therefore produced run-to-run-different output.
+            // Pinning a total order on the FULL path makes the walk a
+            // deterministic foundation so callers don't each have to
+            // re-sort. We compare on the whole path (not just the file
+            // name) so sibling files across different directories also
+            // have a stable total order.
+            .sort_by_file_path(|a, b| a.cmp(b))
             .follow_links(false); // CRITICAL: avoid pnpm symlink loops
 
         if let Some(depth) = self.max_depth {

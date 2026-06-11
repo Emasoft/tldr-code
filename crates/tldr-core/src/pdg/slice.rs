@@ -278,22 +278,27 @@ pub fn get_slice_rich(
                     dep_type: dep_str.to_string(),
                     label: edge.label.clone(),
                 });
-
-                // Annotate the target node with dep info (how it connects)
-                if let Some(node) = line_map.get_mut(&to) {
-                    if node.dep_type.is_none() {
-                        node.dep_type = Some(dep_str.to_string());
-                        if !edge.label.is_empty() {
-                            node.dep_label = Some(edge.label.clone());
-                        }
-                    }
-                }
             }
         }
     }
 
-    // Sort edges by from_line, then to_line
-    edges.sort_by_key(|e| (e.from_line, e.to_line));
+    // CL-1 / GH #74: sort edges by the FULL identity tuple
+    // (from_line, to_line, dep_type, label), not just (from_line, to_line).
+    // `pdg.edges` is iterated in graph-build order, so two distinct edges
+    // that share a from/to pair but differ in `dep_type` (data vs control)
+    // or `label` previously kept whatever relative order the PDG happened
+    // to emit — nondeterministic run-to-run. Including dep_type/label in
+    // the sort key gives a total order. It also makes the `dedup_by` below
+    // correct: `dedup_by` only collapses *adjacent* equal elements, so an
+    // incomplete sort key could leave true duplicates separated by an
+    // intervening edge and silently fail to dedup them.
+    edges.sort_by(|a, b| {
+        a.from_line
+            .cmp(&b.from_line)
+            .then(a.to_line.cmp(&b.to_line))
+            .then(a.dep_type.cmp(&b.dep_type))
+            .then(a.label.cmp(&b.label))
+    });
     // Deduplicate edges (same from/to/type/label)
     edges.dedup_by(|a, b| {
         a.from_line == b.from_line
@@ -301,6 +306,25 @@ pub fn get_slice_rich(
             && a.dep_type == b.dep_type
             && a.label == b.label
     });
+
+    // CL-1 / GH #74: annotate each target node with how it connects (dep
+    // type/label) AFTER the edges have been sorted+deduped. Previously this
+    // ran inside the unordered `pdg.edges` loop with a "first edge wins"
+    // (`dep_type.is_none()`) rule, so when a line had several incoming
+    // edges the annotation reflected whichever edge the graph build emitted
+    // first — nondeterministic. Driving it from the now-totally-ordered
+    // `edges` vector makes "first" mean the smallest edge by the stable
+    // sort key, so the annotation is reproducible run-to-run.
+    for edge in &edges {
+        if let Some(node) = line_map.get_mut(&edge.to_line) {
+            if node.dep_type.is_none() {
+                node.dep_type = Some(edge.dep_type.clone());
+                if !edge.label.is_empty() {
+                    node.dep_label = Some(edge.label.clone());
+                }
+            }
+        }
+    }
 
     // Collect and sort nodes by line number
     let mut nodes: Vec<SliceNode> = line_map.into_values().collect();

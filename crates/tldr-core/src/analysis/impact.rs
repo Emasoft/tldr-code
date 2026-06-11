@@ -629,6 +629,21 @@ pub fn enrich_impact_with_references(
                 }
             }
         }
+
+        // CL-1 / GH #74: this is the serialization boundary for the
+        // top-level caller list. `tree.callers` is now a mix of
+        // call-graph-resolved callers (sorted upstream in
+        // `build_reverse_graph`) and reference-discovered callers appended
+        // above; the interleaving of those two sources is not itself
+        // ordered, so a final stable sort on the caller identity tuple —
+        // (file path, function name) — is required for byte-identical
+        // output across runs. Sorting by file then function keeps callers
+        // from the same file grouped, which also reads better.
+        tree.callers.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.function.cmp(&b.function))
+        });
     }
 }
 
@@ -943,6 +958,22 @@ fn build_reverse_graph(call_graph: &ProjectCallGraph) -> HashMap<FunctionKey, Ve
         let src_key = (edge.src_file.clone(), edge.src_func.clone());
 
         reverse.entry(dst_key).or_default().push(src_key);
+    }
+
+    // CL-1 / GH #74: the BFS in `build_caller_tree` iterates each callee's
+    // adjacency list IN ORDER and emits one `CallerTree` child per caller,
+    // so the order of these Vecs is the order of the serialized `callers[]`
+    // array. `call_graph.edges()` does not promise a stable iteration order
+    // (edges are accumulated across a parallel/HashMap-backed build), so
+    // without this sort the caller tree was shuffled run-to-run. Sort every
+    // adjacency list on the caller identity tuple — (file path, function
+    // name) — which is the same stable key the rest of the impact path
+    // uses. Dedup adjacent equal keys so a caller that invokes the target
+    // from multiple sites at the same (file, func) doesn't appear twice
+    // (its multiplicity is not modelled by the tree).
+    for callers in reverse.values_mut() {
+        callers.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        callers.dedup();
     }
 
     reverse
