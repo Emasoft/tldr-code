@@ -496,7 +496,15 @@ pub fn enrich_impact_with_references(
 
     let mut file_funcs_cache: HashMap<PathBuf, Vec<(String, u32, u32)>> = HashMap::new();
 
-    let mut additions: Vec<(String, PathBuf, u32)> = Vec::new();
+    // CL-2 / GH #40: derive the *bare* method name the user is asking about
+    // so we can extract — per call site — the receiver of THAT call from the
+    // AST and reject references whose receiver belongs to a different
+    // type/module (e.g. an external `json.decode(...)` when the target is the
+    // project-local `rpc.decode`, or `Codec::decode` vs `Parser::decode`).
+    let bare_target = target_func.rsplit(['.', ':']).next().unwrap_or(target_func);
+
+    // (enclosing_caller, caller_file, line, call_site_receiver)
+    let mut additions: Vec<(String, PathBuf, u32, CallReceiver)> = Vec::new();
     // cross-cutting-and-clear-fix-bugs-v1 (P18.X3): collect references from
     // both the primary lookup and (for Lua/Luau qualified names like
     // `m.open`) a secondary bare-name lookup with a context filter — same
@@ -578,14 +586,21 @@ pub fn enrich_impact_with_references(
             continue;
         }
 
+        // CL-2 / GH #40: extract the receiver of the call at this exact site
+        // from the AST. This is the discriminator that distinguishes
+        // `json.decode(...)` (receiver `json`) from `rpc.decode()` (receiver
+        // `rpc`) and `self.decode()` inside `impl Codec` (receiver type
+        // `Codec`) from the same expression inside `impl Parser`.
+        let receiver = extract_call_receiver(&caller_file, r.line, r.column, bare_target, language);
+
         let key_pair = (enclosing.clone(), caller_file.clone());
         if additions
             .iter()
-            .any(|(n, f, _)| n == &key_pair.0 && f == &key_pair.1)
+            .any(|(n, f, _, _)| n == &key_pair.0 && f == &key_pair.1)
         {
             continue;
         }
-        additions.push((enclosing, caller_file, r.line as u32));
+        additions.push((enclosing, caller_file, r.line as u32, receiver));
     }
 
     if additions.is_empty() {
@@ -593,7 +608,23 @@ pub fn enrich_impact_with_references(
     }
 
     for tree in report.targets.values_mut() {
-        for (name, file, line) in &additions {
+        // CL-2 / GH #40: derive the receiver-qualifier this target's
+        // definition is scoped under, so each candidate caller's call-site
+        // receiver can be checked for compatibility. The qualifier comes
+        // from the target's own qualified name (`rpc.decode` -> `rpc`,
+        // `Parser::decode` -> `Parser`); a bare free function yields `None`.
+        let target_qualifier = qualifier_of(&tree.function);
+
+        for (name, file, line, receiver) in &additions {
+            // CL-2: receiver-type discrimination. Only mint this caller if
+            // the call site's receiver is compatible with the target's
+            // defined qualifier. This drops `json.decode(...)` from the
+            // callers of `rpc.decode`, and `Codec::decode` self-calls from
+            // the callers of `Parser::decode`.
+            if !receiver_compatible(receiver, target_qualifier.as_deref(), &tree.file, file) {
+                continue;
+            }
+
             // P14.AGG14-1: last-segment-aware dedup so call-graph
             // qualified-name (`Class.method`) and references bare-name
             // (`method`) collapse to the same caller.
@@ -606,18 +637,34 @@ pub fn enrich_impact_with_references(
             if already_present {
                 continue;
             }
+
+            // CL-2: emit an accurate provenance note. The previous code
+            // hardcoded "call graph missing edge" for every minted caller.
+            // We now distinguish the genuinely cross-file-unresolved case
+            // (target defined in a different file from the call site) from
+            // the same-file case the call graph simply failed to link.
+            let cross_file = !paths_equivalent_root(&tree.file, project_root, file);
+            let note = if cross_file {
+                format!(
+                    "Discovered via references at line {} (call graph did not resolve this cross-file edge)",
+                    line
+                )
+            } else {
+                format!(
+                    "Discovered via references at line {} (call graph did not resolve this same-file edge)",
+                    line
+                )
+            };
+
             tree.callers.push(CallerTree {
                 function: name.clone(),
                 file: file.clone(),
                 caller_count: 0,
                 callers: vec![],
                 truncated: false,
-                note: Some(format!(
-                    "Discovered via references at line {} (call graph missing edge)",
-                    line
-                )),
+                note: Some(note),
                 confidence: None,
-                receiver_type: None,
+                receiver_type: receiver.qualifier_label(),
             });
             tree.caller_count = tree.callers.len();
             if let Some(n) = &tree.note {
@@ -682,6 +729,412 @@ fn last_segment_eq_pub(qualified: &str, target: &str) -> bool {
         Some(i) if i + 1 < qualified.len() => &qualified[i + 1..] == target,
         _ => qualified == target,
     }
+}
+
+// =============================================================================
+// CL-2 / GH #40: AST-driven receiver-type discrimination for the references
+// enrichment path.
+//
+// The references engine matches the BARE method name (e.g. `decode`) at every
+// textual occurrence and classifies each as a `Call`. Without looking at the
+// *receiver* of that call, `enrich_impact_with_references` cannot tell
+// `json.decode(...)` (a call to the external `json` library) from
+// `rpc.decode()` (a call to the project-local `rpc.decode`), nor
+// `self.decode()` inside `impl Codec` from the same expression inside
+// `impl Parser`. The helpers below recover the receiver from the AST at the
+// exact call site and decide whether it is compatible with the target's
+// defined qualifier.
+// =============================================================================
+
+/// The receiver of a call site, recovered from the AST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallReceiver {
+    /// A bare call with no receiver: `decode(...)`.
+    Bare,
+    /// A receiver named by an explicit identifier: `json.decode(...)` ->
+    /// `Named("json")`, `Codec::new()` -> `Named("Codec")`.
+    Named(String),
+    /// A `self` / `this` / `Self` receiver. The optional payload is the
+    /// enclosing type the call lexically sits inside (`impl Codec { ... }` ->
+    /// `Some("Codec")`), recovered from the AST when available.
+    SelfRef(Option<String>),
+    /// The receiver could not be determined (parse failure, position miss).
+    /// Treated as compatible to avoid dropping a genuine caller.
+    Unknown,
+}
+
+impl CallReceiver {
+    /// A short human-readable label for the resolved receiver, surfaced as
+    /// the caller's `receiver_type` so users can see WHY the edge was kept.
+    fn qualifier_label(&self) -> Option<String> {
+        match self {
+            CallReceiver::Named(n) => Some(n.clone()),
+            CallReceiver::SelfRef(Some(t)) => Some(t.clone()),
+            CallReceiver::SelfRef(None) => Some("self".to_string()),
+            CallReceiver::Bare | CallReceiver::Unknown => None,
+        }
+    }
+}
+
+/// Return the receiver-qualifier a qualified function name is scoped under:
+/// `rpc.decode` -> `Some("rpc")`, `Parser::decode` -> `Some("Parser")`,
+/// `decode` -> `None`. Mirrors [`last_segment`] but returns the *prefix*.
+fn qualifier_of(qualified: &str) -> Option<String> {
+    let last_dot = qualified.rfind('.');
+    let last_cc = qualified.rfind("::");
+    let cut = match (last_dot, last_cc) {
+        (Some(d), Some(c)) => Some(d.max(c)),
+        (Some(d), None) => Some(d),
+        (None, Some(c)) => Some(c),
+        (None, None) => None,
+    }?;
+    if cut == 0 {
+        return None;
+    }
+    let prefix = &qualified[..cut];
+    // Keep only the *innermost* qualifier segment (e.g. `a.b.decode` -> `b`),
+    // since that is the receiver expression at the call site.
+    prefix
+        .rsplit(['.', ':'])
+        .find(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Decide whether a call site's `receiver` is compatible with a target whose
+/// definition is scoped under `target_qualifier` and lives in `target_file`.
+///
+/// Rules (conservative — never drop a genuine caller, only reject a
+/// provably-different receiver):
+///   - `Unknown` receiver -> compatible (we could not inspect the site).
+///   - `Bare` receiver -> compatible (an unqualified call could resolve to
+///     the target in scope; the call graph itself handles the resolved
+///     cases, this is only the fallback).
+///   - `Named(r)`:
+///       * if a `target_qualifier` is known, compatible iff `r` equals it
+///         (`json` != `rpc` -> reject; `rpc` == `rpc` -> keep);
+///       * if the target is a bare free function (no qualifier), a *named*
+///         receiver means the call is a method on some object — a different
+///         symbol — so reject.
+///   - `SelfRef(Some(ty))` -> compatible iff the enclosing type equals the
+///     target qualifier (this is the `impl Parser` vs `impl Codec` split);
+///     if the target has no qualifier, a `self`-method call is a different
+///     symbol -> reject.
+///   - `SelfRef(None)` -> compatible (could not resolve the enclosing type;
+///     do not over-reject).
+fn receiver_compatible(
+    receiver: &CallReceiver,
+    target_qualifier: Option<&str>,
+    _target_file: &Path,
+    _call_file: &Path,
+) -> bool {
+    match (receiver, target_qualifier) {
+        (CallReceiver::Unknown, _) => true,
+        (CallReceiver::Bare, _) => true,
+        (CallReceiver::Named(r), Some(q)) => names_equal_ignore_generics(r, q),
+        // Named receiver but the target is a bare free function: the call is
+        // a method on an object, a different symbol.
+        (CallReceiver::Named(_), None) => false,
+        (CallReceiver::SelfRef(Some(ty)), Some(q)) => names_equal_ignore_generics(ty, q),
+        (CallReceiver::SelfRef(Some(_)), None) => false,
+        (CallReceiver::SelfRef(None), _) => true,
+    }
+}
+
+/// Compare two type/receiver names, tolerant of a trailing generic argument
+/// list (`Parser<'a>` vs `Parser`).
+fn names_equal_ignore_generics(a: &str, b: &str) -> bool {
+    let strip = |s: &str| s.split(['<', '>']).next().unwrap_or(s).trim().to_string();
+    strip(a) == strip(b)
+}
+
+/// Extract the receiver of the call whose method/function name is
+/// `bare_target` at 1-indexed `(line, column)` in `file`, by parsing the AST.
+///
+/// Returns [`CallReceiver::Unknown`] on any failure (parse error, position
+/// miss) so the caller treats the site as compatible rather than dropping it.
+fn extract_call_receiver(
+    file: &Path,
+    line: usize,
+    column: usize,
+    bare_target: &str,
+    language: Language,
+) -> CallReceiver {
+    use tree_sitter::Point;
+
+    let (tree, source, _lang) = match parse_file(file) {
+        Ok(t) => t,
+        Err(_) => return CallReceiver::Unknown,
+    };
+    let src = source.as_bytes();
+
+    // tree-sitter points are 0-indexed; references are 1-indexed.
+    let row = line.saturating_sub(1);
+    let col = column.saturating_sub(1);
+    let point = Point::new(row, col);
+
+    let root = tree.root_node();
+    let mut node = match root.descendant_for_point_range(point, point) {
+        Some(n) => n,
+        None => return CallReceiver::Unknown,
+    };
+
+    // Land on the identifier node that names the called method. If the
+    // position resolved to a wrapper, search for the matching name leaf.
+    if node.utf8_text(src).map(|t| t != bare_target).unwrap_or(true) {
+        if let Some(n) = find_named_leaf(&node, bare_target, src) {
+            node = n;
+        }
+    }
+
+    receiver_for_call_name(&node, src, language)
+}
+
+/// Find a descendant identifier-ish leaf whose text equals `name`.
+fn find_named_leaf<'a>(
+    node: &tree_sitter::Node<'a>,
+    name: &str,
+    src: &[u8],
+) -> Option<tree_sitter::Node<'a>> {
+    if node.child_count() == 0 {
+        return if node.utf8_text(src).map(|t| t == name).unwrap_or(false) {
+            Some(*node)
+        } else {
+            None
+        };
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = find_named_leaf(&child, name, src) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Given the AST leaf naming the called method, walk up to the enclosing
+/// call expression and recover the receiver. Per-language node shapes:
+///   - Rust:  `field_expression { value, field }` under `call_expression`
+///            (method call), or `scoped_identifier { path, name }` (Type::m).
+///   - Lua/Luau: `dot_index_expression` / `method_index_expression` whose
+///            first identifier child is the receiver table.
+///   - Python/JS/TS/Java/etc.: `attribute` / `member_expression` /
+///            `field_access` / `selector_expression` with an object child.
+///   - Go: `selector_expression { operand, field }`.
+fn receiver_for_call_name(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    _language: Language,
+) -> CallReceiver {
+    // Walk up to the immediate qualifier node (member/field/dot access).
+    let parent = match node.parent() {
+        Some(p) => p,
+        None => return CallReceiver::Bare,
+    };
+
+    match parent.kind() {
+        // Rust method call: receiver.method() — `field_expression`.
+        "field_expression" => {
+            // The `value` field is the receiver; the `field` is the method.
+            if let Some(value) = parent.child_by_field_name("value") {
+                return receiver_from_expr(&value, src);
+            }
+            // Fallback: first named child is the receiver expression.
+            if let Some(first) = parent.named_child(0) {
+                if first.id() != node.id() {
+                    return receiver_from_expr(&first, src);
+                }
+            }
+            CallReceiver::Bare
+        }
+
+        // Rust associated call: Type::method() — `scoped_identifier`.
+        "scoped_identifier" | "scoped_type_identifier" => {
+            if let Some(path) = parent.child_by_field_name("path") {
+                if let Ok(t) = path.utf8_text(src) {
+                    return classify_receiver_text(t);
+                }
+            }
+            CallReceiver::Bare
+        }
+
+        // Lua/Luau: json.decode(...) / obj:method(...).
+        "dot_index_expression" | "method_index_expression" => {
+            // First identifier child is the receiver table/object.
+            let mut cursor = parent.walk();
+            for child in parent.children(&mut cursor) {
+                if child.id() == node.id() {
+                    break;
+                }
+                if matches!(
+                    child.kind(),
+                    "identifier" | "dot_index_expression" | "method_index_expression"
+                ) {
+                    return receiver_from_expr(&child, src);
+                }
+            }
+            CallReceiver::Bare
+        }
+
+        // Python attribute access: receiver.method.
+        "attribute" => {
+            if let Some(obj) = parent.child_by_field_name("object") {
+                return receiver_from_expr(&obj, src);
+            }
+            CallReceiver::Bare
+        }
+
+        // JS/TS member expression: receiver.method.
+        "member_expression" => {
+            if let Some(obj) = parent.child_by_field_name("object") {
+                return receiver_from_expr(&obj, src);
+            }
+            CallReceiver::Bare
+        }
+
+        // Java/C#/Kotlin field/member access: receiver.method.
+        "field_access" | "navigation_expression" | "navigation_suffix" => {
+            if let Some(obj) = parent.child_by_field_name("object") {
+                return receiver_from_expr(&obj, src);
+            }
+            if let Some(first) = parent.named_child(0) {
+                if first.id() != node.id() {
+                    return receiver_from_expr(&first, src);
+                }
+            }
+            CallReceiver::Bare
+        }
+
+        // Go selector: receiver.Method.
+        "selector_expression" => {
+            if let Some(op) = parent.child_by_field_name("operand") {
+                return receiver_from_expr(&op, src);
+            }
+            CallReceiver::Bare
+        }
+
+        // C++ / PHP / Ruby qualified call shapes.
+        "scoped_call_expression" | "qualified_identifier" => {
+            if let Some(scope) = parent.child_by_field_name("scope") {
+                if let Ok(t) = scope.utf8_text(src) {
+                    return classify_receiver_text(t);
+                }
+            }
+            CallReceiver::Bare
+        }
+
+        // No qualifier node above the call name -> a bare call.
+        _ => CallReceiver::Bare,
+    }
+}
+
+/// Classify a receiver expression node into a [`CallReceiver`]. A leading
+/// `self` / `this` / `Self` is reported as a self-reference (with the
+/// enclosing type resolved from the AST when possible); anything else with a
+/// recoverable leading identifier becomes a `Named` receiver.
+fn receiver_from_expr(expr: &tree_sitter::Node, src: &[u8]) -> CallReceiver {
+    // For nested qualifiers (`a.b`, `Mod::Sub`), take the *innermost* leading
+    // identifier — that is the variable/type whose `.method` is being called.
+    if let Ok(text) = expr.utf8_text(src) {
+        let base = match receiver_base_node(expr) {
+            Some(n) => n.utf8_text(src).unwrap_or(text),
+            None => text,
+        };
+        if is_self_token(base) {
+            return CallReceiver::SelfRef(resolve_enclosing_type(expr, src));
+        }
+        return classify_receiver_text(base);
+    }
+    CallReceiver::Unknown
+}
+
+/// Descend a qualifier expression to its leading base identifier (the
+/// left-most operand of `a.b.c` / `a::b::c`).
+fn receiver_base_node<'a>(expr: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    let mut cur = *expr;
+    loop {
+        match cur.kind() {
+            "field_expression" | "attribute" | "member_expression" | "selector_expression" => {
+                let next = cur
+                    .child_by_field_name("value")
+                    .or_else(|| cur.child_by_field_name("object"))
+                    .or_else(|| cur.child_by_field_name("operand"))
+                    .or_else(|| cur.named_child(0));
+                match next {
+                    Some(n) if n.id() != cur.id() => cur = n,
+                    _ => return Some(cur),
+                }
+            }
+            "dot_index_expression" | "method_index_expression" => {
+                match cur.named_child(0) {
+                    Some(n) if n.id() != cur.id() => cur = n,
+                    _ => return Some(cur),
+                }
+            }
+            "scoped_identifier" | "scoped_type_identifier" | "qualified_identifier" => {
+                match cur.child_by_field_name("path").or_else(|| cur.child_by_field_name("scope")) {
+                    Some(n) if n.id() != cur.id() => cur = n,
+                    _ => return Some(cur),
+                }
+            }
+            _ => return Some(cur),
+        }
+    }
+}
+
+/// Turn raw receiver text into a [`CallReceiver`]. A self/this token becomes
+/// a self-reference with no resolved type; any other non-empty token becomes
+/// a named receiver.
+fn classify_receiver_text(text: &str) -> CallReceiver {
+    let t = text.trim();
+    if t.is_empty() {
+        return CallReceiver::Bare;
+    }
+    if is_self_token(t) {
+        return CallReceiver::SelfRef(None);
+    }
+    CallReceiver::Named(t.to_string())
+}
+
+/// Whether a receiver token denotes the current instance/type.
+fn is_self_token(t: &str) -> bool {
+    matches!(t, "self" | "this" | "Self" | "super")
+}
+
+/// Resolve the type a `self`/`this` call lexically belongs to by walking up
+/// the AST to the enclosing `impl <Type>` (Rust) / class / struct block and
+/// reading its type name. Returns `None` when no such enclosing type exists.
+fn resolve_enclosing_type(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        match n.kind() {
+            // Rust: impl <Type> { ... } — the `type` field names the type.
+            "impl_item" => {
+                if let Some(ty) = n.child_by_field_name("type") {
+                    if let Ok(t) = ty.utf8_text(src) {
+                        return Some(t.trim().to_string());
+                    }
+                }
+            }
+            // Class/struct definitions across languages — the `name` field.
+            "class_declaration"
+            | "class_definition"
+            | "class_specifier"
+            | "struct_specifier"
+            | "struct_item"
+            | "interface_declaration"
+            | "object_declaration"
+            | "trait_item" => {
+                if let Some(name) = n.child_by_field_name("name") {
+                    if let Ok(t) = name.utf8_text(src) {
+                        return Some(t.trim().to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+        cur = n.parent();
+    }
+    None
 }
 
 /// Search for a function in the AST of files under `root`.
