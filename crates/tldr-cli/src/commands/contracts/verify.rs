@@ -216,7 +216,16 @@ pub fn run_verify(
     sub_results.insert("contracts".to_string(), contracts_result);
 
     // 2. Specs extraction (if test directory exists)
-    let test_dirs = find_test_dirs(path);
+    //
+    // cl3-test-linkage-v1 (CL-3 / GH #35): `find_test_dirs` historically only
+    // probed top-level test *directories*. Languages that colocate tests with
+    // source (Go `*_test.go`, Rust inline `#[cfg(test)]`) have no such
+    // directory, so verify reported "No test directory found" / spec_count 0
+    // despite the project clearly containing tests. When no test directory is
+    // found we now fall back to the project root for colocated-test languages
+    // (detected AST-side: `sweep_specs` -> `run_specs` only counts files the
+    // language `test_recognizer` accepts, so scanning the root is safe).
+    let test_dirs = find_test_dirs(path, language);
     if !test_dirs.is_empty() {
         let specs_result = sweep_specs(&test_dirs[0], detail);
         sub_results.insert("specs".to_string(), specs_result);
@@ -331,7 +340,7 @@ fn collect_source_files(path: &Path, language: Language) -> ContractsResult<Vec<
 /// layouts. Previously only top-level `tests/`, `test/` were probed, so
 /// `tldr verify` on a Spring/Maven project reported `error: "No test
 /// directory found"` despite `src/test/java` clearly existing.
-fn find_test_dirs(project_path: &Path) -> Vec<PathBuf> {
+fn find_test_dirs(project_path: &Path, language: Language) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     // Check common test directory names (top-level).
@@ -401,7 +410,44 @@ fn find_test_dirs(project_path: &Path) -> Vec<PathBuf> {
         }
     }
 
+    // cl3-test-linkage-v1 (CL-3 / GH #35): colocated-test fallback. Languages
+    // like Go (`*_test.go`) and Rust (inline `#[cfg(test)]`) do not use a
+    // dedicated test directory, so none of the directory probes above match.
+    // If we found nothing yet, AST-scan the project for a file the language's
+    // `test_recognizer` accepts; if one exists, return the project root so
+    // `sweep_specs` walks it (the walker re-filters via `recognize`, so only
+    // real test files contribute).
+    if candidates.is_empty() && project_has_colocated_tests(project_path, language) {
+        candidates.push(project_path.to_path_buf());
+    }
+
     candidates
+}
+
+/// Detect whether the project contains colocated test files (no dedicated
+/// test directory) by AST-recognizing files via the language `test_recognizer`.
+///
+/// Returns as soon as the first recognized test file is found so large trees
+/// stop early. Used only as a fallback when [`find_test_dirs`]'s directory
+/// probes come up empty.
+fn project_has_colocated_tests(project_path: &Path, language: Language) -> bool {
+    use tldr_core::walker::walk_project;
+
+    for entry in walk_project(project_path).filter(|e| e.path().is_file()) {
+        let file_path = entry.path();
+        // Only consider files in the target language.
+        if super::test_recognizer::detect_language(file_path) != Some(language) {
+            continue;
+        }
+        let source = match std::fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if super::test_recognizer::recognize(file_path, &source, language).is_test_file {
+            return true;
+        }
+    }
+    false
 }
 
 // =============================================================================
@@ -990,7 +1036,7 @@ def test_validate_raises():
         let tests_dir = temp.path().join("tests");
         fs::create_dir(&tests_dir).unwrap();
 
-        let dirs = find_test_dirs(temp.path());
+        let dirs = find_test_dirs(temp.path(), Language::Python);
         assert!(!dirs.is_empty());
         assert!(dirs[0].ends_with("tests"));
     }
@@ -999,8 +1045,34 @@ def test_validate_raises():
     fn test_find_test_dirs_none() {
         let temp = TempDir::new().unwrap();
 
-        let dirs = find_test_dirs(temp.path());
+        // No test directory and no colocated test files -> empty.
+        let dirs = find_test_dirs(temp.path(), Language::Python);
         assert!(dirs.is_empty());
+    }
+
+    #[test]
+    fn test_find_test_dirs_colocated_go() {
+        // cl3-test-linkage-v1 (CL-3 / GH #35): Go colocates `*_test.go` next
+        // to source with no `tests/` directory; the colocated fallback must
+        // return the project root so specs extraction can walk it.
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("router.go"),
+            "package main\n\nfunc Add(a, b int) int { return a + b }\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("router_test.go"),
+            "package main\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n",
+        )
+        .unwrap();
+
+        let dirs = find_test_dirs(temp.path(), Language::Go);
+        assert!(
+            !dirs.is_empty(),
+            "colocated Go *_test.go must yield a test-dir candidate (project root)"
+        );
+        assert_eq!(dirs[0], temp.path());
     }
 
     #[test]

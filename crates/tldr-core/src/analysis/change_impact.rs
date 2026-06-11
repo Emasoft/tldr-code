@@ -16,7 +16,7 @@
 //! - Go: `*_test.go`
 //! - Rust: `tests/*.rs`, `src/**/tests.rs`
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -426,6 +426,7 @@ pub fn change_impact_extended(
         &changed_files,
         &affected_functions,
         &call_graph,
+        project,
     );
 
     // Extract test functions from affected test files (Phase 4)
@@ -1139,20 +1140,39 @@ fn get_all_project_files(project: &Path, language: Language) -> TldrResult<Vec<P
     Ok(collect_files(&tree, project))
 }
 
-/// Check if a file is a test file based on language conventions
+/// Check if a file is a test file based on language conventions.
+///
+/// cl3-test-linkage-v1 (CL-3 / GH #35): the prior implementation lacked a
+/// Swift arm (PascalCase `*Tests.swift` under a capital-`Tests/` directory was
+/// invisible to the lowercase-only generic arm) and the generic fallback
+/// matched the lowercase substring `test`, which over-matched non-test
+/// production files (`latest.rs`, `contestant.go`) while *under*-matching
+/// PascalCase conventions. Each language now has an explicit arm that follows
+/// the language's real test convention; the generic arm is restricted to the
+/// PascalCase-aware directory + suffix conventions shared across the JVM /
+/// .NET / mobile families.
 fn is_test_file(path: &Path, language: Language) -> bool {
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(file_name);
     let path_str = path.to_string_lossy();
 
-    // Helper to check if path contains a test directory
-    let in_tests_dir = || {
-        path_str.contains("/tests/")
-            || path_str.starts_with("tests/")
-            || path_str.contains("/test/")
-            || path_str.starts_with("test/")
+    // Path-component helpers. We match directory names case-insensitively on
+    // the component boundary (not a raw substring) so `/Tests/` and `/tests/`
+    // both register while `/contests/` does not.
+    let has_dir = |needle: &str| {
+        path.components().any(|c| {
+            c.as_os_str()
+                .to_str()
+                .map(|s| s.eq_ignore_ascii_case(needle))
+                .unwrap_or(false)
+        })
     };
-
-    let in_dunder_tests = || path_str.contains("/__tests__/") || path_str.starts_with("__tests__/");
+    let in_tests_dir = || has_dir("tests") || has_dir("test");
+    let in_spec_dir = || has_dir("spec") || has_dir("specs");
+    let in_dunder_tests = || has_dir("__tests__");
 
     match language {
         Language::Python => {
@@ -1162,57 +1182,176 @@ fn is_test_file(path: &Path, language: Language) -> bool {
                 || in_tests_dir()
         }
         Language::TypeScript | Language::JavaScript => {
-            file_name.ends_with(".test.ts")
-                || file_name.ends_with(".test.js")
-                || file_name.ends_with(".spec.ts")
-                || file_name.ends_with(".spec.js")
-                || file_name.ends_with(".test.tsx")
-                || file_name.ends_with(".test.jsx")
+            stem.ends_with(".test")
+                || stem.ends_with(".spec")
                 || in_dunder_tests()
+                || in_tests_dir()
         }
+        // Go: colocated `*_test.go` next to source — no test dir convention.
         Language::Go => file_name.ends_with("_test.go"),
+        // Rust: `#[cfg(test)]` files live under `tests/` or are named
+        // `tests.rs`; integration tests live in a top-level `tests/` dir.
         Language::Rust => in_tests_dir() || file_name == "tests.rs",
+        // Swift: XCTest convention — `*Tests.swift` / `*Test.swift` /
+        // `*Spec.swift`, conventionally under a capital-`Tests/` directory.
+        Language::Swift => {
+            stem.ends_with("Tests")
+                || stem.ends_with("Test")
+                || stem.ends_with("Spec")
+                || in_tests_dir()
+        }
+        // JVM / .NET family: `*Test`/`*Tests`/`*Spec`/`*Specs` PascalCase
+        // suffixes, Maven/Gradle `src/test/...`, sbt `*Spec.scala`.
+        Language::Java | Language::Kotlin | Language::Scala | Language::CSharp => {
+            stem.ends_with("Test")
+                || stem.ends_with("Tests")
+                || stem.ends_with("Spec")
+                || stem.ends_with("Specs")
+                || stem.ends_with("IT") // Maven failsafe integration tests
+                || in_tests_dir()
+                || in_spec_dir()
+        }
+        // Ruby: Minitest `*_test.rb` / RSpec `*_spec.rb`.
+        Language::Ruby => {
+            file_name.ends_with("_test.rb")
+                || file_name.ends_with("_spec.rb")
+                || in_tests_dir()
+                || in_spec_dir()
+        }
+        // PHP: PHPUnit `*Test.php`, conventionally under `tests/`.
+        Language::Php => {
+            stem.ends_with("Test") || stem.ends_with("Tests") || in_tests_dir()
+        }
+        // Elixir: ExUnit `*_test.exs` under `test/`.
+        Language::Elixir => {
+            file_name.ends_with("_test.exs")
+                || file_name.ends_with("_test.ex")
+                || in_tests_dir()
+        }
+        // C / C++: no single canonical convention; fall back to dir + the
+        // common `*_test` / `*_tests` / `test_*` filename markers.
+        Language::C | Language::Cpp => {
+            stem.ends_with("_test")
+                || stem.ends_with("_tests")
+                || file_name.starts_with("test_")
+                || in_tests_dir()
+        }
         _ => {
-            // Generic test detection
-            file_name.contains("test") || in_tests_dir()
+            // Generic: PascalCase-aware suffix + directory conventions.
+            stem.ends_with("Test")
+                || stem.ends_with("Tests")
+                || stem.ends_with("Spec")
+                || stem.ends_with("_test")
+                || stem.ends_with("_spec")
+                || file_name.starts_with("test_")
+                || in_tests_dir()
+                || in_spec_dir()
+                || in_dunder_tests()
         }
     }
 }
 
-/// Find test files affected by the changes
+/// Normalize a path to a project-relative, slash-normalized form so that
+/// paths originating from different sources (absolute filesystem walks vs.
+/// relative call-graph edges) can be compared on equal footing.
+///
+/// cl3-test-linkage-v1 (CL-3 / GH #35): the call graph stores
+/// project-relative paths (via `normalize_path_relative_to_root` in the v2
+/// builder), while `get_all_project_files` and the git-diff detectors yield
+/// *absolute* paths. The old `find_affected_tests` compared these two
+/// representations directly with `HashSet::contains`, so steps 2 and 3 never
+/// matched — colocated test files that *contained* affected functions
+/// (`tree_test.go`) or *called* a changed function (`SortedSet Tests.swift`)
+/// were silently dropped from `affected_tests`. Canonicalizing both sides to
+/// the same relative form before the set-compare closes that gap.
+fn to_project_relative(path: &Path, project: &Path) -> PathBuf {
+    // A relative path is, by construction, already in project-relative space
+    // (the call graph and AST extraction store paths this way). Normalize its
+    // slashes / leading `./` and return — never resolve it against the process
+    // cwd via `canonicalize`, which would wrongly absolutize it.
+    let normalize_rel = |p: &Path| -> PathBuf {
+        let s = p.to_string_lossy().replace('\\', "/");
+        PathBuf::from(s.trim_start_matches("./"))
+    };
+    if path.is_relative() {
+        return normalize_rel(path);
+    }
+
+    // Absolute path: strip the project prefix. Try the plain prefix first
+    // (cheap, no IO), then a canonicalized strip (resolves symlinks / `..`),
+    // mirroring the call-graph's own normalization so both representations
+    // land on the same key.
+    if let Ok(rel) = path.strip_prefix(project) {
+        return normalize_rel(rel);
+    }
+    if let (Ok(canon_file), Ok(canon_root)) = (path.canonicalize(), project.canonicalize()) {
+        if let Ok(rel) = canon_file.strip_prefix(&canon_root) {
+            return normalize_rel(rel);
+        }
+    }
+    // Unrelated absolute path: fall back to the normalized original so it at
+    // least compares consistently with itself.
+    normalize_rel(path)
+}
+
+/// Find test files affected by the changes.
+///
+/// All membership comparisons are performed in project-relative space (see
+/// [`to_project_relative`]) so that absolute filesystem paths (`test_files`,
+/// `changed_files`) and the relative paths stored on call-graph edges /
+/// affected functions compare equal.
 fn find_affected_tests(
     test_files: &HashSet<PathBuf>,
     changed_files: &[PathBuf],
     affected_functions: &[FunctionRef],
     call_graph: &ProjectCallGraph,
+    project: &Path,
 ) -> Vec<PathBuf> {
-    let mut affected_tests = HashSet::new();
+    // Map each test file's relative key back to its original (caller-facing)
+    // path so the report surfaces the path the caller would actually run.
+    let mut rel_to_test: HashMap<PathBuf, PathBuf> = HashMap::new();
+    for tf in test_files {
+        rel_to_test.insert(to_project_relative(tf, project), tf.clone());
+    }
 
-    // 1. Test files that were directly changed
+    let mut affected_rel: HashSet<PathBuf> = HashSet::new();
+
+    // 1. Test files that were directly changed.
     for file in changed_files {
-        if test_files.contains(file) {
-            affected_tests.insert(file.clone());
+        let rel = to_project_relative(file, project);
+        if rel_to_test.contains_key(&rel) {
+            affected_rel.insert(rel);
         }
     }
 
-    // 2. Test files that contain affected functions
-    let affected_files: HashSet<&PathBuf> = affected_functions.iter().map(|f| &f.file).collect();
-    for test_file in test_files {
-        if affected_files.contains(test_file) {
-            affected_tests.insert(test_file.clone());
+    // 2. Test files that contain affected functions.
+    let affected_rel_files: HashSet<PathBuf> = affected_functions
+        .iter()
+        .map(|f| to_project_relative(&f.file, project))
+        .collect();
+    for rel in rel_to_test.keys() {
+        if affected_rel_files.contains(rel) {
+            affected_rel.insert(rel.clone());
         }
     }
 
-    // 3. Test files that call any changed function
-    let changed_file_set: HashSet<&PathBuf> = changed_files.iter().collect();
+    // 3. Test files that call any changed function.
+    let changed_rel: HashSet<PathBuf> = changed_files
+        .iter()
+        .map(|f| to_project_relative(f, project))
+        .collect();
     for edge in call_graph.edges() {
-        // If source is a test file and destination is in a changed file
-        if test_files.contains(&edge.src_file) && changed_file_set.contains(&edge.dst_file) {
-            affected_tests.insert(edge.src_file.clone());
+        let src_rel = to_project_relative(&edge.src_file, project);
+        let dst_rel = to_project_relative(&edge.dst_file, project);
+        if rel_to_test.contains_key(&src_rel) && changed_rel.contains(&dst_rel) {
+            affected_rel.insert(src_rel);
         }
     }
 
-    let mut result: Vec<PathBuf> = affected_tests.into_iter().collect();
+    let mut result: Vec<PathBuf> = affected_rel
+        .into_iter()
+        .map(|rel| rel_to_test.get(&rel).cloned().unwrap_or(rel))
+        .collect();
     result.sort();
     result
 }
@@ -1264,6 +1403,67 @@ mod tests {
         ));
         assert!(is_test_file(Path::new("src/lib/tests.rs"), Language::Rust));
         assert!(!is_test_file(Path::new("src/main.rs"), Language::Rust));
+    }
+
+    // cl3-test-linkage-v1 (CL-3 / GH #35): Swift PascalCase `Tests/` arm.
+    #[test]
+    fn test_is_test_file_swift() {
+        // PascalCase `*Tests.swift` (even with a space in the stem) under a
+        // capital-`Tests/` directory — the case the generic lowercase arm
+        // missed entirely.
+        assert!(is_test_file(
+            Path::new("Tests/SortedCollectionsTests/SortedSet/SortedSet Tests.swift"),
+            Language::Swift
+        ));
+        assert!(is_test_file(
+            Path::new("Tests/HeapTests/HeapTests.swift"),
+            Language::Swift
+        ));
+        assert!(is_test_file(Path::new("FooSpec.swift"), Language::Swift));
+        // Production source must NOT register as a test.
+        assert!(!is_test_file(
+            Path::new("Sources/HeapModule/Heap.swift"),
+            Language::Swift
+        ));
+        // `latest.swift` must not false-positive on a lowercase `test`
+        // substring (the old generic-arm trap).
+        assert!(!is_test_file(Path::new("Sources/latest.swift"), Language::Swift));
+    }
+
+    // cl3-test-linkage-v1: the old generic arm matched any lowercase `test`
+    // substring, falsely flagging production files. The PascalCase-aware
+    // generic arm and per-language arms must not.
+    #[test]
+    fn test_is_test_file_no_substring_false_positive() {
+        // `contestant.go` contains "test" but is not a Go test file.
+        assert!(!is_test_file(Path::new("contestant.go"), Language::Go));
+        // `latest.py` is not a Python test.
+        assert!(!is_test_file(Path::new("src/latest.py"), Language::Python));
+    }
+
+    // cl3-test-linkage-v1: find_affected_tests must compare paths from
+    // different sources (absolute filesystem walk vs. relative call-graph
+    // edges) on equal footing. Affected-function files that land in a test
+    // file must surface even when the test-file set is absolute and the
+    // affected-function path is relative.
+    #[test]
+    fn test_find_affected_tests_path_normalization() {
+        let project = Path::new("/proj");
+        // test_files come from the filesystem walk -> absolute.
+        let mut test_files = HashSet::new();
+        test_files.insert(PathBuf::from("/proj/tree_test.go"));
+        // affected functions come from the call graph -> relative.
+        let affected = vec![FunctionRef::new(
+            PathBuf::from("tree_test.go"),
+            "TestX".to_string(),
+        )];
+        let cg = ProjectCallGraph::new();
+        let result = find_affected_tests(&test_files, &[], &affected, &cg, project);
+        assert_eq!(
+            result,
+            vec![PathBuf::from("/proj/tree_test.go")],
+            "absolute test_file must match a relative affected-function path"
+        );
     }
 
     #[test]

@@ -12,52 +12,82 @@ use super::is_generated_file;
 /// - Python: test_*.py, *_test.py
 /// - Go: *_test.go
 /// - Rust: *_test.rs (integration tests; unit tests in same file are not filtered)
-/// - Ruby: *_spec.rb
-/// - JavaScript/TypeScript: *.test.ts, *.test.js, *.spec.ts, *.spec.js
-/// - Java: *Test.java
-/// - C#: *Tests.cs
-/// - Directories: tests/, test/, __tests__/, spec/, testing/
+/// - Ruby: *_test.rb, *_spec.rb
+/// - JavaScript/TypeScript: *.test.{ts,tsx,js,jsx}, *.spec.{ts,tsx,js,jsx}
+/// - Java: *Test.java, *Tests.java, *IT.java
+/// - Kotlin: *Test.kt, *Tests.kt
+/// - Scala: *Spec.scala, *Test.scala
+/// - C#: *Tests.cs, *Test.cs
+/// - Swift: *Tests.swift, *Test.swift, *Spec.swift
+/// - PHP: *Test.php
+/// - Elixir: *_test.exs
+/// - Directories: tests/, test/, __tests__/, spec/, testing/ (case-insensitive)
+///
+/// cl3-test-linkage-v1 (CL-3 / GH #35): the prior matcher lacked the TSX/JSX
+/// suffixes (the literal #35 bug — colocated `Component.test.tsx` tests were
+/// undercounted by `whatbreaks`) and several PascalCase conventions
+/// (`*Tests.swift`, `*Test.kt`, `*Spec.scala`, `*Test.php`). Directory probes
+/// are now case-insensitive on the component boundary so Swift's capital
+/// `Tests/` directory registers too.
 pub fn is_test_file(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
     let file_name = path
         .file_name()
         .map(|f| f.to_string_lossy())
         .unwrap_or_default();
 
-    // Check test directory patterns (with leading slash)
-    if path_str.contains("/tests/")
-        || path_str.contains("/test/")
-        || path_str.contains("/__tests__/")
-        || path_str.contains("/spec/")
-        || path_str.contains("/testing/")
-    {
+    // Check test directory patterns case-insensitively, on the path-component
+    // boundary so `/Tests/` and `/tests/` both register while `/contests/`
+    // does not.
+    let in_test_dir = path.components().any(|c| {
+        c.as_os_str().to_str().is_some_and(|s| {
+            s.eq_ignore_ascii_case("tests")
+                || s.eq_ignore_ascii_case("test")
+                || s.eq_ignore_ascii_case("__tests__")
+                || s.eq_ignore_ascii_case("spec")
+                || s.eq_ignore_ascii_case("specs")
+                || s.eq_ignore_ascii_case("testing")
+        })
+    });
+    if in_test_dir {
         return true;
     }
 
-    // Also handle paths that START with test directory names
-    // (relative paths without leading slash)
-    if path_str.starts_with("tests/")
-        || path_str.starts_with("test/")
-        || path_str.starts_with("__tests__/")
-        || path_str.starts_with("spec/")
-        || path_str.starts_with("testing/")
-    {
-        return true;
-    }
-
-    // Check test file name patterns
+    // Check test file name patterns.
     let name = file_name.as_ref();
     name.starts_with("test_")
+        // Python / Go / Rust / Ruby snake-case conventions.
         || name.ends_with("_test.py")
         || name.ends_with("_test.go")
         || name.ends_with("_test.rs")
+        || name.ends_with("_test.rb")
         || name.ends_with("_spec.rb")
+        // Elixir ExUnit.
+        || name.ends_with("_test.exs")
+        // JS/TS Jest/Mocha — including the TSX/JSX variants (the GH #35 bug).
         || name.ends_with(".test.ts")
+        || name.ends_with(".test.tsx")
         || name.ends_with(".test.js")
+        || name.ends_with(".test.jsx")
         || name.ends_with(".spec.ts")
+        || name.ends_with(".spec.tsx")
         || name.ends_with(".spec.js")
+        || name.ends_with(".spec.jsx")
+        // JVM / .NET PascalCase suffixes.
         || name.ends_with("Test.java")
+        || name.ends_with("Tests.java")
+        || name.ends_with("IT.java")
+        || name.ends_with("Test.kt")
+        || name.ends_with("Tests.kt")
+        || name.ends_with("Spec.scala")
+        || name.ends_with("Test.scala")
         || name.ends_with("Tests.cs")
+        || name.ends_with("Test.cs")
+        // Swift XCTest.
+        || name.ends_with("Tests.swift")
+        || name.ends_with("Test.swift")
+        || name.ends_with("Spec.swift")
+        // PHP PHPUnit.
+        || name.ends_with("Test.php")
 }
 
 /// Discover source files for clone detection.

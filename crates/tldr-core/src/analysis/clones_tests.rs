@@ -1556,6 +1556,25 @@ mod preserved_behaviors {
         assert!(is_test_file(Path::new("api.spec.js")));
         assert!(is_test_file(Path::new("UserTest.java")));
         assert!(is_test_file(Path::new("UserTests.cs")));
+
+        // cl3-test-linkage-v1 (CL-3 / GH #35): the literal #35 bug — colocated
+        // TSX/JSX test files must be recognized.
+        assert!(is_test_file(Path::new("Button.test.tsx")));
+        assert!(is_test_file(Path::new("Button.test.jsx")));
+        assert!(is_test_file(Path::new("Button.spec.tsx")));
+        assert!(is_test_file(Path::new("Button.spec.jsx")));
+        // PascalCase conventions across the JVM / mobile / .NET families.
+        assert!(is_test_file(Path::new("HeapTests.swift")));
+        assert!(is_test_file(Path::new("SortedSet Tests.swift")));
+        assert!(is_test_file(Path::new("FooSpec.swift")));
+        assert!(is_test_file(Path::new("ParserTest.kt")));
+        assert!(is_test_file(Path::new("StreamSpec.scala")));
+        assert!(is_test_file(Path::new("ServiceTest.php")));
+        assert!(is_test_file(Path::new("RouterTests.java")));
+        // Swift capital-`Tests/` directory.
+        assert!(is_test_file(Path::new(
+            "Tests/SortedCollectionsTests/SortedSet/SortedSet Tests.swift"
+        )));
     }
 
     #[test]
