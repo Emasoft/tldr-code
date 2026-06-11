@@ -14,7 +14,7 @@ use std::path::Path;
 use tree_sitter::Node;
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class, interface, and trait definitions from PHP source code
@@ -77,23 +77,45 @@ fn extract_class_declaration(
     let line = node.start_position().row as u32 + 1;
     let mut class_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Php);
 
+    // cl11-implements-v1 (#82): track the per-base InheritanceKind in a
+    // vector parallel to `bases`. The PHP grammar already distinguishes
+    // `base_clause` (extends) from `class_interface_clause` (implements);
+    // without propagating that, every implemented interface collapses to
+    // `extends` at edge-build time.
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
     // Walk children to find base_clause and class_interface_clause
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "base_clause" => {
-                extract_names_from_clause(&child, source, &mut bases);
+                extract_names_from_clause(
+                    &child,
+                    source,
+                    &mut bases,
+                    &mut kinds,
+                    InheritanceKind::Extends,
+                );
             }
             "class_interface_clause" => {
-                extract_names_from_clause(&child, source, &mut bases);
+                extract_names_from_clause(
+                    &child,
+                    source,
+                    &mut bases,
+                    &mut kinds,
+                    InheritanceKind::Implements,
+                );
             }
             _ => {}
         }
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     class_node.bases = bases;
+    if !kinds.is_empty() {
+        class_node.base_kinds = Some(kinds);
+    }
 
     // Check for abstract modifier
     if has_modifier(node, source, "abstract") {
@@ -120,17 +142,31 @@ fn extract_interface_declaration(
     let mut iface_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Php);
     iface_node.interface = Some(true);
 
+    // cl11-implements-v1 (#82): an interface extending another interface is
+    // an `extends` relationship (Extends). Tag explicitly so the parallel
+    // base_kinds vector stays consistent with classes.
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
     // Interfaces can extend other interfaces via base_clause
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "base_clause" {
-            extract_names_from_clause(&child, source, &mut bases);
+            extract_names_from_clause(
+                &child,
+                source,
+                &mut bases,
+                &mut kinds,
+                InheritanceKind::Extends,
+            );
         }
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     iface_node.bases = bases;
+    if !kinds.is_empty() {
+        iface_node.base_kinds = Some(kinds);
+    }
 
     Some(iface_node)
 }
@@ -160,18 +196,30 @@ fn extract_trait_declaration(
 ///
 /// These clauses contain `name` or `qualified_name` children mixed with
 /// keywords ("extends", "implements") and comma separators.
-fn extract_names_from_clause(node: &Node, source: &str, bases: &mut Vec<String>) {
+///
+/// cl11-implements-v1 (#82): every name extracted from this clause is tagged
+/// with the caller-supplied `kind` (Extends for `base_clause`, Implements for
+/// `class_interface_clause`), pushed into `kinds` parallel to `bases`.
+fn extract_names_from_clause(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "name" => {
                 if let Ok(text) = child.utf8_text(source.as_bytes()) {
                     bases.push(text.to_string());
+                    kinds.push(kind);
                 }
             }
             "qualified_name" => {
                 if let Ok(text) = child.utf8_text(source.as_bytes()) {
                     bases.push(text.to_string());
+                    kinds.push(kind);
                 }
             }
             _ => {}

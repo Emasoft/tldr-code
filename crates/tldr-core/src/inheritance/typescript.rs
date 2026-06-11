@@ -13,7 +13,7 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class and interface definitions from TypeScript source code
@@ -90,19 +90,27 @@ fn extract_class(
         class_node.is_abstract = Some(true);
     }
 
-    // Extract from class_heritage (extends/implements)
+    // Extract from class_heritage (extends/implements).
+    // cl11-implements-v1 (#82): track the per-base InheritanceKind in a
+    // vector parallel to `bases` so `extends SuperClass` (Extends) is not
+    // collapsed onto `implements Interface` (Implements) at edge-build time.
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
     // Find heritage clauses - look for class_heritage node
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "class_heritage" {
-                extract_heritage_clauses(&child, source, &mut bases);
+                extract_heritage_clauses(&child, source, &mut bases, &mut kinds);
             }
         }
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     class_node.bases = bases;
+    if !kinds.is_empty() {
+        class_node.base_kinds = Some(kinds);
+    }
 
     Some(class_node)
 }
@@ -122,34 +130,54 @@ fn extract_interface(node: &Node, source: &str, file_path: &Path) -> Option<Inhe
     );
     iface_node.interface = Some(true);
 
-    // Extract extends for interfaces
+    // Extract extends for interfaces.
+    // cl11-implements-v1 (#82): an interface extending another interface is
+    // an `extends` relationship (Extends), not `implements`. Tag explicitly
+    // so the parallel base_kinds vector stays consistent with classes.
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             // Interface uses extends_clause for inheritance
             if child.kind() == "extends_type_clause" {
-                extract_type_list(&child, source, &mut bases);
+                extract_type_list(&child, source, &mut bases, &mut kinds, InheritanceKind::Extends);
             }
         }
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     iface_node.bases = bases;
+    if !kinds.is_empty() {
+        iface_node.base_kinds = Some(kinds);
+    }
 
     Some(iface_node)
 }
 
-fn extract_heritage_clauses(node: &Node, source: &str, bases: &mut Vec<String>) {
+/// Walk a `class_heritage` node, dispatching on the AST clause kind to tag
+/// each base with the correct `InheritanceKind`.
+///
+/// cl11-implements-v1 (#82): the tree-sitter grammar already distinguishes
+/// `extends_clause` from `implements_clause`; we propagate that distinction
+/// into `kinds` (parallel to `bases`) instead of letting everything default
+/// to `Extends` downstream.
+fn extract_heritage_clauses(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    kinds: &mut Vec<InheritanceKind>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "extends_clause" => {
                     // extends SuperClass
-                    extract_type_from_clause(&child, source, bases);
+                    extract_type_from_clause(&child, source, bases, kinds, InheritanceKind::Extends);
                 }
                 "implements_clause" => {
                     // implements Interface1, Interface2
-                    extract_type_list(&child, source, bases);
+                    extract_type_list(&child, source, bases, kinds, InheritanceKind::Implements);
                 }
                 _ => {}
             }
@@ -157,21 +185,35 @@ fn extract_heritage_clauses(node: &Node, source: &str, bases: &mut Vec<String>) 
     }
 }
 
-fn extract_type_from_clause(node: &Node, source: &str, bases: &mut Vec<String>) {
+fn extract_type_from_clause(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if let Some(name) = extract_type_name(&child, source) {
                 bases.push(name);
+                kinds.push(kind);
             }
         }
     }
 }
 
-fn extract_type_list(node: &Node, source: &str, bases: &mut Vec<String>) {
+fn extract_type_list(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if let Some(name) = extract_type_name(&child, source) {
                 bases.push(name);
+                kinds.push(kind);
             }
         }
     }
