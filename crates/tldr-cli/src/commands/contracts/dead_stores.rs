@@ -363,10 +363,20 @@ pub fn find_dead_stores_dfg(
                 .find(|(_, block_id, _)| *block_id == def_block_id);
 
             if let Some(&(next_def_line, _, _)) = next_def_in_block {
-                // Check if there's any use between this def and the next def in the same block
+                // Check if there's any use between this def and the next def in the same block.
+                //
+                // CL-13 (cl12_13_dfg_v1): the upper boundary is inclusive
+                // (`<= next_def_line`), not strict. A read-then-write
+                // statement `x = f(x)` records the `Use` of `x` on the SAME
+                // source line as the new `Definition`: RHS evaluation (which
+                // reads the OLD value) happens before the LHS write. With a
+                // strict `<` boundary that read was excluded and the prior
+                // store was wrongly flagged dead. An inclusive boundary still
+                // detects genuine dead stores (`x = 1; x = 2`) because there
+                // the redefinition line carries no read of `x`.
                 let has_use_between = uses
                     .iter()
-                    .any(|&use_line| use_line > def_line && use_line < next_def_line);
+                    .any(|&use_line| use_line > def_line && use_line <= next_def_line);
 
                 if !has_use_between {
                     // This is a dead store - overwritten before use in the same block

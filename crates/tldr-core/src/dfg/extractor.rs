@@ -1482,6 +1482,15 @@ impl<'a> DfgBuilder<'a> {
     fn process_augmented_assignment(&mut self, node: Node) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
+                // CL-13 (cl12_13_dfg_v1): an op-assign (`x += 1`, Ruby
+                // `operator_assignment`, Python `augmented_assignment`)
+                // BOTH reads the prior value of `x` and writes a new one.
+                // Recording only the `Update` lost the implicit read, so a
+                // prior store `x = 0` looked dead even though `x += 1`
+                // consumes it. Emit the implicit `Use` first (it observes
+                // the value live at entry to this statement) and then the
+                // `Update` write-back.
+                self.add_ref_from_node(left, RefType::Use);
                 self.add_ref_from_node(left, RefType::Update);
             }
         }
@@ -1650,6 +1659,15 @@ impl<'a> DfgBuilder<'a> {
     fn process_c_style_augmented_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
+                // CL-13 (cl12_13_dfg_v1): C-style op-assign (`x += 1` in
+                // JS/TS/Java/C/C++/Rust) reads the prior value of `x` before
+                // writing the result back. Emit the implicit `Use` so the
+                // read is visible to dead-store and reaching-defs analysis,
+                // then the `Update` write-back. (Member/subscript targets
+                // such as `obj.f += 1` / `arr[i] += 1` are left to recursion
+                // below — only bare-identifier targets carry a simple-variable
+                // read.)
+                self.add_ref_from_node(left, RefType::Use);
                 self.add_ref_from_node(left, RefType::Update);
             }
         }
@@ -1933,6 +1951,11 @@ impl<'a> DfgBuilder<'a> {
             });
 
             if is_update {
+                // CL-13 (cl12_13_dfg_v1): Go op-assign (`x += 1`) reads the
+                // prior value before writing it back. Record the implicit
+                // `Use` of each bare-identifier target so the read is visible
+                // to dead-store / reaching-defs analysis, then the `Update`.
+                self.extract_go_lhs_identifiers_as(left, RefType::Use)?;
                 self.extract_go_lhs_identifiers_as(left, RefType::Update)?;
             } else {
                 self.extract_go_lhs_identifiers_as(left, RefType::Definition)?;
@@ -3180,6 +3203,25 @@ impl<'a> DfgBuilder<'a> {
             if gkind == "emit_statement" {
                 if let Some(name) = grand.child_by_field_name("name") {
                     if name.id() == parent.id() {
+                        return Some(false);
+                    }
+                }
+            }
+
+            // CL-12 (cl12_13_dfg_v1): revert_statement
+            // `revert MyError(args)` parses as
+            //   revert_statement
+            //     revert
+            //     [error] expression > identifier   <- the custom-error name
+            //     revert_arguments ( ... )          <- args (real uses)
+            // The `[error]` identifier names a custom error type, not a
+            // local variable, so it must never be classified as a use (it
+            // has no defining write in the function body and was being
+            // reported as definite-uninitialized). The `revert_arguments`
+            // operands fall through to normal use classification.
+            if gkind == "revert_statement" {
+                if let Some(err) = grand.child_by_field_name("error") {
+                    if err.id() == parent.id() {
                         return Some(false);
                     }
                 }
@@ -4446,7 +4488,16 @@ fn is_keyword(name: &str, language: Language) -> bool {
                 | "false"
                 | "final"
                 | "for"
-                | "from"
+                // CL-12 (cl12_13_dfg_v1): `from` is NOT a Solidity keyword.
+                // It is an ordinary identifier — the canonical
+                // ERC-20/721 `transferFrom(address from, ...)` parameter
+                // and a common local name (`address from = _ownerOf(id)`).
+                // Listing it as a keyword silently dropped every read of a
+                // variable named `from`, hiding real uses (false dead-stores)
+                // and breaking def-use chains. Member-access property names,
+                // callees and assignment targets named `from` are already
+                // excluded by `solidity_use_context`, so removing it here
+                // only records genuine variable references.
                 | "function"
                 | "global"
                 | "if"
