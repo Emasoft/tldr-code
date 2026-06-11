@@ -645,6 +645,14 @@ impl<'a> CfgBuilder<'a> {
             // Route it through the same `process_for_loop` handler —
             // the `body` field lookup works identically.
             "enhanced_for_statement" => self.process_for_loop(node, depth)?,
+            // cl4-cyclomatic-v1 (GH #76): C# spells its for-each construct
+            // `foreach_statement` (distinct from the classical three-part
+            // `for_statement`). It carries a `body` field block, so the
+            // generic `process_for_loop` handler — which looks up `body` —
+            // produces the loop block + back-edge correctly. Without this arm
+            // the foreach fell through to the catch-all `_` branch and emitted
+            // no loop structure at all (degenerate CFG).
+            "foreach_statement" => self.process_for_loop(node, depth)?,
             "while_statement" | "while_expression" => self.process_while_loop(node, depth)?,
             "loop_expression" => self.process_loop_expression(node, depth)?,
             "try_statement" => self.process_try_statement(node, depth)?,
@@ -680,6 +688,15 @@ impl<'a> CfgBuilder<'a> {
                 match self.language {
                     Language::Swift => self.process_swift_switch(node, depth)?,
                     Language::C | Language::Cpp => self.process_c_switch(node, depth)?,
+                    // cl4-cyclomatic-v1 (GH #76): C# spells switch arms as
+                    // `switch_section` children under a `switch_body` (not
+                    // C's `case_statement` under a `compound_statement`, nor
+                    // Swift's `switch_entry`). The Swift fallback handler only
+                    // recognised `switch_entry`, so on C# the switch collapsed
+                    // to a single branch+join pair with NO per-case decision
+                    // edges (degenerate CFG). Dispatch to the dedicated
+                    // per-section handler.
+                    Language::CSharp => self.process_csharp_switch(node, depth)?,
                     _ => self.process_swift_switch(node, depth)?,
                 }
             }
@@ -2226,6 +2243,135 @@ impl<'a> CfgBuilder<'a> {
                         // continue block AND pushes it into
                         // loop_exit_blocks) — that's exactly what we want
                         // tied to the join.
+                        if !self.exit_blocks.contains(&self.current_block_id) {
+                            self.add_edge(
+                                self.current_block_id,
+                                join_block,
+                                EdgeType::Unconditional,
+                                None,
+                            );
+                        }
+                        case_count += 1;
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        if case_count == 0 {
+            self.add_edge(branch_block, join_block, EdgeType::Unconditional, None);
+        }
+
+        self.current_block_id = join_block;
+        Ok(())
+    }
+
+    /// cl4-cyclomatic-v1 (GH #76) Process a C# `switch_statement`.
+    ///
+    /// Pre-fix the C# switch routed through `process_swift_switch`, which
+    /// only knew about Swift's `switch_entry` arm-kind, so C# switches
+    /// collapsed to one branch+join block pair with zero per-case decision
+    /// edges (the same degenerate-CFG symptom the C/C++ handler fixed in
+    /// cfg-c-java-scala-control-flow-v1).
+    ///
+    /// Grammar shape (verified via the `dump_cs_inspect` example against the
+    /// `csharp-newtonsoft-bson` corpus):
+    ///
+    /// ```text
+    /// switch_statement
+    ///   switch
+    ///   ( value: <expr> )
+    ///   body: switch_body
+    ///     {
+    ///     switch_section          ← 1..N (each is one case arm)
+    ///       case | default
+    ///       constant_pattern | … (absent on `default`)
+    ///       :
+    ///       <statements…>         (the case body, may include break/return)
+    ///     }
+    /// ```
+    ///
+    /// Strategy mirrors `process_c_switch`: a branch (dispatch) block and a
+    /// join (post-switch) block, then for each `switch_section` an arm block
+    /// wired with a True/False decision edge, recursion into the section's
+    /// body statements, and a fall-through edge to the join unless the body
+    /// terminated via `return` (→ `exit_blocks`).
+    fn process_csharp_switch(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let start_line = node.start_position().row as u32 + 1;
+        let end_line = node.end_position().row as u32 + 1;
+
+        let scrutinee = node.child_by_field_name("value").map(|n| {
+            n.utf8_text(self.source.as_bytes())
+                .unwrap_or("")
+                .to_string()
+        });
+
+        let branch_block = self.new_block(BlockType::Branch, start_line, start_line);
+        self.add_edge(
+            self.current_block_id,
+            branch_block,
+            EdgeType::Unconditional,
+            None,
+        );
+        let join_block = self.new_block(BlockType::Body, end_line, end_line);
+
+        let body = node.child_by_field_name("body");
+        let mut case_count = 0usize;
+        if let Some(body_node) = body {
+            let mut cursor = body_node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "switch_section" {
+                        let c_start = child.start_position().row as u32 + 1;
+                        let c_end = child.end_position().row as u32 + 1;
+                        let arm_block = self.new_block(BlockType::Body, c_start, c_end);
+                        let edge_type = if case_count == 0 {
+                            EdgeType::True
+                        } else {
+                            EdgeType::False
+                        };
+                        self.add_edge(branch_block, arm_block, edge_type, scrutinee.clone());
+
+                        // Walk the section's children. A `switch_section`
+                        // begins with one or more `case`/`default` label
+                        // groups (the `case` keyword, the pattern, and the
+                        // `:` token); the remaining named children are the
+                        // case body statements. Dispatch every body statement
+                        // through `process_statement` so break/return are
+                        // honoured.
+                        self.current_block_id = arm_block;
+                        let mut sec_cursor = child.walk();
+                        if sec_cursor.goto_first_child() {
+                            loop {
+                                let sec_child = sec_cursor.node();
+                                let ck = sec_child.kind();
+                                if ck != "case"
+                                    && ck != "default"
+                                    && ck != ":"
+                                    && !sec_child.is_extra()
+                                    && sec_child.is_named()
+                                    // The case-label pattern nodes (e.g.
+                                    // `constant_pattern`, `relational_pattern`)
+                                    // carry no control-flow weight; only true
+                                    // statements should be descended into.
+                                    && ck.ends_with("_statement")
+                                {
+                                    self.process_statement(sec_child, depth + 1)?;
+                                }
+                                if !sec_cursor.goto_next_sibling() {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Wire fall-through edge to join unless the section
+                        // body returned (→ exit_blocks). A C# `break`
+                        // redirects `current_block_id` to a synthetic
+                        // loop-exit block (via `process_break_statement`),
+                        // which is exactly the case-terminator we want tied to
+                        // the join.
                         if !self.exit_blocks.contains(&self.current_block_id) {
                             self.add_edge(
                                 self.current_block_id,

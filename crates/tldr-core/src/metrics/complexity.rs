@@ -20,6 +20,10 @@ use crate::ast::function_finder::{
     find_function_node, get_function_body, get_function_name, get_function_node_kinds,
 };
 use crate::ast::parser::{parse, parse_file};
+// cl4-cyclomatic-v1 (GH #75): reuse the catchall-arm detectors from the
+// canonical cognitive calculator so cyclomatic and cognitive agree on which
+// match/when arms are decision points (single source of truth).
+use crate::metrics::cognitive::{is_kotlin_else_when_entry, is_ocaml_wildcard_match_case};
 use crate::error::TldrError;
 use crate::types::{ComplexityMetrics, Language};
 use crate::TldrResult;
@@ -431,6 +435,83 @@ impl<'a> ComplexityCalculator<'a> {
             "do_while_statement" if matches!(self.language, Language::Solidity) => {
                 self.cyclomatic += 1;
             }
+
+            // ---------------------------------------------------------------
+            // cl4-cyclomatic-v1 (GH #75, #76): per-language decision-node
+            // arms that the canonical cognitive calculator already credits
+            // (see `cognitive::CognitiveCalculator::count_cyclomatic_increment`,
+            // the proven-correct reference). The expression-oriented grammars
+            // (Kotlin / Scala / OCaml) expose `if`/`when`/`match` as
+            // `*_expression` rather than `*_statement`, so none of the generic
+            // `_statement`/`_clause` arms above ever fired — branchy functions
+            // collapsed to `cyclomatic = 1`. C# exposes its switch as
+            // `switch_section` arms under a `switch_body` (and its for-each as
+            // `foreach_statement`), neither of which had any arm here.
+            // ---------------------------------------------------------------
+
+            // Kotlin / Scala / OCaml: `if` is an expression.
+            "if_expression"
+                if matches!(
+                    self.language,
+                    Language::Kotlin | Language::Scala | Language::Ocaml
+                ) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // Kotlin `when (...)` dispatch: the construct itself is a decision
+            // point, and each non-`else` `when_entry` adds another arm.
+            "when_expression" if matches!(self.language, Language::Kotlin) => {
+                self.cyclomatic += 1;
+            }
+            "when_entry"
+                if matches!(self.language, Language::Kotlin)
+                    && !is_kotlin_else_when_entry(node) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // Scala / OCaml `match` dispatch. The Scala `case_clause` and
+            // OCaml `match_case` arms are credited below (Scala via the
+            // unconditional `case_clause` arm above; OCaml via `match_case`
+            // here) — this credits the dispatch construct itself.
+            "match_expression"
+                if matches!(self.language, Language::Scala | Language::Ocaml) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // NOTE: OCaml's `function | ...` form (node `function_expression`)
+            // is deliberately NOT credited as a dispatch construct here, to
+            // stay byte-for-byte in step with the canonical cognitive
+            // cyclomatic (see `cognitive::count_cyclomatic_increment`, which
+            // credits `match_expression` but not `function_expression`). Each
+            // `function | pat -> ...` arm is still counted via the `match_case`
+            // arm below, so the McCabe decision count is exact. Crediting the
+            // construct too would double-count by one relative to the
+            // `tldr cognitive --include-cyclomatic` reference and reintroduce
+            // the cross-command drift BUG-7 closed.
+            // OCaml `match_case` arms (each non-wildcard `| pat -> ...`).
+            "match_case"
+                if matches!(self.language, Language::Ocaml)
+                    && !is_ocaml_wildcard_match_case(node, self.source) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // C# `switch (...) { case ...: ... }`. Each non-`default`
+            // `switch_section` is a decision arm. The `default` section is the
+            // catchall and is NOT credited (mirrors the C/C++ `default`
+            // convention and the cognitive catchall helpers).
+            "switch_section"
+                if matches!(self.language, Language::CSharp)
+                    && !is_csharp_default_switch_section(node) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // C# `foreach (T x in xs) { ... }` is a loop / back-edge. The
+            // classical 3-part `for_statement` and `while_statement` are
+            // already credited by the generic arms above; the for-each form
+            // is a distinct node kind that had no arm.
+            "foreach_statement" if matches!(self.language, Language::CSharp) => {
+                self.cyclomatic += 1;
+            }
             _ => {}
         }
 
@@ -439,6 +520,23 @@ impl<'a> ComplexityCalculator<'a> {
             if let Some(op) = node.child_by_field_name("operator") {
                 let op_text = op.utf8_text(self.source.as_bytes()).unwrap_or("");
                 if op_text == "and" || op_text == "or" || op_text == "&&" || op_text == "||" {
+                    self.cyclomatic += 1;
+                }
+            }
+        }
+
+        // cl4-cyclomatic-v1 (GH #75): Scala spells short-circuit boolean
+        // operators as an `infix_expression` whose `operator` field is an
+        // `operator_identifier` node carrying the `&&` / `||` text — a node
+        // shape the `boolean_operator`/`binary_expression` arm above never
+        // matches. Without this, `if ((a ne null) && (b ne null))` and the
+        // like contribute zero decision points on Scala. Gated on
+        // Language::Scala so the `infix_expression` cognate (which some other
+        // grammars reuse for arithmetic) can't double-count elsewhere.
+        if matches!(self.language, Language::Scala) && kind == "infix_expression" {
+            if let Some(op) = node.child_by_field_name("operator") {
+                let op_text = op.utf8_text(self.source.as_bytes()).unwrap_or("");
+                if op_text == "&&" || op_text == "||" {
                     self.cyclomatic += 1;
                 }
             }
@@ -578,6 +676,32 @@ pub(crate) fn is_ruby_loop_call(node: tree_sitter::Node, source: &str) -> bool {
     node.child_by_field_name("block")
         .map(|b| matches!(b.kind(), "do_block" | "block"))
         .unwrap_or(false)
+}
+
+/// cl4-cyclomatic-v1 (GH #75): C# — a `switch_section` whose first child is
+/// the `default` keyword is the catchall arm and is NOT a decision point
+/// (mirrors the C/C++ `default` convention). A normal case section starts
+/// with the `case` keyword.
+///
+/// Grammar shape (verified against tree-sitter-c-sharp):
+/// ```text
+/// switch_body
+///   switch_section          ← `case <pattern>: ...`
+///     case
+///     constant_pattern | ...
+///     :
+///     <statements>
+///   switch_section          ← `default: ...`
+///     default
+///     :
+///     <statements>
+/// ```
+fn is_csharp_default_switch_section(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return false;
+    }
+    cursor.node().kind() == "default"
 }
 
 #[cfg(test)]

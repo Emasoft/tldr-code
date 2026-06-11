@@ -1339,7 +1339,11 @@ fn is_scala_wildcard_arm(node: Node, source: &str) -> bool {
 
 /// Kotlin: a `when_entry` whose first child is the `else` token is the
 /// catchall arm and is NOT credited.
-fn is_kotlin_else_when_entry(node: Node) -> bool {
+///
+/// cl4-cyclomatic-v1 (GH #75): exposed `pub(crate)` so the cyclomatic
+/// calculator in `complexity.rs` reuses the SAME catchall-detection logic
+/// (single source of truth — the cognitive walker is the proven reference).
+pub(crate) fn is_kotlin_else_when_entry(node: Node) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;
@@ -1363,7 +1367,10 @@ fn is_kotlin_else_when_entry(node: Node) -> bool {
 
 /// OCaml: a `match_case` whose first pattern child is a `value_pattern`
 /// containing only `_` is the catchall arm and is NOT credited.
-fn is_ocaml_wildcard_match_case(node: Node, source: &str) -> bool {
+///
+/// cl4-cyclomatic-v1 (GH #75): exposed `pub(crate)` so `complexity.rs`
+/// reuses the SAME catchall-detection logic as the cognitive walker.
+pub(crate) fn is_ocaml_wildcard_match_case(node: Node, source: &str) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;
