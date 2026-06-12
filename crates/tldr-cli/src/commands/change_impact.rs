@@ -24,7 +24,7 @@ use tldr_core::{
 };
 
 use crate::output::{format_change_impact_text, OutputFormat, OutputWriter};
-use crate::path_validation::infer_project_root_for_file;
+use crate::path_validation::{infer_project_root_for_file, rebase_file_onto_root};
 
 /// Find tests affected by code changes
 #[derive(Debug, Args)]
@@ -132,7 +132,13 @@ impl ChangeImpactArgs {
                 // built from `project` but only this file is treated as
                 // "changed".
                 let inferred = infer_project_root_for_file(&self.path);
-                (inferred, Some(vec![self.path.clone()]))
+                // fix-cl-10-v1 (v0.5.0 CL-10): re-base the file onto the
+                // inferred root so the downstream `project_root.join(file)`
+                // reconstructs the file's true absolute path instead of
+                // doubling a shared leading segment (the inferred root is
+                // absolute, but `self.path` was relative to the CWD).
+                let rebased = rebase_file_onto_root(&self.path, &inferred);
+                (inferred, Some(vec![rebased]))
             } else if self.path.is_dir() {
                 (self.path.clone(), None)
             } else {

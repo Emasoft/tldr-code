@@ -121,6 +121,42 @@ pub fn infer_project_root_for_file(file_path: &Path) -> PathBuf {
     }
 }
 
+/// Re-base a (possibly relative) `file_path` so it is expressed RELATIVE to
+/// `project_root`, suitable for a downstream `project_root.join(rebased)` that
+/// must reconstruct the file's true absolute location.
+///
+/// fix-cl-10-v1 (v0.5.0 CL-10): the single-file change-impact path promoted a
+/// CWD-relative file into the explicit change set while the inferred project
+/// root was an ABSOLUTE (canonicalised) ancestor directory. Downstream
+/// `project_root.join(file)` then concatenated the absolute root with a
+/// relative path whose leading components were already part of the root,
+/// producing a DOUBLED path (`/repo/core/core/...`,
+/// `/repo/Src/X/Src/X/...`) that does not exist — AST extraction failed and
+/// results came back silently empty.
+///
+/// Both inputs are canonicalised so the relative computation is exact even
+/// across symlinked temp dirs (`/var` vs `/private/var`). When the file is not
+/// inside the root (no common prefix), or canonicalisation fails, the original
+/// `file_path` is returned unchanged so callers degrade to prior behaviour
+/// rather than fabricate a wrong path.
+pub fn rebase_file_onto_root(file_path: &Path, project_root: &Path) -> PathBuf {
+    let canonical_file = match file_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return file_path.to_path_buf(),
+    };
+    let canonical_root = match project_root.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return file_path.to_path_buf(),
+    };
+    match canonical_file.strip_prefix(&canonical_root) {
+        Ok(rel) => rel.to_path_buf(),
+        // File lives outside the inferred root: hand back the absolute file so
+        // the downstream `is_absolute()` branch uses it directly (no join, no
+        // doubling).
+        Err(_) => canonical_file,
+    }
+}
+
 /// Validate that `path` exists and is a directory, producing clear error
 /// messages on failure.
 ///
