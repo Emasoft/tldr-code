@@ -1466,6 +1466,38 @@ fn walk_for_assertion_calls(
         try_extract_java_mockmvc_assertion(&node, source, test_func_name, specs);
     }
 
+    // cl7-test-frameworks-v1 (CL-7): Jest/mocha (JS/TS) and RSpec (Ruby)
+    // express assertions as a fluent member call whose RECEIVER is an
+    // `expect(actual)` call and whose tail method is a matcher
+    // (`toBe`/`toEqual`/`toStrictEqual` for Jest; `to`/`not_to`+`eq(...)`
+    // for RSpec). The function-under-test is the argument of the inner
+    // `expect(...)`; the expected value is the matcher's argument. Neither
+    // shape has a flat `assertEquals`-style callee, so the generic
+    // tail-name classifier never fired. Handle them structurally here.
+    if matches!(language, Language::JavaScript | Language::TypeScript)
+        && node.kind() == "call_expression"
+    {
+        if try_extract_js_expect_assertion(&node, source, test_func_name, specs) {
+            // Recurse still (nested expects inside callbacks), but the
+            // matched node itself is consumed.
+        }
+    }
+    if matches!(language, Language::Ruby) && node.kind() == "call" {
+        if try_extract_ruby_expect_assertion(&node, source, test_func_name, specs) {
+            // Recurse to catch further assertions in the block.
+        }
+    }
+
+    // cl7-test-frameworks-v1 (CL-7): OCaml ppx tests express checks as
+    // ordinary applications: `let%test _ = equal (f x) y` or alcotest
+    // `check int "desc" expected (f x)`. tree-sitter-ocaml models calls as
+    // `application_expression`, which the generic call-shape matcher below
+    // does not include. Promote OCaml structural equality / check
+    // applications to specs structurally.
+    if matches!(language, Language::Ocaml) && node.kind() == "application_expression" {
+        try_extract_ocaml_assertion(&node, source, test_func_name, specs);
+    }
+
     let kind = node.kind();
     let is_call = matches!(
         kind,
@@ -1859,6 +1891,420 @@ fn classify_mockmvc_matcher(node: Node, source: &[u8]) -> String {
     }
 }
 
+/// cl7-test-frameworks-v1 (CL-7): Jest/mocha (JS/TS) fluent assertion.
+///
+/// Recognises `expect(<actual>).<matcher>(<expected>)` where:
+///   - the outer node is a `call_expression` whose `function` field is a
+///     `member_expression`,
+///   - the member's `object` is a `call_expression` whose callee identifier
+///     is `expect`,
+///   - the member's `property` is a known equality matcher
+///     (`toBe` / `toEqual` / `toStrictEqual`).
+///
+/// The function-under-test is the single argument of the inner `expect(...)`
+/// (when it is itself a call); the expected value is the matcher's argument.
+/// Returns true when a spec was emitted.
+fn try_extract_js_expect_assertion(
+    call: &Node,
+    source: &[u8],
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) -> bool {
+    // outer call_expression -> function: member_expression
+    let member = match call.child_by_field_name("function") {
+        Some(m) if m.kind() == "member_expression" => m,
+        _ => return false,
+    };
+    // member.property is the matcher name.
+    let matcher = match member.child_by_field_name("property") {
+        Some(p) => get_node_text(p, source),
+        None => return false,
+    };
+    // member.object must be an `expect(<actual>)` call.
+    let object = match member.child_by_field_name("object") {
+        Some(o) if o.kind() == "call_expression" => o,
+        _ => return false,
+    };
+    let inner_callee = match object.child_by_field_name("function") {
+        Some(f) => get_node_text(f, source),
+        None => return false,
+    };
+    if inner_callee != "expect" {
+        return false;
+    }
+
+    // First positional argument of `expect(...)` is the actual / FUT call.
+    let expect_args = collect_call_args(object);
+    let actual = match expect_args.first() {
+        Some(a) => *a,
+        None => return false,
+    };
+    let fut = match first_callable_inside(actual) {
+        Some(c) => c,
+        None => return false,
+    };
+    let (fname, inputs) = match generic_extract_call_info(fut, source) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let line = call.start_position().row as u32 + 1;
+    let fs = ensure_entry(specs, &fname);
+    match matcher {
+        "toBe" | "toEqual" | "toStrictEqual" | "toMatchObject" => {
+            // Equality matcher: matcher arg is the expected output.
+            let matcher_args = collect_call_args(*call);
+            let output = matcher_args
+                .first()
+                .map(|n| try_eval_literal(*n, source))
+                .unwrap_or(serde_json::Value::Null);
+            fs.input_output_specs.push(InputOutputSpec {
+                function: fname,
+                inputs,
+                output,
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::High,
+            });
+            true
+        }
+        "toBeNull" | "toBeUndefined" => {
+            fs.property_specs.push(PropertySpec {
+                function: fname,
+                property_type: "null".to_string(),
+                constraint: "result == null".to_string(),
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::Medium,
+            });
+            true
+        }
+        "toBeDefined" | "toBeTruthy" => {
+            fs.property_specs.push(PropertySpec {
+                function: fname,
+                property_type: "truthy".to_string(),
+                constraint: "result is truthy".to_string(),
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::Medium,
+            });
+            true
+        }
+        "toBeFalsy" => {
+            fs.property_specs.push(PropertySpec {
+                function: fname,
+                property_type: "falsy".to_string(),
+                constraint: "result is falsy".to_string(),
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::Medium,
+            });
+            true
+        }
+        "toThrow" | "toThrowError" => {
+            fs.exception_specs.push(ExceptionSpec {
+                function: fname,
+                exception_type: "Error".to_string(),
+                match_pattern: None,
+                inputs,
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::Medium,
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// cl7-test-frameworks-v1 (CL-7): RSpec (Ruby) fluent assertion.
+///
+/// Recognises `expect(<actual>).to <matcher>` / `.not_to <matcher>`, where
+/// the tree-sitter-ruby shape is a `call` node:
+///   - `receiver`: a `call` whose method is `expect` (arg = actual / FUT),
+///   - `method`: `to` / `not_to` / `to_not`,
+///   - `arguments`: the matcher, commonly `eq(<expected>)` (a nested call)
+///     or a bare matcher identifier like `be_nil`.
+fn try_extract_ruby_expect_assertion(
+    call: &Node,
+    source: &[u8],
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) -> bool {
+    // method must be to / not_to / to_not.
+    let method = match call.child_by_field_name("method") {
+        Some(m) => get_node_text(m, source),
+        None => return false,
+    };
+    let negated = match method {
+        "to" => false,
+        "not_to" | "to_not" => true,
+        _ => return false,
+    };
+    // receiver must be `expect(<actual>)`.
+    let receiver = match call.child_by_field_name("receiver") {
+        Some(r) if r.kind() == "call" => r,
+        _ => return false,
+    };
+    let recv_method = match receiver.child_by_field_name("method") {
+        Some(m) => get_node_text(m, source),
+        None => return false,
+    };
+    if recv_method != "expect" {
+        return false;
+    }
+    let expect_args = collect_call_args(receiver);
+    let actual = match expect_args.first() {
+        Some(a) => *a,
+        None => return false,
+    };
+    let fut = match first_callable_inside(actual) {
+        Some(c) => c,
+        None => return false,
+    };
+    let (fname, inputs) = match generic_extract_call_info(fut, source) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    // Inspect the matcher argument: `eq(...)` / `eql(...)` / `be_nil` / etc.
+    let matcher_args = collect_call_args(*call);
+    let matcher = matcher_args.first().copied();
+    let line = call.start_position().row as u32 + 1;
+    let fs = ensure_entry(specs, &fname);
+
+    if let Some(m) = matcher {
+        // Equality matcher `eq(expected)` / `eql(expected)`.
+        if m.kind() == "call" {
+            if let Some(mn) = m.child_by_field_name("method") {
+                let mname = get_node_text(mn, source);
+                if matches!(mname, "eq" | "eql" | "equal") && !negated {
+                    let m_args = collect_call_args(m);
+                    let output = m_args
+                        .first()
+                        .map(|n| try_eval_literal(*n, source))
+                        .unwrap_or(serde_json::Value::Null);
+                    fs.input_output_specs.push(InputOutputSpec {
+                        function: fname,
+                        inputs,
+                        output,
+                        test_function: test_func_name.to_string(),
+                        line,
+                        confidence: Confidence::High,
+                    });
+                    return true;
+                }
+            }
+        }
+        // Bare matcher identifier `be_nil`, `be_truthy`, `be_falsey`, etc.
+        let m_text = get_node_text(m, source);
+        let (ptype, constraint) = ruby_matcher_property(m_text, negated);
+        fs.property_specs.push(PropertySpec {
+            function: fname,
+            property_type: ptype,
+            constraint,
+            test_function: test_func_name.to_string(),
+            line,
+            confidence: Confidence::Medium,
+        });
+        return true;
+    }
+    false
+}
+
+/// Map an RSpec bare matcher (`be_nil`, `be_truthy`, …) to a property
+/// (type, constraint) pair, honouring `not_to` negation.
+fn ruby_matcher_property(matcher: &str, negated: bool) -> (String, String) {
+    let tail = matcher.trim();
+    match tail {
+        "be_nil" => {
+            if negated {
+                ("not_null".to_string(), "result != nil".to_string())
+            } else {
+                ("null".to_string(), "result == nil".to_string())
+            }
+        }
+        "be_truthy" | "be_true" => {
+            if negated {
+                ("falsy".to_string(), "result is falsy".to_string())
+            } else {
+                ("truthy".to_string(), "result is truthy".to_string())
+            }
+        }
+        "be_falsey" | "be_false" => {
+            if negated {
+                ("truthy".to_string(), "result is truthy".to_string())
+            } else {
+                ("falsy".to_string(), "result is falsy".to_string())
+            }
+        }
+        other => {
+            let prefix = if negated { "not " } else { "" };
+            (
+                "matcher".to_string(),
+                format!("result {}{}", prefix, other),
+            )
+        }
+    }
+}
+
+/// cl7-test-frameworks-v1 (CL-7): OCaml ppx / alcotest assertion.
+///
+/// tree-sitter-ocaml models calls as `application_expression` with a
+/// `function` child (the callee) and one or more `argument` children. Two
+/// common test shapes:
+///   - structural equality: `equal (f x) y` / `String.equal (f x) y` —
+///     callee tail is `equal`; the FUT is the call inside the first arg,
+///     the expected value is the second arg.
+///   - alcotest `check`: `check int "desc" expected (f x)` — callee tail is
+///     `check`; the FUT is the call inside the last argument and the
+///     expected value is the preceding argument.
+fn try_extract_ocaml_assertion(
+    app: &Node,
+    source: &[u8],
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) -> bool {
+    let func = match app.child_by_field_name("function") {
+        Some(f) => f,
+        None => return false,
+    };
+    let callee = get_node_text(func, source);
+    let tail = callee.rsplit('.').next().unwrap_or(&callee).trim();
+
+    // Collect the positional argument children (field name "argument").
+    let mut args: Vec<Node> = Vec::new();
+    let mut cursor = app.walk();
+    for child in app.children(&mut cursor) {
+        if let Some(fname) = ocaml_field_name(app, &child) {
+            if fname == "argument" {
+                args.push(child);
+            }
+        }
+    }
+    if args.is_empty() {
+        return false;
+    }
+
+    let line = app.start_position().row as u32 + 1;
+
+    match tail {
+        // Structural equality helpers: `equal a b`, `String.equal a b`,
+        // `Int.equal a b`. The FUT lives in one argument (the one that is /
+        // contains an application), the expected in the other.
+        "equal" | "equal_string" | "equal_int" if args.len() >= 2 => {
+            let (fut_arg, val_arg) = if ocaml_arg_has_application(args[0]) {
+                (args[0], args[1])
+            } else if ocaml_arg_has_application(args[1]) {
+                (args[1], args[0])
+            } else {
+                return false;
+            };
+            let fut = match ocaml_first_application(fut_arg) {
+                Some(c) => c,
+                None => return false,
+            };
+            let (fname, inputs) = match ocaml_application_info(fut, source) {
+                Some(v) => v,
+                None => return false,
+            };
+            let output = try_eval_literal(val_arg, source);
+            let fs = ensure_entry(specs, &fname);
+            fs.input_output_specs.push(InputOutputSpec {
+                function: fname,
+                inputs,
+                output,
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::High,
+            });
+            true
+        }
+        // Alcotest `check testable "desc" expected actual`: 4 args; FUT in the
+        // last, expected in the second-to-last.
+        "check" if args.len() >= 4 => {
+            let actual = args[args.len() - 1];
+            let expected = args[args.len() - 2];
+            let fut = match ocaml_first_application(actual) {
+                Some(c) => c,
+                None => return false,
+            };
+            let (fname, inputs) = match ocaml_application_info(fut, source) {
+                Some(v) => v,
+                None => return false,
+            };
+            let output = try_eval_literal(expected, source);
+            let fs = ensure_entry(specs, &fname);
+            fs.input_output_specs.push(InputOutputSpec {
+                function: fname,
+                inputs,
+                output,
+                test_function: test_func_name.to_string(),
+                line,
+                confidence: Confidence::High,
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Field name of `child` within `parent` (tree-sitter doesn't expose this
+/// off the child directly; walk the parent's cursor to find it).
+fn ocaml_field_name<'a>(parent: &Node<'a>, child: &Node<'a>) -> Option<&'static str> {
+    let mut cursor = parent.walk();
+    for (i, c) in parent.children(&mut cursor).enumerate() {
+        if c.id() == child.id() {
+            return parent.field_name_for_child(i as u32);
+        }
+    }
+    None
+}
+
+/// True when an OCaml argument node is, or contains, an
+/// `application_expression` (a function call) — used to pick the FUT side.
+fn ocaml_arg_has_application(node: Node) -> bool {
+    ocaml_first_application(node).is_some()
+}
+
+/// Find the first `application_expression` at or within `node` (unwrapping
+/// `parenthesized_expression`).
+fn ocaml_first_application(node: Node) -> Option<Node> {
+    if node.kind() == "application_expression" {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = ocaml_first_application(child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Extract `(function_name, inputs)` from an OCaml `application_expression`.
+fn ocaml_application_info(
+    app: Node,
+    source: &[u8],
+) -> Option<(String, Vec<serde_json::Value>)> {
+    let func = app.child_by_field_name("function")?;
+    let callee = get_node_text(func, source);
+    let tail = callee.rsplit('.').next().unwrap_or(&callee).trim();
+    if tail.is_empty() || is_known_assertion_callee(tail) {
+        return None;
+    }
+    let mut inputs: Vec<serde_json::Value> = Vec::new();
+    let mut cursor = app.walk();
+    for child in app.children(&mut cursor) {
+        if let Some(fname) = ocaml_field_name(&app, &child) {
+            if fname == "argument" {
+                inputs.push(try_eval_literal(child, source));
+            }
+        }
+    }
+    Some((tail.to_string(), inputs))
+}
+
 /// Tail identifier of the callable expression.
 fn generic_callee_name(call: &Node, source: &[u8]) -> Option<String> {
     if let Some(f) = call.child_by_field_name("function") {
@@ -2023,6 +2469,18 @@ fn collect_call_args<'a>(call: Node<'a>) -> Vec<Node<'a>> {
                 {
                     return Some(child);
                 }
+                // cl7-test-frameworks-v1 (CL-7): tree-sitter-swift nests
+                // arguments under `call_suffix > value_arguments`, so the
+                // direct-child scan above misses them. Descend one level
+                // into `call_suffix` to find the `value_arguments` list.
+                if k == "call_suffix" {
+                    let mut sub = child.walk();
+                    for grand in child.children(&mut sub) {
+                        if grand.kind() == "value_arguments" {
+                            return Some(grand);
+                        }
+                    }
+                }
             }
             None
         })
@@ -2066,6 +2524,68 @@ fn collect_call_args<'a>(call: Node<'a>) -> Vec<Node<'a>> {
     out
 }
 
+/// cl7-test-frameworks-v1 (CL-7): Swift property-read equality.
+///
+/// For `expectEqual(<a>, <b>)` where one side is a Swift
+/// `navigation_expression` (a property/member read like `set.count`),
+/// return `(fut_name, inputs, value_arg)` so the caller records an
+/// input/output spec: the accessor tail (`count`) is the function-under-test,
+/// the receiver (`set`) is the single input, and the OTHER argument is the
+/// expected output. Returns `None` when neither side is a member read.
+fn swift_member_equality<'a>(
+    a: Node<'a>,
+    b: Node<'a>,
+    source: &[u8],
+    language: Language,
+) -> Option<(String, Vec<serde_json::Value>, Node<'a>)> {
+    if !matches!(language, Language::Swift) {
+        return None;
+    }
+    // Prefer the LEFT side as the actual (XCTest convention is
+    // `expectEqual(actual, expected)`), but accept either being the member
+    // read.
+    for (actual, value) in [(a, b), (b, a)] {
+        if actual.kind() == "navigation_expression" {
+            // Tail accessor name = the property/method being read.
+            let suffix = actual.child_by_field_name("suffix")?;
+            // navigation_suffix -> suffix: simple_identifier
+            let name_node = suffix
+                .child_by_field_name("suffix")
+                .unwrap_or(suffix);
+            let name = get_node_text(name_node, source).trim().to_string();
+            if name.is_empty() || is_known_assertion_callee(&name) {
+                continue;
+            }
+            // Receiver text becomes the (single) input observation.
+            let receiver = actual.child_by_field_name("target");
+            let inputs = receiver
+                .map(|r| try_eval_literal(r, source))
+                .into_iter()
+                .collect::<Vec<_>>();
+            return Some((name, inputs, value));
+        }
+    }
+    None
+}
+
+/// Get (or create) the `FunctionSpecs` entry for `name` in `specs`.
+///
+/// Shared by the framework-specific assertion extractors
+/// (cl7-test-frameworks-v1) and the generic classifier.
+fn ensure_entry<'a>(
+    specs: &'a mut HashMap<String, FunctionSpecs>,
+    name: &str,
+) -> &'a mut FunctionSpecs {
+    specs.entry(name.to_string()).or_insert_with(|| FunctionSpecs {
+        function_name: name.to_string(),
+        summary: String::new(),
+        test_count: 0,
+        input_output_specs: vec![],
+        exception_specs: vec![],
+        property_specs: vec![],
+    })
+}
+
 /// Classify a single assertion call based on the tail of its callee name.
 fn classify_assertion_call(
     call: &Node,
@@ -2077,22 +2597,18 @@ fn classify_assertion_call(
 ) {
     let line = call.start_position().row as u32 + 1;
 
-    // Helper to get a fresh entry in `specs`.
-    fn ensure<'a>(
-        specs: &'a mut HashMap<String, FunctionSpecs>,
-        name: &str,
-    ) -> &'a mut FunctionSpecs {
-        specs.entry(name.to_string()).or_insert_with(|| FunctionSpecs {
-            function_name: name.to_string(),
-            summary: String::new(),
-            test_count: 0,
-            input_output_specs: vec![],
-            exception_specs: vec![],
-            property_specs: vec![],
-        })
-    }
+    // Local alias for the shared entry helper (cl7-test-frameworks-v1).
+    let ensure = ensure_entry;
 
     // Equality assertions: assertEquals(expected, actual) / AreEqual etc.
+    //
+    // cl7-test-frameworks-v1 (CL-7): Swift XCTest/swift-testing expose the
+    // equality helpers `expectEqual` / `XCTAssertEqual` as flat calls of the
+    // form `expectEqual(actual, expected)`; both are now recognised here so
+    // XCTest suites (which use `expectEqual` far more than `XCTAssertEqual`)
+    // yield input/output specs. Scala MUnit's `assertEquals` is already in
+    // this set. OCaml's structural `equal`/`String.equal` helpers are handled
+    // via the OCaml-specific path, not here.
     let is_equality = matches!(
         callee_tail,
         "assertEquals"
@@ -2106,6 +2622,10 @@ fn classify_assertion_call(
             | "should_eq"
             | "shouldBe"
             | "shouldEqual"
+            // Swift XCTest / swift-testing equality helpers.
+            | "expectEqual"
+            | "XCTAssertEqual"
+            | "expectEqualElements"
     );
 
     // Inequality assertions
@@ -2120,26 +2640,53 @@ fn classify_assertion_call(
     );
 
     // Boolean truthy / falsy assertions
+    // cl7-test-frameworks-v1 (CL-7): Swift XCTest `XCTAssertTrue` /
+    // `XCTAssertFalse` and swift-testing `expectTrue` / `expectFalse`.
     let is_true = matches!(
         callee_tail,
-        "assertTrue" | "IsTrue" | "True" | "assert" | "assert_true"
+        "assertTrue"
+            | "IsTrue"
+            | "True"
+            | "assert"
+            | "assert_true"
+            | "XCTAssertTrue"
+            | "expectTrue"
     );
     let is_false = matches!(
         callee_tail,
-        "assertFalse" | "IsFalse" | "False" | "assert_false"
+        "assertFalse"
+            | "IsFalse"
+            | "False"
+            | "assert_false"
+            | "XCTAssertFalse"
+            | "expectFalse"
     );
 
     // Nullness assertions
+    // cl7-test-frameworks-v1 (CL-7): Swift `XCTAssertNotNil` /
+    // `XCTAssertNil` and swift-testing `expectNotNil` / `expectNil`.
     let is_not_null = matches!(
         callee_tail,
-        "assertNotNull" | "IsNotNull" | "NotNull" | "assert_some"
+        "assertNotNull"
+            | "IsNotNull"
+            | "NotNull"
+            | "assert_some"
+            | "XCTAssertNotNil"
+            | "expectNotNil"
     );
     let is_null = matches!(
         callee_tail,
-        "assertNull" | "IsNull" | "Null" | "assert_none"
+        "assertNull"
+            | "IsNull"
+            | "Null"
+            | "assert_none"
+            | "XCTAssertNil"
+            | "expectNil"
     );
 
     // Exception assertions
+    // cl7-test-frameworks-v1 (CL-7): Swift XCTest `XCTAssertThrowsError` and
+    // swift-testing `#expect(throws:)` helper `expectThrows`.
     let is_throws = matches!(
         callee_tail,
         "assertThrows"
@@ -2149,6 +2696,7 @@ fn classify_assertion_call(
             | "Throws_"
             | "should_panic"
             | "expectThrows"
+            | "XCTAssertThrowsError"
     );
 
     // language-specific-bugs-v1 (P14.AGG14-9): Rust macro_invocation
@@ -2201,7 +2749,33 @@ fn classify_assertion_call(
             match (looks_like_call(args[1]), looks_like_call(args[0])) {
                 (true, _) => (args[1], args[0]),
                 (false, true) => (args[0], args[1]),
-                _ => return,
+                _ => {
+                    // cl7-test-frameworks-v1 (CL-7): Swift XCTest /
+                    // swift-testing assertions overwhelmingly compare a
+                    // PROPERTY READ against an expected value, e.g.
+                    // `expectEqual(set.count, count)`. Neither side is a
+                    // call_expression, so the call-shaped picker above
+                    // bails. Treat a `navigation_expression`
+                    // (`receiver.member`) as the function-under-test: the
+                    // accessor tail (`count`) is the FUT name and the
+                    // receiver is the (single) input. This recovers
+                    // input/output specs for the dominant XCTest shape.
+                    if let Some((fname, inputs, value_arg)) =
+                        swift_member_equality(args[0], args[1], source, language)
+                    {
+                        let output = try_eval_literal(value_arg, source);
+                        let fs = ensure(specs, &fname);
+                        fs.input_output_specs.push(InputOutputSpec {
+                            function: fname,
+                            inputs,
+                            output,
+                            test_function: test_func_name.to_string(),
+                            line,
+                            confidence: Confidence::Medium,
+                        });
+                    }
+                    return;
+                }
             }
         };
         if let Some((fname, inputs)) =
@@ -2460,6 +3034,29 @@ fn is_known_assertion_callee(name: &str) -> bool {
             | "should_eq"
             | "shouldBe"
             | "shouldEqual"
+            // cl7-test-frameworks-v1 (CL-7): Swift XCTest / swift-testing,
+            // Jest/RSpec matcher heads, and OCaml helpers that must never be
+            // treated as functions-under-test when they appear nested.
+            | "expectEqual"
+            | "expectEqualElements"
+            | "XCTAssertEqual"
+            | "XCTAssertTrue"
+            | "XCTAssertFalse"
+            | "XCTAssertNil"
+            | "XCTAssertNotNil"
+            | "XCTAssertThrowsError"
+            | "expectTrue"
+            | "expectFalse"
+            | "expectNil"
+            | "expectNotNil"
+            | "expectThrows"
+            | "expect"
+            | "toBe"
+            | "toEqual"
+            | "toStrictEqual"
+            | "toMatch"
+            | "to"
+            | "eq"
     )
 }
 

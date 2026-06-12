@@ -273,7 +273,20 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         // out as `tests/` still count their files. The function-count
         // walker still returns 0 for these — wiring grammar-specific
         // recognisers is left as TODO.
-        Language::C | Language::Cpp | Language::Ocaml => {
+        // OCaml: dune test stanzas live under `test/` / `tests/` dirs and
+        // are conventionally named `*_test.ml` / `*_tests.ml`, plus
+        // ppx_expect suites under `expect-tests/`. Accept any `.ml`/`.mli`
+        // whose name or path signals a test (cl7-test-frameworks-v1, CL-7).
+        Language::Ocaml => {
+            (lower.ends_with(".ml") || lower.ends_with(".mli"))
+                && (lower.contains("test")
+                    || lower.contains("spec")
+                    || path.components().any(|c| {
+                        let s = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+                        s == "test" || s == "tests" || s.contains("test")
+                    }))
+        }
+        Language::C | Language::Cpp => {
             lower.contains("test") || lower.contains("spec")
         }
         // v0.5.0 SOL-001: Solidity test convention per oracle —
@@ -336,7 +349,11 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         Language::Lua | Language::Luau => lua_is_test_call(node, source),
         Language::Rust => rust_is_test_function(node, source),
         Language::CSharp => csharp_has_test_attribute(node, source),
-        Language::C | Language::Cpp | Language::Ocaml => false,
+        // cl7-test-frameworks-v1 (CL-7): OCaml dune/ppx test conventions —
+        // `let%test`, `let%test_unit`, `let%expect_test` extension-point
+        // bindings, plus Alcotest `test_case "..."` registrations.
+        Language::Ocaml => ocaml_is_test_binding(node, source),
+        Language::C | Language::Cpp => false,
         // solidity-test-recognizer-v1 (v0.5.0 SOL-009): Foundry/Forge test
         // convention. A function is a test if it is a `function_definition`
         // whose name starts with `test`, `fuzz`, or `invariant_`. The
@@ -640,13 +657,20 @@ fn go_is_top_level_test_function(node: &Node, source: &[u8]) -> bool {
     starts_upper
 }
 
-// -- Scala: `test("...") { ... }` calls ---------------------------------------
+// -- Scala: `test("...") { ... }` / `property("...") { ... }` calls -----------
 fn scala_is_test_call(node: &Node, source: &[u8]) -> bool {
-    // tree-sitter-scala uses `call_expression`; the function child is a
-    // `simple_identifier`/`identifier` named "test". We also accept the
-    // FunSuite naming convention where a class extends `FunSuite` and
-    // calls `test(...)` at class scope. Pattern-matching just the call
-    // shape is sufficient for the common case.
+    // tree-sitter-scala uses `call_expression`. MUnit / ScalaTest FunSuite
+    // register cases with `test("name") { ... }`; ScalaCheck integrations
+    // (`munit.ScalaCheckSuite`, `org.scalatest.prop`) use
+    // `property("name") { ... }`. Both shapes parse as a `call_expression`
+    // whose `function` child is ITSELF a `call_expression` of the form
+    // `test("name")` / `property("name")` (the trailing `{ ... }` block is
+    // the outer call's argument). Accept either by reading the tail
+    // identifier of the callee, descending through the inner
+    // call_expression when present.
+    //
+    // cl7-test-frameworks-v1 (CL-7): the previous predicate only matched
+    // `test`, silently dropping every ScalaCheck `property(...)` suite.
     if node.kind() != "call_expression" {
         return false;
     }
@@ -654,8 +678,66 @@ fn scala_is_test_call(node: &Node, source: &[u8]) -> bool {
         Some(n) => n,
         None => return false,
     };
-    let name = node_text(func_node, source);
-    matches!(name.as_str(), "test")
+    // `test("name") { ... }` parses as call_expression{ function:
+    // call_expression{ function: identifier "test" }, arguments: block }.
+    // Drill into the nested call's function identifier when present.
+    let callee = if func_node.kind() == "call_expression" {
+        func_node
+            .child_by_field_name("function")
+            .unwrap_or(func_node)
+    } else {
+        func_node
+    };
+    let name = node_text(callee, source);
+    let tail = name.rsplit('.').next().unwrap_or(&name);
+    matches!(tail, "test" | "property")
+}
+
+// -- OCaml: `let%test` / `let%expect_test` / Alcotest `test_case` -------------
+//
+// cl7-test-frameworks-v1 (CL-7): tree-sitter-ocaml parses ppx test bindings
+// as a `value_definition` whose children are `let`, `%`, `attribute_id`
+// (the extension name — `test`, `test_unit`, `expect_test`), and a
+// `let_binding`. We recognise any value_definition carrying a test-shaped
+// extension id. Alcotest suites register cases as `test_case "name" speed f`
+// (an `application_expression` whose function tail is `test_case`); accept
+// that shape too so `alcotest`-based suites count their cases.
+fn ocaml_is_test_binding(node: &Node, source: &[u8]) -> bool {
+    match node.kind() {
+        "value_definition" => {
+            // Look for the `%` + `attribute_id` extension marker among the
+            // direct children. The attribute id names the ppx test kind.
+            let mut cursor = node.walk();
+            let mut saw_percent = false;
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "%" => saw_percent = true,
+                    "attribute_id" if saw_percent => {
+                        let id = node_text(child, source);
+                        let tail = id.rsplit('.').next().unwrap_or(&id);
+                        return matches!(
+                            tail,
+                            "test" | "test_unit" | "expect_test" | "test_module"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        // Alcotest: `test_case "desc" `Quick f` — an application whose
+        // callee tail identifier is `test_case`.
+        "application_expression" => {
+            let func = match node.child_by_field_name("function") {
+                Some(f) => f,
+                None => return false,
+            };
+            let name = node_text(func, source);
+            let tail = name.rsplit('.').next().unwrap_or(&name);
+            matches!(tail, "test_case")
+        }
+        _ => false,
+    }
 }
 
 // -- Elixir: `test "..." do ... end` ------------------------------------------

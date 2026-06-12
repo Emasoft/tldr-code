@@ -352,26 +352,122 @@ fn collect_observations(
     let mut observations = Vec::new();
 
     if test_path.is_file() {
-        let file_obs = extract_observations_from_file(test_path, function_filter)?;
-        observations.extend(file_obs);
+        if is_python_test_file(test_path) {
+            let file_obs = extract_observations_from_file(test_path, function_filter)?;
+            observations.extend(file_obs);
+        } else {
+            observations.extend(collect_generic_observations(test_path, function_filter));
+        }
     } else {
-        // Directory: scan all test_*.py files
+        // Directory: scan every file. Python `test_*.py` keeps the full
+        // pytest-aware AST walker; every other language is routed through
+        // the shared multi-framework spec extractor (cl7-test-frameworks-v1),
+        // so Jest/XCTest/RSpec/MUnit/dune suites yield observations too.
         for entry in walk_project(test_path)
             .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         {
             let path = entry.path();
-            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-            if file_name.starts_with("test_") && file_name.ends_with(".py") {
+            if is_python_test_file(path) {
                 match extract_observations_from_file(path, function_filter) {
                     Ok(file_obs) => observations.extend(file_obs),
                     Err(_) => continue, // Skip files that fail to parse
                 }
+            } else {
+                observations.extend(collect_generic_observations(path, function_filter));
             }
         }
     }
 
     Ok(observations)
+}
+
+/// True when `path` is a Python pytest-style file the legacy observation
+/// walker should handle directly.
+fn is_python_test_file(path: &Path) -> bool {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    (file_name.starts_with("test_") && file_name.ends_with(".py"))
+        || file_name.ends_with("_test.py")
+}
+
+/// cl7-test-frameworks-v1 (CL-7): derive invariant observations for
+/// non-Python test files by reusing the shared, multi-framework spec
+/// extractor (`specs::run_specs`). Every input/output spec it recovers from
+/// a Jest/XCTest/RSpec/MUnit/dune assertion becomes an `Observation` whose
+/// args are the recorded inputs and whose return value is the asserted
+/// output — exactly the precondition/postcondition mapping the pytest path
+/// produces. Files that aren't recognised as tests yield nothing.
+fn collect_generic_observations(
+    path: &Path,
+    function_filter: Option<&str>,
+) -> Vec<Observation> {
+    let report = match super::specs::run_specs(path, function_filter) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut observations = Vec::new();
+    for func in report.functions {
+        if let Some(filter) = function_filter {
+            if func.function_name != filter {
+                continue;
+            }
+        }
+        for io in func.input_output_specs {
+            let args = io
+                .inputs
+                .iter()
+                .map(observed_value_from_json)
+                .collect::<Vec<_>>();
+            let return_value = Some(observed_value_from_json(&io.output));
+            observations.push(Observation {
+                function_name: io.function,
+                args,
+                return_value,
+            });
+        }
+        // Property specs (truthy/null/etc.) carry no concrete argument
+        // values, but they still pin down a function-under-test. Record an
+        // arg-less observation so non-null / type invariants can form from
+        // the asserted output shape where available.
+        for prop in func.property_specs {
+            let return_value = match prop.property_type.as_str() {
+                "null" => Some(ObservedValue::None),
+                "truthy" => Some(ObservedValue::Bool(true)),
+                "falsy" => Some(ObservedValue::Bool(false)),
+                _ => None,
+            };
+            observations.push(Observation {
+                function_name: prop.function,
+                args: Vec::new(),
+                return_value,
+            });
+        }
+    }
+    observations
+}
+
+/// Convert a `serde_json::Value` (as produced by the spec extractor) into the
+/// invariants engine's `ObservedValue` lattice element.
+fn observed_value_from_json(v: &serde_json::Value) -> ObservedValue {
+    match v {
+        serde_json::Value::Null => ObservedValue::None,
+        serde_json::Value::Bool(b) => ObservedValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                ObservedValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                ObservedValue::Float(f)
+            } else {
+                ObservedValue::Other(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => ObservedValue::String(s.clone()),
+        serde_json::Value::Array(items) => {
+            ObservedValue::List(items.iter().map(observed_value_from_json).collect())
+        }
+        serde_json::Value::Object(_) => ObservedValue::Other(v.to_string()),
+    }
 }
 
 /// Extract observations from a single test file.
