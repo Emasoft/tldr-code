@@ -2817,17 +2817,19 @@ fn extract_type_annotation_preconditions(
     conditions: &mut Vec<Condition>,
     config: &LanguageConfig,
 ) -> ContractsResult<()> {
-    let params = match func.child_by_field_name(config.func_params_field) {
-        Some(p) => p,
-        None => return Ok(()),
-    };
+    let clauses = collect_value_param_clauses(func, config);
+    if clauses.is_empty() {
+        return Ok(());
+    }
 
     // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line, not a leading
     // `@Override` / `@inlinable` / `[Test]` line.
     let line = config.func_decl_line(func);
 
-    // Recursively search for typed parameters
-    extract_typed_params_recursive(params, source, conditions, config, line);
+    // Recursively search for typed parameters across every (curried) clause.
+    for params in clauses {
+        extract_typed_params_recursive(params, source, conditions, config, line);
+    }
 
     Ok(())
 }
@@ -2848,6 +2850,40 @@ fn is_scala_implicit_parameter_group(node: Node) -> bool {
         }
     }
     false
+}
+
+/// cl4-interface-v1 (IT3-scala-01/02/03, GH #78): collect the value
+/// parameter-clause node(s) of a function declaration.
+///
+/// For most languages a function declares exactly one parameter list under
+/// `config.func_params_field`, so `child_by_field_name` is sufficient. Scala
+/// is the exception: a `function_definition` carries BOTH its
+/// `type_parameters` (`[F[_], A]`) and one-or-more curried `parameters`
+/// value clauses (`(capacity: Int)(implicit F: ...)`) under the SAME field
+/// name `parameters`. `child_by_field_name` returns only the first such
+/// child — the type-parameter list — so the real value parameters were
+/// dropped and the type variables were mis-reported as parameters. Here we
+/// select, AST-driven by node KIND, only the `parameters`-kind value clauses
+/// (the type-parameter list has kind `type_parameters` and is excluded).
+fn collect_value_param_clauses<'a>(func: Node<'a>, config: &LanguageConfig) -> Vec<Node<'a>> {
+    if config.language == Language::Scala {
+        let mut clauses = Vec::new();
+        let mut cursor = func.walk();
+        let mut idx = 0u32;
+        for child in func.children(&mut cursor) {
+            if func.field_name_for_child(idx) == Some(config.func_params_field)
+                && child.kind() == "parameters"
+            {
+                clauses.push(child);
+            }
+            idx += 1;
+        }
+        return clauses;
+    }
+    match func.child_by_field_name(config.func_params_field) {
+        Some(p) => vec![p],
+        None => Vec::new(),
+    }
 }
 
 /// Recursively extract typed parameter information.
@@ -3282,10 +3318,10 @@ fn extract_untyped_param_preconditions(
     conditions: &mut Vec<Condition>,
     config: &LanguageConfig,
 ) -> ContractsResult<()> {
-    let params = match func.child_by_field_name(config.func_params_field) {
-        Some(p) => p,
-        None => return Ok(()),
-    };
+    let clauses = collect_value_param_clauses(func, config);
+    if clauses.is_empty() {
+        return Ok(());
+    }
 
     // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line.
     let line = config.func_decl_line(func);
@@ -3293,7 +3329,16 @@ fn extract_untyped_param_preconditions(
     // Collect names already covered by typed_param extraction to avoid duplicates
     let existing_vars: HashSet<String> = conditions.iter().map(|c| c.variable.clone()).collect();
 
-    extract_untyped_params_recursive(params, source, conditions, config, line, &existing_vars);
+    for params in clauses {
+        extract_untyped_params_recursive(
+            params,
+            source,
+            conditions,
+            config,
+            line,
+            &existing_vars,
+        );
+    }
 
     Ok(())
 }

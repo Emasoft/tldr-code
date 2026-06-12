@@ -7332,17 +7332,20 @@ fn extract_scala_function_info(node: &Node, source: &str, is_method: bool) -> Fu
 fn extract_scala_params(node: &Node, source: &str) -> Vec<String> {
     let mut params = Vec::new();
 
-    // Scala has parameters field or look for parameter lists
-    if let Some(params_node) = node.child_by_field_name("parameters") {
-        extract_scala_params_from_list(&params_node, source, &mut params);
-    } else {
-        // Look for parameters or class_parameters children
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            if child.kind() == "parameters" || child.kind() == "class_parameters" {
-                extract_scala_params_from_list(&child, source, &mut params);
-                break;
-            }
+    // cl4-interface-v1 (IT3-scala-01/02/03, GH #78): a Scala
+    // `function_definition` exposes its `type_parameters` (`[F[_], A]`) AND
+    // every curried value `parameters` clause (`(capacity: Int)(implicit
+    // F: ...)`) under the SAME field name `parameters`. The previous code
+    // used `child_by_field_name("parameters")`, which returns only the FIRST
+    // such child — the type-parameter list — so curried value parameters
+    // (e.g. `capacity`) were silently dropped (context emitted `bounded()`).
+    // Walk every child whose node KIND is a value parameter clause
+    // (`parameters` / `class_parameters`); `type_parameters` is excluded by
+    // kind so type variables are never mistaken for value parameters.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameters" || child.kind() == "class_parameters" {
+            extract_scala_params_from_list(&child, source, &mut params);
         }
     }
 

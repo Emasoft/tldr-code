@@ -3283,6 +3283,51 @@ fn check_ts_definition(
                 }
             }
         }
+        // cl4-interface-v1 (IT3-javascript-03, GH #78): member-assignment of
+        // a function — `app.defaultConfiguration = function () { ... }` /
+        // `Foo.prototype.bar = function bar() { ... }`. This is how pre-ES6
+        // modules (Express, much of node core) declare their public API. The
+        // canonical-definition resolver had no arm for `assignment_expression`
+        // whose left side is a `member_expression` and whose right side is a
+        // function value, so `references` returned `definitions: []` for every
+        // such symbol even though `structure` / `extract` / `interface` all
+        // report it. Match AST-driven: left = `member_expression` (or
+        // `subscript_expression`), right = `function_expression` /
+        // `arrow_function` / `function`, and the assigned member name (the
+        // `property` field, or the named function's own `name`) equals the
+        // target symbol. The definition site is anchored at the member name.
+        "assignment_expression" => {
+            let left = node.child_by_field_name("left");
+            let right = node.child_by_field_name("right");
+            if let (Some(left), Some(right)) = (left, right) {
+                let right_is_function = matches!(
+                    right.kind(),
+                    "function_expression" | "arrow_function" | "function" | "generator_function"
+                );
+                if right_is_function {
+                    // The assigned member name comes from the `property`
+                    // field of a `member_expression` left-hand side
+                    // (`app.NAME = ...` / `Foo.prototype.NAME = ...`).
+                    let member_name_node = match left.kind() {
+                        "member_expression" => left.child_by_field_name("property"),
+                        _ => None,
+                    };
+                    if let Some(name_node) = member_name_node {
+                        if name_node.utf8_text(source).unwrap_or("") == symbol {
+                            let signature =
+                                extract_signature(&right, source, Language::TypeScript);
+                            return Ok(Some(Definition {
+                                file: file_path.to_path_buf(),
+                                line: name_node.start_position().row + 1,
+                                column: name_node.start_position().column + 1,
+                                kind: DefinitionKind::Function,
+                                signature,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
 

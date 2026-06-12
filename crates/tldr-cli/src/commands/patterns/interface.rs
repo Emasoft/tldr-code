@@ -1221,11 +1221,45 @@ fn extract_php_signature(func_node: Node, source: &[u8]) -> String {
 
 /// Scala signature.
 fn extract_scala_signature(func_node: Node, source: &[u8]) -> String {
-    let mut sig = String::new();
-
-    if let Some(params) = func_node.child_by_field_name("parameters") {
-        sig.push_str(node_text(params, source));
+    // cl4-interface-v1 (IT3-scala-01/02/03, GH #78): a Scala
+    // `function_definition` exposes BOTH its type-parameter list and every
+    // (possibly curried) value-parameter clause under the SAME field name
+    // `parameters`. The tree-sitter-scala grammar models them as distinct
+    // node KINDS, though: `type_parameters` for `[F[_], A]` and `parameters`
+    // for `(capacity: Int)` / `(implicit F: ...)`. The previous extractor
+    // used `child_by_field_name("parameters")`, which returns only the FIRST
+    // such child — the `type_parameters` list — so the real value parameter
+    // `capacity` was dropped and the type parameters were reported as params.
+    // Walk all field-`parameters` children and keep the curried value
+    // clauses (kind == "parameters"), preserving the leading type-parameter
+    // list separately so generic methods still surface their type variables.
+    let mut type_params = String::new();
+    let mut value_clauses = String::new();
+    let mut cursor = func_node.walk();
+    let mut idx = 0u32;
+    for child in func_node.children(&mut cursor) {
+        if func_node.field_name_for_child(idx) == Some("parameters") {
+            match child.kind() {
+                "type_parameters" => {
+                    // Only one type-parameter list is legal; keep the first.
+                    if type_params.is_empty() {
+                        type_params.push_str(node_text(child, source));
+                    }
+                }
+                "parameters" => {
+                    // Curried value clauses: concatenate each `(...)` clause
+                    // verbatim so `(capacity: Int)(implicit F: ...)` is kept.
+                    value_clauses.push_str(node_text(child, source));
+                }
+                _ => {}
+            }
+        }
+        idx += 1;
     }
+
+    let mut sig = String::new();
+    sig.push_str(&type_params);
+    sig.push_str(&value_clauses);
 
     if let Some(ret) = func_node.child_by_field_name("return_type") {
         sig.push_str(": ");
@@ -1814,6 +1848,7 @@ fn collect_methods_from_body(
                                 methods.push(MethodInfo {
                                     name: method_name,
                                     signature,
+                                    lineno: ec_child.start_position().row as u32 + 1,
                                     is_async,
                                 });
                             }
@@ -2046,10 +2081,19 @@ fn extract_method_info(func_node: Node, source: &[u8], lang: Language) -> Method
     let name = get_node_name(func_node, source, lang).unwrap_or_default();
     let signature = extract_function_signature(func_node, source, lang);
     let is_async = detect_async(func_node, source, lang);
+    // cl4-interface-v1 (IT3-java-03, GH #78): capture the method's own
+    // declaration line so the flat `functions[]` view no longer collapses
+    // every method to the enclosing class line. Anchor to the decl-keyword
+    // line (skipping leading `@Override` / `@ModelAttribute` annotation and
+    // modifier children) via the SAME normaliser `extract` / `explain` /
+    // `slice` use, so the per-method line agrees across every pipeline
+    // (v0.4.2 M-002 convention).
+    let lineno = tldr_core::ast::extract::decl_keyword_line_from_node(&func_node);
 
     MethodInfo {
         name,
         signature,
+        lineno,
         is_async,
     }
 }
@@ -2395,6 +2439,7 @@ fn collect_js_member_exports(
                 let method = MethodInfo {
                     name: member.clone(),
                     signature: signature.clone(),
+                    lineno,
                     is_async,
                 };
                 if let Some(entry) = class_entry {
@@ -2726,30 +2771,22 @@ fn flatten_class_methods_to_functions(
     }
     for class in classes {
         for method in &class.methods {
-            // Method doesn't carry an own line in this schema (see
-            // `types.rs::MethodInfo`); use `(name, class_line)` as the
-            // dedup key, matching the lineno we'll attach below. Two
-            // methods with the same name on the same class would
-            // produce a key collision (overload/companion), but Java
-            // forbids that and Kotlin permits it only when signatures
-            // differ — picking one is the convention `tldr structure`
-            // already follows.
-            let key = (method.name.clone(), class.lineno);
+            // cl4-interface-v1 (IT3-java-03, GH #78): `MethodInfo` now
+            // carries its own declaration line, so the flat `functions[]`
+            // view reports the real per-method line (matching `structure` /
+            // `extract`) instead of collapsing every method to the enclosing
+            // class line. Dedup on `(name, method_line)` — two overloads now
+            // remain distinct because their lines differ.
+            let key = (method.name.clone(), method.lineno);
             if seen.contains(&key) {
                 continue;
             }
             seen.insert(key);
-            // MethodInfo doesn't carry a `lineno` of its own — it
-            // inherits visibility/positioning from the enclosing class
-            // entry. For the flat `functions[]` view, attach the class's
-            // line number as a stable proxy so callers can navigate to
-            // the class declaration. Same convention `tldr extract` uses
-            // for class methods exposed at the file level.
             functions.push(FunctionInfo {
                 name: method.name.clone(),
                 signature: method.signature.clone(),
                 docstring: None,
-                lineno: class.lineno,
+                lineno: method.lineno,
                 is_async: method.is_async,
             });
         }
@@ -3801,6 +3838,7 @@ class Child(Parent, Mixin):
                 methods: vec![MethodInfo {
                     name: "method".to_string(),
                     signature: "(self)".to_string(),
+                    lineno: 11,
                     is_async: false,
                 }],
                 private_method_count: 2,

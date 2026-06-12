@@ -632,7 +632,28 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     };
 
     // Extract parameters
-    if let Some(params_node) = func_node.child_by_field_name("parameters") {
+    if matches!(language, Language::Scala) {
+        // cl4-interface-v1 (IT3-scala-01/02/03, GH #78): a Scala
+        // `function_definition` exposes both its `type_parameters`
+        // (`[F[_], A]`) and one-or-more curried `parameters` value clauses
+        // (`(capacity: Int)(implicit F: ...)`) under the SAME field name
+        // `parameters`. `child_by_field_name("parameters")` returns only the
+        // first child — the type-parameter list — so the value parameter
+        // `capacity` was dropped and the type variables F, A were reported as
+        // params. Select, AST-driven by node KIND, every `parameters`-kind
+        // value clause (the `type_parameters` list is excluded) so curried
+        // generic methods surface their real value parameters.
+        let mut idx = 0u32;
+        let mut cursor = func_node.walk();
+        for child in func_node.children(&mut cursor) {
+            if func_node.field_name_for_child(idx) == Some("parameters")
+                && child.kind() == "parameters"
+            {
+                sig.params.extend(extract_params(child, source));
+            }
+            idx += 1;
+        }
+    } else if let Some(params_node) = func_node.child_by_field_name("parameters") {
         sig.params = extract_params(params_node, source);
     } else if matches!(language, Language::Kotlin) {
         // Kotlin's tree-sitter grammar exposes the parameter list as a

@@ -64,16 +64,20 @@ fn test_46_cpp_enum_only_file_emits_enums_in_structure() {
     assert_eq!(result.files.len(), 1, "expected one file in result");
     let f = &result.files[0];
 
-    // `classes[]` should contain both enum names (treated as types alongside
-    // structs/classes for the purposes of the structure summary).
+    // cl4-interface-v1 (IT3-cpp per-file classes leak, GH #78): enums are
+    // NOT classes. They must be reported via `definitions[]` (kind="enum"),
+    // never folded into the `classes[]` string projection — otherwise
+    // `structure files[].classes` advertises enum names (e.g. tinyxml2's
+    // `Mode` / `XMLError`) as if they were classes. Assert they are ABSENT
+    // from classes[] and PRESENT in definitions[] below.
     assert!(
-        f.classes.iter().any(|c| c == "Status"),
-        "expected `Status` enum in classes[] but got: {:?}",
+        !f.classes.iter().any(|c| c == "Status"),
+        "enum `Status` must NOT appear in classes[]; got: {:?}",
         f.classes
     );
     assert!(
-        f.classes.iter().any(|c| c == "Color"),
-        "expected `Color` enum in classes[] but got: {:?}",
+        !f.classes.iter().any(|c| c == "Color"),
+        "enum `Color` must NOT appear in classes[]; got: {:?}",
         f.classes
     );
 
@@ -121,12 +125,22 @@ fn test_46_cpp_mixed_enums_and_classes() {
 
     let f = &result.files[0];
 
-    // All four types must be present in classes[]
-    for expected in &["Color", "Style", "Widget", "Point"] {
+    // cl4-interface-v1 (IT3-cpp per-file classes leak, GH #78): only the
+    // real class/struct types belong in classes[]; the enums (`Color`,
+    // `Style`) must be excluded and surfaced via definitions[] instead.
+    for expected in &["Widget", "Point"] {
         assert!(
             f.classes.iter().any(|c| c == expected),
-            "expected `{}` in classes[] but got: {:?}",
+            "expected class/struct `{}` in classes[] but got: {:?}",
             expected,
+            f.classes
+        );
+    }
+    for excluded in &["Color", "Style"] {
+        assert!(
+            !f.classes.iter().any(|c| c == excluded),
+            "enum `{}` must NOT appear in classes[]; got: {:?}",
+            excluded,
             f.classes
         );
     }

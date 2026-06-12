@@ -475,6 +475,15 @@ pub struct MethodInfo {
     pub name: String,
     /// Full signature
     pub signature: String,
+    /// Line number of the method definition.
+    ///
+    /// cl4-interface-v1 (IT3-java-03, GH #78): previously `MethodInfo`
+    /// carried no per-method line, so `tldr interface` substituted the
+    /// enclosing class line for every method (every Java/Kotlin method
+    /// collapsed to the `class` declaration line). The real declaration line
+    /// is now captured at extraction time so the flat `functions[]` view and
+    /// the per-class `methods[]` view agree with `structure` / `extract`.
+    pub lineno: u32,
     /// Whether the method is async
     pub is_async: bool,
 }
