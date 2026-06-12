@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tree_sitter::{Node, Tree};
+
 use crate::ast::extract::extract_from_tree;
 use crate::ast::parser::parse;
 use crate::types::{ClassInfo, Language};
@@ -37,6 +39,13 @@ pub fn extract_go_api_surface(
     // Find all Go source files
     let go_files = find_go_files(&resolved.root_dir);
 
+    // Derive the reported package name from the AST `package_clause` of the
+    // first source file rooted directly in the resolved directory, falling
+    // back to the resolver-derived name when none is available. This keeps the
+    // top-level `package` field consistent with the AST package used for every
+    // qualified name (CL-8: AST package, not directory basename).
+    let ast_package = root_go_package_name(&resolved.root_dir, &go_files);
+
     // Extract from each file
     for file_path in &go_files {
         let file_apis = extract_from_go_file(
@@ -55,7 +64,7 @@ pub fn extract_go_api_surface(
 
     let total = apis.len();
     Ok(ApiSurface {
-        package: resolved.package_name.clone(),
+        package: ast_package.unwrap_or_else(|| resolved.package_name.clone()),
         language: "go".to_string(),
         total,
         apis,
@@ -133,8 +142,16 @@ fn extract_from_go_file(
     // Use extract_from_tree to get module info
     let module_info = extract_from_tree(&tree, &source, Language::Go, file_path, Some(root_dir))?;
 
+    // Derive the package name from the AST `package_clause` node rather than
+    // the directory basename. Go's source-level package name (e.g. `package
+    // httprouter`) is authoritative and frequently differs from the on-disk
+    // directory name (e.g. `go-httprouter`). Fall back to the resolver's
+    // package name only when the file has no parseable package clause.
+    let ast_package = extract_go_package_name(&tree, &source);
+    let effective_package = ast_package.as_deref().unwrap_or(package_name);
+
     // Compute package path
-    let module_path = compute_go_package_path(file_path, root_dir, package_name);
+    let module_path = compute_go_package_path(file_path, root_dir, effective_package);
     let relative_path = file_path
         .strip_prefix(root_dir)
         .unwrap_or(file_path)
@@ -285,6 +302,64 @@ fn extract_from_go_file(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Determine the package name for the *root* directory of a resolved Go
+/// package by reading the AST `package_clause` of a top-level source file.
+///
+/// Prefers a `.go` file whose parent directory is `root_dir` itself (the
+/// package's own files) so sub-package directories don't hijack the reported
+/// name. Returns `None` if no top-level file has a parseable package clause.
+fn root_go_package_name(root_dir: &Path, go_files: &[PathBuf]) -> Option<String> {
+    // When the target was a single `.go` file, `root_dir` is that file.
+    let base_dir = if root_dir.is_file() {
+        root_dir.parent().unwrap_or(root_dir)
+    } else {
+        root_dir
+    };
+
+    let candidate = go_files
+        .iter()
+        .find(|f| f.parent() == Some(base_dir))
+        .or_else(|| go_files.first())?;
+
+    let source = std::fs::read_to_string(candidate).ok()?;
+    let tree = parse(&source, Language::Go).ok()?;
+    extract_go_package_name(&tree, &source)
+}
+
+/// Extract the source-level package name from a Go parse tree.
+///
+/// AST-driven: locates the top-level `package_clause` node and reads its
+/// `package_identifier` child (tree-sitter-go grammar: a `package_clause` has
+/// exactly one required `package_identifier` child). Returns `None` when the
+/// file has no package clause (e.g. an empty or malformed file), letting the
+/// caller fall back to the resolver-derived name.
+fn extract_go_package_name(tree: &Tree, source: &str) -> Option<String> {
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "package_clause" {
+            return go_package_identifier_text(&child, source);
+        }
+    }
+    None
+}
+
+/// Read the `package_identifier` text from a `package_clause` node.
+fn go_package_identifier_text(clause: &Node, source: &str) -> Option<String> {
+    let mut cursor = clause.walk();
+    for child in clause.children(&mut cursor) {
+        if child.kind() == "package_identifier" {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                let name = text.trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
 
 /// Compute the Go package path from a file path.
 ///

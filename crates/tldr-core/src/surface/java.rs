@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tree_sitter::{Node, Tree};
+
 use crate::ast::extract::extract_from_tree;
 use crate::ast::parser::parse;
 use crate::types::{ClassInfo, Language};
@@ -91,7 +93,7 @@ fn extract_from_java_file(
 
     let tree = parse(&source, Language::Java)?;
     let module_info = extract_from_tree(&tree, &source, Language::Java, file_path, Some(root_dir))?;
-    let module_path = compute_java_module_path(file_path, root_dir, package_name);
+    let module_path = compute_java_module_path(&tree, &source, file_path, root_dir, package_name);
     let relative_path = file_path
         .strip_prefix(root_dir)
         .unwrap_or(file_path)
@@ -104,7 +106,7 @@ fn extract_from_java_file(
             continue;
         }
 
-        let qualified_name = format!("{}.{}", module_path, class.name);
+        let qualified_name = join_module(&module_path, &class.name);
         let kind = determine_java_kind(class, &source);
         let is_interface = kind == ApiKind::Interface;
 
@@ -203,7 +205,35 @@ fn extract_from_java_file(
     Ok(apis)
 }
 
-fn compute_java_module_path(file_path: &Path, root_dir: &Path, package_name: &str) -> String {
+/// Compute the Java module (package) path for a source file.
+///
+/// AST-driven: the authoritative module path is the file's `package
+/// declaration` node (e.g. `package org.springframework.samples.petclinic;`).
+/// The on-disk directory basename of the resolved target (e.g. `java-petclinic`)
+/// is NOT part of the package and must never be prefixed onto it — doing so
+/// produced bogus dotted paths like `java-petclinic.org.springframework...`
+/// and, for default-package files, an unvalidated leading `.` (CL-8 /
+/// IT3-java-01).
+///
+/// When the file declares no package (the default package), the module path is
+/// derived from the directory layout with build-layout segments
+/// (`src/main/java`, ...) stripped. If that yields nothing, the file lives in
+/// the default package and the module is empty — never a literal `.` or the
+/// directory basename.
+fn compute_java_module_path(
+    tree: &Tree,
+    source: &str,
+    file_path: &Path,
+    root_dir: &Path,
+    _package_name: &str,
+) -> String {
+    // Primary source of truth: the AST package declaration.
+    if let Some(pkg) = extract_java_package_declaration(tree, source) {
+        return pkg;
+    }
+
+    // Default package: reconstruct from directory layout (layout segments
+    // stripped), without prefixing the resolver-derived directory basename.
     let relative = file_path.strip_prefix(root_dir).unwrap_or(file_path);
     let parent = relative.parent().unwrap_or_else(|| Path::new(""));
     let parts: Vec<String> = parent
@@ -212,11 +242,52 @@ fn compute_java_module_path(file_path: &Path, root_dir: &Path, package_name: &st
         .collect();
     let parts = strip_layout_segments(Language::Java, Path::new(&parts.join("/")));
 
-    if parts.is_empty() {
-        package_name.to_string()
+    parts.join(".")
+}
+
+/// Join a (possibly empty) Java module path with a member name without
+/// emitting a leading or doubled `.`. For the default package (`module` is
+/// empty) this returns the bare member name (`"Widget"`), never `".Widget"`.
+fn join_module(module: &str, name: &str) -> String {
+    if module.is_empty() {
+        name.to_string()
     } else {
-        format!("{}.{}", package_name, parts.join("."))
+        format!("{}.{}", module, name)
     }
+}
+
+/// Extract the fully-qualified package name from a Java parse tree.
+///
+/// AST-driven: locates the top-level `package_declaration` node and reads its
+/// dotted name child. tree-sitter-java represents the name as a
+/// `scoped_identifier` (multi-segment, e.g. `a.b.c`) or a bare `identifier`
+/// (single segment); leading `annotation` / `marker_annotation` children are
+/// ignored. Returns `None` for a default-package file (no declaration).
+fn extract_java_package_declaration(tree: &Tree, source: &str) -> Option<String> {
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "package_declaration" {
+            return java_package_name_text(&child, source);
+        }
+    }
+    None
+}
+
+/// Read the dotted package name from a `package_declaration` node.
+fn java_package_name_text(decl: &Node, source: &str) -> Option<String> {
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        if matches!(child.kind(), "scoped_identifier" | "identifier") {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                let name = text.trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn is_java_public_at_line(source: &str, line_number: usize) -> bool {
@@ -416,14 +487,40 @@ class Helper {
     }
 
     #[test]
-    fn test_compute_java_module_path_strips_nested_src_main_java_prefix() {
+    fn test_compute_java_module_path_uses_ast_package_declaration() {
+        // The module path is the file's AST `package` declaration verbatim —
+        // independent of the on-disk directory layout and of the resolver's
+        // package_name (CL-8 / IT3-java-01). Neither the directory basename
+        // nor build-layout segments may appear.
         let root = Path::new("/repo");
         let file = Path::new("/repo/module-a/src/main/java/com/example/http/Client.java");
+        let source = "package com.example.http;\n\npublic class Client {}\n";
+        let tree = parse(source, Language::Java).unwrap();
 
         assert_eq!(
-            compute_java_module_path(file, root, "example_pkg"),
-            "example_pkg.module-a.com.example.http"
+            compute_java_module_path(&tree, source, file, root, "example_pkg"),
+            "com.example.http"
         );
+    }
+
+    #[test]
+    fn test_compute_java_module_path_default_package_has_no_dir_prefix() {
+        // A file with no package declaration (default package) must not be
+        // qualified by the resolver-derived directory basename, and must never
+        // produce a leading or doubled `.` (CL-8 / IT3-java-01).
+        let root = Path::new("/repo/java-petclinic");
+        let file = Path::new("/repo/java-petclinic/Widget.java");
+        let source = "public class Widget {}\n";
+        let tree = parse(source, Language::Java).unwrap();
+
+        let module = compute_java_module_path(&tree, source, file, root, "java-petclinic");
+        assert!(
+            module.is_empty(),
+            "default-package module must be empty, got {:?}",
+            module
+        );
+        assert!(!module.starts_with('.'));
+        assert!(!module.contains(".."));
     }
 
     #[test]
