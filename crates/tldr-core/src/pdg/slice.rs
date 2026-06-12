@@ -568,6 +568,52 @@ fn slice_lines(
         .and_then(|id| pdg.nodes.iter().find(|n| n.id == id))
         .map(|n| n.lines);
 
+    // (1b) reg-chop-v1: criterion-block *directional half*.
+    //
+    // CL-14 restricted the criterion block to lines reachable from the
+    // criterion through DFG def-use chains. That is correct when the DFG
+    // captures every intra-block dependence, but several backends emit a
+    // *sparse* def-use graph (notably C/C++ and OCaml `let .. in` chains),
+    // where the chain feeding the criterion is not materialized as an edge.
+    // In those cases the def-use walk below admits *no* line beyond the
+    // criterion itself, collapsing the criterion block to a single line. That
+    // made `chop(source, target)` empty whenever source and target sit in the
+    // same straight-line block (REG-CHOP: C/C++ chop) and erased the per-line
+    // body of an OCaml slice (per-line-uses regression).
+    //
+    // The structural, AST-derived ordering that does NOT rely on def-use
+    // edges is the basic block's own line span: within a single straight-line
+    // basic block, source line order equals execution order. So the directional
+    // slice of the criterion's block is simply the half of the block on the
+    // correct side of the criterion:
+    //   - backward: every block line at-or-before the criterion (the code that
+    //     may have run before — and therefore could feed — the criterion);
+    //   - forward: every block line at-or-after the criterion (the code that
+    //     runs after — and could be affected by — the criterion).
+    //
+    // This preserves CL-14's single-block-collapse fix (a backward slice still
+    // never admits a statement line strictly after the criterion, and forward
+    // never admits one strictly before), while keeping the chop non-empty when
+    // a real same-block path exists.
+    //
+    // When an explicit `variable` filter is supplied the caller is asking for a
+    // *data-only* slice keyed on that variable, so we skip the conservative
+    // half and let the variable-aware DFG def-use walk in (2) decide which
+    // block lines to admit — the half would otherwise defeat the filter.
+    if variable.is_none() {
+        if let Some((bstart, bend)) = block_span {
+            let (lo, hi) = match direction {
+                SliceDirection::Backward => (bstart, criterion_line.min(bend)),
+                SliceDirection::Forward => (criterion_line.max(bstart), bend),
+            };
+            for l in lo..=hi {
+                if l > 0 {
+                    lines.insert(l);
+                }
+            }
+        }
+    }
+
     // Compute the signature span of the criterion block, if it is the block
     // that opens the function. The signature is the leading run of the block
     // from its start line up to (but excluding) the first line that *uses* a
