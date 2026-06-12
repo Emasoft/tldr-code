@@ -717,22 +717,75 @@ fn is_cpp_macro_misparsed_class_wrapper(func_def: Node) -> bool {
 }
 
 /// Extract name from a C/C++ declarator (which may be nested).
+///
+/// cl6-interface-v1 (GH #78): besides the plain `identifier` /
+/// `field_identifier` leaves, C++ member-function declarators terminate in
+/// three other named leaves that the legacy extractor dropped (producing an
+/// empty name → the member silently vanished from `tldr interface`):
+///
+///   * `destructor_name`     → `~StrPair`
+///   * `operator_name`       → `operator[]`, `operator=`, `operator==`
+///   * `qualified_identifier` / `scoped_identifier`
+///     → out-of-class definitions `Foo::method`; we keep the trailing
+///     name segment (`method`) so the member matches its in-class
+///     spelling, falling back to the full qualified text only when the
+///     segment cannot be resolved.
+///
+/// This mirrors the canonical leaf handling in
+/// `tldr-core::analysis::references::find_cpp_declarator_match`.
 fn extract_c_declarator_name(declarator: Node, source: &[u8]) -> Option<String> {
-    // The declarator could be a function_declarator wrapping an identifier
-    if declarator.kind() == "identifier" {
-        return Some(node_text(declarator, source).to_string());
+    match declarator.kind() {
+        // Plain leaves and the C++ operator / destructor leaves all carry the
+        // member name verbatim as their own text.
+        "identifier" | "field_identifier" | "destructor_name" | "operator_name" => {
+            return Some(node_text(declarator, source).to_string());
+        }
+        "qualified_identifier" | "scoped_identifier" => {
+            // `Foo::bar` — the trailing `name` field is the member's own
+            // (possibly further-qualified) name. Recurse into it so a
+            // `Foo::Inner::method` resolves to `method`.
+            if let Some(name_node) = declarator.child_by_field_name("name") {
+                if let Some(resolved) = extract_c_declarator_name(name_node, source) {
+                    return Some(resolved);
+                }
+            }
+            // Couldn't resolve the trailing segment — keep the full
+            // qualified text so the member doesn't disappear entirely.
+            return Some(node_text(declarator, source).to_string());
+        }
+        _ => {}
     }
-    if declarator.kind() == "field_identifier" {
-        return Some(node_text(declarator, source).to_string());
-    }
-    // function_declarator has a "declarator" field that is the name
+    // function_declarator (and the pointer/reference/parenthesized/init
+    // wrappers a return type introduces) carries the name via its
+    // `declarator` field.
     if let Some(inner) = declarator.child_by_field_name("declarator") {
         return extract_c_declarator_name(inner, source);
     }
-    // Try first child
-    if let Some(first) = declarator.child(0) {
-        if first.kind() == "identifier" || first.kind() == "field_identifier" {
-            return Some(node_text(first, source).to_string());
+    // cl6-interface-v1 (GH #78): some wrapper declarators do NOT expose the
+    // inner declarator via the `declarator` field — notably
+    // `reference_declarator` / `pointer_declarator` for a `T& operator[]()` /
+    // `T* foo()` return type, where the inner `function_declarator` is a bare
+    // positional child after the `&` / `*` token. Scan all children for the
+    // next recursable declarator or named leaf so these names are not dropped.
+    let mut cursor = declarator.walk();
+    for child in declarator.children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "identifier"
+                | "field_identifier"
+                | "destructor_name"
+                | "operator_name"
+                | "qualified_identifier"
+                | "scoped_identifier"
+                | "function_declarator"
+                | "pointer_declarator"
+                | "reference_declarator"
+                | "parenthesized_declarator"
+                | "init_declarator"
+        ) {
+            if let Some(resolved) = extract_c_declarator_name(child, source) {
+                return Some(resolved);
+            }
         }
     }
     None
@@ -1662,7 +1715,29 @@ fn is_cpp_member_function_declaration(node: Node) -> bool {
             | "reference_declarator"
             | "init_declarator"
             | "parenthesized_declarator" => {
+                // cl6-interface-v1 (GH #78): a `reference_declarator` /
+                // `pointer_declarator` introduced by a `T&` / `T*` return
+                // type does NOT expose its inner declarator via the
+                // `declarator` field — the inner `function_declarator` is a
+                // bare positional child after the `&` / `*` token. Without
+                // scanning positional children too, `Vec& operator=(...)`
+                // (a bodiless `field_declaration`) was wrongly rejected and
+                // dropped from `methods[]`. Prefer the field, fall back to
+                // the first wrapper/function declarator child.
                 current = decl.child_by_field_name("declarator");
+                if current.is_none() {
+                    let mut c = decl.walk();
+                    current = decl.children(&mut c).find(|ch| {
+                        matches!(
+                            ch.kind(),
+                            "function_declarator"
+                                | "pointer_declarator"
+                                | "reference_declarator"
+                                | "init_declarator"
+                                | "parenthesized_declarator"
+                        )
+                    });
+                }
             }
             _ => return false,
         }
@@ -1708,6 +1783,43 @@ fn collect_methods_from_body(
                     methods,
                     private_count,
                 );
+            }
+            continue;
+        }
+
+        // cl6-interface-v1 (GH #78): in a macro-misparsed class body
+        // (`class TINYXML2_LIB StrPair { ... }` → `compound_statement`),
+        // tree-sitter-cpp cannot reconcile a bodiless destructor / operator
+        // declaration with the function-body context and emits the member's
+        // `function_declarator` orphaned inside a bare `ERROR` node — e.g.
+        // `~StrPair();` becomes `ERROR > function_declarator > destructor_name`
+        // followed by a stray `expression_statement > ;`. The standard
+        // `method_kinds` match below never sees these, so the destructor /
+        // operator silently vanished. Recover them AST-driven: when a cpp
+        // `ERROR` (or recurse-worthy wrapper) directly carries a
+        // `function_declarator`, extract the member name from that declarator
+        // (its `destructor_name` / `operator_name` / `field_identifier` leaf).
+        if matches!(lang, Language::C | Language::Cpp) && kind == "ERROR" {
+            let mut ec = child.walk();
+            for ec_child in child.children(&mut ec) {
+                if ec_child.kind() == "function_declarator" {
+                    if let Some(decl) = ec_child.child_by_field_name("declarator") {
+                        if let Some(method_name) = extract_c_declarator_name(decl, source) {
+                            if !method_name.is_empty()
+                                && is_method_public(&method_name, ec_child, source, lang)
+                            {
+                                let signature =
+                                    extract_function_signature(ec_child, source, lang);
+                                let is_async = detect_async(ec_child, source, lang);
+                                methods.push(MethodInfo {
+                                    name: method_name,
+                                    signature,
+                                    is_async,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             continue;
         }
@@ -2961,6 +3073,99 @@ fn deep_collect(
     }
 }
 
+/// cl6-interface-v1 (GH #78): true when `node` is a wrapper that holds
+/// top-level-style class / function definitions but is not itself a class
+/// or function. The non-deep-walk walker (`visit_top_level`) descends into
+/// these so their inner public definitions surface as top-level exports.
+///
+/// Recognised wrappers, per the tree-sitter grammars (verified against the
+/// pinned corpora):
+///   * TS / JS `export_statement`
+///     `export class Foo`, `export function f`, `export default class D`,
+///     `@Dec() export class Foo` — the definition is a child of the
+///     `export_statement`, never of the program root.
+///   * Scala `package_clause` BLOCK form
+///     `package p { class C; object O }` — the nested definitions live in
+///     a `template_body` sibling of the `package_identifier`. The
+///     file-level form `package p` (no block) has no `template_body` and
+///     is intentionally NOT treated as a wrapper: its definitions are
+///     already direct children of the compilation unit.
+fn is_interface_wrapper(node: Node, lang: Language) -> bool {
+    match lang {
+        Language::TypeScript | Language::JavaScript => node.kind() == "export_statement",
+        Language::Scala => {
+            // Only the block form (carrying a `template_body`) wraps nested
+            // definitions; the bare `package p` clause does not.
+            if node.kind() == "package_clause" {
+                let mut cursor = node.walk();
+                return node
+                    .children(&mut cursor)
+                    .any(|c| c.kind() == "template_body");
+            }
+            // The package block's definitions live one level deeper, inside
+            // the `package_clause`'s `template_body`. Recurse into that body
+            // (but ONLY when it belongs to a `package_clause` — a
+            // `template_body` owned by a `class`/`object`/`trait` is that
+            // type's own member block and is handled by `extract_class_info`
+            // / `collect_nested_classes`, not as a top-level container).
+            node.kind() == "template_body"
+                && node
+                    .parent()
+                    .map(|p| p.kind() == "package_clause")
+                    .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// cl6-interface-v1 (GH #78): collect public *nested* class-like definitions
+/// declared inside a class/object body, recursing so arbitrarily deep
+/// nesting surfaces. Only class-kind nodes are emitted — methods inside the
+/// body belong to the enclosing class's `methods[]` and must not leak into
+/// the top-level `functions[]` array.
+fn collect_nested_classes(
+    body: Node,
+    source: &[u8],
+    lang: Language,
+    class_kinds: &[&str],
+    classes: &mut Vec<ClassInfo>,
+    depth: usize,
+) {
+    const MAX_NESTED_DEPTH: usize = 8;
+    if depth > MAX_NESTED_DEPTH {
+        return;
+    }
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if class_kinds.contains(&child.kind()) {
+            if is_node_public(child, source, lang) {
+                let info = extract_class_info(child, source, lang);
+                if !info.name.is_empty() {
+                    classes.push(info);
+                }
+            }
+            // Recurse into this nested class's body for deeper nesting.
+            if let Some(inner_body) = find_body_node(child, lang) {
+                collect_nested_classes(
+                    inner_body,
+                    source,
+                    lang,
+                    class_kinds,
+                    classes,
+                    depth + 1,
+                );
+            }
+        } else {
+            // Descend through non-class structural nodes (e.g. Ruby
+            // `body_statement`, decorator wrappers) to reach nested
+            // class declarations that aren't direct children of `body`.
+            // Stop short of re-entering a class body we've already
+            // handled above (guarded by the class-kind branch).
+            collect_nested_classes(child, source, lang, class_kinds, classes, depth + 1);
+        }
+    }
+}
+
 /// Check whether a node is contained within a class/struct/interface ancestor.
 /// Used to distinguish top-level functions from methods.
 fn is_inside_class_ancestor(node: Node, class_kinds: &[&str]) -> bool {
@@ -3043,6 +3248,34 @@ fn visit_top_level(
             continue;
         }
 
+        // cl6-interface-v1 (GH #78): descend into wrapper nodes that hold
+        // class / function definitions but are not themselves classes or
+        // functions. Without this, the pre-fix walker (which only iterated
+        // *direct children* of the file root and recursed for PHP only)
+        // silently dropped:
+        //   * TS/JS `export class Foo` / `export function f` / `export
+        //     default class D` — the definition is a child of an
+        //     `export_statement` wrapper, not of the program root.
+        //   * Scala `package p { class C }` — `package_clause` carries the
+        //     nested definitions in a `template_body` sibling of the
+        //     `package_identifier`.
+        // These wrappers are recursed into with the SAME `visit_top_level`
+        // logic so their inner definitions surface as top-level exports.
+        if is_interface_wrapper(child, lang) {
+            visit_top_level(
+                child,
+                source,
+                lang,
+                func_kinds,
+                class_kinds,
+                decorator_kinds,
+                functions,
+                classes,
+                depth + 1,
+            );
+            continue;
+        }
+
         if func_kinds.contains(&kind) {
             if is_node_public(child, source, lang) {
                 functions.push(extract_function_info(child, source, lang));
@@ -3050,6 +3283,25 @@ fn visit_top_level(
         } else if class_kinds.contains(&kind) {
             if is_node_public(child, source, lang) {
                 classes.push(extract_class_info(child, source, lang));
+            }
+            // cl6-interface-v1 (GH #78): a class body may itself declare
+            // public *nested* classes (Ruby `class Outer; class Inner;
+            // end; end`, Scala `object O { class C }`). The pre-fix walker
+            // stopped at the outer class and never recursed, so `Inner`
+            // vanished. Recurse into the body collecting ONLY nested
+            // class-like definitions — methods inside the body are part of
+            // the enclosing class's own `methods[]` (gathered by
+            // `extract_class_info`) and must NOT leak into top-level
+            // `functions[]`.
+            if let Some(body) = find_body_node(child, lang) {
+                collect_nested_classes(
+                    body,
+                    source,
+                    lang,
+                    class_kinds,
+                    classes,
+                    depth + 1,
+                );
             }
         } else if decorator_kinds.contains(&kind) {
             // Handle decorated definitions (Python)
