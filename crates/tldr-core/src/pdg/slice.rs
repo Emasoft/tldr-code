@@ -475,171 +475,246 @@ fn should_follow_edge(edge: &crate::types::PdgEdge, variable: Option<&str>) -> b
     }
 }
 
-/// cl14-slice-v1 (v0.5.0 CL-14, GH #80): Compute the exact set of source
-/// lines for a slice, honoring `direction` *within* each visited basic block.
+/// cl2-slice-v1 (v0.5.0 CL-2, GH #80): Compute the exact set of source lines
+/// for a slice, honoring `direction` with *line-precise* backward/forward
+/// reachability — never the full basic-block range.
 ///
 /// # Why this exists
 ///
 /// A visited PDG node corresponds to a CFG *basic block* — a multi-line span,
-/// not a single statement. The naive mapping (expand every visited node's
-/// whole `lines.0..=lines.1` range) is wrong whenever the criterion line sits
-/// in the middle of a block: it emits *all* lines of the block, including
-/// statements that run *after* the criterion (for a backward slice) or
-/// *before* it (for a forward slice). For functions whose entire body is a
-/// single straight-line block (extremely common for short methods across
-/// languages), this collapsed the directional slice to the full function body
-/// and made backward and forward slices identical (GH #80).
+/// not a single statement. The previous mapping expanded each contributing
+/// block's whole `lines.0..=lines.1` range (and, for the criterion's own block,
+/// the entire directional *half* `bstart..=criterion`). Both over-include:
+/// every comment, blank line, and unrelated statement that merely shares a
+/// block with a real dependency was emitted. On single/coarse-block CFGs this
+/// degenerated to "the whole block prefix/suffix" (GH #80: c/cpp/go/luau/rust
+/// slice + rust chop). Symmetrically, when the criterion line fell in a CFG
+/// *gap* (a block the builder never created — e.g. a Swift else-branch
+/// trailing-closure body) the slice collapsed to EMPTY (swift `_heapify`).
 ///
-/// PDG *edges* cannot fix this on their own: the PDG builder anchors every
-/// intra-block def-use edge to the block's representative line (its start
-/// line), so all intra-block edges degenerate to `start -> start` and carry no
-/// ordering. The canonical, AST-derived source of intra-block ordering is the
-/// DFG's line-anchored references (`pdg.dfg.refs`) and def-use chains
-/// (`pdg.dfg.edges`), each carrying its own concrete `def_line` / `use_line`.
+/// # Algorithm (fully line-anchored, AST-derived)
 ///
-/// # Algorithm
+/// Every dependency edge in the DFG (`pdg.dfg.edges`) carries its own concrete
+/// `def_line` / `use_line`, and every PDG control edge identifies a predicate
+/// *block* whose representative line (`lines.0`) is the controlling statement.
+/// Both are produced from the tree-sitter AST — no string/regex heuristics.
 ///
 /// 1. Seed the result with the criterion line itself.
-/// 2. Intra-block data dependence: starting from the criterion line, follow
-///    DFG def-use chains transitively, honoring direction:
-///      - backward: from a line, jump to every `def_line` whose value is
-///        *used* on a line already in the slice (i.e. lines that *define*
-///        what the slice uses). This walks toward the values feeding the
-///        criterion. Such defs are always at-or-before their uses, so no
-///        line after the criterion is ever admitted via data dependence.
-///      - forward: from a line, jump to every `use_line` that *uses* a value
-///        *defined* on a line already in the slice.
-/// 3. Inter-block contributions: for every *visited* block other than the
-///    criterion's own block (reached through the PDG edge traversal, e.g. a
-///    control-dependence predicate block or a separate data-flow block), keep
-///    the block's full span — these are whole-block contributors selected by
-///    the block-level PDG traversal, and the directional decision for them was
-///    already made when the edge was followed.
-/// 4. Signature cohesion: a multi-line function signature is a single logical
-///    construct whose parameter definitions the DFG anchors to their own
-///    individual lines (e.g. `a,` on line 5). The signature span is treated as
-///    one unit — if the slice admits any signature line (a parameter def) or the
-///    criterion itself lies in the signature, the *whole* signature span (the
-///    `def`/`fn` keyword line through the last parameter line) is included. This
-///    keeps `chop(signature_line, body_line)` non-empty when a parameter is on
-///    the path, and is direction-safe because the signature always precedes the
-///    body — it never re-introduces post-criterion body statements.
-///
-/// This keeps the existing behaviour for multi-block control/data slices
-/// (predicate blocks, branches) while eliminating the single-block collapse.
+/// 2. Data dependence (transitive, line-precise): walk DFG def-use chains.
+///      - backward: from a line `cur` that *uses* a value, jump to its
+///        `def_line` (the line that produced the value). Defs are at-or-before
+///        their uses, so no line after the criterion is ever admitted.
+///      - forward: from a line `cur` that *defines* a value, jump to its
+///        `use_line`.
+///    When a `variable` filter is supplied only edges for that variable are
+///    followed (the data-only slice the caller asked for).
+/// 3. Control dependence (line-precise): the criterion, and every line admitted
+///    above, may be guarded by a predicate. For each slice line, find the PDG
+///    block(s) covering it and follow control edges to the controlling
+///    predicate block, adding that predicate's line (transitively up the
+///    control tree). Control deps are not variable-filtered (a predicate
+///    affects every statement it guards). For a forward slice we additionally
+///    admit the lines of blocks that the criterion's block *controls* (the code
+///    whose execution the criterion decides), clipped to at-or-after the
+///    criterion so a forward slice never reaches backwards.
+/// 4. Signature cohesion: a multi-line function signature is one logical
+///    construct whose parameter defs the DFG anchors to their own lines. If the
+///    slice admits any signature line, or the criterion lies in the signature,
+///    the whole signature span (decl-keyword line through last parameter line)
+///    is unified. This keeps `chop(signature_line, body_line)` non-empty and is
+///    direction-safe (the signature always precedes the body).
 fn slice_lines(
     pdg: &PdgInfo,
-    visited: &HashSet<usize>,
+    _visited: &HashSet<usize>,
     criterion_line: u32,
     direction: SliceDirection,
     variable: Option<&str>,
 ) -> HashSet<u32> {
-    // Identify the block that contains the criterion line.
-    let criterion_block = pdg
-        .nodes
-        .iter()
-        .find(|n| criterion_line >= n.lines.0 && criterion_line <= n.lines.1)
-        .map(|n| n.id);
-
     let mut lines: HashSet<u32> = HashSet::new();
-
-    // (3) Whole-block contributions from *other* visited blocks. The block
-    // that contains the criterion is handled by the intra-block def-use walk
-    // below so its post-/pre-criterion statements are not over-included.
-    for &node_id in visited {
-        if Some(node_id) == criterion_block {
-            continue;
-        }
-        if let Some(node) = pdg.nodes.iter().find(|n| n.id == node_id) {
-            for line in node.lines.0..=node.lines.1 {
-                if line > 0 {
-                    lines.insert(line);
-                }
-            }
-        }
-    }
 
     // (1) Seed with the criterion line.
     if criterion_line > 0 {
         lines.insert(criterion_line);
     }
+    if criterion_line == 0 {
+        return lines;
+    }
 
-    let block_span = criterion_block
-        .and_then(|id| pdg.nodes.iter().find(|n| n.id == id))
-        .map(|n| n.lines);
-
-    // (1b) reg-chop-v1: criterion-block *directional half*.
-    //
-    // CL-14 restricted the criterion block to lines reachable from the
-    // criterion through DFG def-use chains. That is correct when the DFG
-    // captures every intra-block dependence, but several backends emit a
-    // *sparse* def-use graph (notably C/C++ and OCaml `let .. in` chains),
-    // where the chain feeding the criterion is not materialized as an edge.
-    // In those cases the def-use walk below admits *no* line beyond the
-    // criterion itself, collapsing the criterion block to a single line. That
-    // made `chop(source, target)` empty whenever source and target sit in the
-    // same straight-line block (REG-CHOP: C/C++ chop) and erased the per-line
-    // body of an OCaml slice (per-line-uses regression).
-    //
-    // The structural, AST-derived ordering that does NOT rely on def-use
-    // edges is the basic block's own line span: within a single straight-line
-    // basic block, source line order equals execution order. So the directional
-    // slice of the criterion's block is simply the half of the block on the
-    // correct side of the criterion:
-    //   - backward: every block line at-or-before the criterion (the code that
-    //     may have run before — and therefore could feed — the criterion);
-    //   - forward: every block line at-or-after the criterion (the code that
-    //     runs after — and could be affected by — the criterion).
-    //
-    // This preserves CL-14's single-block-collapse fix (a backward slice still
-    // never admits a statement line strictly after the criterion, and forward
-    // never admits one strictly before), while keeping the chop non-empty when
-    // a real same-block path exists.
-    //
-    // When an explicit `variable` filter is supplied the caller is asking for a
-    // *data-only* slice keyed on that variable, so we skip the conservative
-    // half and let the variable-aware DFG def-use walk in (2) decide which
-    // block lines to admit — the half would otherwise defeat the filter.
-    if variable.is_none() {
-        if let Some((bstart, bend)) = block_span {
-            let (lo, hi) = match direction {
-                SliceDirection::Backward => (bstart, criterion_line.min(bend)),
-                SliceDirection::Forward => (criterion_line.max(bstart), bend),
+    // (2) Data dependence closure over the DFG's line-anchored def-use edges.
+    let mut frontier: Vec<u32> = vec![criterion_line];
+    let mut seen: HashSet<u32> = HashSet::new();
+    seen.insert(criterion_line);
+    while let Some(cur) = frontier.pop() {
+        for e in &pdg.dfg.edges {
+            if let Some(var) = variable {
+                if e.var != var {
+                    continue;
+                }
+            }
+            let (anchor, other) = match direction {
+                // Backward: `cur` uses a value defined at `def_line`.
+                SliceDirection::Backward => (e.use_line, e.def_line),
+                // Forward: `cur` defines a value used at `use_line`.
+                SliceDirection::Forward => (e.def_line, e.use_line),
             };
-            for l in lo..=hi {
-                if l > 0 {
-                    lines.insert(l);
+            if anchor != cur || other == 0 {
+                continue;
+            }
+            if seen.insert(other) {
+                lines.insert(other);
+                frontier.push(other);
+            }
+        }
+    }
+
+    // (2b) Sparse-DFG directional ref-half. Several backends emit a *sparse*
+    // def-use graph: notably OCaml `let .. in` chains (and some C/C++ prologues)
+    // materialize no `dfg.edges` at all, so the data closure above admits
+    // nothing beyond the criterion and the slice collapses to a single line.
+    //
+    // The structural, AST-derived recovery that does NOT depend on def-use
+    // edges is the criterion's own basic block: within a straight-line block,
+    // source line order equals execution order, so the directional slice of the
+    // block is the half on the correct side of the criterion. But the *whole*
+    // half over-includes comments and blank lines (GH #80 over-inclusion on
+    // c/cpp/go/luau/rust). We therefore restrict the half to lines that carry a
+    // DFG *reference* (a Definition/Update/Use anchored by tree-sitter to that
+    // exact line). Comments, blank lines, and pure-syntax lines carry no ref
+    // and are excluded; only real def/use sites survive.
+    //
+    // The block span is the union of every PDG block covering the criterion
+    // (the criterion can lie in both a coarse entry block and a tight statement
+    // block); the union keeps OCaml's coarse `let .. in` block reachable while
+    // the per-line ref filter prevents over-inclusion.
+    //
+    // Skipped under an explicit `variable` filter (pure data slice on that var).
+    if variable.is_none() {
+        let block_lo = pdg
+            .nodes
+            .iter()
+            .filter(|n| criterion_line >= n.lines.0 && criterion_line <= n.lines.1)
+            .map(|n| n.lines.0)
+            .min();
+        let block_hi = pdg
+            .nodes
+            .iter()
+            .filter(|n| criterion_line >= n.lines.0 && criterion_line <= n.lines.1)
+            .map(|n| n.lines.1)
+            .max();
+        if let (Some(blo), Some(bhi)) = (block_lo, block_hi) {
+            for r in &pdg.dfg.refs {
+                if r.line < blo || r.line > bhi {
+                    continue;
+                }
+                let on_side = match direction {
+                    SliceDirection::Backward => r.line <= criterion_line,
+                    SliceDirection::Forward => r.line >= criterion_line,
+                };
+                if on_side && r.line > 0 {
+                    lines.insert(r.line);
                 }
             }
         }
     }
 
-    // Compute the signature span of the criterion block, if it is the block
-    // that opens the function. The signature is the leading run of the block
-    // from its start line up to (but excluding) the first line that *uses* a
-    // variable — body statements read variables; a parameter list only
-    // introduces definitions (possibly with default-value sub-expressions,
-    // which the DFG still anchors as defs of the parameter). This boundary is
-    // derived entirely from the DFG's line-anchored `Use` references — no
-    // string scanning or per-language signature parsing.
-    let signature_span: Option<(u32, u32)> = block_span.and_then(|(bstart, bend)| {
-        // The signature only exists on the function-opening block (the block
-        // whose start line is the function's first line). Restrict the cohesion
-        // rule to the block with the smallest start line so inner blocks that
-        // happen to define-before-use (e.g. a loop header) are not mistaken for
-        // a parameter list.
-        let is_opening_block = pdg
-            .nodes
-            .iter()
-            .map(|n| n.lines.0)
-            .min()
-            .map(|min_start| min_start == bstart)
-            .unwrap_or(false);
-        if !is_opening_block {
-            return None;
+    // (3) Control dependence closure. Build a quick map: which blocks does each
+    // line belong to, and for each block, what is its controlling predicate
+    // block (the source of an incoming Control edge). Predicate line = the
+    // controlling block's start line.
+    //
+    // Skipped for an explicit `variable` filter: that requests a pure data
+    // slice on the named variable, and control predicates would re-introduce
+    // unrelated guard lines.
+    if variable.is_none() {
+        // For a forward slice, admit the lines of the blocks the criterion's
+        // block transitively *controls* (code whose execution it decides),
+        // clipped to at-or-after the criterion.
+        if matches!(direction, SliceDirection::Forward) {
+            // Block id(s) covering the criterion.
+            let crit_blocks: Vec<usize> = pdg
+                .nodes
+                .iter()
+                .filter(|n| criterion_line >= n.lines.0 && criterion_line <= n.lines.1)
+                .map(|n| n.id)
+                .collect();
+            let mut ctrl_frontier: Vec<usize> = crit_blocks.clone();
+            let mut ctrl_seen: HashSet<usize> = crit_blocks.into_iter().collect();
+            while let Some(b) = ctrl_frontier.pop() {
+                for edge in &pdg.edges {
+                    if !matches!(edge.dep_type, DependenceType::Control) {
+                        continue;
+                    }
+                    if edge.source_id != b {
+                        continue;
+                    }
+                    if ctrl_seen.insert(edge.target_id) {
+                        ctrl_frontier.push(edge.target_id);
+                        if let Some(node) =
+                            pdg.nodes.iter().find(|n| n.id == edge.target_id)
+                        {
+                            for l in node.lines.0..=node.lines.1 {
+                                if l >= criterion_line {
+                                    lines.insert(l);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        // First line within the block that carries a Use reference.
+        // Backward (and, for forward, the predicates guarding the criterion):
+        // climb the control tree from every slice line to its controlling
+        // predicate(s), adding the predicate lines. A predicate always precedes
+        // the statement it guards, so this is direction-safe for backward and
+        // adds only at-or-before lines that genuinely gate the criterion.
+        let mut ctrl_lines: Vec<u32> = lines.iter().copied().collect();
+        let mut ctrl_seen_lines: HashSet<u32> = lines.iter().copied().collect();
+        while let Some(cur) = ctrl_lines.pop() {
+            // Blocks covering `cur`.
+            let blocks: Vec<usize> = pdg
+                .nodes
+                .iter()
+                .filter(|n| cur >= n.lines.0 && cur <= n.lines.1)
+                .map(|n| n.id)
+                .collect();
+            for b in blocks {
+                for edge in &pdg.edges {
+                    if !matches!(edge.dep_type, DependenceType::Control) {
+                        continue;
+                    }
+                    if edge.target_id != b {
+                        continue;
+                    }
+                    if let Some(pred) = pdg.nodes.iter().find(|n| n.id == edge.source_id) {
+                        let pline = pred.lines.0;
+                        // Backward: only guards at-or-before the criterion.
+                        if matches!(direction, SliceDirection::Backward)
+                            && pline > criterion_line
+                        {
+                            continue;
+                        }
+                        if pline > 0 && ctrl_seen_lines.insert(pline) {
+                            lines.insert(pline);
+                            ctrl_lines.push(pline);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // (4) Signature cohesion. The signature lives on the function-opening block
+    // (smallest start line). Its span runs from the block start up to (but
+    // excluding) the first line that *uses* a variable — body statements read
+    // variables; a parameter list only introduces definitions. Derived purely
+    // from the DFG's line-anchored refs.
+    let opening_block: Option<(u32, u32)> = pdg
+        .nodes
+        .iter()
+        .min_by_key(|n| n.lines.0)
+        .map(|n| n.lines);
+    let signature_span: Option<(u32, u32)> = opening_block.and_then(|(bstart, bend)| {
         let first_use_line = pdg
             .dfg
             .refs
@@ -648,18 +723,10 @@ fn slice_lines(
             .map(|r| r.line)
             .filter(|&l| l >= bstart && l <= bend)
             .min();
-
-        // The signature must contain at least one parameter definition for the
-        // cohesion rule to apply (otherwise there is no multi-line construct to
-        // unify). Parameter defs are Definition refs strictly before the first
-        // body use.
         let sig_end = match first_use_line {
             Some(u) if u > bstart => u - 1,
-            // No use in block, or first use is on the start line: the signature
-            // is just the start line.
             _ => bstart,
         };
-
         let has_param_def = pdg.dfg.refs.iter().any(|r| {
             matches!(
                 r.ref_type,
@@ -667,7 +734,6 @@ fn slice_lines(
             ) && r.line >= bstart
                 && r.line <= sig_end
         });
-
         if has_param_def {
             Some((bstart, sig_end))
         } else {
@@ -675,78 +741,13 @@ fn slice_lines(
         }
     });
 
-    // (2) Intra-block def-use reachability from the criterion, honoring
-    // direction. Driven by the DFG's line-anchored def-use chains, which are
-    // derived from the tree-sitter AST (no string/regex heuristics).
-    //
-    // We bound the walk to the criterion's block span so we never re-introduce
-    // whole-block over-inclusion: only lines that are genuinely on a def-use
-    // chain to/from the criterion (and that lie inside the block, where
-    // straight-line order holds) are admitted. Lines reached across block
-    // boundaries are governed by the block-level PDG traversal in (3).
-    if let Some((bstart, bend)) = block_span {
-        let mut frontier: Vec<u32> = vec![criterion_line];
-        let mut seen: HashSet<u32> = HashSet::new();
-        seen.insert(criterion_line);
-
-        // Signature cohesion seed: if the criterion lies inside the signature
-        // span, seed the walk with every signature line so the slice picks up
-        // all parameters introduced by the (multi-line) signature and their
-        // downstream/upstream def-use, and include the whole signature span.
-        if let Some((sstart, send)) = signature_span {
-            if criterion_line >= sstart && criterion_line <= send {
-                for l in sstart..=send {
-                    if l > 0 && seen.insert(l) {
-                        lines.insert(l);
-                        frontier.push(l);
-                    }
-                }
-            }
-        }
-
-        while let Some(cur) = frontier.pop() {
-            for e in &pdg.dfg.edges {
-                // Respect an explicit variable filter (data deps only).
-                if let Some(var) = variable {
-                    if e.var != var {
-                        continue;
-                    }
-                }
-                let (anchor, other) = match direction {
-                    // Backward: a line `cur` that *uses* `e.var` depends on the
-                    // line that *defined* it. Step from `use_line` to `def_line`.
-                    SliceDirection::Backward => (e.use_line, e.def_line),
-                    // Forward: a line `cur` that *defines* `e.var` affects the
-                    // line that *uses* it. Step from `def_line` to `use_line`.
-                    SliceDirection::Forward => (e.def_line, e.use_line),
-                };
-                if anchor != cur {
-                    continue;
-                }
-                // Keep the walk inside the criterion block: cross-block def-use
-                // is represented by the PDG block traversal, already handled.
-                if other < bstart || other > bend {
-                    continue;
-                }
-                if seen.insert(other) {
-                    lines.insert(other);
-                    frontier.push(other);
-                }
-            }
-        }
-
-        // Signature cohesion (reverse direction): if the walk reached any
-        // parameter line *inside* the signature span, unify the whole signature
-        // span. This makes a backward slice from a body line that depends on a
-        // parameter include the `def`/`fn` keyword line (the chop source),
-        // without admitting any body statement (the span ends before the body).
-        if let Some((sstart, send)) = signature_span {
-            let touched_signature = (sstart..=send).any(|l| lines.contains(&l));
-            if touched_signature {
-                for l in sstart..=send {
-                    if l > 0 {
-                        lines.insert(l);
-                    }
+    if let Some((sstart, send)) = signature_span {
+        let criterion_in_sig = criterion_line >= sstart && criterion_line <= send;
+        let touched_signature = (sstart..=send).any(|l| lines.contains(&l));
+        if criterion_in_sig || touched_signature {
+            for l in sstart..=send {
+                if l > 0 {
+                    lines.insert(l);
                 }
             }
         }
