@@ -256,6 +256,20 @@ pub struct TaintInfo {
     pub function_name: String,
     /// Tainted variables at each block: block_id -> set of tainted variable names
     pub tainted_vars: HashMap<usize, HashSet<String>>,
+    /// Flat, deterministic per-function view of every tainted variable.
+    ///
+    /// taint-flat-list-v1 (v0.5.0 M15): the union of all blocks' tainted-var
+    /// sets, with `_<digits>` SSA version suffixes stripped (identical cleaning
+    /// to the block-keyed `tainted_vars` surface), deduplicated, and sorted
+    /// lexicographically. This is purely ADDITIVE — the block-keyed
+    /// `tainted_vars` map above is untouched, so no existing consumer breaks.
+    /// Consumers (bugbot L2 IR, `vuln`/`secure` aggregation) that want a single
+    /// per-function list no longer have to re-fold the block map themselves.
+    ///
+    /// `#[serde(default)]` keeps deserialisation of older taint bodies (which
+    /// lack the field) working and leaves non-taint code paths unaffected.
+    #[serde(default)]
+    pub tainted_vars_flat: Vec<String>,
     /// All detected taint sources
     pub sources: Vec<TaintSource>,
     /// All detected sinks (both tainted and untainted)
@@ -285,6 +299,7 @@ impl TaintInfo {
         Self {
             function_name: function_name.into(),
             tainted_vars: HashMap::new(),
+            tainted_vars_flat: Vec::new(),
             sources: Vec::new(),
             sinks: Vec::new(),
             flows: Vec::new(),
@@ -6018,6 +6033,22 @@ pub fn compute_taint_with_tree(
             (*block, cleaned)
         })
         .collect();
+
+    // taint-flat-list-v1 (v0.5.0 M15): additive flat per-function view. Fold
+    // the (already SSA-suffix-stripped) block-keyed sets into a single
+    // BTreeSet so the resulting Vec is deduplicated and sorted
+    // lexicographically — a deterministic surface that does not depend on the
+    // HashMap iteration order. The block-keyed `tainted_vars` map is left
+    // exactly as before, so this changes nothing for existing consumers.
+    let flat: Vec<String> = stripped
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    result.tainted_vars_flat = flat;
+
     result.tainted_vars = stripped;
 
     // Phase 5: Detect vulnerabilities

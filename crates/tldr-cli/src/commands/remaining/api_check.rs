@@ -1867,6 +1867,18 @@ pub(crate) fn analyze_file(
         LuaApiCheckContext::default()
     };
 
+    // regex-cpp-apicheck-v1 (v0.5.0 REGEX-CPP): for C++, pre-compute the
+    // AST context that gates CPP004 `raw-new` flagging. The context holds
+    // the set of lines overlapping a real `new_expression` node. Other
+    // languages get an empty default context — `check_regex_rule`'s CPP004
+    // branch is itself language-gated so the default is never consulted for
+    // non-C++ files.
+    let cpp_ctx: CppApiCheckContext = if matches!(language, ApiLanguage::Cpp) {
+        compute_cpp_api_check_context(&content, language)
+    } else {
+        CppApiCheckContext::default()
+    };
+
     for (line_num, line) in content.lines().enumerate() {
         let line_number = (line_num + 1) as u32;
         let trimmed = line.trim();
@@ -1904,6 +1916,7 @@ pub(crate) fn analyze_file(
                 &rust_ctx,
                 py_ctx,
                 &lua_ctx,
+                &cpp_ctx,
                 &regex_specs,
             ) {
                 findings.push(finding);
@@ -2281,6 +2294,88 @@ fn compute_lua_api_check_context(content: &str, language: ApiLanguage) -> LuaApi
     ctx
 }
 
+/// regex-cpp-apicheck-v1 (v0.5.0 REGEX-CPP): per-file AST context for the
+/// C++ api-check scanner. The `CPP004` `raw-new` rule is regex-only
+/// (`\bnew\s+\w`). The `\bnew` word-boundary matches the literal word
+/// "new" *anywhere* on a line — including inside string literals and any
+/// trailing inline text the line-level `is_comment_line` skip cannot see.
+/// Concretely `const char* s = "construct a new object";` matches
+/// `new object` inside the string and reports a phantom raw-`new`
+/// allocation.
+///
+/// We pre-compute one set per file by walking the tree-sitter parse:
+///
+///   - `new_expression_line_set`: every source line (1-indexed) whose
+///     byte range overlaps a `new_expression` AST node. `new_expression`
+///     is the C++ grammar's node kind for an actual `new T(...)`
+///     allocation expression (see `tree-sitter-cpp` `node-types.json`).
+///     Comments and string literals are lexed as `comment` /
+///     `string_literal` / `raw_string_literal` nodes, so the word "new"
+///     inside them never produces a `new_expression` and can never appear
+///     in this set.
+///
+/// The context is consulted ONLY for CPP004 inside [`check_regex_rule`].
+/// Other C++ rules (CPP001–CPP003, CPP005) and other languages are
+/// unaffected. A parse failure yields an empty default context whose
+/// `parsed` flag is `false`; the gate then falls back to the regex-only
+/// behaviour rather than silently suppressing every finding (the gate is a
+/// precision optimisation, not a correctness pre-condition).
+#[derive(Debug, Default)]
+pub(crate) struct CppApiCheckContext {
+    /// Whether the file parsed successfully. When `false` (parse error or
+    /// non-C++ language), the CPP004 gate falls back to regex-only
+    /// behaviour so a parser hiccup cannot suppress real findings.
+    pub parsed: bool,
+    /// Line numbers (1-indexed) that overlap a `new_expression` node. A
+    /// CPP004 regex match on a line NOT in this set is a phantom (the
+    /// word "new" appeared in a comment / string literal), and must be
+    /// suppressed.
+    pub new_expression_line_set: HashSet<u32>,
+}
+
+/// Build a [`CppApiCheckContext`] by parsing `content` as C++ and walking
+/// the resulting tree-sitter parse, collecting every line that overlaps a
+/// `new_expression` node. Returns a context with `parsed = false` (and an
+/// empty line set) on any parse failure or for a non-C++ language — the
+/// caller then keeps the regex-only behaviour for that file.
+fn compute_cpp_api_check_context(content: &str, language: ApiLanguage) -> CppApiCheckContext {
+    if !matches!(language, ApiLanguage::Cpp) {
+        return CppApiCheckContext::default();
+    }
+    let tree = match tldr_core::ast::parser::parse(content, Language::Cpp) {
+        Ok(t) => t,
+        Err(_) => return CppApiCheckContext::default(),
+    };
+    let mut ctx = CppApiCheckContext {
+        parsed: true,
+        new_expression_line_set: HashSet::new(),
+    };
+
+    fn visit(node: tree_sitter::Node, ctx: &mut CppApiCheckContext) {
+        if node.kind() == "new_expression" {
+            // Mark every line that intersects this node's byte range. Use
+            // 1-indexed lines to match the api-check emission convention.
+            // A `new T(...)` expression normally lives on one line, but a
+            // multi-line allocation (long argument list) is covered too.
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+            for ln in start_line..=end_line {
+                ctx.new_expression_line_set.insert(ln);
+            }
+            // Recurse — a `new` argument list can itself contain a nested
+            // `new T(new U())`; recursing keeps the visitor uniform.
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, ctx);
+        }
+    }
+
+    visit(tree.root_node(), &mut ctx);
+    ctx
+}
+
 /// lu001-ast-gate-v1: extract the LHS identifier from a line that the
 /// LU001 regex (`^[A-Za-z_][A-Za-z0-9_]*\s*=`) has just matched. Returns
 /// `None` if the regex shape isn't present (defensive — should never
@@ -2316,6 +2411,7 @@ fn check_rule(
     rust_ctx: &RustLineContext<'_>,
     py_ctx: PyLineContext,
     lua_ctx: &LuaApiCheckContext,
+    cpp_ctx: &CppApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     let trimmed = line_text.trim();
@@ -2359,7 +2455,16 @@ fn check_rule(
         "RS004" => check_detached_tokio_spawn(rule, file, line, trimmed),
         "RS005" => check_hashmap_order_dependence(rule, file, line, trimmed, rust_ctx),
         "RS006" => check_clone_in_hot_loop(rule, file, line, trimmed, rust_ctx),
-        _ => check_regex_rule(rule, file, line, trimmed, language, lua_ctx, regex_specs),
+        _ => check_regex_rule(
+            rule,
+            file,
+            line,
+            trimmed,
+            language,
+            lua_ctx,
+            cpp_ctx,
+            regex_specs,
+        ),
     }
 }
 
@@ -2427,12 +2532,30 @@ fn check_regex_rule(
     line_text: &str,
     language: ApiLanguage,
     lua_ctx: &LuaApiCheckContext,
+    cpp_ctx: &CppApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     // fastpath-extend-non-vuln-v1: lookup the pre-compiled regex by rule id
     // (compiled ONCE per file in `analyze_file`, not once per line).
     let (spec, regex) = regex_specs.iter().find(|(spec, _)| spec.id == rule.id)?;
     if !regex.is_match(line_text) {
+        return None;
+    }
+
+    // regex-cpp-apicheck-v1 (v0.5.0 REGEX-CPP): the CPP004 `raw-new` rule
+    // is regex-only (`\bnew\s+\w`). The `\bnew` word-boundary matches the
+    // literal word "new" anywhere on a line — including inside string
+    // literals (e.g. `"construct a new object"`). The AST pre-pass
+    // populated `cpp_ctx` with the set of lines that carry a genuine
+    // `new_expression` node; consult it here. Only fires for C++ — other
+    // languages share neither the rule id nor the gate. When the file did
+    // not parse (`cpp_ctx.parsed == false`) we keep the regex-only
+    // behaviour so a parser hiccup cannot suppress real allocations.
+    if rule.id == "CPP004"
+        && matches!(language, ApiLanguage::Cpp)
+        && cpp_ctx.parsed
+        && !cpp_ctx.new_expression_line_set.contains(&line)
+    {
         return None;
     }
 
