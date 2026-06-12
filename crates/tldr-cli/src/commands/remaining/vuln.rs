@@ -778,6 +778,11 @@ fn map_core_vuln_type(core_ty: tldr_core::security::vuln::VulnType) -> VulnType 
         CoreVulnType::Suicidal => VulnType::Suicidal,
         CoreVulnType::UncheckedLowlevel => VulnType::UncheckedLowlevel,
         CoreVulnType::LockedEther => VulnType::LockedEther,
+        // v0.5.0 PACK-VULN pack-vuln-v1
+        CoreVulnType::Reentrancy => VulnType::Reentrancy,
+        CoreVulnType::UncheckedSend => VulnType::UncheckedSend,
+        CoreVulnType::ArbitrarySend => VulnType::ArbitrarySend,
+        CoreVulnType::DelegatecallTainted => VulnType::DelegatecallTainted,
     }
 }
 
@@ -1271,6 +1276,11 @@ fn vuln_type_name(vt: VulnType) -> &'static str {
         VulnType::Suicidal => "Unprotected Selfdestruct",
         VulnType::UncheckedLowlevel => "Unchecked Low-Level Call",
         VulnType::LockedEther => "Locked Ether",
+        // v0.5.0 PACK-VULN pack-vuln-v1
+        VulnType::Reentrancy => "Reentrancy",
+        VulnType::UncheckedSend => "Unchecked Send",
+        VulnType::ArbitrarySend => "Arbitrary Send",
+        VulnType::DelegatecallTainted => "Delegatecall to Tainted Target",
     }
 }
 

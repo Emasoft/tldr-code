@@ -68,6 +68,15 @@ pub fn solidity_finding_message(vuln_type: VulnType) -> &'static str {
             "Return value of a low-level call (.call / .send / .delegatecall) is discarded; failures of the external call will silently pass and subsequent code will proceed as if the call succeeded. Capture the boolean return and require(ok) before continuing.",
         VulnType::LockedEther =>
             "Contract accepts ether (via payable function, receive, fallback, or payable constructor) but provides no withdraw path (no .transfer / .send / .call{value:...} / selfdestruct call reachable from within the contract). Funds sent to this contract are permanently trapped.",
+        // v0.5.0 PACK-VULN pack-vuln-v1
+        VulnType::Reentrancy =>
+            "An external value-bearing call (.call{value:...} / .send / .transfer) executes BEFORE the function writes the state variable it depends on, violating the Checks-Effects-Interactions pattern. The callee can re-enter this function before the state update commits and repeatedly drain funds. Move all state writes ahead of the external call, or guard the function with a reentrancy lock.",
+        VulnType::UncheckedSend =>
+            "The boolean returned by .send(...) is discarded. .send forwards a fixed 2300-gas stipend and returns false (rather than reverting) when the transfer fails, so a discarded return silently swallows failed payments and lets execution continue as if the transfer succeeded. Check the return with require(ok) or switch to a checked .call / pull-payment pattern.",
+        VulnType::ArbitrarySend =>
+            "A value transfer (.transfer / .send / .call{value:...}) sends ether to a destination derived from caller-controlled input (a function parameter or msg.data) inside a publicly-callable function with no access control. Any caller can redirect the contract's ether to an address they choose. Restrict the recipient to a vetted address or add access control.",
+        VulnType::DelegatecallTainted =>
+            "delegatecall is invoked on a target address derived from caller-controlled input. delegatecall runs the callee's code in THIS contract's storage context, so an attacker-chosen target can overwrite arbitrary storage (including ownership) or self-destruct the contract. Pin the delegatecall target to an immutable / access-controlled state variable.",
         // Non-Solidity vuln types should never reach this dispatcher; we
         // return an empty string rather than panicking so a misuse only
         // surfaces as a generic CLI description (the existing fallback).
@@ -88,6 +97,11 @@ pub fn is_solidity_vuln_type(vuln_type: VulnType) -> bool {
             | VulnType::Suicidal
             | VulnType::UncheckedLowlevel
             | VulnType::LockedEther
+            // v0.5.0 PACK-VULN pack-vuln-v1
+            | VulnType::Reentrancy
+            | VulnType::UncheckedSend
+            | VulnType::ArbitrarySend
+            | VulnType::DelegatecallTainted
     )
 }
 
@@ -114,6 +128,11 @@ pub fn scan_solidity_vulns(
     detect_suicidal(&root, source, path, &mut findings);
     detect_unchecked_lowlevel(&root, source, path, &mut findings);
     detect_locked_ether(&root, source, path, &mut findings);
+    // v0.5.0 PACK-VULN pack-vuln-v1: four additional AST-pattern detectors.
+    detect_reentrancy(&root, source, path, &mut findings);
+    detect_unchecked_send(&root, source, path, &mut findings);
+    detect_arbitrary_send(&root, source, path, &mut findings);
+    detect_delegatecall_tainted(&root, source, path, &mut findings);
 
     if let Some(ty) = vuln_filter {
         findings.retain(|f| f.vuln_type == ty);
@@ -705,41 +724,15 @@ fn detect_unchecked_lowlevel(
     let mut calls: Vec<Node> = Vec::new();
     collect_by_kind(*root, &["call_expression"], &mut calls);
     for call in calls {
-        // tree-sitter-solidity nests the callee under an `expression`
-        // wrapper. The function-position is the FIRST child; unwrap
-        // any `expression` / `primary_expression` wrappers to reach the
-        // underlying `member_expression`.
-        let callee = match resolve_callee(&call) {
-            Some(c) => c,
+        // Resolve the method property via `call_member_method`, which handles
+        // BOTH the plain `receiver.method(...)` member-call shape AND the
+        // value/gas-modified `receiver.call{value: x}(...)` shape (where the
+        // callee is a `struct_expression` wrapping the member access). The
+        // pre-PACK-VULN logic only matched the plain `member_expression`
+        // shape, so a discarded `.call{value:...}` return slipped through.
+        let (_member, prop) = match call_member_method(&call, source) {
+            Some(m) => m,
             None => continue,
-        };
-        // Callee is a member_expression whose property is one of the
-        // low-level call names.
-        if callee.kind() != "member_expression" {
-            continue;
-        }
-        // tree-sitter-solidity emits member_expression as
-        // `expression . identifier` with NO field-name on the property
-        // child. Read the last `identifier` child (the property name)
-        // and fall back to the text-after-final-dot on grammar forks.
-        let prop = {
-            let mut prop_txt: Option<String> = None;
-            let mut mc = callee.walk();
-            for c in callee.children(&mut mc) {
-                if c.kind() == "identifier" {
-                    prop_txt = Some(node_text(&c, source));
-                }
-            }
-            match prop_txt {
-                Some(s) => s,
-                None => {
-                    let txt = node_text(&callee, source);
-                    match txt.rsplit('.').next() {
-                        Some(s) => s.to_string(),
-                        None => continue,
-                    }
-                }
-            }
         };
         let prop_trimmed = prop.trim();
         if !matches!(prop_trimmed, "call" | "send" | "delegatecall") {
@@ -897,4 +890,434 @@ fn has_withdraw_path(body: &Node, source: &str) -> bool {
         return true;
     }
     false
+}
+
+// =============================================================================
+// Shared AST helpers for the pack-vuln-v1 detectors (reentrancy /
+// unchecked-send / arbitrary-send / delegatecall-to-tainted).
+// =============================================================================
+
+/// Resolve the *method property name* of a `call_expression` whose callee is
+/// a member access (`receiver.method(...)`), returning `Some("method")`.
+///
+/// Handles BOTH the plain member-call shape
+/// (`call_expression -> [function] member_expression`) and the
+/// value/gas-modified shape
+/// (`call_expression -> [function] struct_expression -> [type] member_expression`)
+/// that tree-sitter-solidity emits for `receiver.call{value: x}(...)`. The
+/// `struct_expression` is the `.call{...}` options block; its `[type]` field
+/// holds the underlying `member_expression`.
+///
+/// AST-DRIVEN: navigates `[function]` / `[type]` fields and the
+/// `member_expression` `[property]` field — never substring-matches.
+fn call_member_method<'a>(call: &Node<'a>, source: &str) -> Option<(Node<'a>, String)> {
+    let func = call.child_by_field_name("function")?;
+    let func = unwrap_expr_wrapper(func);
+    let member = match func.kind() {
+        "member_expression" => func,
+        // `.call{value:...}` → struct_expression whose `[type]` is the member.
+        "struct_expression" => {
+            let ty = func.child_by_field_name("type")?;
+            let ty = unwrap_expr_wrapper(ty);
+            if ty.kind() != "member_expression" {
+                return None;
+            }
+            ty
+        }
+        _ => return None,
+    };
+    let prop = member.child_by_field_name("property")?;
+    let prop_name = node_text(&prop, source).trim().to_string();
+    Some((member, prop_name))
+}
+
+/// Receiver (object) expression of a member-access callee — the value before
+/// the final `.method`. For `msg.sender.call{...}` this is `msg.sender`; for
+/// `impl.delegatecall(...)` this is `impl`. Returns the receiver node.
+fn member_receiver<'a>(member: &Node<'a>) -> Option<Node<'a>> {
+    member
+        .child_by_field_name("object")
+        .map(|n| unwrap_expr_wrapper(n))
+}
+
+/// The leading identifier of an expression — the "root" name a value derives
+/// from. `impl` → `impl`; `msg.sender` → `msg`; `payable(dest)` → `dest`
+/// (best-effort: first `identifier` descendant in source order).
+fn leading_identifier(node: &Node, source: &str) -> Option<String> {
+    if node.kind() == "identifier" {
+        return Some(node_text(node, source).trim().to_string());
+    }
+    // BFS in source order for the first identifier descendant.
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" {
+            return Some(node_text(&n, source).trim().to_string());
+        }
+        let mut c = n.walk();
+        let children: Vec<Node> = n.children(&mut c).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+/// Collect the parameter names of a `function_definition`. These are the
+/// canonical *attacker-controlled* inputs for the arbitrary-send and
+/// delegatecall-to-tainted detectors (a publicly-callable function's
+/// parameters are caller-chosen).
+fn function_param_names(func: &Node, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = func.walk();
+    for child in func.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                out.push(node_text(&name_node, source).trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The ordered list of top-level `statement` nodes inside a function body,
+/// in source order. tree-sitter-solidity wraps each statement in a
+/// `statement` node under `function_body`.
+fn body_statements<'a>(func: &Node<'a>) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    if let Some(body) = func.child_by_field_name("body") {
+        let mut cursor = body.walk();
+        for child in body.children(&mut cursor) {
+            match child.kind() {
+                "statement"
+                | "expression_statement"
+                | "variable_declaration_statement"
+                | "if_statement"
+                | "for_statement"
+                | "while_statement" => out.push(child),
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Whether `node` (or any descendant) is an `assignment_expression` whose
+/// left-hand side writes to a contract state variable named in `state_names`.
+/// Covers plain (`x = ...`), indexed (`balances[k] = ...`), and member
+/// (`self.x = ...`) writes by inspecting the leading identifier of the LHS.
+fn writes_state_var(node: &Node, source: &str, state_names: &[String]) -> bool {
+    let mut assigns: Vec<Node> = Vec::new();
+    collect_by_kind(*node, &["assignment_expression"], &mut assigns);
+    for assign in assigns {
+        if let Some(lhs) = assign.child_by_field_name("left") {
+            if let Some(root) = leading_identifier(&lhs, source) {
+                if state_names.iter().any(|s| s == &root) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Whether any low-level value-bearing external call appears under `node`.
+/// Used by the reentrancy detector to locate the "interaction" step.
+fn contains_external_value_call(node: &Node, source: &str) -> bool {
+    let mut calls: Vec<Node> = Vec::new();
+    collect_by_kind(*node, &["call_expression"], &mut calls);
+    for call in &calls {
+        if let Some((_, method)) = call_member_method(call, source) {
+            if matches!(method.as_str(), "call" | "send" | "transfer") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// =============================================================================
+// Detector 6: reentrancy (CEI violation)
+// =============================================================================
+
+/// For each contract function: locate the FIRST external value-bearing call
+/// (`.call{value:...}` / `.send` / `.transfer`). If a write to a contract
+/// state variable occurs in a statement that appears AFTER that call in
+/// source order, the function violates Checks-Effects-Interactions and is
+/// flagged as reentrancy.
+///
+/// AST-DRIVEN: statement ordering comes from the `function_body` child list;
+/// the external call is matched via `call_member_method`; the state write is
+/// matched via `assignment_expression` LHS leading-identifier against the
+/// contract's `state_variable_declaration` names — never substring.
+fn detect_reentrancy(root: &Node, source: &str, path: &Path, findings: &mut Vec<VulnFinding>) {
+    let contracts = find_contracts(root);
+    for contract in &contracts {
+        if contract.kind() != "contract_declaration" {
+            continue;
+        }
+        let state_names: Vec<String> = contract_state_vars(contract)
+            .iter()
+            .filter_map(|sv| state_var_name(sv, source))
+            .filter(|n| !n.is_empty())
+            .collect();
+        if state_names.is_empty() {
+            continue;
+        }
+        for func in contract_functions(contract) {
+            if func.kind() != "function_definition" {
+                continue;
+            }
+            let stmts = body_statements(&func);
+            // Find the index of the first statement containing an external
+            // value-bearing call.
+            let call_idx = stmts
+                .iter()
+                .position(|s| contains_external_value_call(s, source));
+            let call_idx = match call_idx {
+                Some(i) => i,
+                None => continue,
+            };
+            // Any state write in a LATER statement is a CEI violation.
+            let mut violating_line: Option<u32> = None;
+            for stmt in stmts.iter().skip(call_idx + 1) {
+                if writes_state_var(stmt, source, &state_names) {
+                    violating_line = Some(stmt.start_position().row as u32 + 1);
+                    break;
+                }
+            }
+            if let Some(_line) = violating_line {
+                // Report on the external-call line (the interaction), which is
+                // the actionable site for a reviewer.
+                let call_line = stmts[call_idx].start_position().row as u32 + 1;
+                let snippet = node_text(&stmts[call_idx], source);
+                findings.push(make_finding(
+                    VulnType::Reentrancy,
+                    path,
+                    call_line,
+                    &snippet,
+                    "external call precedes a state-variable write (CEI violation)",
+                ));
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Detector 7: unchecked-send
+// =============================================================================
+
+/// Find every `receiver.send(...)` call whose boolean return value is
+/// discarded — the callee `member_expression` has property `send` and the
+/// call's resolved context is an `expression_statement` (not captured by an
+/// assignment / tuple destructure / `require` / `if`).
+///
+/// AST-DRIVEN: reuses `call_member_method` for the property and the existing
+/// `is_inside_require_or_assert` guard; context resolution walks parent
+/// nodes by kind — never substring.
+fn detect_unchecked_send(root: &Node, source: &str, path: &Path, findings: &mut Vec<VulnFinding>) {
+    let mut calls: Vec<Node> = Vec::new();
+    collect_by_kind(*root, &["call_expression"], &mut calls);
+    for call in calls {
+        let (_member, method) = match call_member_method(&call, source) {
+            Some(m) => m,
+            None => continue,
+        };
+        if method != "send" {
+            continue;
+        }
+        // Captured / checked contexts are SAFE.
+        if is_inside_require_or_assert(&call, source) {
+            continue;
+        }
+        let mut ctx = call.parent();
+        let mut steps = 0;
+        let ctx_kind = loop {
+            let n = match ctx {
+                Some(n) => n,
+                None => break "__none__",
+            };
+            match n.kind() {
+                "expression_statement"
+                | "assignment_expression"
+                | "variable_declaration_statement"
+                | "variable_declaration_tuple"
+                | "tuple_expression"
+                | "if_statement"
+                | "while_statement"
+                | "return_statement" => break n.kind(),
+                _ => {}
+            }
+            steps += 1;
+            if steps > 6 {
+                break "__none__";
+            }
+            ctx = n.parent();
+        };
+        // Captured (assignment / tuple / decl) or used in a condition → SAFE.
+        if matches!(
+            ctx_kind,
+            "assignment_expression"
+                | "variable_declaration_statement"
+                | "variable_declaration_tuple"
+                | "tuple_expression"
+                | "if_statement"
+                | "while_statement"
+                | "return_statement"
+        ) {
+            continue;
+        }
+        if ctx_kind == "expression_statement" {
+            let line = call.start_position().row as u32 + 1;
+            let snippet = enclosing_statement_text(&call, source);
+            findings.push(make_finding(
+                VulnType::UncheckedSend,
+                path,
+                line,
+                &snippet,
+                "return value of `.send` is discarded (failed transfers pass silently)",
+            ));
+        }
+    }
+}
+
+// =============================================================================
+// Detector 8: arbitrary-send (value to attacker-controlled destination)
+// =============================================================================
+
+/// Find every value transfer (`.transfer` / `.send` / `.call{value:...}`)
+/// whose RECEIVER derives from a function parameter (caller-chosen) inside a
+/// public/external function with no access-control guard. Such a call lets
+/// any caller redirect the contract's ether.
+///
+/// AST-DRIVEN: the value-call is matched via `call_member_method`; the
+/// receiver root identifier via `member_receiver` + `leading_identifier`;
+/// the taint set is the enclosing function's `parameter` names; access
+/// control reuses `has_access_control_modifier` / `has_msg_sender_require_guard`.
+fn detect_arbitrary_send(root: &Node, source: &str, path: &Path, findings: &mut Vec<VulnFinding>) {
+    let mut calls: Vec<Node> = Vec::new();
+    collect_by_kind(*root, &["call_expression"], &mut calls);
+    for call in calls {
+        let (member, method) = match call_member_method(&call, source) {
+            Some(m) => m,
+            None => continue,
+        };
+        // For `.call`, only the value-bearing form (struct_expression with a
+        // `value:` field) is a fund transfer. `call_member_method` already
+        // resolved through the struct_expression; re-check the callee shape so
+        // a plain `.call(data)` (no value) is not treated as a send.
+        let is_value_call = match method.as_str() {
+            "transfer" | "send" => true,
+            "call" => {
+                // The call's `[function]` must be a struct_expression carrying
+                // a `value:` field for this to move ether.
+                call.child_by_field_name("function")
+                    .map(|f| unwrap_expr_wrapper(f))
+                    .map(|f| f.kind() == "struct_expression" && node_text(&f, source).contains("value"))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        };
+        if !is_value_call {
+            continue;
+        }
+        let receiver = match member_receiver(&member) {
+            Some(r) => r,
+            None => continue,
+        };
+        let root_ident = match leading_identifier(&receiver, source) {
+            Some(r) => r,
+            None => continue,
+        };
+        let func = match enclosing_function(&call) {
+            Some(f) => f,
+            None => continue,
+        };
+        if func.kind() != "function_definition" {
+            continue;
+        }
+        let vis = function_visibility(&func, source).unwrap_or_default();
+        if vis != "public" && vis != "external" {
+            continue;
+        }
+        // Access-controlled functions are out of scope (the privileged caller
+        // is trusted to choose the destination).
+        if has_access_control_modifier(&func, source)
+            || has_msg_sender_require_guard(&func, source)
+        {
+            continue;
+        }
+        let params = function_param_names(&func, source);
+        if !params.iter().any(|p| p == &root_ident) {
+            continue;
+        }
+        let line = call.start_position().row as u32 + 1;
+        let snippet = enclosing_statement_text(&call, source);
+        findings.push(make_finding(
+            VulnType::ArbitrarySend,
+            path,
+            line,
+            &snippet,
+            "ether sent to a caller-controlled destination without access control",
+        ));
+    }
+}
+
+// =============================================================================
+// Detector 9: delegatecall-to-tainted
+// =============================================================================
+
+/// Find every `target.delegatecall(...)` whose RECEIVER derives from a
+/// function parameter (caller-chosen). delegatecall runs the callee's code in
+/// THIS contract's storage context, so an attacker-chosen target can rewrite
+/// arbitrary storage or self-destruct the contract.
+///
+/// AST-DRIVEN: the delegatecall is matched via `call_member_method` (property
+/// == "delegatecall"); the receiver root via `member_receiver` +
+/// `leading_identifier`; the taint set is the enclosing function's parameters.
+fn detect_delegatecall_tainted(
+    root: &Node,
+    source: &str,
+    path: &Path,
+    findings: &mut Vec<VulnFinding>,
+) {
+    let mut calls: Vec<Node> = Vec::new();
+    collect_by_kind(*root, &["call_expression"], &mut calls);
+    for call in calls {
+        let (member, method) = match call_member_method(&call, source) {
+            Some(m) => m,
+            None => continue,
+        };
+        if method != "delegatecall" {
+            continue;
+        }
+        let receiver = match member_receiver(&member) {
+            Some(r) => r,
+            None => continue,
+        };
+        let root_ident = match leading_identifier(&receiver, source) {
+            Some(r) => r,
+            None => continue,
+        };
+        // `msg.sender` / `address(this)` receivers are not parameter-tainted.
+        let func = match enclosing_function(&call) {
+            Some(f) => f,
+            None => continue,
+        };
+        if func.kind() != "function_definition" {
+            continue;
+        }
+        let params = function_param_names(&func, source);
+        if !params.iter().any(|p| p == &root_ident) {
+            continue;
+        }
+        let line = call.start_position().row as u32 + 1;
+        let snippet = enclosing_statement_text(&call, source);
+        findings.push(make_finding(
+            VulnType::DelegatecallTainted,
+            path,
+            line,
+            &snippet,
+            "delegatecall target derives from caller-controlled input",
+        ));
+    }
 }

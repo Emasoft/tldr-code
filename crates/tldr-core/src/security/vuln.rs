@@ -101,6 +101,35 @@ pub enum VulnType {
     /// (`.transfer`, `.send`, `.call{value:...}`, `selfdestruct`),
     /// permanently trapping funds.
     LockedEther,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Reentrancy (CWE-841 / SWC-107).
+    /// An external value-bearing call (`.call{value:...}` / `.send` /
+    /// `.transfer` to an attacker-reachable destination) executes BEFORE
+    /// the contract updates the state variable it depends on
+    /// (Checks-Effects-Interactions violation). The callee can re-enter
+    /// the function before the state write commits and drain the contract.
+    Reentrancy,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Unchecked `.send` return
+    /// (CWE-252 / SWC-104). The boolean returned by `address.send(...)`
+    /// is discarded; `.send` forwards a fixed 2300 gas stipend and returns
+    /// `false` on failure rather than reverting, so a discarded return
+    /// silently swallows failed transfers. Distinct from
+    /// `UncheckedLowlevel` to surface the `.send`-specific remediation
+    /// (prefer the checked-`.call` / pull-payment pattern).
+    UncheckedSend,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Arbitrary send (CWE-862 / SWC-105).
+    /// A value transfer (`.transfer` / `.send` / `.call{value:...}`) sends
+    /// ether to a destination derived from attacker-controlled input
+    /// (function parameter / `msg.data`) in a publicly-callable function
+    /// with no access control. Any caller can redirect the contract's
+    /// funds to an address they choose.
+    ArbitrarySend,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Delegatecall to tainted target
+    /// (CWE-829 / SWC-112). `target.delegatecall(...)` is invoked on a
+    /// target address derived from attacker-controlled input. Because
+    /// `delegatecall` runs the callee's code in THIS contract's storage
+    /// context, an attacker-chosen target can rewrite arbitrary storage
+    /// (including ownership) or self-destruct the contract.
+    DelegatecallTainted,
 }
 
 impl std::fmt::Display for VulnType {
@@ -119,6 +148,11 @@ impl std::fmt::Display for VulnType {
             VulnType::Suicidal => write!(f, "Unprotected Selfdestruct"),
             VulnType::UncheckedLowlevel => write!(f, "Unchecked Low-Level Call"),
             VulnType::LockedEther => write!(f, "Locked Ether"),
+            // v0.5.0 PACK-VULN pack-vuln-v1
+            VulnType::Reentrancy => write!(f, "Reentrancy"),
+            VulnType::UncheckedSend => write!(f, "Unchecked Send"),
+            VulnType::ArbitrarySend => write!(f, "Arbitrary Send"),
+            VulnType::DelegatecallTainted => write!(f, "Delegatecall to Tainted Target"),
         }
     }
 }
@@ -286,6 +320,14 @@ pub(crate) fn severity_for_vuln_type(vuln_type: VulnType) -> &'static str {
         VulnType::TxOrigin
         | VulnType::UncheckedLowlevel
         | VulnType::LockedEther => "MEDIUM",
+        // v0.5.0 PACK-VULN pack-vuln-v1: reentrancy / arbitrary-send /
+        // delegatecall-to-tainted are direct fund-loss / takeover paths
+        // (HIGH); unchecked-send silently swallows failures (MEDIUM, same
+        // tier as unchecked-lowlevel).
+        VulnType::Reentrancy
+        | VulnType::ArbitrarySend
+        | VulnType::DelegatecallTainted => "HIGH",
+        VulnType::UncheckedSend => "MEDIUM",
         _ => severity_for(vuln_type),
     }
 }
@@ -449,6 +491,15 @@ pub(crate) fn get_remediation(vuln_type: VulnType) -> &'static str {
             "Check the boolean return value of .call / .send / .delegatecall via require(ok, ...) or an if-revert pattern; prefer .transfer for fixed-gas ether sends when applicable",
         VulnType::LockedEther =>
             "Add a withdraw function callable by authorized parties (using .transfer, .send, or .call{value: ...}) so accepted ether can be retrieved",
+        // v0.5.0 PACK-VULN pack-vuln-v1
+        VulnType::Reentrancy =>
+            "Apply the Checks-Effects-Interactions pattern: update all state variables BEFORE making external calls, or guard the function with a reentrancy lock (e.g. OpenZeppelin ReentrancyGuard's nonReentrant modifier)",
+        VulnType::UncheckedSend =>
+            "Do not discard the boolean returned by .send; check it via require(ok) or, preferably, switch to the checked .call pattern or a pull-payment withdrawal so failed transfers cannot be silently ignored",
+        VulnType::ArbitrarySend =>
+            "Do not transfer ether to a destination taken directly from caller-controlled input; restrict the recipient to a vetted address (owner / mapping-tracked balance) or add access control so only authorized callers can choose the destination",
+        VulnType::DelegatecallTainted =>
+            "Never delegatecall to an address derived from untrusted input; pin the implementation target to an immutable / access-controlled state variable, since delegatecall executes the callee's code against this contract's storage",
     }
 }
 
@@ -468,6 +519,11 @@ pub(crate) fn get_cwe_id(vuln_type: VulnType) -> &'static str {
         VulnType::Suicidal => "CWE-284",
         VulnType::UncheckedLowlevel => "CWE-252",
         VulnType::LockedEther => "CWE-664",
+        // v0.5.0 PACK-VULN pack-vuln-v1
+        VulnType::Reentrancy => "CWE-841",
+        VulnType::UncheckedSend => "CWE-252",
+        VulnType::ArbitrarySend => "CWE-862",
+        VulnType::DelegatecallTainted => "CWE-829",
     }
 }
 

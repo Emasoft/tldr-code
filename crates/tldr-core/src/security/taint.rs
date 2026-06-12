@@ -3548,9 +3548,29 @@ static PHP_AST_SINKS: &[AstSinkPattern] = &[
         member_patterns: &[],
         sink_type: TaintSinkType::ShellExec,
     },
+    // PACK-VULN pack-vuln-v1: PHP SQL-injection sinks. `mysqli_query(...)`
+    // is a bare function call (call_names path). `$pdo->query(...)` /
+    // `$db->query(...)` / `$stmt->execute(...)` are PHP
+    // `member_call_expression` nodes whose `extract_call_name_php` yields the
+    // `"$obj->method"` arrow form. Routing `query` / `execute` through
+    // `call_names` makes the `->`-separator arm in `detect_sinks_ast`
+    // (`call_name.ends_with("->query")`) fire on the REAL method-call node —
+    // this replaces the prior-wave `("", "->query(")` raw-substring
+    // member-pattern, which never matched because the canonical
+    // `member_call_expression` is routed through the call-name path (not the
+    // text-substring fallback in `member_patterns_match`). A string/output op
+    // that merely contains `->query(` is a `binary_expression`, never a call
+    // node, so it is no longer flagged.
+    //
+    // `query` and `execute` are NOT PHP builtin function names, so a bare
+    // `query(...)` / `execute(...)` is implausible; restricting the SQL bank
+    // to these two (plus the bare `mysqli_query`) avoids colliding with PHP's
+    // shell-exec builtin `exec()` (registered in the ShellExec bank above) —
+    // `$pdo->exec($sql)` is deliberately NOT routed here to keep `exec`
+    // unambiguously a shell sink.
     AstSinkPattern {
-        call_names: &["mysqli_query"],
-        member_patterns: &[("", "->query(")],
+        call_names: &["mysqli_query", "query", "execute"],
+        member_patterns: &[],
         sink_type: TaintSinkType::SqlQuery,
     },
     // VULN-MIGRATION-V1 M2: HtmlOutput (Xss) sinks per vuln.rs L400-L404.
@@ -3897,9 +3917,27 @@ static OCAML_AST_SINKS: &[AstSinkPattern] = &[
         member_patterns: &[("Sys", "command")],
         sink_type: TaintSinkType::ShellExec,
     },
+    // PACK-VULN pack-vuln-v1: OCaml command-execution sinks. `Unix.execvp`
+    // (pre-existing) plus `Unix.system` (runs the arg through `/bin/sh -c`)
+    // and the `Unix.open_process` family (`open_process`,
+    // `open_process_in`, `open_process_out`, `open_process_full`) which
+    // likewise spawn `/bin/sh -c <cmd>`. Multi-segment receivers like
+    // `Unix` resolve via `extract_call_name_ocaml` + the `rfind('.')`
+    // receiver/field split in `member_patterns_match`, so these match the
+    // real `application_expression` call node, not a substring.
     AstSinkPattern {
         call_names: &[],
-        member_patterns: &[("Unix", "execvp")],
+        member_patterns: &[
+            ("Unix", "execvp"),
+            ("Unix", "execv"),
+            ("Unix", "execve"),
+            ("Unix", "system"),
+            ("Unix", "open_process"),
+            ("Unix", "open_process_in"),
+            ("Unix", "open_process_out"),
+            ("Unix", "open_process_full"),
+            ("Unix", "open_process_args"),
+        ],
         sink_type: TaintSinkType::ShellExec,
     },
     // VULN-SOURCE-PARITY-V1 M2: extended `member_patterns` with three additional
@@ -4406,6 +4444,45 @@ fn extract_first_identifier_arg_ast(
     // named children of the statement node and recursively scan for the first
     // variable_name / name identifier descendant. Skips string-literal subtrees
     // already filtered by is_in_string upstream of detect_sinks_ast.
+    // PACK-VULN pack-vuln-v1: PHP file-inclusion sink var-extraction.
+    // `include($page)` / `require($page)` / `include_once(...)` /
+    // `require_once(...)` parse as `include_expression` / `require_expression`
+    // — a language construct, NOT a call_expression. The node has no
+    // `arguments` field and no `argument`-kind child (its operand is a
+    // `parenthesized_expression` or a bare expression), so the generic
+    // args-list lookup below returns None and the FileOpen (PathTraversal)
+    // sink is silently dropped. Walk the named descendants seeking the first
+    // `variable_name` (the tainted path operand), mirroring the echo BFS arm
+    // below. String-literal subtrees are skipped (caller also filters).
+    if language == Language::Php
+        && matches!(
+            descendant.kind(),
+            "include_expression" | "require_expression"
+        )
+    {
+        let mut stack: Vec<tree_sitter::Node> = vec![*descendant];
+        while let Some(node) = stack.pop() {
+            if string_kinds.contains(&node.kind()) {
+                continue;
+            }
+            if node.kind() == "variable_name" && node.id() != descendant.id() {
+                let text = node_text(&node, source);
+                let head = text.trim_start_matches('$');
+                if is_valid_identifier(head) {
+                    return Some(head.to_string());
+                }
+            }
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.is_named() {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
     if language == Language::Php
         && matches!(
             descendant.kind(),
@@ -4627,6 +4704,23 @@ fn extract_first_identifier_arg_ast(
             "call_expression",
             "parenthesized_expression",
             "argument_list",
+        ],
+        // PACK-VULN pack-vuln-v1: PHP string-concatenation sink arguments.
+        // `$db->query("SELECT ... " . $id)` passes a `binary_expression`
+        // (the `.` concat operator) as the single argument; the tainted
+        // variable `$id` is nested inside it. Without a descend-through set
+        // the generic arg-list scan sees only the binary_expression (whose
+        // leading token is a string literal) and returns None, dropping the
+        // SQL-injection sink. Descending through `binary_expression` /
+        // `parenthesized_expression` / nested call shapes recovers the
+        // tainted operand. AST-driven: the BFS walks named child nodes, not
+        // substrings, and skips `string_node_kinds` subtrees at every level.
+        Language::Php => &[
+            "binary_expression",
+            "parenthesized_expression",
+            "function_call_expression",
+            "member_call_expression",
+            "argument",
         ],
         _ => &[],
     };

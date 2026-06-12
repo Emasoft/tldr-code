@@ -1684,6 +1684,16 @@ pub enum VulnType {
     UncheckedLowlevel,
     /// (v0.5.0 SOL-011 solidity-vuln-v1) Solidity locked ether
     LockedEther,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Solidity reentrancy (CEI violation)
+    Reentrancy,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Solidity unchecked `.send` return
+    UncheckedSend,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Solidity arbitrary send (value to
+    /// caller-controlled destination)
+    ArbitrarySend,
+    /// (v0.5.0 PACK-VULN pack-vuln-v1) Solidity delegatecall to a
+    /// caller-controlled target
+    DelegatecallTainted,
 }
 
 impl VulnType {
@@ -1709,6 +1719,11 @@ impl VulnType {
             Self::Suicidal => "CWE-284",
             Self::UncheckedLowlevel => "CWE-252",
             Self::LockedEther => "CWE-664",
+            // v0.5.0 PACK-VULN pack-vuln-v1
+            Self::Reentrancy => "CWE-841",
+            Self::UncheckedSend => "CWE-252",
+            Self::ArbitrarySend => "CWE-862",
+            Self::DelegatecallTainted => "CWE-829",
         }
     }
 
@@ -1730,6 +1745,9 @@ impl VulnType {
             // v0.5.0 SOL-011 solidity-vuln-v1
             Self::ShadowingState | Self::Suicidal => Severity::High,
             Self::TxOrigin | Self::UncheckedLowlevel | Self::LockedEther => Severity::Medium,
+            // v0.5.0 PACK-VULN pack-vuln-v1
+            Self::Reentrancy | Self::ArbitrarySend | Self::DelegatecallTainted => Severity::High,
+            Self::UncheckedSend => Severity::Medium,
         }
     }
 }
