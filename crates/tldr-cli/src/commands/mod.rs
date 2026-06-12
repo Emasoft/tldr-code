@@ -11,6 +11,9 @@ pub mod dead;
 pub mod impact;
 pub mod structure;
 pub mod tree;
+// cl15-polyglot-v1 (v0.5.0 CL-15): shared multi-language project scan +
+// dropped-language warning helper used by the dir-level commands.
+pub mod polyglot;
 // cfg, dfg: archived (T5 deep analysis)
 pub mod churn;
 pub mod complexity;

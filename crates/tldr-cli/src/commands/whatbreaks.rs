@@ -85,6 +85,20 @@ impl WhatbreaksArgs {
         // cli-error-clarity-v2 (P2.BUG-4).
         require_directory(&self.path, "whatbreaks")?;
 
+        // cl15-polyglot-v1 (v0.5.0 CL-15): when the user pins `--lang` on a
+        // polyglot tree, the non-matching languages are dropped from the
+        // underlying call-graph/import analysis. Emit a clear stderr WARNING
+        // naming them so the restriction is never silent. (Full multi-language
+        // merging for whatbreaks is driven by the core
+        // `whatbreaks_analysis` language resolution — see deferred note in the
+        // CL-15 report.)
+        if self.lang.is_some() {
+            let resolved = self
+                .lang
+                .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+            crate::commands::polyglot::warn_if_languages_dropped(&self.path, resolved);
+        }
+
         writer.progress(&format!(
             "Analyzing what breaks if '{}' changes...",
             self.target

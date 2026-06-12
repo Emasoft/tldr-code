@@ -105,14 +105,47 @@ impl HubsArgs {
             .lang
             .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
 
+        // cl15-polyglot-v1 (v0.5.0 CL-15): determine the set of languages to
+        // analyze. When the user did NOT pin `--lang`, build a MERGED call
+        // graph across EVERY detected language so hub centrality reflects the
+        // whole polyglot tree, not just the dominant language. When the user
+        // DID pin `--lang`, restrict to that language but emit a clear stderr
+        // WARNING naming the dropped languages + file counts.
+        let scan_languages: Vec<Language> = if self.lang.is_some() {
+            crate::commands::polyglot::warn_if_languages_dropped(&self.path, language);
+            vec![language]
+        } else {
+            let mut langs = crate::commands::polyglot::detected_language_list(&self.path);
+            if langs.is_empty() {
+                langs.push(language);
+            }
+            langs
+        };
+
         writer.progress(&format!(
-            "Building call graph for {} ({:?})...",
+            "Building call graph for {} ({} language(s))...",
             self.path.display(),
-            language
+            scan_languages.len()
         ));
 
-        // Build call graph
-        let graph = build_project_call_graph(&self.path, language, None, true)?;
+        // Build ONE merged call graph that unions every detected language's
+        // edges, and merge each language's function-line lookup. The per-
+        // language V2 builder filters to that language's extension family, so
+        // the polyglot tree needs one pass per language.
+        let mut graph = tldr_core::types::ProjectCallGraph::new();
+        let mut function_lines = std::collections::HashMap::new();
+        for scan_lang in &scan_languages {
+            let g = build_project_call_graph(&self.path, *scan_lang, None, true)?;
+            for edge in g.edges() {
+                graph.add_edge(edge.clone());
+            }
+            // hubs-line-population-v1: enumerate function definition lines so
+            // the hub report identifies each function by its real AST line
+            // instead of the legacy `0` placeholder produced by the
+            // call-graph builder. Merge across languages — each language's
+            // files use disjoint relative paths so there are no key clashes.
+            function_lines.extend(enumerate_function_lines(&self.path, *scan_lang));
+        }
 
         writer.progress("Computing hub centrality metrics...");
 
@@ -120,13 +153,6 @@ impl HubsArgs {
         let forward = build_forward_graph(&graph);
         let reverse = build_reverse_graph(&graph);
         let nodes = collect_nodes(&graph);
-
-        // hubs-line-population-v1: enumerate function definition lines so the
-        // hub report identifies each function by its real AST line instead of
-        // the legacy `0` placeholder produced by the call-graph builder
-        // (graph_utils::collect_nodes constructs FunctionRefs without line
-        // info).
-        let function_lines = enumerate_function_lines(&self.path, language);
 
         // Compute hub report
         let report = compute_hub_report_with_lines(

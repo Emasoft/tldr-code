@@ -64,6 +64,24 @@ impl ImpactArgs {
             .lang
             .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
 
+        // cl15-polyglot-v1 (v0.5.0 CL-15): determine the set of languages to
+        // analyze. When the user did NOT pin `--lang`, build a MERGED call
+        // graph across EVERY detected language and run the impact analysis
+        // (plus per-language AST fallback) against it — so callers in any
+        // language are resolved, not just those in the dominant one. When the
+        // user DID pin `--lang`, restrict to that language but emit a clear
+        // stderr WARNING naming the dropped languages + file counts.
+        let scan_languages: Vec<Language> = if self.lang.is_some() {
+            crate::commands::polyglot::warn_if_languages_dropped(&self.path, language);
+            vec![language]
+        } else {
+            let mut langs = crate::commands::polyglot::detected_language_list(&self.path);
+            if langs.is_empty() {
+                langs.push(language);
+            }
+            langs
+        };
+
         let type_aware_msg = if self.type_aware { " (type-aware)" } else { "" };
 
         // Try daemon first for cached result
@@ -96,38 +114,66 @@ impl ImpactArgs {
             type_aware_msg
         ));
 
-        // Build call graph first
-        let graph = build_project_call_graph(&self.path, language, None, true)?;
+        // cl15-polyglot-v1 (v0.5.0 CL-15): build ONE merged call graph that
+        // unions every detected language's edges. The per-language V2 builder
+        // filters to that language's `scan_extensions()` family, so a polyglot
+        // tree needs one build pass per language; we fold every edge into a
+        // single `ProjectCallGraph`. Impact's graph walk is language-agnostic
+        // (it just traverses edges), so the merged graph resolves callers in
+        // any language.
+        let mut graph = tldr_core::types::ProjectCallGraph::new();
+        for scan_lang in &scan_languages {
+            let g = build_project_call_graph(&self.path, *scan_lang, None, true)?;
+            for edge in g.edges() {
+                graph.add_edge(edge.clone());
+            }
+        }
 
         writer.progress(&format!(
             "Analyzing impact of {}{}...",
             self.function, type_aware_msg
         ));
 
-        // Run impact analysis with AST fallback for isolated functions
-        // TODO: When type_aware is true, use type-aware call graph building
-        // For now, this flag is registered but type resolution is pending full implementation
-        let mut report = impact_analysis_with_ast_fallback(
-            &graph,
-            &self.function,
-            self.depth,
-            self.file.as_deref(),
-            &self.path,
-            language,
-        )?;
-
-        // language-adapter-fixes-v1 (P13.AGG13-4): for languages whose call
-        // graph builder under-reports cross-file edges (notably C# field-typed
-        // method calls, Kotlin/Scala/OCaml functor wrappers), the call graph
-        // alone leaves `caller_count = 0` even when `tldr explain` and
-        // `tldr references` find call sites. Mirror the same fallback explain
-        // uses (P12.AGG12-1) so `impact` agrees with `explain`/`references`.
+        // Run impact analysis with AST fallback for isolated functions, once
+        // per detected language. The call-graph walk inside is identical
+        // across passes (same merged graph), but the AST fallback +
+        // language-specific reconciliation (`find_function_in_ast`,
+        // Swift/C#/Kotlin enrichment) is language-specific — so each language
+        // contributes its own AST-discovered definitions. Targets keyed by
+        // `<file>:<func>` dedup naturally across passes via the BTreeMap.
         //
-        // sibling-resolver-gaps-v1 (P14.AGG14-1, P14.AGG14-4): the helper
-        // moved into `tldr-core::analysis::impact` so the same enrichment
-        // also runs inside `whatbreaks`. The same-fix-different-shape
-        // dedup (last-segment aware) lives in the core helper.
-        enrich_impact_with_references(&mut report, &self.path, &self.function, language);
+        // TODO: When type_aware is true, use type-aware call graph building.
+        // For now, this flag is registered but type resolution is pending.
+        let mut report: Option<ImpactReport> = None;
+        for scan_lang in &scan_languages {
+            let mut r = impact_analysis_with_ast_fallback(
+                &graph,
+                &self.function,
+                self.depth,
+                self.file.as_deref(),
+                &self.path,
+                *scan_lang,
+            )?;
+
+            // language-adapter-fixes-v1 (P13.AGG13-4): for languages whose call
+            // graph builder under-reports cross-file edges (notably C# field-typed
+            // method calls, Kotlin/Scala/OCaml functor wrappers), the call graph
+            // alone leaves `caller_count = 0` even when `tldr explain` and
+            // `tldr references` find call sites. Mirror the same fallback explain
+            // uses (P12.AGG12-1) so `impact` agrees with `explain`/`references`.
+            //
+            // sibling-resolver-gaps-v1 (P14.AGG14-1, P14.AGG14-4): the helper
+            // moved into `tldr-core::analysis::impact` so the same enrichment
+            // also runs inside `whatbreaks`. The same-fix-different-shape
+            // dedup (last-segment aware) lives in the core helper.
+            enrich_impact_with_references(&mut r, &self.path, &self.function, *scan_lang);
+
+            match report.as_mut() {
+                None => report = Some(r),
+                Some(acc) => merge_impact_reports(acc, r),
+            }
+        }
+        let mut report = report.expect("scan_languages is never empty");
 
         // If type-aware was requested, add placeholder stats to indicate it's enabled
         // (actual type resolution is integrated in callgraph builder - Phase 8 full implementation)
@@ -165,6 +211,40 @@ impl ImpactArgs {
         }
 
         Ok(())
+    }
+}
+
+/// cl15-polyglot-v1 (v0.5.0 CL-15): merge a per-language `ImpactReport`
+/// (`incoming`) into the accumulator (`acc`).
+///
+/// Each polyglot pass runs against the SAME merged call graph, so the
+/// graph-walk targets are identical across passes; the only per-pass
+/// difference is the language-specific AST fallback, which can add targets
+/// (definitions in files the call graph missed) or attach more callers to an
+/// existing target. The merge therefore:
+///
+///  - unions `targets` by their `<file>:<func>` key;
+///  - on a key collision keeps whichever `CallerTree` reports MORE callers
+///    (the richer of the two — a language pass that resolved real callers
+///    beats one that found a bare zero-caller definition row);
+///  - recomputes `total_targets` from the merged map.
+fn merge_impact_reports(acc: &mut ImpactReport, incoming: ImpactReport) {
+    let incoming_type_resolution = incoming.type_resolution;
+    for (key, tree) in incoming.targets {
+        match acc.targets.get(&key) {
+            Some(existing) if existing.caller_count >= tree.caller_count => {
+                // Keep the richer existing entry.
+            }
+            _ => {
+                acc.targets.insert(key, tree);
+            }
+        }
+    }
+    acc.total_targets = acc.targets.len();
+    // Preserve any type-resolution stats already present; the per-pass
+    // placeholder is re-applied by the caller after the merge if requested.
+    if acc.type_resolution.is_none() {
+        acc.type_resolution = incoming_type_resolution;
     }
 }
 

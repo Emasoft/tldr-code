@@ -51,17 +51,20 @@ impl StructureArgs {
             anyhow::bail!("Path not found: {}", self.path.display());
         }
 
-        // m117-deferred-decisions-v1 (v0.4.2 M-118, D10): `--all-langs`
-        // escape hatch. Iterate every detected language on a polyglot
-        // tree and merge `files` from each per-language scan into one
-        // CodeStructure. The flag is no-op when:
-        //   - `--lang` is set (user pinned a specific language)
+        // cl15-polyglot-v1 (v0.5.0 CL-15): multi-language is now the DEFAULT
+        // for directory scans. When the user did NOT pin a language with
+        // `--lang`, iterate EVERY detected language on the tree and merge
+        // their `files` into one CodeStructure — never silently drop the
+        // non-dominant languages. The legacy `--all-langs` flag is now
+        // redundant in this default path but kept for compatibility (it
+        // selects the same multi-language behaviour). The polyglot path is a
+        // no-op when:
+        //   - `--lang` is set (user pinned a specific language — see the
+        //     dropped-language warning emitted further below)
         //   - The target is a single file (only one language applies)
-        // The merged structure echoes the FIRST scanned language in
-        // its `language` field to preserve the existing single-language
-        // schema; downstream consumers that want the per-language
-        // breakdown can call `--lang` repeatedly.
-        if self.all_langs && self.lang.is_none() && self.path.is_dir() {
+        // The merged structure echoes the FIRST scanned language in its
+        // `language` field to preserve the existing single-language schema.
+        if self.lang.is_none() && self.path.is_dir() {
             return self.run_all_langs(format, quiet);
         }
 
@@ -84,6 +87,15 @@ impl StructureArgs {
                 Language::from_directory(&self.path).unwrap_or(Language::Python)
             }
         });
+
+        // cl15-polyglot-v1 (v0.5.0 CL-15): if the user pinned `--lang` on a
+        // polyglot directory, the non-matching languages are dropped from
+        // this scan. Emit a clear stderr WARNING naming them + file counts so
+        // the restriction is never silent. (The single-file path can only
+        // ever be one language, so this only fires for directories.)
+        if self.lang.is_some() && self.path.is_dir() {
+            crate::commands::polyglot::warn_if_languages_dropped(&self.path, language);
+        }
 
         // Try daemon first for cached result
         if let Some(structure) = try_daemon_route::<CodeStructure>(
@@ -128,38 +140,22 @@ impl StructureArgs {
         Ok(())
     }
 
-    /// m117-deferred-decisions-v1 (v0.4.2 M-118, D10): polyglot
-    /// scanning helper. Walks the directory once with the project
-    /// walker, groups files by `Language::from_path`, runs
-    /// `get_code_structure` per detected language, and merges the
-    /// `files` vectors. Warnings and `files_skipped` are summed
-    /// across the per-language scans.
+    /// cl15-polyglot-v1 (v0.5.0 CL-15): polyglot scanning helper — now the
+    /// DEFAULT directory path (no longer gated behind `--all-langs`). Walks
+    /// the directory once via the shared
+    /// [`crate::commands::polyglot::detect_languages`] helper, runs
+    /// `get_code_structure` per detected language, and merges the `files`
+    /// vectors. Warnings and `files_skipped` are summed across the
+    /// per-language scans.
     fn run_all_langs(&self, format: OutputFormat, quiet: bool) -> Result<()> {
-        use std::collections::HashSet;
-
         let writer = OutputWriter::new(format, quiet);
 
-        // Stage 1: enumerate every language that has at least one
-        // file under `self.path`. We deliberately reuse `from_path`
-        // (not `from_path_with_siblings`) here because each per-lang
-        // scan handles its own extension widening downstream.
-        let mut seen: HashSet<Language> = HashSet::new();
-        let mut langs: Vec<Language> = Vec::new();
-        for entry in tldr_core::walker::walk_project(&self.path) {
-            let p = entry.path();
-            if !p.is_file() {
-                continue;
-            }
-            if let Some(lang) = Language::from_path(p) {
-                if seen.insert(lang) {
-                    langs.push(lang);
-                }
-            }
-        }
-        // Stable order across runs: sort by the Debug-rendered enum
-        // variant name. `Language` doesn't derive `Ord`, but the
-        // Debug repr is stable per-build.
-        langs.sort_by_key(|l| format!("{:?}", l));
+        // Stage 1: enumerate every language that has at least one file under
+        // `self.path` via the shared deterministic detector. (Each per-lang
+        // scan handles its own extension widening downstream, so `from_path`
+        // bucketing here is sufficient.)
+        let mut langs: Vec<Language> =
+            crate::commands::polyglot::detected_language_list(&self.path);
 
         // Empty tree → fall back to Python so the output schema is
         // still well-formed (mirrors the single-language path's
@@ -169,20 +165,27 @@ impl StructureArgs {
         }
 
         writer.progress(&format!(
-            "Extracting structure from {} (--all-langs: {} languages)...",
+            "Extracting structure from {} ({} language(s))...",
             self.path.display(),
             langs.len()
         ));
 
-        // Stage 2: run get_code_structure once per language and
-        // merge. Preserve the first language as the top-level
-        // `language` field (legacy schema) but emit per-language
-        // tallies via a `languages_scanned` warning suffix so users
-        // see what was covered.
+        // Stage 2: run get_code_structure once per language and merge.
+        //
+        // The top-level `language` field reports the DOMINANT autodetected
+        // language (what `Language::from_directory` picks), NOT the first
+        // scanned language — this preserves the long-standing autodetection
+        // contract pinned by `language_autodetect_tests.rs` (e.g. a TS project
+        // with a couple of Python bait files still reports `language:
+        // "typescript"`). The full per-language breakdown is surfaced via the
+        // `polyglot scan:` warning below. When `from_directory` can't decide
+        // (rare for a tree we already know is non-empty), fall back to the
+        // first scanned language.
+        let dominant = Language::from_directory(&self.path).or_else(|| langs.first().copied());
+
         let mut merged_files: Vec<tldr_core::types::FileStructure> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
         let mut files_skipped: u32 = 0;
-        let mut primary: Option<Language> = None;
 
         for lang in &langs {
             let s = get_code_structure(
@@ -191,9 +194,6 @@ impl StructureArgs {
                 self.max_results,
                 Some(&IgnoreSpec::default()),
             )?;
-            if primary.is_none() {
-                primary = Some(*lang);
-            }
             merged_files.extend(s.files);
             files_skipped = files_skipped.saturating_add(s.files_skipped);
             for w in s.warnings {
@@ -202,7 +202,7 @@ impl StructureArgs {
         }
 
         warnings.push(format!(
-            "--all-langs: scanned {} language(s): {}",
+            "polyglot scan: analyzed {} language(s): {}",
             langs.len(),
             langs
                 .iter()
@@ -213,7 +213,7 @@ impl StructureArgs {
 
         let merged = CodeStructure {
             root: self.path.clone(),
-            language: primary,
+            language: dominant,
             files: merged_files,
             files_skipped,
             warnings,

@@ -121,6 +121,28 @@ impl CallsArgs {
             .or_else(|| Language::from_directory(&self.path));
         let language = detected_language.unwrap_or(Language::Python);
 
+        // cl15-polyglot-v1 (v0.5.0 CL-15): determine the set of languages to
+        // analyze. When the user did NOT pin `--lang`, analyze EVERY detected
+        // language under the tree and merge the per-language call graphs — the
+        // dominant-language pick above is only used as the reported
+        // `language` label, never as a filter that drops the rest. When the
+        // user DID pin `--lang`, restrict to that one language but emit a
+        // clear stderr WARNING naming the dropped languages + file counts.
+        let scan_languages: Vec<Language> = if self.lang.is_some() {
+            if self.path.is_dir() {
+                crate::commands::polyglot::warn_if_languages_dropped(&self.path, language);
+            }
+            vec![language]
+        } else if self.path.is_dir() {
+            let mut langs = crate::commands::polyglot::detected_language_list(&self.path);
+            if langs.is_empty() {
+                langs.push(language);
+            }
+            langs
+        } else {
+            vec![language]
+        };
+
         // Try daemon first for cached result
         if let Some(output) = try_daemon_route::<CallGraphOutput>(
             &self.path,
@@ -193,34 +215,54 @@ impl CallsArgs {
             language
         ));
 
-        // Build call graph (V2 canonical)
-        let config = BuildConfig {
-            language: language.as_str().to_string(),
-            respect_ignore: self.respect_ignore,
-            use_type_resolution: true,
-            ..Default::default()
-        };
-        let ir = build_project_call_graph_v2(&self.path, config)?;
         // Bypass compat layer - output ir.edges directly with normalized paths
         let root = self
             .path
             .canonicalize()
             .unwrap_or_else(|_| self.path.clone());
-        let edges: Vec<EdgeOutput> = ir
-            .edges
-            .iter()
-            .map(|e| {
+
+        // cl15-polyglot-v1 (v0.5.0 CL-15): build one call graph per detected
+        // language and merge. The V2 builder filters to a single language's
+        // `scan_extensions()` family, so a polyglot tree needs one pass per
+        // language; we accumulate edges and the per-language function
+        // inventory (defined funcs as nodes) into a single combined graph.
+        let mut edges: Vec<EdgeOutput> = Vec::new();
+        let mut defined_nodes: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for scan_lang in &scan_languages {
+            let config = BuildConfig {
+                language: scan_lang.as_str().to_string(),
+                respect_ignore: self.respect_ignore,
+                use_type_resolution: true,
+                ..Default::default()
+            };
+            let ir = build_project_call_graph_v2(&self.path, config)?;
+            for e in &ir.edges {
                 let src = e.src_file.strip_prefix(&root).unwrap_or(&e.src_file);
                 let dst = e.dst_file.strip_prefix(&root).unwrap_or(&e.dst_file);
-                EdgeOutput {
+                edges.push(EdgeOutput {
                     src_file: src.to_path_buf(),
                     src_func: e.src_func.clone(),
                     dst_file: dst.to_path_buf(),
                     dst_func: e.dst_func.clone(),
                     call_type: e.call_type,
+                });
+            }
+            // Include every defined function as a graph node (zero-out-degree
+            // where appropriate) so the call graph exposes both call
+            // relationships AND the function inventory per language.
+            for (file_path, file_ir) in &ir.files {
+                let rel = file_path.strip_prefix(&root).unwrap_or(file_path);
+                for func in &file_ir.funcs {
+                    let qualified = if let Some(class) = &func.class_name {
+                        format!("{}.{}", class, func.name)
+                    } else {
+                        func.name.clone()
+                    };
+                    defined_nodes.insert(format!("{}:{}", rel.display(), qualified));
                 }
-            })
-            .collect();
+            }
+        }
 
         // calls-edge-limit-v1 (v0.4.2 M-003): the prior implementation
         // truncated `edges` UNCONDITIONALLY at `--max-items` (default 200)
@@ -233,7 +275,6 @@ impl CallsArgs {
         // deterministic), keep ALL edges in `CallGraphOutput`, and only
         // narrow the slice when rendering text/DOT. JSON gets the full
         // graph; truncated=false and shown_edges==total_edges there.
-        let mut edges = edges;
         edges.sort_by(|a, b| {
             let a_key = format!("{}:{}", a.src_file.display(), a.src_func);
             let b_key = format!("{}:{}", b.src_file.display(), b.src_func);
@@ -257,20 +298,11 @@ impl CallsArgs {
             node_set.insert(format!("{}:{}", edge.src_file.display(), edge.src_func));
             node_set.insert(format!("{}:{}", edge.dst_file.display(), edge.dst_func));
         }
-        for (file_path, file_ir) in &ir.files {
-            // FileIR paths are already normalized to forward-slash
-            // relative form; strip the canonicalized root just in case
-            // the FileIR happens to be absolute (defensive).
-            let rel = file_path.strip_prefix(&root).unwrap_or(file_path);
-            for func in &file_ir.funcs {
-                let qualified = if let Some(class) = &func.class_name {
-                    format!("{}.{}", class, func.name)
-                } else {
-                    func.name.clone()
-                };
-                node_set.insert(format!("{}:{}", rel.display(), qualified));
-            }
-        }
+        // cl15-polyglot-v1: the per-language defined-function inventory was
+        // accumulated above across every scanned language. Merge it in so
+        // every language's functions appear as nodes (zero-out-degree where
+        // appropriate), matching the single-language behaviour per-language.
+        node_set.extend(defined_nodes);
         let nodes: Vec<String> = node_set.into_iter().collect();
 
         // calls-edge-limit-v1: JSON gets the full edge set, so for the

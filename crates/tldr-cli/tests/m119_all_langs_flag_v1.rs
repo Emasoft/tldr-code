@@ -1,11 +1,15 @@
-//! m119-all-langs-flag-v1 (v0.4.2 M-118, D10):
+//! m119-all-langs-flag-v1 (v0.4.2 M-118, D10) — updated for
+//! cl15-polyglot-v1 (v0.5.0 CL-15):
 //!
-//! Pin the user-facing surface of the `--all-langs` (alias `-A`)
-//! escape hatch added to project-path commands. Default behaviour
-//! is unchanged: a polyglot project scans only its auto-detected
-//! primary language, silently dropping secondary-language files.
-//! With `--all-langs`, every detected language is scanned and the
-//! results are merged.
+//! Pin the user-facing surface of the `--all-langs` (alias `-A`) flag on
+//! project-path commands.
+//!
+//! cl15-polyglot-v1 changed the DEFAULT: a polyglot project now scans EVERY
+//! detected language by default (no longer silently drops secondary-language
+//! files). `--all-langs` therefore selects the SAME multi-language behaviour
+//! and is kept for backwards compatibility. A single-language restriction is
+//! only requested via `--lang`, which emits a stderr warning (covered by
+//! cl15_polyglot_v1.rs).
 //!
 //! Anchor command: `structure` (it is the canonical
 //! file-walk-and-extract command and the most observable in the
@@ -16,8 +20,10 @@
 //!   - Rust files (secondary: 1 file)
 //!
 //! Assertions:
-//!   1. `structure` default → only Python files appear in `files[]`.
-//!   2. `structure --all-langs` → both Python AND Rust appear.
+//!   1. `structure` default → BOTH Python AND Rust appear in `files[]`
+//!      (CL-15: multi-language is the default).
+//!   2. `structure --all-langs` → both Python AND Rust appear (same as
+//!      default; flag kept for compatibility).
 //!   3. `structure -A` → short alias works the same.
 //!   4. `--all-langs --help` is documented.
 
@@ -92,11 +98,12 @@ fn count_files_with_ext(v: &serde_json::Value, ext: &str) -> usize {
 }
 
 // =============================================================================
-// (1) Default scan: Python dominant → Rust files silently dropped.
+// (1) Default scan (cl15-polyglot-v1): EVERY detected language is analyzed —
+//     the secondary Rust file is no longer dropped.
 // =============================================================================
 
 #[test]
-fn m119_default_drops_secondary_language() {
+fn m119_default_analyzes_every_language() {
     let dir = make_polyglot_dir();
     let path = dir.path().to_str().unwrap();
 
@@ -119,10 +126,12 @@ fn m119_default_drops_secondary_language() {
         n_py,
         stdout
     );
-    assert_eq!(
-        n_rs, 0,
-        "default scan should DROP Rust files (dominant=Python). \
-         got n_rs={}, json={}",
+    // cl15-polyglot-v1: multi-language is the default — the secondary Rust
+    // file must now be INCLUDED, not silently dropped.
+    assert!(
+        n_rs >= 1,
+        "default scan must now INCLUDE the secondary Rust file (CL-15: \
+         multi-language is the default). got n_rs={}, json={}",
         n_rs, stdout
     );
 }
