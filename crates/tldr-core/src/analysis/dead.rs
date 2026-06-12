@@ -1195,12 +1195,14 @@ mod tests {
             src_func: "main".to_string(),
             dst_file: "main.py".into(),
             dst_func: "process".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "main.py".into(),
             src_func: "process".to_string(),
             dst_file: "utils.py".into(),
             dst_func: "helper".to_string(),
+            call_line: None,
         });
 
         graph
@@ -1601,6 +1603,7 @@ mod tests {
             src_func: "main".to_string(),
             dst_file: "test.rs".into(), // must match enriched_func's file
             dst_func: "pub_helper".to_string(),
+            call_line: None,
         });
 
         let functions = vec![enriched_func("pub_helper", true, false, false, vec![])];

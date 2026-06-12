@@ -168,16 +168,26 @@ pub fn project_graph_to_edges(
     graph
         .edges()
         .map(|edge| {
-            // Look up line number from file IRs if available
-            let line = file_irs
-                .get(&edge.src_file.to_string_lossy().to_string())
-                .and_then(|ir| {
-                    ir.calls.get(&edge.src_func).and_then(|calls| {
-                        calls
-                            .iter()
-                            .find(|c| c.target == edge.dst_func)
-                            .and_then(|c| c.line)
-                    })
+            // fix-cl-1-v1 (v0.5.0 CL-1): prefer the call-site line carried on
+            // the resolved edge itself. The previous IR re-lookup keyed on
+            // `c.target == edge.dst_func`, but `dst_func` is the *resolved*
+            // (often qualified) name while `c.target` is the *raw* pre-
+            // resolution name — they diverge for C resolved names and
+            // qualified methods, dropping the line to 0. The edge's own
+            // `call_line` is set at resolution time when both are known.
+            let line = edge
+                .call_line
+                .or_else(|| {
+                    file_irs
+                        .get(&edge.src_file.to_string_lossy().to_string())
+                        .and_then(|ir| {
+                            ir.calls.get(&edge.src_func).and_then(|calls| {
+                                calls
+                                    .iter()
+                                    .find(|c| c.target == edge.dst_func)
+                                    .and_then(|c| c.line)
+                            })
+                        })
                 })
                 .unwrap_or(0);
 
@@ -237,6 +247,8 @@ pub fn callgraph_ir_to_v1(ir: &CallGraphIR, root: &Path) -> crate::types::Projec
             src_func: edge.src_func.clone(),
             dst_file,
             dst_func: edge.dst_func.clone(),
+            // fix-cl-1-v1 (v0.5.0 CL-1): preserve call-site line.
+            call_line: edge.call_line,
         };
         graph.add_edge(v1_edge);
     }

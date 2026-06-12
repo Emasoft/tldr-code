@@ -1548,7 +1548,9 @@ fn augment_with_project_call_graph(
                 a_to_b.calls.push(CrossCall {
                     caller,
                     callee,
-                    line: 0,
+                    // fix-cl-1-v1 (v0.5.0 CL-1): the call graph now carries the
+                    // call-site line on each edge; use it instead of 0.
+                    line: edge.call_line.unwrap_or(0),
                 });
                 a_to_b.count = a_to_b.count.saturating_add(1);
             }
@@ -1559,7 +1561,8 @@ fn augment_with_project_call_graph(
                 b_to_a.calls.push(CrossCall {
                     caller,
                     callee,
-                    line: 0,
+                    // fix-cl-1-v1 (v0.5.0 CL-1): preserve the call-site line.
+                    line: edge.call_line.unwrap_or(0),
                 });
                 b_to_a.count = b_to_a.count.saturating_add(1);
             }

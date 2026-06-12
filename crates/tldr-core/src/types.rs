@@ -2533,7 +2533,16 @@ pub struct ProjectCallGraph {
 }
 
 /// Edge in the call graph
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// fix-cl-1-v1 (v0.5.0 CL-1): `call_line` records the representative call-site
+/// line (1-indexed) so consumers like `tldr explain` and `tldr coupling` can
+/// report the real line instead of `0`. It is deliberately **excluded** from
+/// `PartialEq`/`Eq`/`Hash` because an edge is the caller->callee relationship,
+/// not an individual call site — multiple call sites collapse to one edge in
+/// the backing `HashSet`. Including the line in the identity key would re-split
+/// deduplicated edges. `#[serde(default)]` keeps older serialized graphs
+/// (without the field) loadable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallEdge {
     /// Path to the file containing the calling function
     pub src_file: PathBuf,
@@ -2543,6 +2552,32 @@ pub struct CallEdge {
     pub dst_file: PathBuf,
     /// Name of the called function
     pub dst_func: String,
+    /// Representative call-site line (1-indexed). `None` when unknown.
+    /// Excluded from edge identity — see the type-level note above.
+    #[serde(default)]
+    pub call_line: Option<u32>,
+}
+
+impl PartialEq for CallEdge {
+    fn eq(&self, other: &Self) -> bool {
+        // `call_line` intentionally excluded from identity (see type docs).
+        self.src_file == other.src_file
+            && self.src_func == other.src_func
+            && self.dst_file == other.dst_file
+            && self.dst_func == other.dst_func
+    }
+}
+
+impl Eq for CallEdge {}
+
+impl std::hash::Hash for CallEdge {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // `call_line` intentionally excluded from identity (see type docs).
+        self.src_file.hash(state);
+        self.src_func.hash(state);
+        self.dst_file.hash(state);
+        self.dst_func.hash(state);
+    }
 }
 
 // =============================================================================
@@ -2663,6 +2698,9 @@ impl TypedCallEdge {
             src_func: self.src_func.clone(),
             dst_file: self.dst_file.clone(),
             dst_func: self.dst_func.clone(),
+            // fix-cl-1-v1 (v0.5.0 CL-1): preserve the call-site line. A 0
+            // sentinel in the typed edge means "unknown" -> None.
+            call_line: (self.call_site_line != 0).then_some(self.call_site_line),
         }
     }
 }
@@ -3758,6 +3796,7 @@ mod tests {
             src_func: "foo".to_string(),
             dst_file: PathBuf::from("b.py"),
             dst_func: "bar".to_string(),
+            call_line: None,
         };
 
         graph.add_edge(edge.clone());

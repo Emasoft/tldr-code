@@ -2004,6 +2004,7 @@ fn locate_call_in_caller_file(
     fn descend<'a>(
         node: tree_sitter::Node<'a>,
         source: &[u8],
+        language: Language,
         func_kinds: &[&str],
         class_kinds: &[&str],
         caller_tail: &str,
@@ -2016,22 +2017,23 @@ fn locate_call_in_caller_file(
         let is_func_decl = func_kinds.contains(&kind);
         let mut now_in = in_target_func;
         if is_func_decl {
-            // Try to read this function's name. Reuse the same fallback
-            // logic as `find_callers_in_file`: prefer the `name` field,
-            // else the first identifier child.
-            let mut name: Option<String> = None;
-            if let Some(name_node) = node.child_by_field_name("name") {
-                name = Some(node_text(name_node, source).to_string());
+            // fix-cl-1-v1 (v0.5.0 CL-1): use the canonical AST-driven,
+            // language-aware name extractor. The previous inline fallback
+            // (`name` field, else first direct `identifier` child) failed for
+            // C/C++ where the function name lives inside the
+            // `function_declarator` declarator chain — not a direct child —
+            // so the caller scope was never entered and the call-site line
+            // dropped to 0 (gaps IT3-c-01/04, IT3-ruby-02/04, IT3-swift-04).
+            let name = if let Ok(source_str) = std::str::from_utf8(source) {
+                tldr_core::ast::function_finder::get_function_name(node, language, source_str)
             } else {
-                for child in node.children(&mut node.walk()) {
-                    if matches!(child.kind(), "identifier" | "simple_identifier") {
-                        name = Some(node_text(child, source).to_string());
-                        break;
-                    }
-                }
-            }
+                None
+            };
             if let Some(n) = name.as_deref() {
-                if explain_names_match(n, caller_tail) || n == caller_tail {
+                // Names may be qualified (e.g. C++ `Foo::bar`, Lua
+                // `Mod.fn`); compare on the trailing segment.
+                let n_tail = n.rsplit(['.', ':']).next().unwrap_or(n);
+                if explain_names_match(n_tail, caller_tail) || n_tail == caller_tail {
                     now_in = true;
                 }
             }
@@ -2077,6 +2079,7 @@ fn locate_call_in_caller_file(
             if let Some(line) = descend(
                 child,
                 source,
+                language,
                 func_kinds,
                 class_kinds,
                 caller_tail,
@@ -2092,6 +2095,7 @@ fn locate_call_in_caller_file(
     descend(
         tree.root_node(),
         source_bytes,
+        language,
         func_kinds,
         class_kinds,
         caller_tail,

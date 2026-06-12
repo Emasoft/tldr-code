@@ -441,24 +441,28 @@ mod tests {
             src_func: "get_user".to_string(),
             dst_file: "services/user.py".into(),
             dst_func: "find_user".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "services/user.py".into(),
             src_func: "find_user".to_string(),
             dst_file: "utils/db.py".into(),
             dst_func: "query".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "api/routes.py".into(),
             src_func: "create_user".to_string(),
             dst_file: "services/user.py".into(),
             dst_func: "save_user".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "services/user.py".into(),
             src_func: "save_user".to_string(),
             dst_file: "utils/db.py".into(),
             dst_func: "insert".to_string(),
+            call_line: None,
         });
 
         graph
@@ -490,12 +494,14 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: "module_b/bar.py".into(),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "module_b/bar.py".into(),
             src_func: "func_b".to_string(),
             dst_file: "module_a/foo.py".into(),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
 
         let report = architecture_analysis(&graph).unwrap();
@@ -578,12 +584,14 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: "module_b/bar.py".into(),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "module_b/bar.py".into(),
             src_func: "func_b".to_string(),
             dst_file: "module_a/foo.py".into(),
             dst_func: "func_a".to_string(),
+            call_line: None,
         });
 
         let report = find_circular_dependencies_tarjan(&graph, CycleGranularity::File);
@@ -602,18 +610,21 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: "module_b/bar.py".into(),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "module_b/bar.py".into(),
             src_func: "func_b".to_string(),
             dst_file: "module_c/baz.py".into(),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "module_c/baz.py".into(),
             src_func: "func_c".to_string(),
             dst_file: "module_a/foo.py".into(),
             dst_func: "func_a".to_string(),
+            call_line: None,
         });
 
         // Legacy detection should miss this
@@ -642,12 +653,14 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: "module_b/bar.py".into(),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "module_b/bar.py".into(),
             src_func: "func_b".to_string(),
             dst_file: "module_c/baz.py".into(),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
 
         let report = find_circular_dependencies_tarjan(&graph, CycleGranularity::File);
@@ -666,12 +679,14 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: "module.py".into(),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "module.py".into(),
             src_func: "func_b".to_string(),
             dst_file: "module.py".into(),
             dst_func: "func_a".to_string(),
+            call_line: None,
         });
 
         // File level should find no cycles (same file)
@@ -695,12 +710,14 @@ mod tests {
             src_func: "a".to_string(),
             dst_file: "cycle1_b/bar.py".into(),
             dst_func: "b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "cycle1_b/bar.py".into(),
             src_func: "b".to_string(),
             dst_file: "cycle1_a/foo.py".into(),
             dst_func: "a".to_string(),
+            call_line: None,
         });
 
         // Cycle 2: X -> Y -> Z -> X
@@ -709,18 +726,21 @@ mod tests {
             src_func: "x".to_string(),
             dst_file: "cycle2_y/y.py".into(),
             dst_func: "y".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "cycle2_y/y.py".into(),
             src_func: "y".to_string(),
             dst_file: "cycle2_z/z.py".into(),
             dst_func: "z".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "cycle2_z/z.py".into(),
             src_func: "z".to_string(),
             dst_file: "cycle2_x/x.py".into(),
             dst_func: "x".to_string(),
+            call_line: None,
         });
 
         let report = find_circular_dependencies_tarjan(&graph, CycleGranularity::File);

@@ -1034,6 +1034,12 @@ pub fn build_project_call_graph_v2(
                 dst_func: target.qualified_name(),
                 call_type: call_site.call_type,
                 via_import,
+                // fix-cl-1-v1 (v0.5.0 CL-1): carry the call-site line from the
+                // resolved CallSite so downstream consumers (explain /
+                // coupling) report the real line instead of 0. Excluded from
+                // edge identity, so the HashSet dedup below keeps the first
+                // (sort-stable smallest) line as the representative.
+                call_line: call_site.line,
             };
             if edge_set.insert(edge.clone()) {
                 ir.add_edge(edge);

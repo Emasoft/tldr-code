@@ -1694,6 +1694,7 @@ mod tests {
                 src_func: format!("caller_{}", i),
                 dst_file: PathBuf::from("hub.py"),
                 dst_func: "central_hub".to_string(),
+                call_line: None,
             });
         }
 
@@ -1709,6 +1710,7 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: PathBuf::from("b.py"),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
 
         graph.add_edge(CallEdge {
@@ -1716,6 +1718,7 @@ mod tests {
             src_func: "func_b".to_string(),
             dst_file: PathBuf::from("c.py"),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
 
         graph.add_edge(CallEdge {
@@ -1723,6 +1726,7 @@ mod tests {
             src_func: "func_c".to_string(),
             dst_file: PathBuf::from("d.py"),
             dst_func: "func_d".to_string(),
+            call_line: None,
         });
 
         graph
@@ -1738,6 +1742,7 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: PathBuf::from("b.py"),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
 
         // A -> C
@@ -1746,6 +1751,7 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: PathBuf::from("c.py"),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
 
         // B -> D
@@ -1754,6 +1760,7 @@ mod tests {
             src_func: "func_b".to_string(),
             dst_file: PathBuf::from("d.py"),
             dst_func: "func_d".to_string(),
+            call_line: None,
         });
 
         // C -> D
@@ -1762,6 +1769,7 @@ mod tests {
             src_func: "func_c".to_string(),
             dst_file: PathBuf::from("d.py"),
             dst_func: "func_d".to_string(),
+            call_line: None,
         });
 
         graph
@@ -1947,6 +1955,7 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: PathBuf::from("a.py"),
             dst_func: "func_a".to_string(),
+            call_line: None,
         });
 
         let forward = build_forward_graph(&graph);
@@ -1974,6 +1983,7 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: PathBuf::from("b.py"),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
 
         let forward = build_forward_graph(&graph);
@@ -2285,6 +2295,7 @@ mod tests {
                 src_func: format!("func_{}", i),
                 dst_file: PathBuf::from(format!("node_{}.py", i + 1)),
                 dst_func: format!("func_{}", i + 1),
+                call_line: None,
             });
         }
 
@@ -2329,6 +2340,7 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: PathBuf::from("b.py"),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
 
         let forward = build_forward_graph(&graph);

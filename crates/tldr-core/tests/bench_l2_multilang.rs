@@ -1761,6 +1761,7 @@ mod hubs_tests {
             src_func: "caller".to_string(),
             dst_file: PathBuf::from("b.py"),
             dst_func: "callee".to_string(),
+            call_line: None,
         });
         let forward = build_forward_graph(&graph);
         let reverse = build_reverse_graph(&graph);

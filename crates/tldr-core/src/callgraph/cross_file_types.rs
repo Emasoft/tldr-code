@@ -1515,7 +1515,18 @@ pub struct ReExportChain {
 /// - Import path used to resolve the call
 ///
 /// This is the V2 edge type for the new cross-file resolution system.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// # Edge identity vs `call_line`
+///
+/// fix-cl-1-v1 (v0.5.0 CL-1): an edge is the *relationship* between a caller
+/// and a callee. Multiple physical call sites (different lines) for the same
+/// `(src_file, src_func, dst_file, dst_func, call_type, via_import)` collapse
+/// to **one** logical edge. To honour that contract, `call_line` is recorded
+/// for line attribution (so `explain` / `coupling` stop reporting `line: 0`)
+/// but is deliberately **excluded** from `PartialEq`/`Eq`/`Hash` — adding it
+/// to the identity key would re-split deduplicated edges per call site. The
+/// builder keeps the smallest (first) call-site line as the representative.
+#[derive(Debug, Clone)]
 pub struct CrossFileCallEdge {
     /// Source file containing the call
     pub src_file: std::path::PathBuf,
@@ -1529,6 +1540,36 @@ pub struct CrossFileCallEdge {
     pub call_type: CallType,
     /// Import path used to resolve this call (if any)
     pub via_import: Option<String>,
+    /// Call-site line (1-indexed) of the representative call site for this
+    /// edge. `None` when the underlying `CallSite` had no location. Excluded
+    /// from edge identity — see the type-level note above.
+    pub call_line: Option<u32>,
+}
+
+impl PartialEq for CrossFileCallEdge {
+    fn eq(&self, other: &Self) -> bool {
+        // `call_line` intentionally excluded from identity (see type docs).
+        self.src_file == other.src_file
+            && self.src_func == other.src_func
+            && self.dst_file == other.dst_file
+            && self.dst_func == other.dst_func
+            && self.call_type == other.call_type
+            && self.via_import == other.via_import
+    }
+}
+
+impl Eq for CrossFileCallEdge {}
+
+impl std::hash::Hash for CrossFileCallEdge {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // `call_line` intentionally excluded from identity (see type docs).
+        self.src_file.hash(state);
+        self.src_func.hash(state);
+        self.dst_file.hash(state);
+        self.dst_func.hash(state);
+        self.call_type.hash(state);
+        self.via_import.hash(state);
+    }
 }
 
 /// Project-wide call graph V2 with indexed lookups.

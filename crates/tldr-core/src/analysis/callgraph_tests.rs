@@ -494,6 +494,7 @@ mod type_aware_tests {
                 src_func: edge.src_func,
                 dst_file: edge.dst_file,
                 dst_func: edge.dst_func,
+                call_line: None,
             });
         }
         graph
@@ -1250,6 +1251,7 @@ mod hubs_tests {
                 src_func: edge.src_func,
                 dst_file: edge.dst_file,
                 dst_func: edge.dst_func,
+                call_line: None,
             });
         }
 
@@ -1949,6 +1951,7 @@ mod integration_tests {
                 src_func: edge.src_func,
                 dst_file: edge.dst_file,
                 dst_func: edge.dst_func,
+                call_line: None,
             });
         }
 

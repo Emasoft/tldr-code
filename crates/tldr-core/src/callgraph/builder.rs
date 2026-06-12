@@ -73,6 +73,9 @@ fn project_graph_from_ir(ir: CallGraphIR) -> ProjectCallGraph {
             src_func: edge.src_func,
             dst_file: edge.dst_file,
             dst_func: edge.dst_func,
+            // fix-cl-1-v1 (v0.5.0 CL-1): carry the call-site line through to
+            // the V1 graph so explain/coupling stop reporting line 0.
+            call_line: edge.call_line,
         });
     }
     graph
@@ -91,6 +94,8 @@ pub fn project_graph_from_ir_ref(ir: &CallGraphIR) -> ProjectCallGraph {
             src_func: edge.src_func.clone(),
             dst_file: edge.dst_file.clone(),
             dst_func: edge.dst_func.clone(),
+            // fix-cl-1-v1 (v0.5.0 CL-1): preserve call-site line.
+            call_line: edge.call_line,
         });
     }
     graph
@@ -278,6 +283,7 @@ mod tests {
             dst_func: "func_b".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
         ir.edges.push(CrossFileCallEdge {
             src_file: PathBuf::from("src/b.py"),
@@ -286,6 +292,7 @@ mod tests {
             dst_func: "func_c".to_string(),
             call_type: CallType::Method,
             via_import: Some("c".to_string()),
+            call_line: None,
         });
 
         let graph = project_graph_from_ir_ref(&ir);
@@ -315,6 +322,7 @@ mod tests {
                 dst_func: "bar".to_string(),
                 call_type: CallType::Direct,
                 via_import: None,
+                call_line: None,
             });
             ir
         };

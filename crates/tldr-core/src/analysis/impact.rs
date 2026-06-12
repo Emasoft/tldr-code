@@ -1713,12 +1713,14 @@ mod tests {
             src_func: "func_a".to_string(),
             dst_file: "b.py".into(),
             dst_func: "func_b".to_string(),
+            call_line: None,
         });
         graph.add_edge(CallEdge {
             src_file: "b.py".into(),
             src_func: "func_b".to_string(),
             dst_file: "c.py".into(),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
         // D also calls C
         graph.add_edge(CallEdge {
@@ -1726,6 +1728,7 @@ mod tests {
             src_func: "func_d".to_string(),
             dst_file: "c.py".into(),
             dst_func: "func_c".to_string(),
+            call_line: None,
         });
 
         graph

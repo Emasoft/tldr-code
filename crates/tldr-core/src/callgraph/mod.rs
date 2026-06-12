@@ -101,6 +101,11 @@ mod cross_file_test;
 #[cfg(test)]
 mod hypotheses_test;
 
+// fix-cl-1-v1 (v0.5.0 CL-1): pins that CrossFileCallEdge preserves the
+// call-site line and excludes it from edge identity.
+#[cfg(test)]
+mod fix_cl1_callgraph_line_v1;
+
 pub use builder::build_project_call_graph;
 pub use cross_file_types::{
     // Phase 3: Container types
