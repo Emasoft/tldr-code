@@ -91,6 +91,31 @@ impl ContextArgs {
                 None => (self.entry.clone(), None),
             };
 
+        // cl16-arg-ergonomics-v1 (v0.5.0 CL-16): `context` expects a function
+        // ENTRY, not a file path. When the user hands us a bare existing file
+        // path (no `<file>:<func>` split was found, and no explicit `--file`),
+        // the lookup downstream would fail with the misleading
+        // "Function not found: <path>" plus a junk block of fuzzy
+        // function-name suggestions. Detect the confusion up-front and emit a
+        // clear, actionable hint instead: tell the user `context` wants a
+        // function name and show the `<file>:<func>` shorthand that scopes to
+        // that file. We only trip when the positional arg literally resolves
+        // to a regular file on disk, so genuine function names (including
+        // qualified `Module::Sub::fn` names) are never affected.
+        if derived_file.is_none() && self.file.is_none() {
+            let as_path = Path::new(&entry);
+            if as_path.is_file() {
+                anyhow::bail!(
+                    "context expects a function name, but '{}' is a file. \
+                     Pass a function name (e.g. `tldr context my_function`), or scope to a \
+                     function in that file with the `<file>:<func>` shorthand \
+                     (e.g. `tldr context {}:my_function`) or the `--file` flag.",
+                    entry,
+                    entry
+                );
+            }
+        }
+
         // The user-supplied --file (if any) wins over the derived form so
         // explicit flags always take precedence over inferred shorthands.
         let effective_file: Option<PathBuf> =

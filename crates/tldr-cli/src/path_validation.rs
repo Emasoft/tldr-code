@@ -71,9 +71,27 @@ const PROJECT_ROOT_MARKERS: &[&str] = &[
 /// is found anywhere up the chain, the file's immediate parent directory
 /// is returned — analyses will still run, just scoped to that directory.
 pub fn infer_project_root_for_file(file_path: &Path) -> PathBuf {
-    let mut current = match file_path.parent() {
+    // cl16-arg-ergonomics-v1 (v0.5.0 CL-16): canonicalize the file path up
+    // front so RELATIVE inputs resolve to a real absolute ancestor chain.
+    // Previously a relative path like `app.py` (parent == "") or
+    // `src/flask/app.py` (parent climbs to "") collapsed the inferred root to
+    // the empty string, and `change-impact` then failed with the misleading
+    // "Path not found: " (no path named at all). Canonicalising first means
+    // `parent()` always yields a concrete directory; if canonicalisation
+    // fails (e.g. the file was deleted) we fall back to the raw path so the
+    // marker walk still has something to chew on.
+    let canonical = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.to_path_buf());
+    let mut current = match canonical.parent() {
+        // An empty parent (bare relative filename that didn't canonicalize)
+        // means "current directory" — resolve it to an absolute path so the
+        // marker walk has a real chain to climb instead of "".
+        Some(p) if p.as_os_str().is_empty() => {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        }
         Some(p) => p.to_path_buf(),
-        None => return PathBuf::from("."),
+        None => return std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
     let fallback = current.clone();
 
