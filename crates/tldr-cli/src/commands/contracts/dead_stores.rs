@@ -313,7 +313,11 @@ pub fn find_dead_stores_dfg(
             .unwrap_or(false);
 
         // Collect definitions and uses
-        let mut definitions: Vec<(u32, u32, u32)> = Vec::new(); // (line, block_id, version)
+        // (line, block_id, version, is_update). `is_update` marks a
+        // read-modify-write store — a `RefType::Update` — produced by an
+        // op-assign (`x += 1`), an increment, or a partial aggregate write
+        // (`x.field = ...`, `arr[i] = ...`, Solidity `_roles[r].x = true`).
+        let mut definitions: Vec<(u32, u32, u32, bool)> = Vec::new();
         let uses: Vec<u32> = var_refs
             .iter()
             .filter(|r| matches!(r.ref_type, RefType::Use))
@@ -328,15 +332,30 @@ pub fn find_dead_stores_dfg(
                     *version += 1;
 
                     let block_id = line_to_block.get(&var_ref.line).copied().unwrap_or(0);
-                    definitions.push((var_ref.line, block_id as u32, *version));
+                    let is_update = matches!(var_ref.ref_type, RefType::Update);
+                    definitions.push((var_ref.line, block_id as u32, *version, is_update));
                 }
                 RefType::Use => {}
             }
         }
 
-        // If there are no uses of this variable at all, all non-parameter definitions are dead
+        // If there are no uses of this variable at all, all non-parameter
+        // definitions are dead — EXCEPT read-modify-write `Update` stores.
+        //
+        // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): an `Update` reads the prior
+        // value and writes back a (partially) modified one. A partial
+        // aggregate / state-variable write — Solidity `_roles[role].hasRole[
+        // account] = true`, `obj.field = ...`, `arr[i] = ...` — is an
+        // OBSERVABLE side effect on a container, never a dead store of that
+        // container intra-procedurally. Flagging `_roles@185` in
+        // OpenZeppelin's `_grantRole` (the only effect of an access-control
+        // primitive) was a false positive. Updates are excluded from
+        // dead-store reporting here and below.
         if uses.is_empty() && !definitions.is_empty() && !is_parameter {
-            for (def_line, block_id, version) in &definitions {
+            for (def_line, block_id, version, is_update) in &definitions {
+                if *is_update {
+                    continue;
+                }
                 dead_stores.push(DeadStore {
                     variable: var_name.clone(),
                     ssa_name: format!("{}_{}", var_name, version),
@@ -350,9 +369,17 @@ pub fn find_dead_stores_dfg(
 
         // Check each definition for "overwritten before use" pattern
         // Only flag as dead if there's a REDEFINITION in the SAME BLOCK without use between
-        for (i, &(def_line, def_block_id, version)) in definitions.iter().enumerate() {
+        for (i, &(def_line, def_block_id, version, is_update)) in definitions.iter().enumerate() {
             // Skip parameters for overwrite detection (first definition on param line)
             if is_parameter && i == 0 {
+                continue;
+            }
+
+            // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): a read-modify-write
+            // `Update` store (`x += 1`, `obj.field = ...`, `arr[i] = ...`,
+            // Solidity mapping write) consumes the prior value and is an
+            // observable partial update — it is never a dead store.
+            if is_update {
                 continue;
             }
 
@@ -360,9 +387,9 @@ pub fn find_dead_stores_dfg(
             let next_def_in_block = definitions
                 .iter()
                 .skip(i + 1)
-                .find(|(_, block_id, _)| *block_id == def_block_id);
+                .find(|(_, block_id, _, _)| *block_id == def_block_id);
 
-            if let Some(&(next_def_line, _, _)) = next_def_in_block {
+            if let Some(&(next_def_line, _, _, _)) = next_def_in_block {
                 // Check if there's any use between this def and the next def in the same block.
                 //
                 // CL-13 (cl12_13_dfg_v1): the upper boundary is inclusive

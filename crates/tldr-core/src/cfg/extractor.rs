@@ -271,6 +271,47 @@ fn solidity_if_branches<'a>(node: Node<'a>) -> (Option<Node<'a>>, Option<Node<'a
     (then_branch, else_branch)
 }
 
+/// Swift `if_statement` exposes neither a `consequence` nor an `alternative`
+/// field. The then-branch is an unnamed `statements` child positioned after the
+/// `condition` field; the else-branch (when present) is the `statements` (or
+/// nested `if_statement` for else-if chains) child that follows the bare `else`
+/// token. `child_by_field_name` therefore cannot reach either branch, which
+/// dropped the else-branch body from the CFG/PDG entirely (GH #80: swift
+/// `_heapify` backward slice from an else-branch trailing-closure line returned
+/// EMPTY because no basic block covered that line).
+///
+/// Returns `(then, else)`. `else` is `None` when the if has no else clause.
+fn swift_if_branches<'a>(node: Node<'a>) -> (Option<Node<'a>>, Option<Node<'a>>) {
+    let mut then_branch = None;
+    let mut else_branch = None;
+    let mut saw_else_token = false;
+    for i in 0..node.child_count() {
+        let child = match node.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        let kind = child.kind();
+        if kind == "else" {
+            saw_else_token = true;
+            continue;
+        }
+        // The branch bodies are `statements` blocks; an else-if chain places a
+        // nested `if_statement` directly after the `else` token instead.
+        let is_branch_body = kind == "statements" || kind == "if_statement";
+        if !is_branch_body {
+            continue;
+        }
+        if saw_else_token {
+            if else_branch.is_none() {
+                else_branch = Some(child);
+            }
+        } else if then_branch.is_none() {
+            then_branch = Some(child);
+        }
+    }
+    (then_branch, else_branch)
+}
+
 /// cfg-continue-fallthrough-fix-v1 (v0.4.2 M-104): Kotlin `if_expression` has
 /// no named "consequence" field (node-types.json verified). The consequence body
 /// is the first named child AFTER the "condition" field's end position.
@@ -780,6 +821,23 @@ impl<'a> CfgBuilder<'a> {
                 self.process_block(node, depth)?;
             }
 
+            // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): a bare C/C++ block
+            // `{ ... }` (`compound_statement`) that appears as a statement —
+            // e.g. the body of an `else_clause` (`else { ... }`), a `case`
+            // arm, or a free-standing scope — must have its children walked
+            // so any NESTED control flow (an `if`/`for`/`while` inside the
+            // block) is split into its own CFG blocks. Pre-fix this fell into
+            // the catch-all `_` arm below, which merely stretched the current
+            // block's line range over the WHOLE compound statement and never
+            // descended. That collapsed a conditional re-assignment and the
+            // later unconditional uses of a variable into ONE coarse basic
+            // block, so reaching-defs treated the conditional store as the
+            // last def before the uses and flagged the earlier (live) store as
+            // a dead store (luau Parser.cpp `parseIf` -> `matchThenElse@590`).
+            "compound_statement" => {
+                self.process_block(node, depth)?;
+            }
+
             // Other statements - just update current block
             _ => {
                 self.update_current_block_lines(start_line, end_line);
@@ -829,11 +887,21 @@ impl<'a> CfgBuilder<'a> {
         } else {
             (None, None)
         };
+        // Swift if_statement uses neither consequence/alternative fields nor
+        // then_clause/else_clause kinds — both branches are bare `statements`
+        // children separated by an `else` token (GH #80 else-branch drop).
+        let (swift_then, swift_else) = if matches!(self.language, Language::Swift) {
+            swift_if_branches(node)
+        } else {
+            (None, None)
+        };
         let consequence = sol_then
+            .or(swift_then)
             .or_else(|| node.child_by_field_name("consequence"))
             .or_else(|| find_child_by_kind(node, "then_clause"))
             .or_else(|| kotlin_if_consequence(node));
         let alternative = sol_else
+            .or(swift_else)
             .or_else(|| node.child_by_field_name("alternative"))
             .or_else(|| find_child_by_kind(node, "else_clause"))
             .or_else(|| kotlin_if_alternative(node));

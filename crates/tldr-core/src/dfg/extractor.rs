@@ -130,11 +130,20 @@ pub(crate) fn extract_dfg_from_tree_with_cfg(
         .ok_or_else(|| TldrError::function_not_found(function_name))?;
 
     let mut builder = DfgBuilder::new(function_name.to_string(), source, language);
+    // fix_cl5_dfg_v1 (v0.5.0 CL-5): record the analyzed function's byte span
+    // so collect_imports only suppresses parameters of nested functions.
+    builder.analyzed_fn_span = Some((func_node.start_byte(), func_node.end_byte()));
     // AGG13-15: pre-populate import set BEFORE extracting refs so
     // is_use_context can consult it during traversal.
     builder.collect_imports(root);
     builder.extract_parameters(func_node)?;
     let body_node = get_function_body(func_node, language);
+    // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): pre-collect Ruby local-variable
+    // names from the whole function node (params + body) so is_use_context
+    // can tell a bare local read from a receiver-less zero-arg method call.
+    if matches!(language, Language::Ruby) {
+        builder.collect_ruby_local_names(func_node);
+    }
     if let Some(body) = body_node {
         builder.extract_refs_from_node(body, 0)?;
     }
@@ -151,6 +160,9 @@ fn build_dfg_for_function(
     language: Language,
 ) -> TldrResult<DfgInfo> {
     let mut builder = DfgBuilder::new(function_name.to_string(), source, language);
+    // fix_cl5_dfg_v1 (v0.5.0 CL-5): record the analyzed function's byte span
+    // so collect_imports only suppresses parameters of nested functions.
+    builder.analyzed_fn_span = Some((func_node.start_byte(), func_node.end_byte()));
 
     // AGG13-15: collect file-level imports so Java/C# `PageRequest`
     // / `Sort` style identifiers can be classified as not-a-use.
@@ -161,6 +173,12 @@ fn build_dfg_for_function(
 
     // Get the function body and extract all variable references
     let body_node = get_function_body(func_node, language);
+    // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): pre-collect Ruby local-variable
+    // names so is_use_context can distinguish a bare local read from a
+    // receiver-less zero-arg method call.
+    if matches!(language, Language::Ruby) {
+        builder.collect_ruby_local_names(func_node);
+    }
     if let Some(body) = body_node {
         builder.extract_refs_from_node(body, 0)?;
     }
@@ -191,6 +209,27 @@ struct DfgBuilder<'a> {
     /// when they are the receiver of a `method_invocation` /
     /// `field_access`. Empty for languages that don't need this filter.
     imported_type_names: HashSet<String>,
+    /// fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): set of identifier names that
+    /// are GENUINE local variables of the analyzed Ruby method — i.e. they
+    /// appear as the LHS of an assignment / operator-assignment, as a block
+    /// or method parameter, or as a `for`/rescue binding. In Ruby a bare
+    /// `identifier` with no receiver and no argument list is syntactically
+    /// AMBIGUOUS: it is a local-variable read ONLY when such a local exists
+    /// in scope, otherwise it is a zero-arg method call (`target_ruby`,
+    /// `target_ruby_version`). reaching-defs was flagging those method calls
+    /// as definite-uninitialized variables. Populated from the AST (no regex)
+    /// for Ruby only; empty for every other language.
+    ruby_local_names: HashSet<String>,
+    /// fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): byte span `[start, end)` of the
+    /// function currently being analyzed. Used by `collect_imports` to gate
+    /// TS/JS parameter collection so that ONLY parameters of functions nested
+    /// INSIDE the analyzed function are added to the suppression set. A
+    /// sibling/unrelated method's parameter that happens to share a name with
+    /// a local of the analyzed function (NestJS `scanForModules`'s
+    /// `moduleDefinition`, also a parameter of `insertOrOverrideModule`) must
+    /// NOT suppress the analyzed function's reads of its own variable.
+    /// `None` until set in the build path.
+    analyzed_fn_span: Option<(usize, usize)>,
 }
 
 impl<'a> DfgBuilder<'a> {
@@ -202,6 +241,95 @@ impl<'a> DfgBuilder<'a> {
             refs: Vec::new(),
             variables: HashSet::new(),
             imported_type_names: HashSet::new(),
+            ruby_local_names: HashSet::new(),
+            analyzed_fn_span: None,
+        }
+    }
+
+    /// fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): collect the names of genuine
+    /// local variables of a Ruby method by walking its AST subtree once.
+    ///
+    /// A Ruby local variable is introduced by:
+    ///   * `assignment` LHS — `x = ...` (`[left]` identifier, or each
+    ///     identifier of a `left_assignment_list` for `a, b = ...`).
+    ///   * `operator_assignment` LHS — `x += ...`.
+    ///   * a `for` loop binding — `for x in ...`.
+    ///   * a rescue binding — `rescue => e`.
+    /// (method/block parameters are already recorded as definitions by
+    /// `extract_parameters`; we add them here too so the receiver-less use
+    /// of a parameter is never misread as a method call.)
+    ///
+    /// Everything else that surfaces as a bare `identifier` with no receiver
+    /// and no argument list — `target_ruby`, `supported_versions` — is a
+    /// zero-arg method call, NOT a local read.
+    fn collect_ruby_local_names(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        match node.kind() {
+            "assignment" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    self.collect_ruby_assignment_target_names(left);
+                }
+            }
+            "operator_assignment" => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    if left.kind() == "identifier" {
+                        if let Ok(t) = left.utf8_text(self.source.as_bytes()) {
+                            self.ruby_local_names.insert(t.to_string());
+                        }
+                    }
+                }
+            }
+            // `for x in ...` / `for a, b in ...`
+            "for" => {
+                if let Some(pat) = node.child_by_field_name("pattern") {
+                    self.collect_ruby_assignment_target_names(pat);
+                }
+            }
+            // block / method parameters: `do |x|`, `def f(x)`
+            "block_parameters" | "method_parameters" | "parameters"
+            | "lambda_parameters" => {
+                let mut pc = node.walk();
+                for child in node.children(&mut pc) {
+                    if child.kind() == "identifier" {
+                        if let Ok(t) = child.utf8_text(self.source.as_bytes()) {
+                            self.ruby_local_names.insert(t.to_string());
+                        }
+                    } else {
+                        self.collect_ruby_assignment_target_names(child);
+                    }
+                }
+            }
+            // `rescue => e`
+            "exception_variable" => {
+                self.collect_ruby_assignment_target_names(node);
+            }
+            _ => {}
+        }
+        for child in node.children(&mut cursor) {
+            self.collect_ruby_local_names(child);
+        }
+    }
+
+    /// Collect identifier names from a Ruby assignment target (handles bare
+    /// identifiers, multiple-assignment lists, and splats). Member / index
+    /// writes (`obj.field = ...`, `arr[i] = ...`) do NOT introduce a local
+    /// of that base name, so they are intentionally not collected here.
+    fn collect_ruby_assignment_target_names(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                if let Ok(t) = node.utf8_text(self.source.as_bytes()) {
+                    self.ruby_local_names.insert(t.to_string());
+                }
+            }
+            "left_assignment_list" | "rest_assignment" | "splat_parameter"
+            | "destructured_parameter" | "optional_parameter"
+            | "keyword_parameter" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.collect_ruby_assignment_target_names(child);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -333,6 +461,29 @@ impl<'a> DfgBuilder<'a> {
                         self.imported_type_names.insert(name);
                     }
                 }
+                // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): only collect the
+                // parameters of functions NESTED INSIDE the analyzed function
+                // (its byte span strictly contains them). Parameters of the
+                // analyzed function itself are real local variables — their
+                // reads are genuine uses. Parameters of unrelated sibling
+                // functions must not enter the suppression set, or a name they
+                // happen to share with a local of the analyzed function (e.g.
+                // NestJS `moduleDefinition`, a parameter of BOTH
+                // `scanForModules` and `insertOrOverrideModule`) silently drops
+                // every read of that local and a benign reassignment looks like
+                // a dead store.
+                let collect_params = match self.analyzed_fn_span {
+                    Some((start, end)) => {
+                        let ns = node.start_byte();
+                        let ne = node.end_byte();
+                        // Strictly nested inside the analyzed function (and not
+                        // the analyzed function itself, which shares neither
+                        // boundary when strictly inside).
+                        ns >= start && ne <= end && !(ns == start && ne == end)
+                    }
+                    // No analyzed span recorded — preserve prior behaviour.
+                    None => true,
+                };
                 // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
                 // Also collect parameter names of every nested function.
                 // When the OUTER function being analyzed has nested
@@ -345,12 +496,26 @@ impl<'a> DfgBuilder<'a> {
                 // definite-uninitialized by the outer reaching-defs
                 // pass. Mirror that here by walking the parameters
                 // subtree once and capturing every named binding.
-                if let Some(params) = node.child_by_field_name("parameters") {
-                    collect_ts_js_param_names(
-                        params,
-                        self.source,
-                        &mut self.imported_type_names,
-                    );
+                //
+                // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): do NOT collect the
+                // params of the function CURRENTLY BEING ANALYZED. Its own
+                // parameters are real local variables of this function — their
+                // reads are genuine uses. Adding them to `imported_type_names`
+                // made the position-independent suppression below drop every
+                // read of a parameter (e.g. NestJS `scanForModules`'s
+                // destructured `moduleDefinition`), so a reassignment
+                // `moduleDefinition = ... ?? moduleDefinition` looked like a
+                // dead store (no recorded use). Skip the analyzed function so
+                // its parameter reads survive; nested helpers are still
+                // collected.
+                if collect_params {
+                    if let Some(params) = node.child_by_field_name("parameters") {
+                        collect_ts_js_param_names(
+                            params,
+                            self.source,
+                            &mut self.imported_type_names,
+                        );
+                    }
                 }
                 // Descend into the body so we collect names of
                 // nested function declarations as well.
@@ -3114,6 +3279,59 @@ impl<'a> DfgBuilder<'a> {
                 // node was already filtered above. We don't need extra
                 // handling here.
                 let _ = pkind;
+            }
+        }
+
+        // fix_cl5_dfg_v1 (v0.5.0 CL-5, GH #77): Ruby classification.
+        //   1. `recv.method(args)` / `recv.method` -> the `method` field of a
+        //      `call` node is a method name, NEVER a local-variable use. This
+        //      removes the false `inspect`, `join`, `supported?`,
+        //      `rubocop_version_with_support`, `supported_versions` reads.
+        //   2. `raise X, msg` parses as a `call` whose `method` field is the
+        //      bare `raise` identifier with an `arguments` list — same rule
+        //      covers it (and any other command call with arguments).
+        //   3. A receiver-less, argument-less bare `identifier` is a local
+        //      read ONLY when a local of that name exists in the method
+        //      (collected in `ruby_local_names`); otherwise it is a zero-arg
+        //      method call (`target_ruby`, `target_ruby_version`) and must not
+        //      be classified as a use.
+        if matches!(self.language, Language::Ruby) {
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "call" {
+                    // The method name of a call is never a variable use.
+                    if let Some(method) = parent.child_by_field_name("method") {
+                        if method.id() == node.id() {
+                            return false;
+                        }
+                    }
+                    // The receiver of `recv.method` IS a use (fall through).
+                }
+            }
+            // Receiver-less, argument-less bare identifier: a use only if a
+            // local of that name was actually declared in this method.
+            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+            if !text.is_empty() && !self.ruby_local_names.contains(text) {
+                // Not a known local. It could still be a hash key / symbol /
+                // call method (already handled above) — but as a bare read it
+                // is a zero-arg method call. Suppress.
+                if let Some(parent) = node.parent() {
+                    // Only suppress when this identifier is a standalone read,
+                    // i.e. its parent is not an assignment target context. The
+                    // generic classifier below already rejects LHS positions,
+                    // so suppressing here is safe for reads.
+                    let pkind = parent.kind();
+                    // Do not suppress when the identifier is itself the LHS of
+                    // an assignment/operator-assignment (it would be a DEF, not
+                    // reached here as a use anyway) — guard defensively.
+                    let is_lhs = matches!(pkind, "assignment" | "operator_assignment")
+                        && parent
+                            .child_by_field_name("left")
+                            .map(|l| l.id() == node.id())
+                            .unwrap_or(false);
+                    if !is_lhs {
+                        return false;
+                    }
+                }
             }
         }
 
