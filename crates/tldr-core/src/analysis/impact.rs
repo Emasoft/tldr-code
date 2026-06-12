@@ -384,8 +384,89 @@ pub fn impact_analysis_with_ast_fallback(
                         }
                     }
                 }
+
                 report.total_targets = report.targets.len();
             }
+
+            // REG-SWIFT-IMPACT: cross-language phantom-definition
+            // discrimination. Runs UNCONDITIONALLY for every Ok report — i.e.
+            // independently of the AST-augmentation block above, which is
+            // gated on `find_function_in_ast` finding the function in the
+            // scan-pass language and is therefore SKIPPED entirely on a
+            // non-swift pass (where no `_heapify` C/Rust/Python definition
+            // exists). The swift reconciliation likewise only fires during the
+            // swift scan pass. In polyglot mode the impact command runs one
+            // pass per detected language against a single MERGED call graph
+            // (every language's edges unioned), so a swift class-method target
+            // that the FuncIndex mis-attributed to a file which merely
+            // `extension`-extends the type (e.g. `extension Heap { ... }` in
+            // `Tests/HeapTests/HeapTests.swift` with no actual `_heapify`
+            // definition) is emitted DURING the non-swift passes too, where
+            // neither gate above runs — and the fabricated row survives the
+            // per-pass merge and is unioned into the final report.
+            //
+            // A scan pass for language L should only mint a definition target
+            // whose file is written in L: a target whose FILE language differs
+            // from the scan-pass language is the merged graph leaking another
+            // language's edge into this pass, and the owning-language pass is
+            // the authoritative producer for it. We additionally require
+            // (AST-verified, parsing the file in its OWN language) that the
+            // off-language file does NOT actually define the function before
+            // dropping it, so a genuinely cross-language definition is never
+            // discarded. The dropped row's callers are merged onto a surviving
+            // same-language definition target when one exists, preserving the
+            // true caller set. AST-only — no name/path string heuristics.
+            let drop_phantom_keys: Vec<String> = report
+                .targets
+                .iter()
+                .filter(|(_, t)| {
+                    let file_lang = Language::from_path(&t.file);
+                    // Off-language target leaked in by the merged graph...
+                    file_lang.is_some_and(|fl| fl != language)
+                        // ...that does not actually define the function.
+                        && !file_defines_function(&t.file, &t.function)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            if !drop_phantom_keys.is_empty() {
+                let mut orphan_callers: Vec<CallerTree> = Vec::new();
+                for k in &drop_phantom_keys {
+                    if let Some(removed) = report.targets.remove(k) {
+                        orphan_callers.extend(removed.callers);
+                    }
+                }
+                // Re-home orphaned callers onto a surviving same-language
+                // definition target, if this pass produced one.
+                if !orphan_callers.is_empty() {
+                    let canon_key = report
+                        .targets
+                        .iter()
+                        .find(|(_, t)| {
+                            Language::from_path(&t.file) == Some(language)
+                                && file_defines_function(&t.file, &t.function)
+                        })
+                        .map(|(k, _)| k.clone());
+                    if let Some(canon_key) = canon_key {
+                        if let Some(tree) = report.targets.get_mut(&canon_key) {
+                            for caller in orphan_callers.drain(..) {
+                                let already = tree.callers.iter().any(|existing| {
+                                    existing.function == caller.function
+                                        && existing.file == caller.file
+                                });
+                                if !already {
+                                    tree.callers.push(caller);
+                                }
+                            }
+                            tree.caller_count = tree.callers.len();
+                            if tree.caller_count > 0 {
+                                tree.note = None;
+                            }
+                        }
+                    }
+                }
+                report.total_targets = report.targets.len();
+            }
+
             Ok(report)
         }
         Err(TldrError::FunctionNotFound {
@@ -1143,6 +1224,42 @@ fn resolve_enclosing_type(node: &tree_sitter::Node, src: &[u8]) -> Option<String
         cur = n.parent();
     }
     None
+}
+
+/// AST-driven check: does `file` actually contain a definition of the
+/// function named by `qualified` (compared on its leaf segment)?
+///
+/// cross-cutting-and-clear-fix-bugs-v1 (P18.R2) / REG-SWIFT-IMPACT: the
+/// project call graph can mis-attribute a qualified `Type.method` target's
+/// `dst_file` to a file that merely *extends* `Type` (e.g. an `extension
+/// Heap { ... }` in a `Tests/` file) without defining the queried method.
+/// In polyglot mode the impact command runs one pass per detected language,
+/// and the merged call graph emits that phantom swift target during the
+/// NON-swift passes — where the swift-gated reconciliation below never runs —
+/// so the fabricated `Tests/HeapTests/HeapTests.swift` row survives the
+/// per-pass merge.
+///
+/// This helper parses `file` in its OWN language (recovered from the path,
+/// not the scan-pass language) and asks the AST extractors whether a
+/// function or method whose leaf name equals `qualified`'s leaf is genuinely
+/// declared there. It is the authoritative, AST-only discriminator used to
+/// reject a target file that does not define the function. Parse failures or
+/// an unknown language return `false` (no claim of a definition).
+fn file_defines_function(file: &Path, qualified: &str) -> bool {
+    let Some(language) = Language::from_path(file) else {
+        return false;
+    };
+    let (tree, source, _detected) = match parse_file(file) {
+        Ok(result) => result,
+        Err(_) => return false,
+    };
+    let leaf = last_segment(qualified);
+    let functions = extract_functions(&tree, &source, language);
+    let methods = extract_methods(&tree, &source, language);
+    functions
+        .iter()
+        .chain(methods.iter())
+        .any(|name| last_segment(name) == leaf)
 }
 
 /// Search for a function in the AST of files under `root`.
