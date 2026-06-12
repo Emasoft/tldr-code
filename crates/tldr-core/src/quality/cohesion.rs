@@ -913,6 +913,13 @@ fn extract_classes(root: tree_sitter::Node, source: &str, language: Language) ->
         // `self`/`this` prefix in Solidity, unlike every other supported
         // language).
         Language::Solidity => extract_solidity_classes_cohesion(root, source),
+        // IT3-elixir-02 (v0.5.0 CL-6): the cohesion `extract_classes` dispatch
+        // had no Elixir arm, so every `defmodule` reported `classes:0`. Treat
+        // an Elixir module as a class whose methods are its `def`/`defp`
+        // clauses and whose LCOM4 "fields" are the `@attr` module attributes
+        // referenced in each method body (matched by
+        // `extract_elixir_module_attribute`).
+        Language::Elixir => extract_elixir_classes_cohesion(root, source),
         _ => vec![], // Unsupported language
     }
 }
@@ -1380,6 +1387,176 @@ fn collect_kotlin_methods(
 }
 
 // =============================================================================
+// Elixir Module Extraction (v0.5.0 CL-6, IT3-elixir-02)
+// =============================================================================
+
+/// Extract Elixir modules (`defmodule`) as cohesion classes.
+///
+/// IT3-elixir-02 (v0.5.0 CL-6): cohesion had no Elixir arm. An Elixir module is
+/// modelled as a class whose methods are its `def`/`defp` function clauses; the
+/// LCOM4 "fields" are the module attributes (`@attr`) each method references
+/// (recognised downstream by `extract_elixir_module_attribute`).
+///
+/// Grammar (tree-sitter-elixir): both `defmodule` and `def`/`defp` are `call`
+/// nodes — `call(identifier "<keyword>", arguments(...), do_block(...))`. The
+/// module name is the `alias` in the `defmodule` arguments; the method name is
+/// the leading identifier of the `def`/`defp` clause. Multiple clauses of the
+/// same function name (Elixir multi-clause functions) collapse to a single
+/// method whose byte span covers all clauses, so a shared `@attr` correctly
+/// links them.
+fn extract_elixir_classes_cohesion(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
+    let mut classes = Vec::new();
+    extract_elixir_classes_cohesion_recursive(&root, source, &mut classes);
+    classes
+}
+
+fn extract_elixir_classes_cohesion_recursive(
+    node: &tree_sitter::Node,
+    source: &str,
+    classes: &mut Vec<ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call" {
+            if let Some(first) = child.child(0) {
+                if first.utf8_text(source.as_bytes()).ok() == Some("defmodule") {
+                    if let Some(info) = extract_elixir_module_cohesion_info(&child, source) {
+                        classes.push(info);
+                    }
+                    // Recurse into the module body to capture nested modules.
+                    extract_elixir_classes_cohesion_recursive(&child, source, classes);
+                    continue;
+                }
+            }
+        }
+        extract_elixir_classes_cohesion_recursive(&child, source, classes);
+    }
+}
+
+fn extract_elixir_module_cohesion_info(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<ClassInfo> {
+    // Module name: the `alias` inside the `defmodule` arguments.
+    let args = node.child(1)?;
+    let name = if args.kind() == "arguments" {
+        let mut ac = args.walk();
+        let found = args
+            .children(&mut ac)
+            .find(|c| c.kind() == "alias")
+            .and_then(|c| c.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()));
+        found
+    } else if args.kind() == "alias" {
+        args.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+    } else {
+        None
+    }?;
+    if name.is_empty() {
+        return None;
+    }
+
+    let line = node.start_position().row + 1;
+
+    // Methods live in the module's `do_block`. Collapse multi-clause
+    // functions (`def foo(0)`, `def foo(n)`) into one `MethodInfo` spanning
+    // all clauses so a shared `@attr` connects them.
+    let mut methods: Vec<MethodInfo> = Vec::new();
+    let mut by_name: HashMap<String, usize> = HashMap::new();
+    let mut bc = node.walk();
+    for child in node.children(&mut bc) {
+        if child.kind() == "do_block" {
+            collect_elixir_methods(&child, source, &mut methods, &mut by_name);
+        }
+    }
+
+    Some(ClassInfo {
+        name,
+        line,
+        methods,
+        is_partial: false,
+    })
+}
+
+fn collect_elixir_methods(
+    body: &tree_sitter::Node,
+    source: &str,
+    methods: &mut Vec<MethodInfo>,
+    by_name: &mut HashMap<String, usize>,
+) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "call" {
+            continue;
+        }
+        let Some(first) = child.child(0) else { continue };
+        let kw = first.utf8_text(source.as_bytes()).ok();
+        if kw != Some("def") && kw != Some("defp") {
+            continue;
+        }
+        if let Some(name) = elixir_method_name(&child, source) {
+            if let Some(&idx) = by_name.get(&name) {
+                // Extend the existing clause's span to cover this clause too.
+                let existing: &mut MethodInfo = &mut methods[idx];
+                existing.start_byte = existing.start_byte.min(child.start_byte());
+                existing.end_byte = existing.end_byte.max(child.end_byte());
+            } else {
+                by_name.insert(name.clone(), methods.len());
+                methods.push(MethodInfo {
+                    name,
+                    start_byte: child.start_byte(),
+                    end_byte: child.end_byte(),
+                });
+            }
+        }
+    }
+}
+
+/// Extract the function name from a `def`/`defp` `call` node.
+///
+/// Shapes handled (tree-sitter-elixir):
+///   `def foo(a, b) do ... end`  -> arguments( call( identifier "foo", ...) )
+///   `def foo do ... end`        -> arguments( identifier "foo" )
+///   `def foo(a) when g do ...`  -> arguments( binary_operator( call(...), guard) )
+fn elixir_method_name(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let args = node.child(1)?;
+    let clause = if args.kind() == "arguments" {
+        args.child(0)?
+    } else {
+        args
+    };
+    match clause.kind() {
+        "identifier" => clause
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string()),
+        "call" => clause
+            .child(0)
+            .filter(|c| c.kind() == "identifier")
+            .and_then(|c| c.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())),
+        "binary_operator" => {
+            // `def foo(args) when guard` — the function clause is the
+            // left-hand `call`/`identifier`.
+            let mut bc = clause.walk();
+            for c in clause.children(&mut bc) {
+                if c.kind() == "call" {
+                    if let Some(fname) = c.child(0).filter(|n| n.kind() == "identifier") {
+                        return fname
+                            .utf8_text(source.as_bytes())
+                            .ok()
+                            .map(|s| s.to_string());
+                    }
+                }
+                if c.kind() == "identifier" {
+                    return c.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+// =============================================================================
 // Lua Class Extraction (v0.4.2 M-030)
 // =============================================================================
 
@@ -1614,7 +1791,145 @@ fn extract_cpp_classes_cohesion(
 ) -> Vec<ClassInfo> {
     let mut classes = Vec::new();
     extract_cpp_classes_cohesion_recursive(root, source, &mut classes);
+
+    // IT3-cpp-03 (v0.5.0 CL-6): the recursive pass above only sees methods
+    // *defined inline* inside a `class_specifier` body. The dominant C++ idiom
+    // declares the class (with only method signatures) in a `.h` and defines
+    // the methods out-of-line in a `.cpp`:
+    //
+    //     int  Widget::area()              { return this->w * this->h; }
+    //     void Widget::resize(int w,int h) { this->w = w; this->h = h; }
+    //
+    // On the `.cpp` there is no `class_specifier` at all, so cohesion reported
+    // `classes:0`. Collect these out-of-line `function_definition` nodes whose
+    // declarator name is a `qualified_identifier` (`Widget::area`), group them
+    // by the class qualifier, and either merge into a matching in-body class
+    // (header+source in one TU) or synthesize a fresh class for the qualifier.
+    let mut out_of_line: HashMap<String, Vec<MethodInfo>> = HashMap::new();
+    collect_cpp_out_of_line_methods(&root, source, &mut out_of_line);
+
+    for (class_name, methods) in out_of_line {
+        if let Some(existing) = classes.iter_mut().find(|c| c.name == class_name) {
+            // Merge, skipping methods already captured inline (same span).
+            for m in methods {
+                if !existing
+                    .methods
+                    .iter()
+                    .any(|e| e.start_byte == m.start_byte && e.end_byte == m.end_byte)
+                {
+                    existing.methods.push(m);
+                }
+            }
+        } else {
+            let line = methods
+                .iter()
+                .map(|m| m.start_byte)
+                .min()
+                .map(|b| source[..b].bytes().filter(|&c| c == b'\n').count() + 1)
+                .unwrap_or(1);
+            classes.push(ClassInfo {
+                name: class_name,
+                line,
+                methods,
+                is_partial: true,
+            });
+        }
+    }
+
     classes
+}
+
+/// Collect out-of-line C++ method definitions (`Ret Class::method(){...}`),
+/// keyed by the class qualifier.
+///
+/// AST (tree-sitter-cpp): a top-level `function_definition` whose `declarator`
+/// is a `function_declarator` whose own `declarator` field is a
+/// `qualified_identifier`. The `qualified_identifier` exposes a `scope`
+/// (the class / namespace path, e.g. `Widget` or `Outer::Inner`) and a `name`
+/// (the bare method identifier). We use the *immediate* scope segment as the
+/// owning class name.
+fn collect_cpp_out_of_line_methods(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashMap<String, Vec<MethodInfo>>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_definition" {
+            if let Some((class_name, method_name)) =
+                cpp_out_of_line_qualified_name(&child, source)
+            {
+                out.entry(class_name).or_default().push(MethodInfo {
+                    name: method_name,
+                    start_byte: child.start_byte(),
+                    end_byte: child.end_byte(),
+                });
+                // Don't recurse into the function body.
+                continue;
+            }
+        }
+        // Recurse (covers `namespace_definition` -> `declaration_list`, etc.),
+        // but do not descend into `class_specifier` bodies — those inline
+        // methods are already handled by the recursive in-body pass.
+        if child.kind() != "class_specifier" && child.kind() != "struct_specifier" {
+            collect_cpp_out_of_line_methods(&child, source, out);
+        }
+    }
+}
+
+/// If `node` is an out-of-line method definition (`Ret Class::method(...)`),
+/// return `(class_qualifier, method_name)`.
+fn cpp_out_of_line_qualified_name(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<(String, String)> {
+    // Walk through declarator wrappers (pointer/reference) to the
+    // `function_declarator`.
+    let declarator = cpp_unwrap_to_function_declarator(node.child_by_field_name("declarator")?)?;
+    let inner = declarator.child_by_field_name("declarator")?;
+    if inner.kind() != "qualified_identifier" {
+        return None;
+    }
+    let scope = inner.child_by_field_name("scope")?;
+    let name_node = inner.child_by_field_name("name")?;
+    // For nested qualifiers (`Outer::Inner::m`) the `scope` is itself a
+    // `qualified_identifier`; take its trailing `name` segment as the
+    // immediate owning class.
+    let class_name = cpp_qualified_tail(&scope, source)?;
+    let method_name = node_text_of(&name_node, source)?;
+    if class_name.is_empty() || method_name.is_empty() {
+        return None;
+    }
+    Some((class_name, method_name))
+}
+
+fn cpp_unwrap_to_function_declarator<'a>(
+    node: tree_sitter::Node<'a>,
+) -> Option<tree_sitter::Node<'a>> {
+    match node.kind() {
+        "function_declarator" => Some(node),
+        "pointer_declarator" | "reference_declarator" | "parenthesized_declarator" => {
+            cpp_unwrap_to_function_declarator(node.child_by_field_name("declarator")?)
+        }
+        _ => None,
+    }
+}
+
+/// Return the trailing identifier segment of a (possibly nested) C++ scope.
+fn cpp_qualified_tail(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "qualified_identifier" => {
+            let name = node.child_by_field_name("name")?;
+            cpp_qualified_tail(&name, source)
+        }
+        _ => node_text_of(node, source),
+    }
+}
+
+fn node_text_of(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    node.utf8_text(source.as_bytes())
+        .ok()
+        .map(|s| s.to_string())
 }
 
 fn extract_cpp_classes_cohesion_recursive(
@@ -3061,15 +3376,7 @@ fn extract_field_from_pattern(
             "call_expression",
             "function",
         ),
-        Language::Java => extract_field_with_named_receiver(
-            node,
-            source,
-            "object",
-            "field",
-            "this",
-            "method_invocation",
-            "object",
-        ),
+        Language::Java => extract_java_this_field_access(node, source),
         Language::CSharp => extract_field_with_positional_receiver(
             node,
             source,
@@ -3129,6 +3436,35 @@ fn extract_field_with_named_receiver(
         return None;
     }
     Some(node_text(&node.child_by_field_name(field_name)?, source).to_string())
+}
+
+/// Java `this.field` access extraction.
+///
+/// IT3-java-04 (v0.5.0 CL-6): the previous implementation routed Java through
+/// `extract_field_with_named_receiver(..., "method_invocation", "object")`,
+/// which dropped any `field_access` that was the `object` (receiver) of a
+/// `method_invocation` — e.g. `this.field.doSomething()`. That guard exists to
+/// avoid double-counting a `this.method()` *call* as a field, but in the Java
+/// grammar `this.method()` is a `method_invocation` (with `object = this`,
+/// `name = method`), **never** a `field_access`. A `field_access` node whose
+/// `object` is `this` is therefore *always* a genuine field read — even when it
+/// is itself the receiver of a subsequent method call. We drop the spurious
+/// parent guard entirely and simply require `object == this`.
+///
+/// Grammar (tree-sitter-java):
+///   `field_access` has `object` and `field` fields. `object` may be a
+///   `this` node (kind `"this"`) for the `this.field` idiom this metric tracks.
+fn extract_java_this_field_access(
+    node: &tree_sitter::Node,
+    source: &[u8],
+) -> Option<String> {
+    use crate::security::ast_utils::node_text;
+
+    let receiver = node.child_by_field_name("object")?;
+    if node_text(&receiver, source) != "this" {
+        return None;
+    }
+    Some(node_text(&node.child_by_field_name("field")?, source).to_string())
 }
 
 fn extract_field_with_positional_receiver(
