@@ -856,6 +856,10 @@ mod serde_backward_compat {
             decorators: vec![],
             line_number: 10,
             line_end: 10,
+            kind: None,
+            modifiers: vec![],
+            events: vec![],
+            errors: vec![],
         };
 
         // WHEN: We serialize
@@ -890,6 +894,10 @@ mod serde_backward_compat {
             decorators: vec![],
             line_number: 1,
             line_end: 1,
+            kind: None,
+            modifiers: vec![],
+            events: vec![],
+            errors: vec![],
         };
 
         // WHEN: We serialize and deserialize

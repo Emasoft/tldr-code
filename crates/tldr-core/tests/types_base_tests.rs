@@ -473,6 +473,7 @@ fn test_function_info_creation() {
         visibility: None,
         line_number: 42,
         line_end: 42,
+        state_mutability: None,
     };
 
     assert_eq!(func.name, "process_data");
@@ -492,6 +493,10 @@ fn test_class_info_creation() {
         decorators: vec!["@dataclass".to_string()],
         line_number: 10,
         line_end: 10,
+        kind: None,
+        modifiers: vec![],
+        events: vec![],
+        errors: vec![],
     };
 
     assert_eq!(class.name, "DataProcessor");
@@ -510,6 +515,9 @@ fn test_module_info_creation() {
         classes: vec![],
         constants: vec![],
         call_graph: IntraFileCallGraph::default(),
+        modifiers: vec![],
+        events: vec![],
+        errors: vec![],
     };
 
     assert_eq!(module.file_path, PathBuf::from("/test.py"));
@@ -827,7 +835,7 @@ fn test_type_resolution_stats_summary_enabled() {
 #[test]
 fn test_impact_report_creation() {
     let report = ImpactReport {
-        targets: HashMap::new(),
+        targets: std::collections::BTreeMap::new(),
         total_targets: 0,
         type_resolution: None,
     };
@@ -1685,6 +1693,7 @@ fn test_full_serde_roundtrip_complex_types() {
         visibility: None,
         line_number: 42,
         line_end: 42,
+        state_mutability: None,
     };
 
     let json = serde_json::to_string_pretty(&func).unwrap();

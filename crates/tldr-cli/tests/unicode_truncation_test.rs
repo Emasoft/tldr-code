@@ -239,6 +239,9 @@ fn cli_module_info_text_does_not_panic_on_cjk_module_docstring() {
         classes: vec![],
         constants: vec![],
         call_graph: IntraFileCallGraph::default(),
+        modifiers: vec![],
+        events: vec![],
+        errors: vec![],
     };
 
     let out = format_module_info_text(&info);
@@ -265,9 +268,16 @@ fn cli_module_info_text_does_not_panic_on_cjk_class_docstring() {
             decorators: vec![],
             line_number: 1,
             line_end: 1,
+            kind: None,
+            modifiers: vec![],
+            events: vec![],
+            errors: vec![],
         }],
         constants: vec![],
         call_graph: IntraFileCallGraph::default(),
+        modifiers: vec![],
+        events: vec![],
+        errors: vec![],
     };
 
     let out = format_module_info_text(&info);
@@ -299,10 +309,14 @@ fn cli_module_info_text_does_not_panic_on_emoji_function_docstring() {
             visibility: None,
             line_number: 1,
             line_end: 1,
+            state_mutability: None,
         }],
         classes: vec![],
         constants: vec![],
         call_graph: IntraFileCallGraph::default(),
+        modifiers: vec![],
+        events: vec![],
+        errors: vec![],
     };
 
     let out = format_module_info_text(&info);
