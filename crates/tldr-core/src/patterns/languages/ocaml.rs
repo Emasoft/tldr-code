@@ -26,6 +26,9 @@ impl LanguageSemantics for OcamlSemantics {
             "module_definition" | "module_binding" => {
                 self.detect_module(node, source, file_path, signals)
             }
+            "module_type_definition" => {
+                self.detect_module_type(node, source, file_path, signals)
+            }
             "open_statement" => self.detect_open(node, source, file_path, signals),
             "source_file" | "implementation" | "compilation_unit" => {
                 self.detect_open_lines(source, file_path, signals)
@@ -81,16 +84,21 @@ impl OcamlSemantics {
         file_path: &Path,
         signals: &mut PatternSignals,
     ) {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            let name = node_text(name_node, source);
-            let case = detect_naming_case(&name);
-            signals
-                .naming
-                .class_names
-                .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+        // A `module_definition` wraps a `module_binding`. Resolve the
+        // binding so we can inspect its `module_name` / `module_parameter`
+        // / `module_application` children uniformly regardless of which
+        // node the walker handed us.
+        let binding = if node.kind() == "module_binding" {
+            Some(node)
         } else {
-            let text = node_text(node, source);
-            if text.starts_with("module ") {
+            first_child_of_kind(node, "module_binding")
+        };
+
+        let (name, name_line) = match binding.and_then(|b| module_binding_name(b, source)) {
+            Some(pair) => pair,
+            None => {
+                // Defensive fallback: pull the first identifier-ish token.
+                let text = node_text(node, source);
                 let name = text
                     .trim_start_matches("module ")
                     .split_whitespace()
@@ -98,15 +106,100 @@ impl OcamlSemantics {
                     .unwrap_or("")
                     .trim_end_matches('=')
                     .to_string();
-                if !name.is_empty() {
-                    let case = detect_naming_case(&name);
-                    signals
-                        .naming
-                        .class_names
-                        .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+                if name.is_empty() {
+                    return;
+                }
+                (name, node.start_position().row as u32 + 1)
+            }
+        };
+
+        let case = detect_naming_case(&name);
+        signals.naming.class_names.push((
+            name.clone(),
+            case,
+            file_path.display().to_string(),
+            name_line,
+        ));
+
+        let file = file_path.display().to_string();
+        let line = node.start_position().row as u32 + 1;
+
+        if let Some(b) = binding {
+            // pack-patterns-v1: a `module_parameter` child makes this
+            // binding a FUNCTOR — a module parameterised by another
+            // module, the OCaml analogue of a generic/template type.
+            let is_functor = first_child_of_kind(b, "module_parameter").is_some();
+            if is_functor {
+                let params = collect_module_parameters(b, source);
+                signals.design_patterns.push_pattern(
+                    "Functor",
+                    "module",
+                    "ocaml",
+                    name.clone(),
+                    file.clone(),
+                    line,
+                    format!(
+                        "module `{name}` is a functor parameterised by ({})",
+                        params.join(", ")
+                    ),
+                );
+            }
+
+            // A `module_application` body (e.g. `module IntSet = Make(Int)`)
+            // is a FUNCTOR INSTANTIATION — applying a functor to a concrete
+            // module argument.
+            if let Some(app) = first_child_of_kind(b, "module_application") {
+                if let Some(applied) = module_application_target(app, source) {
+                    signals.design_patterns.push_pattern(
+                        "FunctorApplication",
+                        "module",
+                        "ocaml",
+                        name.clone(),
+                        file.clone(),
+                        line,
+                        format!("module `{name}` instantiates functor `{applied}`"),
+                    );
                 }
             }
         }
+    }
+
+    /// pack-patterns-v1: a `module_type_definition` (`module type S = sig
+    /// … end`) is OCaml's interface / signature idiom — the structural
+    /// analogue of an interface or typeclass. We surface it as a
+    /// `ModuleSignature` design pattern.
+    fn detect_module_type(
+        &self,
+        node: Node,
+        source: &str,
+        file_path: &Path,
+        signals: &mut PatternSignals,
+    ) {
+        let name = match first_child_of_kind(node, "module_type_name") {
+            Some(n) => node_text(n, source),
+            None => return,
+        };
+        if name.is_empty() {
+            return;
+        }
+        let file = file_path.display().to_string();
+        let line = node.start_position().row as u32 + 1;
+
+        let case = detect_naming_case(&name);
+        signals
+            .naming
+            .class_names
+            .push((name.clone(), case, file.clone(), line));
+
+        signals.design_patterns.push_pattern(
+            "ModuleSignature",
+            "module",
+            "ocaml",
+            name.clone(),
+            file,
+            line,
+            format!("module type `{name}` declares a signature (interface)"),
+        );
     }
 
     fn detect_open(
@@ -142,6 +235,51 @@ impl OcamlSemantics {
     }
 }
 
+/// First direct child of `node` whose kind equals `kind`.
+fn first_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    let found = node.children(&mut cursor).find(|c| c.kind() == kind);
+    found
+}
+
+/// Resolve a `module_binding`'s name (the `module_name` child) and its
+/// 1-based line.
+fn module_binding_name(binding: Node, source: &str) -> Option<(String, u32)> {
+    let name_node = first_child_of_kind(binding, "module_name")?;
+    let name = node_text(name_node, source);
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, name_node.start_position().row as u32 + 1))
+}
+
+/// Collect the parameter module names from a functor's `module_parameter`
+/// children (e.g. `(Ord : COMPARABLE)` -> `Ord`).
+fn collect_module_parameters(binding: Node, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cursor = binding.walk();
+    for child in binding.children(&mut cursor) {
+        if child.kind() == "module_parameter" {
+            if let Some(pname) = first_child_of_kind(child, "module_name") {
+                out.push(node_text(pname, source));
+            }
+        }
+    }
+    out
+}
+
+/// The functor being applied in a `module_application` (`Make (…)` ->
+/// `Make`), read from the leading `module_path` / `module_name`.
+fn module_application_target(app: Node, source: &str) -> Option<String> {
+    if let Some(path) = first_child_of_kind(app, "module_path") {
+        if let Some(name) = first_child_of_kind(path, "module_name") {
+            return Some(node_text(name, source));
+        }
+        return Some(node_text(path, source));
+    }
+    first_child_of_kind(app, "module_name").map(|n| node_text(n, source))
+}
+
 /// Build the OCaml language profile.
 pub fn profile() -> LanguageProfile {
     let mut map = LanguageNodeMap::new();
@@ -153,6 +291,8 @@ pub fn profile() -> LanguageProfile {
         .insert("module_definition", vec![SignalAction::CallSemantics]);
     map.dispatch
         .insert("module_binding", vec![SignalAction::CallSemantics]);
+    map.dispatch
+        .insert("module_type_definition", vec![SignalAction::CallSemantics]);
     map.dispatch.insert(
         "try_expression",
         vec![SignalAction::PushEvidence(SignalTarget::TryCatchBlocks)],

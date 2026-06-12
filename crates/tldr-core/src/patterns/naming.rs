@@ -30,16 +30,43 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
     let class_consistency = calculate_consistency(&naming.class_names, &classes);
     let constant_consistency = calculate_consistency(&naming.constant_names, &constants);
 
-    let total_items =
-        naming.function_names.len() + naming.class_names.len() + naming.constant_names.len();
+    // pack-patterns-v1: identifiers evaluated under the per-identifier
+    // (precomputed) convention path — e.g. Go funcs, whose
+    // visibility-driven convention is checked directly rather than via a
+    // single global majority. Their consistency is simply
+    // `(total - genuine_violations) / total`. This keeps a pure-Go
+    // project from collapsing to a 0.0 consistency score (which would
+    // filter out the whole naming pattern, hiding the very violations we
+    // computed).
+    let precomputed_total = naming.precomputed_total;
+    let precomputed_violation_count = naming
+        .precomputed_violations
+        .iter()
+        .filter(|(name, actual, expected, _, _)| {
+            !is_magic_dunder(name) && !is_compatible(*actual, *expected)
+        })
+        .count();
+    let precomputed_consistency = if precomputed_total > 0 {
+        (precomputed_total.saturating_sub(precomputed_violation_count)) as f64
+            / precomputed_total as f64
+    } else {
+        0.0
+    };
+
+    let total_items = naming.function_names.len()
+        + naming.class_names.len()
+        + naming.constant_names.len()
+        + precomputed_total;
     let consistency_score = if total_items > 0 {
         let fn_weight = naming.function_names.len() as f64 / total_items as f64;
         let cls_weight = naming.class_names.len() as f64 / total_items as f64;
         let const_weight = naming.constant_names.len() as f64 / total_items as f64;
+        let pre_weight = precomputed_total as f64 / total_items as f64;
 
         function_consistency * fn_weight
             + class_consistency * cls_weight
             + constant_consistency * const_weight
+            + precomputed_consistency * pre_weight
     } else {
         0.0
     };
@@ -49,6 +76,25 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
     violations.extend(find_violations(&naming.function_names, &functions));
     violations.extend(find_violations(&naming.class_names, &classes));
     violations.extend(find_violations(&naming.constant_names, &constants));
+
+    // pack-patterns-v1: append directly-computed violations from
+    // languages whose convention is NOT a single global majority (Go's
+    // visibility-driven exported-PascalCase / unexported-camelCase rule).
+    // These are already filtered to genuine violations by the language
+    // profile, so we surface them verbatim — but still allow-list magic
+    // dunders and degenerate single-word compatibility for safety.
+    for (name, actual, expected, file, line) in &naming.precomputed_violations {
+        if is_magic_dunder(name) || is_compatible(*actual, *expected) {
+            continue;
+        }
+        violations.push(NamingViolation {
+            name: name.clone(),
+            expected: naming_case_to_convention(*expected),
+            actual: naming_case_to_convention(*actual),
+            file: file.clone(),
+            line: *line,
+        });
+    }
 
     // Detect private prefix
     let private_prefix = naming

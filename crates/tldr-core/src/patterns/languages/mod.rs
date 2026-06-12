@@ -20,5 +20,7 @@ pub mod php;
 pub mod ruby;
 /// Scala language profile.
 pub mod scala;
+/// Solidity design-pattern profile (pack-patterns-v1).
+pub mod solidity;
 /// Swift language profile.
 pub mod swift;

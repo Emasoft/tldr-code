@@ -36,6 +36,51 @@ pub struct PatternSignals {
     /// Language-specific extension signals not covered by standard schema.
     /// Key format: "category.field_name" (e.g., "pattern_matching.arm_count").
     pub extensions: HashMap<String, Vec<Evidence>>,
+    /// Concrete AST-grounded design-pattern occurrences (GoF /
+    /// language-idiomatic) — pack-patterns-v1 (v0.5.0 PACK-PATTERNS).
+    pub design_patterns: DesignPatternSignals,
+}
+
+/// Raw design-pattern hits accumulated during the single AST walk.
+///
+/// Each entry is the fully-formed [`crate::types::DesignPattern`] minus
+/// any cross-file dedup (the miner dedups + sorts after aggregation).
+/// We store the public type directly so the miner can roll the field up
+/// verbatim — there is no lossy intermediate representation.
+#[derive(Debug, Clone, Default)]
+pub struct DesignPatternSignals {
+    /// Detected pattern occurrences in AST-discovery order.
+    pub hits: Vec<crate::types::DesignPattern>,
+}
+
+impl DesignPatternSignals {
+    /// Merge design-pattern hits from another instance.
+    pub fn merge(&mut self, other: &DesignPatternSignals) {
+        self.hits.extend(other.hits.iter().cloned());
+    }
+
+    /// Record a detected design pattern occurrence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_pattern(
+        &mut self,
+        pattern: impl Into<String>,
+        category: impl Into<String>,
+        language: impl Into<String>,
+        subject: impl Into<String>,
+        file: impl Into<String>,
+        line: u32,
+        evidence: impl Into<String>,
+    ) {
+        self.hits.push(crate::types::DesignPattern {
+            pattern: pattern.into(),
+            category: category.into(),
+            language: language.into(),
+            subject: subject.into(),
+            file: file.into(),
+            line,
+            evidence: evidence.into(),
+        });
+    }
 }
 
 impl PatternSignals {
@@ -51,6 +96,7 @@ impl PatternSignals {
         self.type_coverage.merge(&other.type_coverage);
         self.api_conventions.merge(&other.api_conventions);
         self.async_patterns.merge(&other.async_patterns);
+        self.design_patterns.merge(&other.design_patterns);
         for (key, values) in &other.extensions {
             self.extensions
                 .entry(key.clone())
@@ -206,6 +252,26 @@ pub struct NamingSignals {
     pub constant_names: Vec<(String, NamingCase, String, u32)>,
     /// Private member prefix detection
     pub private_prefixes: HashMap<String, usize>, // prefix -> count
+    /// pack-patterns-v1: directly-computed naming violations for
+    /// languages whose convention is NOT a single global majority.
+    ///
+    /// Go is the motivating case: its naming convention is
+    /// VISIBILITY-driven (exported PascalCase vs unexported camelCase),
+    /// so a single project-wide majority is meaningless — feeding all
+    /// funcs into one bucket flagged whichever visibility group was the
+    /// minority. Languages with a per-identifier expected convention
+    /// emit violations here, and the miner appends them verbatim to the
+    /// `NamingPattern.violations` output (after the global-majority
+    /// violations). Tuple: `(name, actual_case, expected_case, file, line)`.
+    pub precomputed_violations: Vec<(String, NamingCase, NamingCase, String, u32)>,
+    /// pack-patterns-v1: count of identifiers evaluated under the
+    /// per-identifier (precomputed) convention path. Used to compute a
+    /// real consistency score: `(total - violations) / total`. Without
+    /// this, a pure-Go project (whose funcs bypass `function_names`)
+    /// would have an empty global bucket and a 0.0 consistency score,
+    /// causing the whole naming pattern — including the violations — to
+    /// be filtered out by the confidence gate.
+    pub precomputed_total: usize,
 }
 
 /// Detected naming case convention for an identifier.
@@ -250,6 +316,9 @@ impl NamingSignals {
         self.function_names.extend(other.function_names.clone());
         self.class_names.extend(other.class_names.clone());
         self.constant_names.extend(other.constant_names.clone());
+        self.precomputed_violations
+            .extend(other.precomputed_violations.clone());
+        self.precomputed_total += other.precomputed_total;
         for (prefix, count) in &other.private_prefixes {
             *self.private_prefixes.entry(prefix.clone()).or_insert(0) += count;
         }
@@ -260,6 +329,7 @@ impl NamingSignals {
         !self.function_names.is_empty()
             || !self.class_names.is_empty()
             || !self.constant_names.is_empty()
+            || !self.precomputed_violations.is_empty()
     }
 }
 

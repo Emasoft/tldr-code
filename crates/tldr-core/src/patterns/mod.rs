@@ -218,20 +218,49 @@ impl PatternMiner {
             async_patterns: &async_patterns,
         });
 
+        // pack-patterns-v1: roll up concrete AST-grounded design-pattern
+        // occurrences (Solidity Ownable/Proxy/…, PHP Singleton/Factory/
+        // Observer, OCaml functor idioms). Dedup by
+        // (pattern, language, file, line) so the same contract/class is
+        // not double-counted, then sort deterministically.
+        let design_patterns = Self::dedup_design_patterns(&aggregated_signals);
+
         // Update patterns_by_language.
         // Languages without AST pattern handlers (detector.rs) genuinely detect 0 patterns.
         // For supported languages, use the global patterns_after count since signals are
         // aggregated globally and cannot be attributed to individual languages.
         // TODO: per-language pattern detection requires running the pipeline per language.
-        let supported_pattern_languages: &[&str] =
-            &["python", "typescript", "javascript", "go", "rust", "java"];
+        //
+        // pack-patterns-v1: solidity / php / ocaml join the supported set —
+        // they now have real AST pattern handlers (design-pattern detection
+        // for solidity/php; module/functor idioms + naming for ocaml).
+        let supported_pattern_languages: &[&str] = &[
+            "python",
+            "typescript",
+            "javascript",
+            "go",
+            "rust",
+            "java",
+            "solidity",
+            "php",
+            "ocaml",
+        ];
+        // pack-patterns-v1: per-language design-pattern counts. Unlike the
+        // globally-aggregated idiom signals, design patterns ARE
+        // attributable to a single language, so we count them per-language
+        // and add them on top of the global idiom count.
+        let mut design_by_language: HashMap<String, usize> = HashMap::new();
+        for dp in &design_patterns {
+            *design_by_language.entry(dp.language.clone()).or_insert(0) += 1;
+        }
         for lang in files_by_language.keys() {
-            let count = if supported_pattern_languages.contains(&lang.as_str()) {
+            let idiom_count = if supported_pattern_languages.contains(&lang.as_str()) {
                 patterns_after
             } else {
                 0
             };
-            patterns_by_language.insert(lang.clone(), count);
+            let dp_count = design_by_language.get(lang).copied().unwrap_or(0);
+            patterns_by_language.insert(lang.clone(), idiom_count + dp_count);
         }
 
         // Build metadata
@@ -293,9 +322,47 @@ impl PatternMiner {
             type_coverage,
             api_conventions,
             async_patterns,
+            design_patterns,
             constraints,
             conflicts,
         })
+    }
+
+    /// pack-patterns-v1: dedup + deterministically sort the raw
+    /// design-pattern hits aggregated across files.
+    ///
+    /// The same logical pattern can be discovered more than once (e.g. a
+    /// contract that both inherits `Ownable` AND defines an `onlyOwner`
+    /// modifier triggers two structural sub-checks). We key dedup on
+    /// `(pattern, language, file, line)` so each physical declaration
+    /// surfaces exactly once, then sort by
+    /// `(language, file, line, pattern)` for stable, diffable output.
+    fn dedup_design_patterns(
+        signals: &PatternSignals,
+    ) -> Vec<crate::types::DesignPattern> {
+        use std::collections::BTreeSet;
+
+        let mut seen: BTreeSet<(String, String, String, u32)> = BTreeSet::new();
+        let mut out: Vec<crate::types::DesignPattern> = Vec::new();
+        for dp in &signals.design_patterns.hits {
+            let key = (
+                dp.pattern.clone(),
+                dp.language.clone(),
+                dp.file.clone(),
+                dp.line,
+            );
+            if seen.insert(key) {
+                out.push(dp.clone());
+            }
+        }
+        out.sort_by(|a, b| {
+            a.language
+                .cmp(&b.language)
+                .then(a.file.cmp(&b.file))
+                .then(a.line.cmp(&b.line))
+                .then(a.pattern.cmp(&b.pattern))
+        });
+        out
     }
 
     /// Collect source files to analyze

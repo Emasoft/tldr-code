@@ -909,6 +909,58 @@ impl TypeScriptSemantics {
 /// Go semantic extraction.
 pub struct GoSemantics;
 
+/// pack-patterns-v1: classify a Go function/method name by visibility and
+/// return `(actual_case, expected_case)`.
+///
+/// Go's exported/unexported distinction is purely the first rune's case
+/// (Go spec §"Exported identifiers"): an uppercase first rune is
+/// exported. The idiomatic convention (`golint`, Effective Go) is:
+///
+/// - exported  -> PascalCase  (`MixedCaps`)
+/// - unexported -> camelCase  (`mixedCaps`)
+///
+/// We map the detected [`NamingCase`] onto the visibility-appropriate
+/// expectation so the caller can decide whether the name is a genuine
+/// violation. Single-word names (`New`, `min`, `GET`) come back as
+/// `LowerAlpha`/`UpperAlpha`, which the violation emitter already treats
+/// as compatible with both adjacent conventions; here we additionally
+/// snap them to the visibility-correct expectation so they never count
+/// as violations.
+///
+/// Returns `None` for names with no classifiable first letter (the
+/// function never names an empty identifier in practice, but be defensive).
+fn go_function_naming(name: &str) -> Option<(NamingCase, NamingCase)> {
+    let first = name.trim_start_matches('_').chars().next()?;
+    let exported = first.is_ascii_uppercase();
+    let expected = if exported {
+        NamingCase::PascalCase
+    } else {
+        NamingCase::CamelCase
+    };
+
+    let actual = detect_naming_case(name);
+    Some((actual, expected))
+}
+
+/// pack-patterns-v1: whether a Go function's detected `actual` case is
+/// compatible with its visibility-appropriate `expected` case (and thus
+/// NOT a violation). Mirrors `naming::is_compatible` for the degenerate
+/// single-word forms, specialised to Go's two valid conventions:
+///
+/// - exported expects `PascalCase`: a single uppercase word
+///   (`UpperAlpha`, e.g. `New`, `GET`) is the pascal-degenerate form and
+///   is compatible.
+/// - unexported expects `CamelCase`: a single lowercase word
+///   (`LowerAlpha`, e.g. `min`, `recv`) is the camel-degenerate form and
+///   is compatible.
+fn is_go_compatible(actual: NamingCase, expected: NamingCase) -> bool {
+    matches!(
+        (actual, expected),
+        (NamingCase::UpperAlpha, NamingCase::PascalCase)
+            | (NamingCase::LowerAlpha, NamingCase::CamelCase)
+    )
+}
+
 impl LanguageSemantics for GoSemantics {
     fn process_node(
         &self,
@@ -946,17 +998,56 @@ impl GoSemantics {
     ) {
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = node_text(name_node, source);
-            let case = detect_naming_case(&name);
-            signals.naming.function_names.push((
-                name.clone(),
-                case,
-                file_path.display().to_string(),
-                name_node.start_position().row as u32 + 1,
-            ));
 
             if name.starts_with("Test") {
                 signals.test_idioms.test_function_count += 1;
                 signals.test_idioms.detected_framework = Some("go test".to_string());
+            }
+
+            // pack-patterns-v1: Go naming is VISIBILITY-DRIVEN, not a
+            // single global convention. Per the Go spec & `gofmt`/`golint`
+            // convention, an *exported* identifier (first rune uppercase)
+            // is PascalCase ("MixedCaps") and an *unexported* identifier
+            // (first rune lowercase) is camelCase ("mixedCaps"). BOTH are
+            // correct and coexist in every package. Feeding all funcs into
+            // one global-majority bucket flagged whichever visibility group
+            // was the minority (e.g. 24 false positives on go-httprouter:
+            // every correctly-named unexported camelCase func reported as
+            // "expected pascal_case").
+            //
+            // We drive off the identifier's first-rune case (the AST decl's
+            // name) to decide the visibility-appropriate expectation, then:
+            //
+            //   * record the func in `function_names` normalised to its
+            //     visibility-correct case when it MATCHES (so the
+            //     project-wide consistency score / majority stay coherent
+            //     without spurious cross-visibility violations); and
+            //   * emit a DIRECT precomputed violation (bypassing the
+            //     meaningless global-majority comparison) when the name is
+            //     genuinely WRONG for its visibility class — e.g. an
+            //     exported `Bad_Name` (snake_case) or an unexported
+            //     `bad_helper` (snake_case). This keeps real violations
+            //     visible while eliminating the false positives.
+            // Go funcs are deliberately NOT pushed into `function_names`:
+            // that bucket is reduced to a SINGLE project-wide majority,
+            // which is meaningless for Go's dual visibility-driven
+            // conventions and would re-introduce the cross-visibility
+            // false positives via `find_violations`. Instead we emit only
+            // GENUINE violations (a name whose case is wrong for its own
+            // visibility class) directly through `precomputed_violations`.
+            let file = file_path.display().to_string();
+            let line = name_node.start_position().row as u32 + 1;
+            if let Some((actual_case, expected_case)) = go_function_naming(&name) {
+                signals.naming.precomputed_total += 1;
+                if actual_case != expected_case && !is_go_compatible(actual_case, expected_case) {
+                    signals.naming.precomputed_violations.push((
+                        name.clone(),
+                        actual_case,
+                        expected_case,
+                        file.clone(),
+                        line,
+                    ));
+                }
             }
         }
 
@@ -1444,11 +1535,11 @@ pub fn language_profile(language: crate::types::Language) -> Option<LanguageProf
         crate::types::Language::Swift => Some(languages::swift::profile()),
         crate::types::Language::Scala => Some(languages::scala::profile()),
         crate::types::Language::Ocaml => Some(languages::ocaml::profile()),
-        // v0.5.0 SOL-001 Solidity foundation: design-pattern profile
-        // (per oracle: contract / interface / library / modifier
-        // semantics) lands in a later milestone. None = pattern miner
-        // skips Solidity files without crashing.
-        crate::types::Language::Solidity => None,
+        // pack-patterns-v1 (v0.5.0 PACK-PATTERNS): Solidity now has a
+        // real design-pattern profile — Ownable / Pausable /
+        // ReentrancyGuard / Proxy / Factory detection driven off the
+        // contract / modifier / inheritance AST.
+        crate::types::Language::Solidity => Some(languages::solidity::profile()),
     }
 }
 
@@ -1478,6 +1569,7 @@ mod grammar_tests {
             Language::Luau,
             Language::Elixir,
             Language::Ocaml,
+            Language::Solidity,
         ];
 
         for lang in &languages {

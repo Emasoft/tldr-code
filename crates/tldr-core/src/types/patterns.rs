@@ -45,6 +45,12 @@ pub struct PatternReport {
     /// Async/concurrency patterns
     #[serde(skip_serializing_if = "Option::is_none")]
     pub async_patterns: Option<AsyncPattern>,
+    /// Concrete AST-grounded design-pattern occurrences (GoF /
+    /// language-idiomatic): Solidity `Ownable`/`Proxy`/…, PHP
+    /// `Singleton`/`Factory`/`Observer`, OCaml functor idioms.
+    /// pack-patterns-v1 (v0.5.0 PACK-PATTERNS).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub design_patterns: Vec<DesignPattern>,
     /// Generated LLM constraints
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<Constraint>,
@@ -68,6 +74,7 @@ impl PatternReport {
             type_coverage: None,
             api_conventions: None,
             async_patterns: None,
+            design_patterns: Vec::new(),
             constraints: Vec::new(),
             conflicts: Vec::new(),
         }
@@ -250,6 +257,46 @@ impl Default for NamingPattern {
             violations: Vec::new(),
         }
     }
+}
+
+// =============================================================================
+// Design Patterns (pack-patterns-v1, v0.5.0 PACK-PATTERNS)
+// =============================================================================
+
+/// A detected named design pattern (GoF / language-idiomatic).
+///
+/// Unlike the code-style/behavioural idiom categories (naming,
+/// error_handling, …) which are *aggregate* roll-ups, a `DesignPattern`
+/// is a concrete, AST-grounded occurrence: a specific contract, class,
+/// module, or function that structurally matches a known design pattern.
+/// Each carries the file + line of the declaration that anchored the
+/// match so an LLM/IDE can jump straight to it.
+///
+/// Examples:
+/// - Solidity `Ownable` (contract with an `onlyOwner` modifier),
+///   `Pausable`, `ReentrancyGuard`, `Proxy`, `Factory`.
+/// - PHP `Singleton`, `Factory`, `Observer`.
+/// - OCaml functor / module-idiom patterns.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesignPattern {
+    /// Canonical pattern name (e.g. `Ownable`, `Singleton`, `Factory`).
+    pub pattern: String,
+    /// Pattern family/category (e.g. `access_control`, `creational`,
+    /// `behavioral`, `structural`, `module`).
+    pub category: String,
+    /// Source language the pattern was detected in (lowercase, e.g.
+    /// `solidity`, `php`, `ocaml`).
+    pub language: String,
+    /// The name of the declaration that anchored the match (contract /
+    /// class / module / function name).
+    pub subject: String,
+    /// File containing the declaration.
+    pub file: String,
+    /// 1-based line of the anchoring declaration.
+    pub line: u32,
+    /// Short human-readable note on WHY this matched (the structural
+    /// evidence, e.g. "contract with onlyOwner modifier").
+    pub evidence: String,
 }
 
 /// Naming convention type
