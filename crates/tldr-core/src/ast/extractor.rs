@@ -200,6 +200,187 @@ pub fn get_code_structure(
     })
 }
 
+/// reg-health-regression-v1 (v0.5.0 REG-HEALTH): enumerate every language
+/// that has at least one source file under `root`, grouped by
+/// [`Language::from_path`], in a deterministic order.
+///
+/// This is the single source-of-truth for "which languages live in this
+/// tree", shared by the polyglot `structure` directory path and by
+/// `health`'s `classes_analyzed` / `functions_analyzed` canonicalisation so
+/// the two surfaces agree (the M-016 invariant).
+///
+/// The walk goes through [`crate::walker::walk_project`] — the same walk the
+/// dominant-language [`Language::from_directory`] autodetector uses — so the
+/// file inventory is consistent across commands. The result is sorted by the
+/// `Debug`-rendered enum variant name; `Language` does not derive `Ord`, but
+/// its `Debug` repr is stable per-build, so language order is reproducible.
+pub fn detect_project_languages(root: &Path) -> Vec<Language> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<Language> = HashSet::new();
+    let mut langs: Vec<Language> = Vec::new();
+    for entry in crate::walker::walk_project(root) {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if let Some(lang) = Language::from_path(p) {
+            if seen.insert(lang) {
+                langs.push(lang);
+            }
+        }
+    }
+    langs.sort_by_key(|l| format!("{:?}", l));
+    langs
+}
+
+/// reg-health-regression-v1 (v0.5.0 REG-HEALTH): multi-language structure
+/// extraction for a directory.
+///
+/// `structure` and `health` both became polyglot in v0.5.0 (CL-15): a
+/// mixed-language tree is no longer silently reduced to its dominant
+/// language. This helper centralises the merge so the two commands count
+/// classes/functions identically (the M-016 `health == structure`
+/// invariant).
+///
+/// # Algorithm
+///
+/// 1. [`detect_project_languages`] enumerates every language present.
+/// 2. [`get_code_structure`] runs once per language. Each per-language scan
+///    widens to its `scan_extensions()` family — so the C++ scan picks up
+///    `.h` headers, but so does the C scan, meaning a header next to C++
+///    sources is parsed by BOTH grammars and would be counted twice.
+/// 3. **Deduplication by path**: each physical file is kept exactly once,
+///    under the language [`Language::from_path_with_siblings`] assigns it
+///    (the sibling-aware owner — a `.h` next to `.cpp` belongs to C++, not
+///    C). When the owning language is not among the scanned set, the entry
+///    with the richer parse (most definitions) wins. This removes the C/C++
+///    `.h` double-count that otherwise inflated `structure`'s class total
+///    above `health`'s single-grammar count.
+///
+/// The merged `language` field reports the DOMINANT autodetected language
+/// ([`Language::from_directory`]) for schema parity with the single-language
+/// path. An empty / source-free tree yields `language: None` and a
+/// `"No source files found in directory"` warning (the N7 contract), never a
+/// silent default fallback.
+pub fn get_polyglot_code_structure(
+    root: &Path,
+    max_results: usize,
+    ignore_spec: Option<&IgnoreSpec>,
+) -> TldrResult<CodeStructure> {
+    use std::collections::HashMap;
+
+    let langs = detect_project_languages(root);
+
+    // Empty tree → null language + N7 warning. Do NOT default to a
+    // language (reg-health-regression-v1: CL-15 leaked a Python fallback).
+    if langs.is_empty() {
+        return Ok(CodeStructure {
+            root: root.to_path_buf(),
+            language: None,
+            files: Vec::new(),
+            files_skipped: 0,
+            warnings: vec!["No source files found in directory".to_string()],
+        });
+    }
+
+    // Per-path winning entry. `from_path_with_siblings` names the owning
+    // language; we keep the scan whose language matches it. When no scan
+    // matches the owner (rare), keep the parse with the most definitions.
+    struct Winner {
+        owned: bool,
+        defs: usize,
+        file: FileStructure,
+    }
+    let mut by_path: HashMap<std::path::PathBuf, Winner> = HashMap::new();
+    let mut order: Vec<std::path::PathBuf> = Vec::new();
+
+    let mut files_skipped: u32 = 0;
+    let mut warnings: Vec<String> = Vec::new();
+
+    for lang in &langs {
+        let s = get_code_structure(root, *lang, max_results, ignore_spec)?;
+        files_skipped = files_skipped.saturating_add(s.files_skipped);
+        for w in s.warnings {
+            // Drop the per-language "No source files found" noise — the
+            // merged result is non-empty by construction here.
+            if w == "No source files found in directory" {
+                continue;
+            }
+            warnings.push(w);
+        }
+        for file in s.files {
+            // `file.path` is relative to `root` (see `extract_file_structure`).
+            // Resolve ownership against the ABSOLUTE path so the sibling scan
+            // in `from_path_with_siblings` can see neighbouring `.cpp` files
+            // (a root-level `tinyxml2.h` has an empty parent otherwise, which
+            // would mis-assign it to C and defeat the dedup).
+            let abs_path = if file.path.is_absolute() {
+                file.path.clone()
+            } else {
+                root.join(&file.path)
+            };
+            let owner = Language::from_path_with_siblings(&abs_path);
+            let owned = owner == Some(*lang);
+            let defs = file.definitions.len();
+            match by_path.get_mut(&file.path) {
+                None => {
+                    order.push(file.path.clone());
+                    by_path.insert(
+                        file.path.clone(),
+                        Winner {
+                            owned,
+                            defs,
+                            file,
+                        },
+                    );
+                }
+                Some(existing) => {
+                    // Prefer the owning-language scan; tie-break on the
+                    // richer parse (most definitions). This deterministically
+                    // keeps the C++ scan of a `.h` over the C scan.
+                    let replace = match (existing.owned, owned) {
+                        (false, true) => true,
+                        (true, false) => false,
+                        _ => defs > existing.defs,
+                    };
+                    if replace {
+                        existing.owned = owned;
+                        existing.defs = defs;
+                        existing.file = file;
+                    }
+                }
+            }
+        }
+    }
+
+    let merged_files: Vec<FileStructure> =
+        order.into_iter().filter_map(|p| by_path.remove(&p).map(|w| w.file)).collect();
+
+    warnings.push(format!(
+        "polyglot scan: analyzed {} language(s): {}",
+        langs.len(),
+        langs
+            .iter()
+            .map(|l| format!("{:?}", l))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    // Dominant autodetected language for schema parity; fall back to the
+    // first scanned language only when `from_directory` can't decide on a
+    // tree we already know is non-empty.
+    let dominant = Language::from_directory(root).or_else(|| langs.first().copied());
+
+    Ok(CodeStructure {
+        root: root.to_path_buf(),
+        language: dominant,
+        files: merged_files,
+        files_skipped,
+        warnings,
+    })
+}
+
 /// Extract structure from a single file
 fn extract_file_structure(
     path: &Path,

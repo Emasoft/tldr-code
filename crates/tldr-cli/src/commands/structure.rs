@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::Args;
 
 use tldr_core::types::CodeStructure;
-use tldr_core::{get_code_structure, IgnoreSpec, Language};
+use tldr_core::{get_code_structure, get_polyglot_code_structure, IgnoreSpec, Language};
 
 use crate::commands::daemon_router::{params_with_path_lang, try_daemon_route};
 use crate::output::{format_structure_text, OutputFormat, OutputWriter};
@@ -140,84 +140,36 @@ impl StructureArgs {
         Ok(())
     }
 
-    /// cl15-polyglot-v1 (v0.5.0 CL-15): polyglot scanning helper — now the
-    /// DEFAULT directory path (no longer gated behind `--all-langs`). Walks
-    /// the directory once via the shared
-    /// [`crate::commands::polyglot::detect_languages`] helper, runs
-    /// `get_code_structure` per detected language, and merges the `files`
-    /// vectors. Warnings and `files_skipped` are summed across the
-    /// per-language scans.
+    /// cl15-polyglot-v1 (v0.5.0 CL-15) / reg-health-regression-v1 (v0.5.0
+    /// REG-HEALTH): polyglot scanning helper — the DEFAULT directory path
+    /// (no longer gated behind `--all-langs`).
+    ///
+    /// Delegates to the shared
+    /// [`tldr_core::get_polyglot_code_structure`] so `structure` and
+    /// `health` count classes/functions identically (the M-016 invariant).
+    /// That core helper:
+    ///   - detects every language present and runs `get_code_structure` per
+    ///     language,
+    ///   - deduplicates files by path (a `.h` scanned by both the C and C++
+    ///     grammars is kept once, under its sibling-aware owner), so the
+    ///     class total is not inflated by double-counted headers, and
+    ///   - emits `language: null` + `"No source files found in directory"`
+    ///     for an empty tree (the N7 contract) instead of a Python fallback.
     fn run_all_langs(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
-        // Stage 1: enumerate every language that has at least one file under
-        // `self.path` via the shared deterministic detector. (Each per-lang
-        // scan handles its own extension widening downstream, so `from_path`
-        // bucketing here is sufficient.)
-        let mut langs: Vec<Language> =
-            crate::commands::polyglot::detected_language_list(&self.path);
-
-        // Empty tree → fall back to Python so the output schema is
-        // still well-formed (mirrors the single-language path's
-        // historical fallback).
-        if langs.is_empty() {
-            langs.push(Language::Python);
-        }
-
+        let lang_count = crate::commands::polyglot::detected_language_list(&self.path).len();
         writer.progress(&format!(
             "Extracting structure from {} ({} language(s))...",
             self.path.display(),
-            langs.len()
+            lang_count
         ));
 
-        // Stage 2: run get_code_structure once per language and merge.
-        //
-        // The top-level `language` field reports the DOMINANT autodetected
-        // language (what `Language::from_directory` picks), NOT the first
-        // scanned language — this preserves the long-standing autodetection
-        // contract pinned by `language_autodetect_tests.rs` (e.g. a TS project
-        // with a couple of Python bait files still reports `language:
-        // "typescript"`). The full per-language breakdown is surfaced via the
-        // `polyglot scan:` warning below. When `from_directory` can't decide
-        // (rare for a tree we already know is non-empty), fall back to the
-        // first scanned language.
-        let dominant = Language::from_directory(&self.path).or_else(|| langs.first().copied());
-
-        let mut merged_files: Vec<tldr_core::types::FileStructure> = Vec::new();
-        let mut warnings: Vec<String> = Vec::new();
-        let mut files_skipped: u32 = 0;
-
-        for lang in &langs {
-            let s = get_code_structure(
-                &self.path,
-                *lang,
-                self.max_results,
-                Some(&IgnoreSpec::default()),
-            )?;
-            merged_files.extend(s.files);
-            files_skipped = files_skipped.saturating_add(s.files_skipped);
-            for w in s.warnings {
-                warnings.push(w);
-            }
-        }
-
-        warnings.push(format!(
-            "polyglot scan: analyzed {} language(s): {}",
-            langs.len(),
-            langs
-                .iter()
-                .map(|l| format!("{:?}", l))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-
-        let merged = CodeStructure {
-            root: self.path.clone(),
-            language: dominant,
-            files: merged_files,
-            files_skipped,
-            warnings,
-        };
+        let merged = get_polyglot_code_structure(
+            &self.path,
+            self.max_results,
+            Some(&IgnoreSpec::default()),
+        )?;
 
         if writer.is_text() {
             writer.write_text(&format_structure_text(&merged))?;

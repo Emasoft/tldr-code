@@ -98,7 +98,10 @@ pub use error::TldrError;
 pub use types::*;
 
 // Re-export Layer 1 functions for convenience
-pub use ast::{extract_file, extract_file_with_lang, get_code_structure, get_imports};
+pub use ast::{
+    detect_project_languages, extract_file, extract_file_with_lang, get_code_structure,
+    get_imports, get_polyglot_code_structure,
+};
 pub use fs::get_file_tree;
 
 // Re-export Layer 2 functions for convenience

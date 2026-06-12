@@ -18,6 +18,6 @@ pub mod parser;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree, extract_function_params};
-pub use extractor::get_code_structure;
+pub use extractor::{detect_project_languages, get_code_structure, get_polyglot_code_structure};
 pub use imports::get_imports;
 pub use parser::ParserPool;

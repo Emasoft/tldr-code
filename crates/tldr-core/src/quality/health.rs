@@ -33,7 +33,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ast::extract::extract_file;
-use crate::ast::extractor::get_code_structure;
+use crate::ast::extractor::{get_code_structure, get_polyglot_code_structure};
 use crate::callgraph::build_project_call_graph;
 use crate::error::TldrError;
 use crate::types::{IgnoreSpec, Language, ModuleInfo};
@@ -1152,7 +1152,22 @@ fn canonicalize_counters_from_structure(
     path: &Path,
     language: Language,
 ) {
-    let structure = match get_code_structure(path, language, 0, Some(&IgnoreSpec::default())) {
+    // reg-health-regression-v1 (v0.5.0 REG-HEALTH): `tldr structure` became
+    // polyglot in CL-15 — a directory scan now counts classes/functions
+    // across EVERY detected language (deduplicating headers parsed by both
+    // the C and C++ grammars), not just the dominant one. `health` must
+    // canonicalise against that SAME polyglot projection or the M-016
+    // invariant `health.classes_analyzed == sum(structure.files[].classes)`
+    // breaks on any mixed-language corpus (e.g. a Kotlin repo with a stray
+    // `.java`, a Swift repo vendoring C++ benchmarks, the cpp `.h`/`.cpp`
+    // double-count). A single-FILE health run still uses the single-language
+    // projection — there is only one language for one file.
+    let structure = if path.is_dir() {
+        get_polyglot_code_structure(path, 0, Some(&IgnoreSpec::default()))
+    } else {
+        get_code_structure(path, language, 0, Some(&IgnoreSpec::default()))
+    };
+    let structure = match structure {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -1172,19 +1187,36 @@ fn canonicalize_counters_from_structure(
     // ClassInfo.methods (surfaced as kind="method" definitions) so
     // contract members count toward the corpus-wide function total.
     //
-    // For non-Solidity languages the previous (function-only) count
-    // is preserved verbatim — the Phase-22 health-dashboard-v1
-    // invariant `summary.functions_analyzed == sum(files[].functions.len())`
-    // continues to hold across the kotlin / swift / typescript / cpp /
-    // java / go / javascript corpora pinned by `health_dashboard_v1.rs`.
+    // reg-health-regression-v1: under the polyglot directory projection the
+    // merged files span multiple languages, so the Solidity rule is applied
+    // PER FILE (via the file's sibling-aware owning language) rather than
+    // from a single corpus-wide `language`. For non-Solidity files the
+    // previous (function-only) count is preserved verbatim — the
+    // health-dashboard-v1 invariant `functions_analyzed ==
+    // sum(files[].functions.len())` continues to hold across the kotlin /
+    // swift / typescript / cpp / java / go / javascript corpora pinned by
+    // `health_dashboard_v1.rs`.
     let functions_total: usize = structure
         .files
         .iter()
         .map(|f| {
+            let file_lang = if path.is_dir() {
+                // `f.path` is relative to the scan root; resolve against the
+                // absolute path so header sibling-detection matches what the
+                // polyglot structure merge used.
+                let abs = if f.path.is_absolute() {
+                    f.path.clone()
+                } else {
+                    path.join(&f.path)
+                };
+                Language::from_path_with_siblings(&abs).unwrap_or(language)
+            } else {
+                language
+            };
             f.definitions
                 .iter()
                 .filter(|d| {
-                    if matches!(language, Language::Solidity) {
+                    if matches!(file_lang, Language::Solidity) {
                         // Contract members appear as `method` and free
                         // functions as `function`. Both contribute to
                         // the function-axis count.
