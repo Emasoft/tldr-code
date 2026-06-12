@@ -420,6 +420,12 @@ pub fn profile() -> LanguageProfile {
         .insert("library_declaration", vec![SignalAction::CallSemantics]);
     map.dispatch
         .insert("interface_declaration", vec![SignalAction::CallSemantics]);
+    // Function/constructor definitions: route the data-driven path through
+    // `SoliditySemantics`, which classifies them (Factory pattern, etc.).
+    map.dispatch
+        .insert("function_definition", vec![SignalAction::CallSemantics]);
+    map.dispatch
+        .insert("constructor_definition", vec![SignalAction::CallSemantics]);
     // Solidity `try { ... } catch { ... }` external-call error handling.
     map.dispatch.insert(
         "try_statement",
