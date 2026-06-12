@@ -2017,9 +2017,23 @@ static TYPESCRIPT_AST_SINKS: &[AstSinkPattern] = &[
         member_patterns: &[("document", "write")],
         sink_type: TaintSinkType::FileWrite,
     },
+    // REGEX-VULN-V1 (BUG-1): the SQL-injection sink for TS/JS `.query(...)` /
+    // `.execute(...)` is an actual method CALL on a DB / connection receiver —
+    // not a property of the same name. The pre-fix `member_patterns:
+    // &[("*", "query"), ("*", "execute")]` matched ANY `member_expression`
+    // whose property is literally `query` / `execute`, including plain property
+    // READS (`req.query`, `config.query`, `logger.info(config.query)`) that are
+    // not call sites — producing a false SqlInjection finding on every Express
+    // handler that touches `req.query`. Routing these through `call_names`
+    // requires `call_kinds.contains(&descendant.kind())` (a real
+    // `call_expression`); `extract_call_name` yields the dotted callee
+    // (`db.query`), which the call-name path matches via `ends_with(".query")`.
+    // A bare property read is a `member_expression`, never a `call_expression`,
+    // so it no longer fires. Real `db.query(userInput)` / `conn.execute(sql)`
+    // calls still match.
     AstSinkPattern {
-        call_names: &[],
-        member_patterns: &[("*", "query"), ("*", "execute")],
+        call_names: &["query", "execute"],
+        member_patterns: &[],
         sink_type: TaintSinkType::SqlQuery,
     },
     // W1-M1: NextJS framework sinks (parity-add for Wave 2 regex deletion).
@@ -3564,15 +3578,33 @@ static PHP_AST_SINKS: &[AstSinkPattern] = &[
         sink_type: TaintSinkType::FileOpen,
     },
     // VULN-MIGRATION-V1 M2: HttpRequest (Ssrf) sinks per vuln.rs L688-L697.
-    // `Guzzle\Client` is a namespaced class identifier — raw fallback.
-    // `->request(` is PHP arrow-method-call — raw fallback (mirrors the
-    // existing PHP `->query(` SqlQuery convention).
+    //
+    // REGEX-VULN-V1 (BUG-2): SSRF/HttpRequest sinks must be REAL call sites of
+    // the actual sink functions, not string/output ops that merely contain a
+    // sink substring.
+    //
+    // Two raw-substring `member_patterns` entries were removed:
+    //   * `("", "Guzzle\\Client")` — a namespaced CLASS identifier. Constructing
+    //     a client (`new \Guzzle\Client($url)`) performs NO network I/O and is
+    //     not an HTTP-request sink; the entry fired SSRF on the class name
+    //     appearing anywhere in code-bearing text (instantiation, type hints).
+    //   * `("", "->request(")` — fired on ANY node whose text contained the
+    //     substring, including string concatenation / output ops. The real
+    //     Guzzle sink is the METHOD CALL `$client->request('GET', $url)`, a
+    //     `member_call_expression`. Routing `request` through `call_names`
+    //     requires a real call node (`call_kinds.contains(&descendant.kind())`)
+    //     and matches the arrow callee via `ends_with("->request")` (see the
+    //     `->`-separator arm in `detect_sinks_ast`). A string/output op is a
+    //     `binary_expression` / `echo_statement`, never a call node, so it no
+    //     longer fires.
+    //
     // NOTE: `fopen` and `file_get_contents` deliberately appear in BOTH the
     // FileOpen and HttpRequest sink banks — vuln.rs lists them under both
     // VulnTypes because PHP's `fopen` / `file_get_contents` accept http://
     // URLs (SSRF) AND filesystem paths (PathTraversal). The taint engine
     // emits one TaintFlow per matching (pattern, descendant) pair, so the
-    // pattern is correctly mirrored from vuln.rs.
+    // pattern is correctly mirrored from vuln.rs. These already match through
+    // the `call_names` (real-call-node) path.
     AstSinkPattern {
         call_names: &[
             "fopen",
@@ -3581,11 +3613,9 @@ static PHP_AST_SINKS: &[AstSinkPattern] = &[
             "curl_setopt",
             "get_headers",
             "readfile",
+            "request",
         ],
-        member_patterns: &[
-            ("", "Guzzle\\Client"),
-            ("", "->request("),
-        ],
+        member_patterns: &[],
         sink_type: TaintSinkType::HttpRequest,
     },
     // VULN-MIGRATION-V1 M2: Deserialize sinks per vuln.rs L762-L765.
@@ -5298,7 +5328,20 @@ pub fn detect_sinks_ast(
                 let call_kinds = call_node_kinds(language);
                 if call_kinds.contains(&descendant.kind()) {
                     if let Some(call_name) = extract_call_name(descendant, source, language) {
-                        return call_name == *name || call_name.ends_with(&format!(".{}", name));
+                        // Match a bare call (`name(...)`) or a method call whose
+                        // dotted/arrow callee ends in `.name` / `->name`. The
+                        // `->` arm covers PHP `member_call_expression`
+                        // (`$client->request(...)`), whose `extract_call_name`
+                        // joins receiver and method with `->` rather than `.`.
+                        // REGEX-VULN-V1: routing method-call sinks through this
+                        // call-name path (instead of a `("", "->name(")` raw
+                        // substring member-pattern) requires a real call node —
+                        // `call_kinds.contains(&descendant.kind())` above — so a
+                        // string/output op that merely CONTAINS the text is no
+                        // longer flagged.
+                        return call_name == *name
+                            || call_name.ends_with(&format!(".{}", name))
+                            || call_name.ends_with(&format!("->{}", name));
                     }
                 }
                 false
