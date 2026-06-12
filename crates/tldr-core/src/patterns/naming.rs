@@ -20,13 +20,29 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
         return None;
     }
 
+    // reg-go-extract-v1: when the function bucket is majority-exempt
+    // (Go's visibility-driven convention), its identifiers are still
+    // recorded in `function_names` for raw extraction, but their
+    // correctness is evaluated per-visibility through the precomputed
+    // path — NOT against a single project-wide majority. Excluding them
+    // from the global-majority function-convention computation here is
+    // what prevents the minority visibility group from being flagged as
+    // a false-positive violation.
+    let function_majority_exempt = naming.function_majority_exempt;
+    let function_names_for_majority: &[(String, NamingCase, String, u32)] =
+        if function_majority_exempt {
+            &[]
+        } else {
+            &naming.function_names
+        };
+
     // Determine majority convention for each category
-    let functions = detect_majority_convention(&naming.function_names);
+    let functions = detect_majority_convention(function_names_for_majority);
     let classes = detect_majority_convention(&naming.class_names);
     let constants = detect_majority_convention(&naming.constant_names);
 
     // Calculate consistency score
-    let function_consistency = calculate_consistency(&naming.function_names, &functions);
+    let function_consistency = calculate_consistency(function_names_for_majority, &functions);
     let class_consistency = calculate_consistency(&naming.class_names, &classes);
     let constant_consistency = calculate_consistency(&naming.constant_names, &constants);
 
@@ -53,12 +69,15 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
         0.0
     };
 
-    let total_items = naming.function_names.len()
-        + naming.class_names.len()
-        + naming.constant_names.len()
-        + precomputed_total;
+    // reg-go-extract-v1: exempt function_names contribute to consistency
+    // ONLY through `precomputed_consistency` (the per-visibility score),
+    // so they must not also be weighted via the global-majority path here
+    // (double counting). When exempt, the global function bucket is empty.
+    let global_function_len = function_names_for_majority.len();
+    let total_items =
+        global_function_len + naming.class_names.len() + naming.constant_names.len() + precomputed_total;
     let consistency_score = if total_items > 0 {
-        let fn_weight = naming.function_names.len() as f64 / total_items as f64;
+        let fn_weight = global_function_len as f64 / total_items as f64;
         let cls_weight = naming.class_names.len() as f64 / total_items as f64;
         let const_weight = naming.constant_names.len() as f64 / total_items as f64;
         let pre_weight = precomputed_total as f64 / total_items as f64;
@@ -72,8 +91,15 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
     };
 
     // Detect violations
+    //
+    // reg-go-extract-v1: skip the global-majority violation pass over the
+    // function bucket when it is majority-exempt (Go). Its genuine
+    // per-visibility violations are appended below from
+    // `precomputed_violations`; running `find_violations` here would flag
+    // the minority visibility group (e.g. exported PascalCase funcs in a
+    // camelCase-majority package) as false positives.
     let mut violations = Vec::new();
-    violations.extend(find_violations(&naming.function_names, &functions));
+    violations.extend(find_violations(function_names_for_majority, &functions));
     violations.extend(find_violations(&naming.class_names, &classes));
     violations.extend(find_violations(&naming.constant_names, &constants));
 

@@ -272,6 +272,20 @@ pub struct NamingSignals {
     /// causing the whole naming pattern — including the violations — to
     /// be filtered out by the confidence gate.
     pub precomputed_total: usize,
+    /// reg-go-extract-v1: when `true`, the `function_names` bucket holds
+    /// identifiers whose naming convention is per-identifier (NOT a single
+    /// project-wide majority) and whose genuine violations are computed
+    /// directly into `precomputed_violations`.
+    ///
+    /// Go is the motivating case: its convention is VISIBILITY-driven
+    /// (exported PascalCase vs unexported camelCase), both legitimate in
+    /// the same package. The funcs are still recorded in `function_names`
+    /// so raw extraction (snapshot/equivalence) works, but the global
+    /// `find_violations` majority comparison must be SKIPPED for this
+    /// bucket — otherwise the minority visibility group is flagged as a
+    /// false positive (24 such false positives on go-httprouter). The
+    /// per-visibility violations already live in `precomputed_violations`.
+    pub function_majority_exempt: bool,
 }
 
 /// Detected naming case convention for an identifier.
@@ -319,6 +333,11 @@ impl NamingSignals {
         self.precomputed_violations
             .extend(other.precomputed_violations.clone());
         self.precomputed_total += other.precomputed_total;
+        // reg-go-extract-v1: once any merged source uses the
+        // per-identifier (visibility-driven) convention path, the merged
+        // function bucket must stay exempt from the global-majority
+        // violation pass.
+        self.function_majority_exempt |= other.function_majority_exempt;
         for (prefix, count) in &other.private_prefixes {
             *self.private_prefixes.entry(prefix.clone()).or_insert(0) += count;
         }

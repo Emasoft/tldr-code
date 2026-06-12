@@ -1035,8 +1035,25 @@ impl GoSemantics {
             // false positives via `find_violations`. Instead we emit only
             // GENUINE violations (a name whose case is wrong for its own
             // visibility class) directly through `precomputed_violations`.
+            //
+            // reg-go-extract-v1: the func name STILL must be recorded in
+            // `function_names` — that bucket is the raw function-name
+            // extraction surface (snapshot / equivalence consumers read it
+            // directly). PACK-PATTERNS dropped the push, which silently
+            // zeroed Go function extraction. We restore the push and mark
+            // the bucket `function_majority_exempt` so `signals_to_pattern`
+            // SKIPS the meaningless global-majority `find_violations` over
+            // Go funcs (which would re-introduce the cross-visibility false
+            // positives PACK-PATTERNS eliminated); genuine violations stay
+            // in `precomputed_violations`.
             let file = file_path.display().to_string();
             let line = name_node.start_position().row as u32 + 1;
+            let case = detect_naming_case(&name);
+            signals
+                .naming
+                .function_names
+                .push((name.clone(), case, file.clone(), line));
+            signals.naming.function_majority_exempt = true;
             if let Some((actual_case, expected_case)) = go_function_naming(&name) {
                 signals.naming.precomputed_total += 1;
                 if actual_case != expected_case && !is_go_compatible(actual_case, expected_case) {
