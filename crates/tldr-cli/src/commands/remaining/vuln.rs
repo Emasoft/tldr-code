@@ -269,8 +269,37 @@ impl VulnArgs {
         // analysis fan-out) and visibly differed between runs on the same
         // repo, creating the illusion of different findings between
         // `--format json` and `--format text`.
-        filtered_findings
-            .sort_by(|a, b| (&a.file, a.line, a.vuln_type).cmp(&(&b.file, b.line, b.vuln_type)));
+        // fix-cl-12-vuln-dedup-v1 (v0.5.0 CL-12, gaps IT3-luau-01/02):
+        // include the SINK expression in the sort key so that findings that
+        // share a `(vuln_type, file, line, sink)` semantic identity but
+        // differ only in their taint SOURCE become adjacent — a prerequisite
+        // for the consecutive-only `dedup_by` below. The sink expression is
+        // the `code_snippet` of the last `taint_flow` step (the sink
+        // statement); it is empty for findings without a flow (e.g. the
+        // Rust line-scanner's smell emissions), which simply group together.
+        filtered_findings.sort_by(|a, b| {
+            (&a.file, a.line, a.vuln_type, sink_expr(a))
+                .cmp(&(&b.file, b.line, b.vuln_type, sink_expr(b)))
+        });
+
+        // fix-cl-12-vuln-dedup-v1: collapse intra-canonical duplicate taint
+        // PATHS at the single emission boundary. The C++ (and any) taint pass
+        // emits one finding per source→sink path; when N distinct sources
+        // converge on the SAME sink statement at the SAME `(file, line,
+        // vuln_type)`, they are the SAME vulnerability and must report once.
+        // Pre-fix, ~51 argv-derived PathTraversal paths into one `fopen` sink
+        // (Luau `CLI/src/Compile.cpp:703`) all survived, inflating the
+        // dashboard. `dedupe_overlap` only reconciles the Rust line-scanner
+        // vs. the canonical pipeline; it does NOT collapse these. `dedup_by`
+        // removes only CONSECUTIVE equal-key elements, which the sink-aware
+        // sort above guarantees are adjacent, so the result is deterministic
+        // and order-independent.
+        filtered_findings.dedup_by(|a, b| {
+            a.vuln_type == b.vuln_type
+                && a.file == b.file
+                && a.line == b.line
+                && sink_expr(a) == sink_expr(b)
+        });
 
         // schema-cleanup-v2 (P2.BUG-9): resolve the enclosing function for
         // each finding's `(file, line)`. Pre-fix, vuln findings had no
@@ -345,6 +374,24 @@ impl VulnArgs {
         // it exits 0 unconditionally on a successful scan).
         Ok(())
     }
+}
+
+// =============================================================================
+// Semantic-key dedup helper (fix-cl-12-vuln-dedup-v1)
+// =============================================================================
+
+/// The sink expression of a finding: the `code_snippet` of the LAST
+/// `taint_flow` step (the sink statement). Returns `""` when the finding
+/// carries no flow (e.g. the Rust line-scanner's smell emissions). Used as
+/// the discriminating component of the `(vuln_type, file, line, sink)`
+/// semantic key for both the dedup sort and the `dedup_by` collapse, so that
+/// N source-distinct taint paths converging on the same sink statement at the
+/// same location report as one vulnerability.
+fn sink_expr(f: &VulnFinding) -> &str {
+    f.taint_flow
+        .last()
+        .map(|step| step.code_snippet.as_str())
+        .unwrap_or("")
 }
 
 // =============================================================================
