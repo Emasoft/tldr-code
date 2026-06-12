@@ -60,8 +60,12 @@ pub struct DepsReport {
     pub internal_dependencies: BTreeMap<PathBuf, Vec<PathBuf>>,
 
     /// External dependencies (file -> [package names])
-    /// Uses BTreeMap for deterministic JSON output (S7-R40)
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Uses BTreeMap for deterministic JSON output (S7-R40).
+    ///
+    /// Schema-parity contract (FIX-DEPS-SCHEMA): this key is ALWAYS serialized,
+    /// emitting an empty object `{}` for stdlib-only / zero-external repos rather
+    /// than being omitted. Consumers expect all four canonical keys present.
+    #[serde(default)]
     pub external_dependencies: BTreeMap<PathBuf, Vec<String>>,
 
     /// Circular dependencies found
