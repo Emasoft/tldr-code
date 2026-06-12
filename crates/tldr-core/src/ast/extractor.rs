@@ -2394,21 +2394,40 @@ fn collect_definitions(
             // while the other pipelines reported the decl-keyword line
             // for the SAME symbol — a cross-pipeline drift.
             //
-            // Gated on `Language::Java` only: other grammars use the
-            // bare node start line elsewhere and the test
-            // `m002_java_cross_pipeline_v1` pins their pre-fix behavior
-            // so we don't widen the gate unintentionally.
+            // Originally gated on `Language::Java` (M-109) then widened to
+            // Solidity (SOL-004). v0.5.0 CL-10 (GH #81): the gate ALSO has
+            // to cover every grammar whose declaration node emits leading
+            // annotation/attribute/modifier children that shift the bare
+            // `node.start_position()` line off the decl keyword. The shared
+            // `decl_keyword_line_from_node` helper already recognises those
+            // child kinds (`attribute`/`attributes`/`modifier` for Swift,
+            // `modifiers`/`annotation` for Java, the Kotlin `*_modifier`
+            // family, and Scala `annotations`) — so the only thing missing
+            // was the LANGUAGE GATE here. Swift `@inlinable` /
+            // `@discardableResult` / `@available(...)`-decorated methods were
+            // reporting the attribute line in `structure` / `interface` /
+            // `contracts` / `verify` / `definition` / `cohesion` while
+            // `extract` / `explain` / `slice` reported the `func` keyword
+            // line for the SAME symbol.
             //
-            // v0.5.0 SOL-004 (solidity-ast-extractor-v1): also enable
-            // `decl_keyword_line_from_node` for Solidity. NatSpec
-            // comments (`///` and `/** */`) and `override_specifier` /
-            // `virtual` are siblings of the decl keyword in the
-            // tree-sitter-solidity grammar — when present in some
-            // shapes they can shift the bare `node.start_position()`
-            // line away from the keyword. Routing through the shared
-            // helper preserves the M-109 cross-pipeline invariant
-            // (structure ↔ extract / explain / slice agree on line).
-            let line_start = if matches!(language, Language::Java | Language::Solidity) {
+            // Languages WITHOUT leading-annotation grammar shapes (Rust,
+            // Python — handled via `decorated_definition` parent — Go, C,
+            // C++, JS/TS, …) place the decl keyword as the first child, so
+            // `decl_keyword_line_from_node` returns the same line as
+            // `node.start_position()` for them; routing them through the
+            // helper is a no-op. We still gate explicitly so the behaviour
+            // is intentional and the test `m002_java_cross_pipeline_v1`
+            // (which pins Rust/Python/Go to the bare start line) keeps
+            // passing.
+            let line_start = if matches!(
+                language,
+                Language::Java
+                    | Language::Solidity
+                    | Language::Swift
+                    | Language::Kotlin
+                    | Language::Scala
+                    | Language::CSharp
+            ) {
                 decl_keyword_line_from_node(&node)
             } else {
                 node.start_position().row as u32 + 1 // 1-indexed

@@ -525,6 +525,8 @@ pub(crate) fn extract_classes_detailed(tree: &Tree, source: &str, language: Lang
 ///   `@Foo(x)`, `@Foo(x = 1)`.
 /// - `attribute` / `attributes` / `modifier` — Swift grammar variants
 ///   for `@inlinable`, `@available(...)`, `@objc`, etc.
+/// - `attribute_list` — C# grammar variant for `[Test]`, `[Serializable]`,
+///   `[Obsolete(...)]`, etc.
 /// - `block_comment` / `line_comment` / `comment` — leading doc
 ///   comments are tree-sitter children of the declaration in some
 ///   grammars; they should not anchor the decl line.
@@ -554,6 +556,11 @@ const ANNOTATION_LIKE_KINDS: &[&str] = &[
     "modifier",
     "type_modifiers",
     "user_type",
+    // C# grammar: `[Attribute]` declaration prefixes are emitted as
+    // `attribute_list` children of the declaration node (v0.5.0 CL-10,
+    // GH #81). A method `[Test]\npublic void Foo()` would otherwise
+    // anchor to the `[Test]` line.
+    "attribute_list",
     // Leading doc / comments (defensive — most grammars don't make
     // these children of the decl node, but if they do they should not
     // anchor the line).
@@ -6512,7 +6519,13 @@ fn extract_csharp_function_info(node: &Node, source: &str) -> FunctionInfo {
     };
 
     let decorators = extract_csharp_attributes(node, source);
-    let line_number = node.start_position().row as u32 + 1;
+    // v0.5.0 CL-10 (GH #81): C# methods/constructors emit leading
+    // `attribute_list` (`[Test]`, `[Serializable]`, …) children that shift
+    // the bare `node.start_position()` line off the `public void Foo` decl
+    // keyword. Route through `decl_keyword_line_from_node` (which now lists
+    // `attribute_list` in `ANNOTATION_LIKE_KINDS`) so `extract` agrees with
+    // `structure` / `cognitive` / `contracts` on the decl-keyword line.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // is-public-visibility-v1 (v0.4.2 M-007): C# uses `modifier` children
@@ -6658,7 +6671,10 @@ fn extract_csharp_class_info(node: &Node, source: &str) -> ClassInfo {
         .map(|n| get_node_text(&n, source))
         .unwrap_or_default();
 
-    let line_number = node.start_position().row as u32 + 1;
+    // v0.5.0 CL-10 (GH #81): normalise past a leading `[Attribute]`
+    // (`attribute_list`) child so the class line matches the `class Foo`
+    // decl keyword — consistent with the `structure` C# path.
+    let line_number = decl_keyword_line_from_node(node);
     let line_end = node.end_position().row as u32 + 1;
 
     // Extract base types from base_list

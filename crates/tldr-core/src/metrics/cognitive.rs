@@ -25,6 +25,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
+use crate::ast::extract::decl_keyword_line_from_node;
 use crate::ast::function_finder::{get_function_body, get_function_name, get_function_node_kinds};
 use crate::ast::parser::{parse, parse_file};
 use crate::metrics::types::{CognitiveContributor, CognitiveInfo};
@@ -355,6 +356,33 @@ pub fn analyze_cognitive_source(
     })
 }
 
+/// v0.5.0 CL-10 (GH #81): return the 1-indexed decl-keyword line for a
+/// function/method `node`, normalising past leading annotation/attribute/
+/// modifier children for the grammars that emit them. For all other
+/// languages the helper returns the bare `node.start_position()` line
+/// (`decl_keyword_line_from_node` is a no-op when the first child already
+/// IS the decl keyword), so the gate only changes behaviour where a real
+/// drift exists.
+///
+/// The language gate is kept identical to
+/// `ast::extractor::collect_definitions` so `cognitive` agrees with
+/// `structure` / `extract` / `explain` / `slice` on the reported line.
+fn decl_keyword_line_for(node: Node, language: Language) -> u32 {
+    if matches!(
+        language,
+        Language::Java
+            | Language::Solidity
+            | Language::Swift
+            | Language::Kotlin
+            | Language::Scala
+            | Language::CSharp
+    ) {
+        decl_keyword_line_from_node(&node)
+    } else {
+        node.start_position().row as u32 + 1
+    }
+}
+
 /// Find all functions in the AST and calculate their cognitive complexity
 fn find_all_functions(
     root: Node,
@@ -404,7 +432,15 @@ fn find_all_functions(
                 functions.push(FunctionCognitive {
                     name,
                     file: file_path.to_string(),
-                    line: node.start_position().row as u32 + 1,
+                    // v0.5.0 CL-10 (GH #81): route the reported line through
+                    // `decl_keyword_line_from_node` for grammars that emit
+                    // leading annotation/attribute/modifier children
+                    // (Java `@Override`, Swift `@inlinable`, C# `[Test]`,
+                    // …). Without this the bare `node.start_position()`
+                    // anchored cognitive's line to the annotation line while
+                    // `extract` / `structure` reported the decl-keyword line
+                    // for the SAME symbol — a cross-pipeline drift.
+                    line: decl_keyword_line_for(node, language),
                     cognitive,
                     cyclomatic,
                     max_nesting,

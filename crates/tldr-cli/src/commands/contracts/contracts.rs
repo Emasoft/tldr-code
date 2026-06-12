@@ -31,6 +31,7 @@ use clap::Args;
 use regex::Regex;
 use tree_sitter::{Node, Parser, Tree};
 
+use tldr_core::ast::extract::decl_keyword_line_from_node;
 use tldr_core::ast::ParserPool;
 use tldr_core::Language;
 
@@ -106,11 +107,18 @@ struct LanguageConfig {
     error_call_names: &'static [&'static str],
     /// Node kinds for call expressions (e.g., "call_expression", "function_call")
     call_kinds: &'static [&'static str],
+    /// v0.5.0 CL-10 (GH #81): the source language. Stored so per-function
+    /// line attribution can be normalised past leading annotation/attribute
+    /// children for grammars that emit them (Java `@Override`, Swift
+    /// `@inlinable`, C# `[Test]`, …) via [`func_decl_line`]. Defaults to
+    /// `Python` in the per-language constructors and is overwritten by
+    /// [`LanguageConfig::for_language`].
+    language: Language,
 }
 
 impl LanguageConfig {
     fn for_language(lang: Language) -> Self {
-        match lang {
+        let mut config = match lang {
             Language::Python => Self::python(),
             Language::Go => Self::go(),
             Language::Rust => Self::rust(),
@@ -130,6 +138,41 @@ impl LanguageConfig {
             Language::Swift => Self::swift(),
             // v0.5.0 SOL-001 Solidity foundation
             Language::Solidity => Self::solidity(),
+        };
+        // v0.5.0 CL-10: the per-language constructors default `language` to
+        // `Python`; record the real language so `func_decl_line` can pick
+        // the correct line-normalisation gate. (TypeScript/JavaScript share
+        // one constructor — store the concrete variant passed in.)
+        config.language = lang;
+        config
+    }
+
+    /// v0.5.0 CL-10 (GH #81): return the 1-indexed decl-keyword line for a
+    /// function/method `func` node, normalising past leading
+    /// annotation/attribute/modifier children for the grammars that emit
+    /// them (Java `@Override`, Swift `@inlinable` / `@discardableResult`,
+    /// C# `[Test]`, Kotlin/Scala modifier families). For every other
+    /// language `decl_keyword_line_from_node` returns the bare
+    /// `func.start_position()` line (the decl keyword IS the first child),
+    /// so the gate only changes behaviour where a real drift exists.
+    ///
+    /// The language gate is kept identical to
+    /// `ast::extractor::collect_definitions` and `metrics::cognitive` so the
+    /// `contracts` per-condition `source_line` agrees with `structure` /
+    /// `extract` / `cognitive` for the SAME symbol.
+    fn func_decl_line(&self, func: Node) -> u32 {
+        if matches!(
+            self.language,
+            Language::Java
+                | Language::Solidity
+                | Language::Swift
+                | Language::Kotlin
+                | Language::Scala
+                | Language::CSharp
+        ) {
+            decl_keyword_line_from_node(&func)
+        } else {
+            func.start_position().row as u32 + 1
         }
     }
 
@@ -186,6 +229,7 @@ impl LanguageConfig {
             assert_call_names: &["require", "assert"],
             error_call_names: &["revert"],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -215,6 +259,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &[],
             call_kinds: &["call"],
+            language: Language::Python,
         }
     }
 
@@ -244,6 +289,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &["panic"],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -277,6 +323,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &[],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -310,6 +357,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &[],
             call_kinds: &["method_invocation"],
+            language: Language::Python,
         }
     }
 
@@ -353,6 +401,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &[],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -386,6 +435,7 @@ impl LanguageConfig {
             assert_call_names: &["assert"],
             error_call_names: &["abort", "exit"],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -424,6 +474,7 @@ impl LanguageConfig {
             assert_call_names: &["assert"],
             error_call_names: &["abort", "exit"],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -453,6 +504,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &["raise"],
             call_kinds: &["call"],
+            language: Language::Python,
         }
     }
 
@@ -490,6 +542,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &[],
             call_kinds: &["invocation_expression"],
+            language: Language::Python,
         }
     }
 
@@ -519,6 +572,7 @@ impl LanguageConfig {
             assert_call_names: &["assert", "require"],
             error_call_names: &[],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -548,6 +602,7 @@ impl LanguageConfig {
             assert_call_names: &["assert"],
             error_call_names: &[],
             call_kinds: &["function_call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -583,6 +638,7 @@ impl LanguageConfig {
             assert_call_names: &["assert"],
             error_call_names: &["error"],
             call_kinds: &["function_call"],
+            language: Language::Python,
         }
     }
 
@@ -612,6 +668,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &["raise"],
             call_kinds: &["call"],
+            language: Language::Python,
         }
     }
 
@@ -641,6 +698,7 @@ impl LanguageConfig {
             assert_call_names: &[],
             error_call_names: &[],
             call_kinds: &["application"],
+            language: Language::Python,
         }
     }
 
@@ -676,6 +734,7 @@ impl LanguageConfig {
             ],
             error_call_names: &[],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -709,6 +768,7 @@ impl LanguageConfig {
             assert_call_names: &["precondition", "assert", "assertionFailure"],
             error_call_names: &["fatalError", "preconditionFailure"],
             call_kinds: &["call_expression"],
+            language: Language::Python,
         }
     }
 
@@ -738,6 +798,7 @@ impl LanguageConfig {
             assert_call_names: &["assert"],
             error_call_names: &["error"],
             call_kinds: &["function_call"],
+            language: Language::Python,
         }
     }
 
@@ -2761,7 +2822,9 @@ fn extract_type_annotation_preconditions(
         None => return Ok(()),
     };
 
-    let line = func.start_position().row as u32 + 1;
+    // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line, not a leading
+    // `@Override` / `@inlinable` / `[Test]` line.
+    let line = config.func_decl_line(func);
 
     // Recursively search for typed parameters
     extract_typed_params_recursive(params, source, conditions, config, line);
@@ -3179,7 +3242,8 @@ fn extract_return_type_postconditions(
         None => return Ok(()),
     };
 
-    let line = func.start_position().row as u32 + 1;
+    // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line.
+    let line = config.func_decl_line(func);
     let type_str = get_node_text(return_type, source);
 
     // Skip void/None/unit return types
@@ -3223,7 +3287,8 @@ fn extract_untyped_param_preconditions(
         None => return Ok(()),
     };
 
-    let line = func.start_position().row as u32 + 1;
+    // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line.
+    let line = config.func_decl_line(func);
 
     // Collect names already covered by typed_param extraction to avoid duplicates
     let existing_vars: HashSet<String> = conditions.iter().map(|c| c.variable.clone()).collect();
@@ -3421,7 +3486,8 @@ fn extract_docstring_contracts(
     config: &LanguageConfig,
     language: Language,
 ) -> ContractsResult<()> {
-    let line = func.start_position().row as u32 + 1;
+    // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line.
+    let line = config.func_decl_line(func);
 
     // Collect existing variables to avoid duplicates
     let existing_pre_vars: HashSet<String> =
