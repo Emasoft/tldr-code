@@ -145,7 +145,15 @@ end
     let v = parse_json(&stdout);
     let edges = v["edges"].as_array().expect("edges array");
 
-    for parent in &["Comparable", "Enumerable", "Loggable"] {
+    // m114-adapter-tail-v1 (v0.4.2 M-114) / CL-11R: each mixin keyword maps
+    // to a DISTINCT inheritance kind, preserving Ruby's method-resolution-order
+    // semantics — `include` -> "includes", `extend` -> "extended",
+    // `prepend` -> "prepends". They must NOT be collapsed to "implements".
+    for (parent, expected_kind) in &[
+        ("Comparable", "includes"),
+        ("Enumerable", "extended"),
+        ("Loggable", "prepends"),
+    ] {
         let mixin = edges
             .iter()
             .find(|e| e["child"] == "MyCollection" && e["parent"] == *parent)
@@ -156,9 +164,9 @@ end
                 )
             });
         assert_eq!(
-            mixin["kind"], "implements",
-            "ruby mixin {} must be implements/mixin",
-            parent
+            mixin["kind"], *expected_kind,
+            "ruby mixin {} must be kind={} (distinct MRO semantics)",
+            parent, expected_kind
         );
     }
 }
