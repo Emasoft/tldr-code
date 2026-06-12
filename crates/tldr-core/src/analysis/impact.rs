@@ -15,7 +15,7 @@
 //! - Cycle detected: Mark as truncated: true
 //! - Ambiguous name: Return all matches
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::extractor::{
@@ -162,8 +162,14 @@ pub fn impact_analysis(
     // Build reverse graph (callee -> callers)
     let reverse_graph = build_reverse_graph(call_graph);
 
-    // Find all functions matching the target
-    let mut targets: HashMap<String, CallerTree> = HashMap::new();
+    // Find all functions matching the target.
+    //
+    // cl1r-determinism-v1 (v0.5.0 CL-1R): `ImpactReport.targets` is a
+    // `BTreeMap` so the serialized map-key order is deterministic. Build the
+    // accumulator as a `BTreeMap` too — the `.entry()` / `.remove()` /
+    // `.values()` API is identical and the type flows straight into the
+    // report without a conversion.
+    let mut targets: BTreeMap<String, CallerTree> = BTreeMap::new();
     let mut found_any = false;
 
     for edge in call_graph.edges() {
@@ -404,8 +410,10 @@ pub fn impact_analysis_with_ast_fallback(
                         .map(|c| c.roots.iter().map(|p| p.display().to_string()).collect())
                         .unwrap_or_default();
 
-                    // Function exists in AST but has no call edges
-                    let mut targets = HashMap::new();
+                    // Function exists in AST but has no call edges.
+                    // cl1r-determinism-v1 (v0.5.0 CL-1R): BTreeMap for
+                    // deterministic serialized map-key order.
+                    let mut targets: BTreeMap<String, CallerTree> = BTreeMap::new();
                     for (func_name, func_file) in &locations {
                         let key = format!("{}:{}", func_file.display(), func_name);
                         let is_exported = function_is_exported(func_file, target_func, language);

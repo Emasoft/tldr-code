@@ -170,7 +170,12 @@ impl ImpactArgs {
 
 /// path-shape-consistency-v1 (v0.4.2 M-008): re-assert user-input path
 /// shape across every `CallerTree.file` (recursive) and every
-/// `targets` HashMap key (which contains `<file>:<func>` strings).
+/// `targets` map key (which contains `<file>:<func>` strings).
+///
+/// cl1r-determinism-v1 (v0.5.0 CL-1R): `targets` is now a `BTreeMap`, so the
+/// take-and-rebuild below re-sorts keys after the path-shape rewrite — the
+/// serialized map-key order stays deterministic even though some keys change
+/// shape (project-relative -> absolute) during the rewrite.
 ///
 /// All rewrite logic lives in [`PathShapeRewriter`] — this function is a
 /// thin schema-aware wrapper that knows how to walk the `ImpactReport`
@@ -193,7 +198,7 @@ fn restore_impact_path_shape(report: &mut ImpactReport, user_root: &std::path::P
         walk(tree, &rewriter);
     }
 
-    // 2. Rewrite the HashMap keys. Keys are `<file>:<func>` strings;
+    // 2. Rewrite the map keys. Keys are `<file>:<func>` strings;
     //    when `<file>` is project-relative ("router.go") the absolute
     //    user-input root must be prepended so the key shape matches
     //    the value shape. Split on the LAST `:` to preserve any `:`

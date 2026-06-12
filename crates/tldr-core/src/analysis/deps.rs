@@ -642,7 +642,7 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
         .count();
 
     // Collapse to packages if requested (Phase 7)
-    let final_deps = if options.collapse_packages {
+    let mut final_deps = if options.collapse_packages {
         collapse_to_packages(&internal_dependencies, &root)
     } else {
         internal_dependencies.clone()
@@ -676,6 +676,27 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
 
     // Calculate depth stats (Phase 7)
     let (max_depth, leaf_files_calc, root_files_calc) = calculate_depth_stats(&final_deps);
+
+    // cl1r-determinism-v1 (v0.5.0 CL-1R): sort every serialized adjacency Vec
+    // at the emission boundary. The `BTreeMap` keys are already ordered, but
+    // each `Vec<PathBuf>` value is assembled from collections whose order is
+    // NOT guaranteed across runs:
+    //   - `collapse_to_packages` converts a `HashSet<PathBuf>` to a `Vec`
+    //     (`--collapse-packages`) in randomized HashSet iteration order;
+    //   - the Go same-package augmentation pushes implicit edges while
+    //     iterating a `HashMap<String, Vec<PathBuf>>` of package groups.
+    // Sorting here (after cycle/depth analysis, which is order-insensitive)
+    // makes `internal_dependencies` byte-stable run-to-run without changing
+    // its set semantics. Done in place on `final_deps` since it flows
+    // straight into the report below.
+    for deps in final_deps.values_mut() {
+        deps.sort();
+    }
+    // external_dependencies values are package-name strings assembled in
+    // import order; sort them too so the emitted lists are deterministic.
+    for pkgs in external_dependencies.values_mut() {
+        pkgs.sort();
+    }
 
     let stats = DepStats {
         total_files,
@@ -804,8 +825,23 @@ fn detect_cycles(deps: &BTreeMap<PathBuf, Vec<PathBuf>>, max_length: usize) -> V
         );
     }
 
-    // Convert HashSet to Vec (cycles are already deduplicated)
-    cycles.into_iter().collect()
+    // Convert HashSet to Vec (cycles are already deduplicated).
+    //
+    // cl1r-determinism-v1 (v0.5.0 CL-1R): `HashSet::into_iter` yields the
+    // deduplicated cycles in randomized per-process order, so the serialized
+    // `circular_dependencies` array reshuffled run-to-run. Sort by each
+    // cycle's CANONICAL path (the same rotation-normalized form used for
+    // dedup) so the emitted order is deterministic and independent of DFS
+    // start-node / HashSet iteration order. The stored `path` is left as its
+    // canonical form already (cycles are inserted canonical via DepCycle's
+    // Eq/Hash), but we re-derive the key defensively rather than assuming.
+    // Normalize each cycle's stored `path` to its canonical rotation so the
+    // emitted `path` array is also rotation-stable (the DFS may discover the
+    // same cycle starting from any of its nodes; canonicalizing pins a single
+    // representation), then sort by that canonical path.
+    let mut result: Vec<DepCycle> = cycles.into_iter().map(|c| c.canonical()).collect();
+    result.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.length.cmp(&b.length)));
+    result
 }
 
 /// DFS helper for cycle detection.
@@ -961,10 +997,20 @@ pub fn collapse_to_packages(
         package_deps.entry(from_pkg).or_default();
     }
 
-    // Convert HashSet to Vec for the return type
+    // Convert HashSet to Vec for the return type.
+    //
+    // cl1r-determinism-v1 (v0.5.0 CL-1R): `HashSet::into_iter` yields elements
+    // in randomized per-process order, so sort each collapsed adjacency Vec
+    // before returning. This makes the public `collapse_to_packages` API
+    // deterministic for every caller (the `analyze_dependencies` emission
+    // boundary applies a belt-and-suspenders sort as well).
     package_deps
         .into_iter()
-        .map(|(k, v)| (k, v.into_iter().collect()))
+        .map(|(k, v)| {
+            let mut deps: Vec<PathBuf> = v.into_iter().collect();
+            deps.sort();
+            (k, deps)
+        })
         .collect()
 }
 

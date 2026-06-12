@@ -2778,8 +2778,17 @@ impl ProjectCallGraph {
 /// Impact analysis report
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImpactReport {
-    /// Map from target function name to its caller tree
-    pub targets: HashMap<String, CallerTree>,
+    /// Map from target function name (`<file>:<func>` key) to its caller tree.
+    ///
+    /// cl1r-determinism-v1 (v0.5.0 CL-1R): a `BTreeMap` rather than a
+    /// `HashMap`. serde serializes a `HashMap` in its randomized per-process
+    /// iteration order, which made the `targets` object's map-key order differ
+    /// run-to-run for any multi-target impact query (e.g. `impact run` on
+    /// Flask resolves to both `flask/app.py:run` and
+    /// `tests/test_config.py:Flask.run`). A `BTreeMap` guarantees a
+    /// deterministic, sorted key order at the serialization boundary so the
+    /// full JSON document is byte-stable.
+    pub targets: std::collections::BTreeMap<String, CallerTree>,
     /// Total number of target functions analyzed
     pub total_targets: usize,
     /// Type resolution statistics (when --type-aware is enabled)
