@@ -870,6 +870,22 @@ impl<'a> CognitiveCalculator<'a> {
                 // `call` nodes for case/cond/with handled in node-aware
                 // wrapper `increases_nesting_node`.
             }
+            // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): tree-sitter-c-sharp
+            // spells its for-each loop `foreach_statement` (distinct from the
+            // classical three-part `for_statement`), and its switch arms as
+            // `switch_section` children under a `switch_body`. The generic arm
+            // already credits `switch_statement` / `switch_body` for nesting,
+            // but NOT `switch_section` — without it a `foreach` nested in a
+            // case body sat at the same nesting level as the switch and earned
+            // no SonarSource nesting penalty. Crediting `switch_section` makes
+            // each case arm a nesting step, so loops/branches inside a case
+            // body are correctly penalised. `foreach_statement` makes the
+            // for-each body a nesting step too (mirrors `for_statement`).
+            Language::CSharp => {
+                if matches!(kind, "foreach_statement" | "switch_section") {
+                    return true;
+                }
+            }
             _ => {}
         }
 
@@ -1067,6 +1083,28 @@ impl<'a> CognitiveCalculator<'a> {
             {
                 Some((1, "case"))
             }
+            // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): C# for-each loop. The
+            // generic `for_statement` arm above does not match it
+            // (tree-sitter-c-sharp uses a distinct `foreach_statement` kind),
+            // so a `foreach` earned zero cognitive credit. Credit it as a loop
+            // (+1 base + nesting penalty), matching the SonarSource treatment
+            // of `for`/`while`.
+            "foreach_statement" if matches!(self.language, Language::CSharp) => {
+                Some((1, "for"))
+            }
+            // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): each non-`default`
+            // `switch_section` is a case arm. SonarSource credits the switch
+            // construct once (the `switch_statement` arm above) and we extend
+            // with +1 per case arm so a branchy `switch` surfaces a meaningful
+            // cognitive score (mirrors the c/cpp `case_statement` and
+            // rust/scala/kotlin per-arm credit). The `default` section is the
+            // catchall and is NOT credited.
+            "switch_section"
+                if matches!(self.language, Language::CSharp)
+                    && !is_csharp_default_switch_section(node) =>
+            {
+                Some((1, "case"))
+            }
             _ => None,
         };
 
@@ -1218,6 +1256,21 @@ impl<'a> CognitiveCalculator<'a> {
             {
                 self.cyclomatic += 1
             }
+            // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): keep the cognitive
+            // module's own cyclomatic counter (`tldr cognitive
+            // --include-cyclomatic`) byte-for-byte in step with the canonical
+            // `complexity.rs` arm-set added in cl4-cyclomatic-v1 — each
+            // non-`default` `switch_section` and each `foreach_statement` is a
+            // C# decision point / loop back-edge.
+            "switch_section"
+                if matches!(self.language, Language::CSharp)
+                    && !is_csharp_default_switch_section(node) =>
+            {
+                self.cyclomatic += 1
+            }
+            "foreach_statement" if matches!(self.language, Language::CSharp) => {
+                self.cyclomatic += 1
+            }
             // Loop/match expressions on Rust/Scala/Kotlin/OCaml.
             "for_expression" | "while_expression" | "loop_expression"
                 if matches!(
@@ -1307,6 +1360,30 @@ fn is_statement(kind: &str) -> bool {
 /// C / C++: a `case_statement` whose first child is the `default` keyword
 /// is the catchall arm and is NOT credited.
 fn is_default_case_statement(node: Node) -> bool {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return false;
+    }
+    cursor.node().kind() == "default"
+}
+
+/// C#: a `switch_section` whose first child is the `default` keyword is the
+/// catchall arm and is NOT credited (mirrors the C/C++ `default` convention).
+///
+/// Grammar shape (verified against tree-sitter-c-sharp 0.23.1):
+/// ```text
+/// switch_body
+///   switch_section          ← `case <pattern>: ...`
+///     case
+///     constant_pattern | ...
+///     :
+///     <statements | block>
+///   switch_section          ← `default: ...`
+///     default
+///     :
+///     <statements>
+/// ```
+fn is_csharp_default_switch_section(node: Node) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;

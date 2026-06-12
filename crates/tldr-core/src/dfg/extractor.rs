@@ -1058,6 +1058,17 @@ impl<'a> DfgBuilder<'a> {
                 }
             },
 
+            // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): Luau (and Lua, which
+            // shares the Luau compound-assignment extension) spells op-assigns
+            // (`total += v`, `x *= 2`) as a DISTINCT `update_statement` node,
+            // NOT `assignment_statement`. With no arm here the LHS target's
+            // implicit READ (an op-assign reads the prior value before writing
+            // back) was lost, so a backward slice of the accumulator omitted
+            // the `+=` line and a prior store looked dead.
+            "update_statement" if matches!(self.language, Language::Lua | Language::Luau) => {
+                self.process_lua_update_statement(node, depth)?;
+            }
+
             // =================================================================
             // Java/C# local variable declaration: int x = ...;
             // =================================================================
@@ -2295,6 +2306,62 @@ impl<'a> DfgBuilder<'a> {
                 }
             } else if child.kind() == "expression_list" {
                 // Process the value expressions for uses
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Process a Lua/Luau compound-assignment ("update") statement:
+    /// `x += expr`, `x *= expr`, `t.field -= expr`, …
+    ///
+    /// cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): tree-sitter-luau exposes the
+    /// op-assign extension as a DISTINCT `update_statement` node (verified
+    /// against tree-sitter-luau):
+    /// ```text
+    /// update_statement
+    ///   variable_list
+    ///     identifier | dot_index_expression | bracket_index_expression
+    ///   += | -= | *= | /= | ^= | %= | ..=   (anonymous operator token)
+    ///   expression_list
+    ///     <expr…>
+    /// ```
+    ///
+    /// Unlike a plain `assignment_statement`, a compound assignment BOTH reads
+    /// the prior value of the target AND writes a new one. We mirror the CL-13
+    /// op-assign treatment (`process_augmented_assignment`): emit the implicit
+    /// `Use` first (it observes the value live at entry to this statement) and
+    /// then the `Update` write-back, so the def reaching the op-assign is
+    /// consumed and the target appears in backward slices of the result.
+    fn process_lua_update_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "variable_list" {
+                let mut inner = child.walk();
+                for inner_child in child.children(&mut inner) {
+                    match inner_child.kind() {
+                        "identifier" => {
+                            // Implicit read then write-back of the scalar target.
+                            self.add_ref_from_node(inner_child, RefType::Use);
+                            self.add_ref_from_node(inner_child, RefType::Update);
+                        }
+                        "dot_index_expression" | "bracket_index_expression" => {
+                            // `t.field += …` / `t[i] += …`: the base object is
+                            // read and updated.
+                            let mut deep = inner_child.walk();
+                            for deep_child in inner_child.children(&mut deep) {
+                                if deep_child.kind() == "identifier" {
+                                    self.add_ref_from_node(deep_child, RefType::Use);
+                                    self.add_ref_from_node(deep_child, RefType::Update);
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if child.kind() == "expression_list" {
+                // The RHS contributes uses.
                 self.extract_refs_from_node(child, depth + 1)?;
             }
         }

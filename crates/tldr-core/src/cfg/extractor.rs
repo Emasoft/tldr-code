@@ -2347,17 +2347,34 @@ impl<'a> CfgBuilder<'a> {
                             loop {
                                 let sec_child = sec_cursor.node();
                                 let ck = sec_child.kind();
-                                if ck != "case"
+                                // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): a C#
+                                // case body may be a bare statement list
+                                // (`case X: stmt; break;`) OR a brace-wrapped
+                                // `block` (`case X: { ...; break; }`). The
+                                // pre-fix predicate descended ONLY into
+                                // `*_statement` children, so a `block`-wrapped
+                                // body — and any `foreach`/`for`/`while` loop
+                                // nested inside it — was never routed through
+                                // `process_statement`. No LoopHeader / back-edge
+                                // was emitted and the top-level `has_loops`
+                                // summary stayed false for switch-heavy
+                                // functions that plainly loop. Descend into the
+                                // `block` wrapper too (it is dispatched to
+                                // `process_block`, which recurses into the
+                                // nested loop). The case-label tokens
+                                // (`case`/`default`/`:`) and the case-pattern
+                                // nodes (`constant_pattern`,
+                                // `relational_pattern`, …) carry no control-flow
+                                // weight and are still excluded.
+                                let is_case_body = sec_child.is_named()
+                                    && !sec_child.is_extra()
+                                    && ck != "case"
                                     && ck != "default"
                                     && ck != ":"
-                                    && !sec_child.is_extra()
-                                    && sec_child.is_named()
-                                    // The case-label pattern nodes (e.g.
-                                    // `constant_pattern`, `relational_pattern`)
-                                    // carry no control-flow weight; only true
-                                    // statements should be descended into.
-                                    && ck.ends_with("_statement")
-                                {
+                                    && (ck.ends_with("_statement")
+                                        || ck == "block"
+                                        || ck == "compound_statement");
+                                if is_case_body {
                                     self.process_statement(sec_child, depth + 1)?;
                                 }
                                 if !sec_cursor.goto_next_sibling() {
