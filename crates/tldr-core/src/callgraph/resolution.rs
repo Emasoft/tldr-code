@@ -1228,22 +1228,74 @@ pub fn resolve_call_with_receiver(
     }
 
     let type_filter = receiver_type_filter(receiver_type, receiver, class_index);
+
+    // fix-cl-3b-v1 (v0.5.0 CL-3b, IT3-rust-07 / #74): a qualified
+    // `Receiver::method` whose `Receiver` is a *capitalized type spelling*
+    // (e.g. `HashSet::new()`, `Vec::new()`) must NOT have its bare method
+    // (`new`) fuzzy-bound to an unrelated same-file user struct's method
+    // (`DepStats::new`). When the receiver is capitalized AND is not a
+    // known user class (so the class-scoped resolvers above already
+    // declined), it names an external/stdlib type with no user-defined
+    // definition; the only acceptable fuzzy candidate is one whose
+    // `class_name` actually equals that receiver. We pass the receiver as a
+    // strict class gate so a mismatched-class candidate is rejected rather
+    // than silently bound. Lowercase receivers (ordinary variables) keep
+    // the prior permissive behavior — they are not type spellings.
+    let strict_receiver_class: Option<&str> = if receiver_is_type_spelling(receiver)
+        && class_index.get(receiver).is_none()
+        && type_filter.is_none()
+    {
+        Some(receiver)
+    } else {
+        None
+    };
+
     if let Some(resolved) = resolve_local_fuzzy_match(
         bare_target,
         type_filter,
+        strict_receiver_class,
         func_index,
         class_index,
         current_file,
     ) {
         return Some(resolved);
     }
-    if let Some(resolved) =
-        resolve_global_fuzzy_match(bare_target, type_filter, func_index, class_index)
-    {
+    if let Some(resolved) = resolve_global_fuzzy_match(
+        bare_target,
+        type_filter,
+        strict_receiver_class,
+        func_index,
+        class_index,
+    ) {
         return Some(resolved);
     }
 
     resolve_type_aware_fallback(receiver_type, bare_target, func_index, class_index)
+}
+
+/// fix-cl-3b-v1 (v0.5.0 CL-3b): a receiver token is a "type spelling" when
+/// the LAST segment of its qualified path begins with an ASCII uppercase
+/// letter — the convention for type / module names across Rust
+/// (`HashSet`, `Vec`, `DepStats`, the fully-qualified
+/// `std::collections::HashSet`), the JVM languages, Swift, and OCaml
+/// modules. The last-segment test is essential: Rust constructor calls are
+/// frequently spelled with a fully-qualified path whose leading segments
+/// are lowercase crate/module names (`std::collections::HashSet::new()`),
+/// so a naive first-char check would miss them. Ordinary value receivers
+/// (locals, fields, `self`) are lowercase in their final segment and are
+/// deliberately excluded so their permissive variable-receiver fuzzy
+/// resolution is unchanged.
+fn receiver_is_type_spelling(receiver: &str) -> bool {
+    let last_segment = receiver
+        .rsplit("::")
+        .next()
+        .and_then(|s| s.rsplit('.').next())
+        .unwrap_or(receiver);
+    last_segment
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
 }
 
 fn normalize_receiver_target<'a>(target: &'a str, receiver: &str) -> &'a str {
@@ -1506,6 +1558,7 @@ fn receiver_type_filter<'a>(
 fn resolve_local_fuzzy_match(
     bare_target: &str,
     type_filter: Option<&str>,
+    strict_receiver_class: Option<&str>,
     func_index: &FuncIndex,
     class_index: &ClassIndex,
     current_file: &Path,
@@ -1519,6 +1572,17 @@ fn resolve_local_fuzzy_match(
         .filter(|((_module, func_name), entry)| {
             if *func_name != bare_target || entry.file_path != current_file {
                 return false;
+            }
+            // fix-cl-3b-v1 (IT3-rust-07): when the call's receiver is a
+            // capitalized external/stdlib type spelling (e.g. `HashSet`),
+            // only accept a candidate whose `class_name` is exactly that
+            // type. This blocks `HashSet::new()` from binding to a
+            // same-file `DepStats::new`.
+            if let Some(recv_class) = strict_receiver_class {
+                match &entry.class_name {
+                    Some(c) if c == recv_class => {}
+                    _ => return false,
+                }
             }
             if let Some(type_name) = type_filter {
                 if let Some(ref candidate_class) = entry.class_name {
@@ -1599,6 +1663,7 @@ fn resolve_global_free_function(
 fn resolve_global_fuzzy_match(
     bare_target: &str,
     type_filter: Option<&str>,
+    strict_receiver_class: Option<&str>,
     func_index: &FuncIndex,
     class_index: &ClassIndex,
 ) -> Option<ResolvedTarget> {
@@ -1606,10 +1671,28 @@ fn resolve_global_fuzzy_match(
         return None;
     }
 
+    // fix-cl-3b-v1 (IT3-rust-07): a capitalized external/stdlib receiver
+    // type (e.g. `HashSet`) that is not a known user class must never
+    // fuzzy-bind its bare method to an unrelated user class. There is no
+    // candidate whose `class_name` equals such a receiver (it has no
+    // user-defined definition), so decline outright rather than letting the
+    // method-only / function-level fallbacks pick a wrong same-named target.
+    if let Some(recv_class) = strict_receiver_class {
+        let exact = func_index
+            .find_by_name(bare_target)
+            .any(|e| e.class_name.as_deref() == Some(recv_class));
+        if !exact {
+            return None;
+        }
+    }
+
     let mut candidates: Vec<_> = func_index
         .find_by_name(bare_target)
         .filter(|e| e.is_method)
         .collect();
+    if let Some(recv_class) = strict_receiver_class {
+        candidates.retain(|e| e.class_name.as_deref() == Some(recv_class));
+    }
     if let Some(type_name) = type_filter {
         candidates.retain(|e| match &e.class_name {
             Some(c) => is_in_inheritance_chain(type_name, c, class_index),

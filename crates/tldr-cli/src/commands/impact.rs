@@ -145,15 +145,47 @@ impl ImpactArgs {
         // TODO: When type_aware is true, use type-aware call graph building.
         // For now, this flag is registered but type resolution is pending.
         let mut report: Option<ImpactReport> = None;
+        // fix-cl-3b-v1 (v0.5.0 CL-3b, IT3-ocaml-02 / #74): the per-language
+        // pass must NOT fast-fail the whole command when ONE scanned
+        // language doesn't contain the symbol. `impact_analysis_with_ast_fallback`
+        // returns `FunctionNotFound` when neither the call graph nor that
+        // language's AST scan locate `target` — which is the expected
+        // outcome for every language EXCEPT the one that actually defines
+        // it. The previous `?` propagated the first such error (e.g. the C
+        // stubs in a dune tree) and aborted before the OCaml pass ever ran,
+        // so a top-level OCaml `let` that `whatbreaks`' single-language
+        // internal impact resolves fine reported "Function not found".
+        // We now tolerate per-language `FunctionNotFound`, retaining it only
+        // as the fallback error to surface if EVERY language misses.
+        let mut last_not_found: Option<anyhow::Error> = None;
         for scan_lang in &scan_languages {
-            let mut r = impact_analysis_with_ast_fallback(
+            let mut r = match impact_analysis_with_ast_fallback(
                 &graph,
                 &self.function,
                 self.depth,
                 self.file.as_deref(),
                 &self.path,
                 *scan_lang,
-            )?;
+            ) {
+                Ok(r) => r,
+                Err(tldr_core::TldrError::FunctionNotFound {
+                    name,
+                    file,
+                    suggestions,
+                }) => {
+                    // Remember it; another language may still resolve the symbol.
+                    last_not_found = Some(
+                        tldr_core::TldrError::FunctionNotFound {
+                            name,
+                            file,
+                            suggestions,
+                        }
+                        .into(),
+                    );
+                    continue;
+                }
+                Err(other) => return Err(other.into()),
+            };
 
             // language-adapter-fixes-v1 (P13.AGG13-4): for languages whose call
             // graph builder under-reports cross-file edges (notably C# field-typed
@@ -173,7 +205,15 @@ impl ImpactArgs {
                 Some(acc) => merge_impact_reports(acc, r),
             }
         }
-        let mut report = report.expect("scan_languages is never empty");
+        // Only error when NO scanned language resolved the symbol.
+        let mut report = match report {
+            Some(r) => r,
+            None => {
+                return Err(last_not_found.unwrap_or_else(|| {
+                    anyhow::anyhow!("Function not found: {}", self.function)
+                }));
+            }
+        };
 
         // If type-aware was requested, add placeholder stats to indicate it's enabled
         // (actual type resolution is integrated in callgraph builder - Phase 8 full implementation)

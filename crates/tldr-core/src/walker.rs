@@ -61,7 +61,21 @@ pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &[
     "dist",
     "build",
     "out",
-    "bin",
+    // fix-cl-3b-v1 (v0.5.0 CL-3b, IT3-ocaml-03 / #74): `bin` removed from
+    // the unconditional skip list. It is a build sink for some toolchains
+    // but is *authored source* for many layouts the analyzer must read —
+    // dune (`bin/main.ml`, `bin/common.ml`), Rust (`src/bin/`), Go
+    // (`bin/`/`cmd/` entry points). Skipping it made `references` /
+    // `impact` report `definitions: []` / `total_references: 0` for
+    // top-level functions defined under `bin/` even though `structure`,
+    // `extract`, `definition`, and `interface` resolved them (those use
+    // `get_file_tree`, whose `DEFAULT_SKIP_DIRS` had already dropped
+    // `bin`). Compiled artifacts under `bin/` carry no source extension,
+    // so the per-command extension filter / `is_source_file` gate drops
+    // them anyway — removing the name from the skip list only recovers the
+    // authored `.ml` / `.rs` / `.go` sources. JS/TS `bin/` source was
+    // already preserved via `JS_TS_PRESERVED_DIRS` + `lang_hint`; this
+    // makes the behavior uniform across languages.
     "obj",
     // JavaScript framework caches
     ".next",

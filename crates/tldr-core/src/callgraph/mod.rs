@@ -106,6 +106,12 @@ mod hypotheses_test;
 #[cfg(test)]
 mod fix_cl1_callgraph_line_v1;
 
+// fix-cl-3b-v1 (v0.5.0 CL-3b): cross-file resolution must not route through
+// bare names that mis-resolve (same-named fns, top-level let under bin/,
+// unqualified std `new`).
+#[cfg(test)]
+mod fix_cl3b_callgraph_v1;
+
 pub use builder::build_project_call_graph;
 pub use cross_file_types::{
     // Phase 3: Container types
