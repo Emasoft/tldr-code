@@ -432,7 +432,18 @@ pub fn build_def_use_chains(
         }
     }
 
-    def_chains.into_values().collect()
+    // #74: def_chains is a HashMap; into_values() order is nondeterministic. Impose
+    // a stable total order on the def-use chains keyed by their definition site.
+    let mut chains: Vec<DefUseChain> = def_chains.into_values().collect();
+    chains.sort_by(|a, b| {
+        a.definition
+            .var
+            .cmp(&b.definition.var)
+            .then_with(|| a.definition.line.cmp(&b.definition.line))
+            .then_with(|| a.definition.column.cmp(&b.definition.column))
+            .then_with(|| a.definition.block.cmp(&b.definition.block))
+    });
+    chains
 }
 
 // =============================================================================
@@ -745,7 +756,7 @@ fn def_ids_to_definitions(
     refs: &[VarRef],
     cfg: &CfgInfo,
 ) -> Vec<Definition> {
-    def_ids
+    let mut out: Vec<Definition> = def_ids
         .iter()
         .filter_map(|def_id| {
             let var_ref = refs.get(def_id.ref_index)?;
@@ -764,7 +775,23 @@ fn def_ids_to_definitions(
                 source_text: None,
             })
         })
-        .collect()
+        .collect();
+    // #74: the source HashSet<DefId> has nondeterministic iteration order; impose a
+    // stable total order before emitting so the result array is byte-identical run to run.
+    sort_definitions(&mut out);
+    out
+}
+
+/// Impose a stable total order on a definition list so HashSet/HashMap-derived
+/// collections serialize identically across runs (#74).
+fn sort_definitions(defs: &mut [Definition]) {
+    defs.sort_by(|a, b| {
+        a.var
+            .cmp(&b.var)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.column.cmp(&b.column))
+            .then_with(|| a.block.cmp(&b.block))
+    });
 }
 
 /// Compute GEN set for a block (last definition of each variable)
@@ -794,7 +821,7 @@ fn compute_block_gen(
         }
     }
 
-    last_def_for_var
+    let mut gen: Vec<Definition> = last_def_for_var
         .values()
         .map(|(_, var_ref)| Definition {
             var: var_ref.name.clone(),
@@ -803,7 +830,10 @@ fn compute_block_gen(
             block: block.id,
             source_text: None,
         })
-        .collect()
+        .collect();
+    // #74: last_def_for_var is a HashMap; its value iteration order is nondeterministic.
+    sort_definitions(&mut gen);
+    gen
 }
 
 /// Compute KILL set for a block (definitions of variables that are also defined in this block)

@@ -255,6 +255,12 @@ pub struct TaintInfo {
     #[serde(rename = "function", alias = "function_name")]
     pub function_name: String,
     /// Tainted variables at each block: block_id -> set of tainted variable names
+    ///
+    /// #74 (IT3-typescript-04): a bare `HashMap`/`HashSet` serializes in
+    /// nondeterministic iteration order, leaking into JSON key + array order.
+    /// `serialize_tainted_vars` emits block keys in numeric order and each
+    /// variable set sorted lexicographically.
+    #[serde(serialize_with = "serialize_tainted_vars")]
     pub tainted_vars: HashMap<usize, HashSet<String>>,
     /// Flat, deterministic per-function view of every tainted variable.
     ///
@@ -277,6 +283,10 @@ pub struct TaintInfo {
     /// Flows from source to sink (vulnerabilities)
     pub flows: Vec<TaintFlow>,
     /// Variables that have been sanitized
+    ///
+    /// #74 (IT3-typescript-04): sorted at serialize time so the JSON array order
+    /// is deterministic across runs.
+    #[serde(serialize_with = "serialize_string_set")]
     pub sanitized_vars: HashSet<String>,
     /// Convergence status: "converged" if the worklist reached a fixed point,
     /// "iteration_limit_reached" if analysis was capped at MAX_TAINT_ITERATIONS.
@@ -287,6 +297,45 @@ pub struct TaintInfo {
 
 fn default_convergence() -> Option<String> {
     None
+}
+
+/// Serialize the block-keyed tainted-var map with deterministic ordering.
+///
+/// #74 (IT3-typescript-04): block keys are emitted in ascending numeric order and
+/// each block's variable set is sorted lexicographically, so the JSON object key
+/// order and inner array order are byte-identical across runs.
+fn serialize_tainted_vars<S>(
+    map: &HashMap<usize, HashSet<String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut block_ids: Vec<usize> = map.keys().copied().collect();
+    block_ids.sort_unstable();
+    let mut m = serializer.serialize_map(Some(block_ids.len()))?;
+    for block_id in block_ids {
+        let mut vars: Vec<&String> = map[&block_id].iter().collect();
+        vars.sort();
+        m.serialize_entry(&block_id, &vars)?;
+    }
+    m.end()
+}
+
+/// Serialize a string set as a lexicographically sorted sequence (#74).
+fn serialize_string_set<S>(set: &HashSet<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+    let mut sorted: Vec<&String> = set.iter().collect();
+    sorted.sort();
+    let mut seq = serializer.serialize_seq(Some(sorted.len()))?;
+    for v in sorted {
+        seq.serialize_element(v)?;
+    }
+    seq.end()
 }
 
 // =============================================================================

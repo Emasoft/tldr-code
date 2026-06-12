@@ -500,11 +500,15 @@ pub fn analyze_coupling_with_graph(
         couplings.push(coupling);
     }
 
-    // Sort by score descending
+    // Sort by score descending, then by a stable total order on the (source, target)
+    // module pair. `pair_calls` is a HashMap, so equal-score pairs would otherwise
+    // retain nondeterministic HashMap iteration order (#74, IT3-lua-05).
     couplings.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.target.cmp(&b.target))
     });
 
     // Calculate statistics
@@ -678,6 +682,20 @@ fn calculate_module_coupling(
         }
     }
 
+    // #74 (IT3-lua-05): `edges` derives from a HashMap-grouped pair list whose
+    // ordering follows nondeterministic call-graph edge iteration; impose a
+    // stable total order on each direction's call-site list.
+    let sort_call_sites = |sites: &mut Vec<CallSite>| {
+        sites.sort_by(|a, b| {
+            a.caller
+                .cmp(&b.caller)
+                .then_with(|| a.callee.cmp(&b.callee))
+                .then_with(|| a.line.cmp(&b.line))
+        });
+    };
+    sort_call_sites(&mut calls_s_to_t);
+    sort_call_sites(&mut calls_t_to_s);
+
     // Count imports between modules
     let import_count = count_imports_between(source, target, module_infos);
 
@@ -752,10 +770,14 @@ fn find_shared_imports(
     let source_imports = import_maps.get(source).unwrap_or(&empty);
     let target_imports = import_maps.get(target).unwrap_or(&empty);
 
-    source_imports
+    // #74: HashSet::intersection yields nondeterministic order; impose a stable
+    // total order so `shared_imports` serializes identically across runs.
+    let mut shared: Vec<String> = source_imports
         .intersection(target_imports)
         .cloned()
-        .collect()
+        .collect();
+    shared.sort();
+    shared
 }
 
 /// Convert a path to a module name

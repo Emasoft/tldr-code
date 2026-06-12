@@ -269,8 +269,18 @@ pub fn run(args: SecureArgs, format: OutputFormat) -> anyhow::Result<()> {
         apply_test_file_suppression(&mut all_findings);
     }
 
-    // Sort findings by severity (critical first)
-    all_findings.sort_by(|a, b| severity_order(&a.severity).cmp(&severity_order(&b.severity)));
+    // Sort findings by severity (critical first), then by a stable total order on
+    // (file, line, category, description). Sub-analyses collect findings from
+    // HashMap-keyed sub_results, so equal-severity findings would otherwise retain
+    // nondeterministic iteration order (#74, IT3-lua-02).
+    all_findings.sort_by(|a, b| {
+        severity_order(&a.severity)
+            .cmp(&severity_order(&b.severity))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.category.cmp(&b.category))
+            .then_with(|| a.description.cmp(&b.description))
+    });
 
     // WRAPPER-CROSS-CONSISTENCY-V1 (BUG-15, BUG-16): compute the summary
     // counters from the FINAL `findings` array via category group-by,

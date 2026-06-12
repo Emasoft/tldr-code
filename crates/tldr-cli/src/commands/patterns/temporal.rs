@@ -596,8 +596,12 @@ fn per_caller_first_line(
 }
 
 /// Aggregate one file's sequences into the directory-wide accumulator.
-/// Counts bigrams, tracks before/after totals for confidence, and
-/// records up to `args.include_examples` example sites per pair.
+/// Counts bigrams, tracks before/after totals for confidence, and records
+/// every candidate example site per pair. #74 (IT3-go-02): the
+/// `include_examples` cap is intentionally NOT applied here — capping during
+/// this HashMap-ordered walk would let nondeterministic file order pick which
+/// sites survive. The constraint-build sites sort by (file, line) and truncate
+/// deterministically instead.
 #[allow(clippy::too_many_arguments)]
 fn aggregate_file_sequences(
     file_sequences: &HashMap<String, Vec<String>>,
@@ -607,7 +611,6 @@ fn aggregate_file_sequences(
     bigram_counts: &mut HashMap<(String, String), u32>,
     before_counts: &mut HashMap<String, u32>,
     all_examples: &mut HashMap<(String, String), Vec<TemporalExample>>,
-    args: &TemporalArgs,
 ) {
     for (key, calls) in file_sequences {
         all_sequences
@@ -637,18 +640,19 @@ fn aggregate_file_sequences(
             *bigram_counts.entry(pair.clone()).or_default() += 1;
             *before_counts.entry(before.clone()).or_default() += 1;
 
-            // Track examples
-            let examples = all_examples.entry(pair).or_default();
-            if examples.len() < args.include_examples as usize {
-                let line = first_line
-                    .get(&(caller_for_lookup.clone(), before.clone(), after.clone()))
-                    .copied()
-                    .unwrap_or(1);
-                examples.push(TemporalExample {
-                    file: file_path_str.to_string(),
-                    line,
-                });
-            }
+            // Track examples. #74 (IT3-go-02): `file_sequences` is iterated in
+            // HashMap order, so capping to `include_examples` HERE would let the
+            // nondeterministic file/sequence order decide WHICH example sites
+            // survive. Collect every candidate now; the constraint-build site
+            // sorts by (file, line) and then truncates deterministically.
+            let line = first_line
+                .get(&(caller_for_lookup.clone(), before.clone(), after.clone()))
+                .copied()
+                .unwrap_or(1);
+            all_examples.entry(pair).or_default().push(TemporalExample {
+                file: file_path_str.to_string(),
+                line,
+            });
         }
     }
 }
@@ -736,15 +740,18 @@ pub fn mine_bigrams(
             continue;
         }
 
-        // Get examples (limited)
+        // Get examples (limited). #74: sites are accumulated in HashMap-value
+        // iteration order, so sort by (file, line) and drop exact duplicates
+        // before truncating to keep selection deterministic.
         let examples = counter
             .examples
             .get(&(before.clone(), after.clone()))
             .map(|ex| {
-                ex.iter()
-                    .take(args.include_examples as usize)
-                    .cloned()
-                    .collect()
+                let mut sites: Vec<TemporalExample> = ex.clone();
+                sites.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+                sites.dedup_by(|a, b| a.file == b.file && a.line == b.line);
+                sites.truncate(args.include_examples as usize);
+                sites
             })
             .unwrap_or_default();
 
@@ -757,12 +764,15 @@ pub fn mine_bigrams(
         });
     }
 
-    // Sort by confidence (descending), then support (descending)
+    // Sort by confidence (descending), then support (descending), then a stable
+    // total order on the (before, after) edge so ties are deterministic (#74).
     constraints.sort_by(|a, b| {
         b.confidence
             .partial_cmp(&a.confidence)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.support.cmp(&a.support))
+            .then_with(|| a.before.cmp(&b.before))
+            .then_with(|| a.after.cmp(&b.after))
     });
 
     (counter, constraints)
@@ -846,12 +856,15 @@ pub fn mine_trigrams(
         })
         .collect();
 
-    // Sort by confidence (descending), then support (descending)
+    // Sort by confidence (descending), then support (descending), then a stable
+    // total order on the trigram sequence so ties (and which trigram survived the
+    // top-K heap eviction on equal support) are deterministic (#74).
     trigrams.sort_by(|a, b| {
         b.confidence
             .partial_cmp(&a.confidence)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.support.cmp(&a.support))
+            .then_with(|| a.sequence.cmp(&b.sequence))
     });
 
     trigrams
@@ -999,7 +1012,6 @@ fn analyze_temporal_directory(
                         &mut bigram_counts,
                         &mut before_counts,
                         &mut all_examples,
-                        args,
                     );
                 }
             }
@@ -1062,7 +1074,6 @@ fn analyze_temporal_directory(
                     &mut bigram_counts,
                     &mut before_counts,
                     &mut all_examples,
-                    args,
                 );
             }
         }
@@ -1083,10 +1094,16 @@ fn analyze_temporal_directory(
             continue;
         }
 
-        let examples = all_examples
+        // #74 (IT3-go-02): impose a stable (file, line) order on the candidate
+        // example sites, drop exact-duplicate sites, then take the first
+        // `include_examples` deterministically.
+        let mut examples = all_examples
             .get(&(before.clone(), after.clone()))
             .cloned()
             .unwrap_or_default();
+        examples.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.line.cmp(&b.line)));
+        examples.dedup_by(|a, b| a.file == b.file && a.line == b.line);
+        examples.truncate(args.include_examples as usize);
 
         constraints.push(TemporalConstraint {
             before: before.clone(),
@@ -1097,12 +1114,15 @@ fn analyze_temporal_directory(
         });
     }
 
-    // Sort by confidence, then support
+    // Sort by confidence, then support, then a stable total order on the
+    // (before, after) edge so ties never fall back to HashMap iteration order (#74).
     constraints.sort_by(|a, b| {
         b.confidence
             .partial_cmp(&a.confidence)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.support.cmp(&a.support))
+            .then_with(|| a.before.cmp(&b.before))
+            .then_with(|| a.after.cmp(&b.after))
     });
 
     // Apply query filter if specified

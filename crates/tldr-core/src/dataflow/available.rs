@@ -392,6 +392,11 @@ pub struct AvailableExprsInfo {
     pub avail_out: HashMap<BlockId, HashSet<Expression>>,
 
     /// All unique expressions found in the function.
+    ///
+    /// #74 (IT3-typescript-03): a bare `HashSet` serializes in nondeterministic
+    /// iteration order; `serialize_expr_set` sorts by expression text so the JSON
+    /// array is byte-identical across runs.
+    #[serde(serialize_with = "serialize_expr_set")]
     pub all_exprs: HashSet<Expression>,
 
     /// Entry block ID.
@@ -468,22 +473,45 @@ fn serialize_avail_map<S>(
 where
     S: serde::Serializer,
 {
-    // Sort by block ID for deterministic output
-    let sorted: IndexMap<String, Vec<&Expression>> = map
+    // Sort by block ID for deterministic output. #74 (IT3-typescript-03): the
+    // previous implementation only sorted the inner expression vectors and
+    // collected the outer entries straight from `map.iter()`, so the block-ID
+    // keys retained HashMap iteration order and leaked into JSON key order.
+    let mut entries: Vec<(BlockId, Vec<&Expression>)> = map
         .iter()
         .map(|(k, v)| {
             let mut exprs: Vec<_> = v.iter().collect();
             // Also sort expressions by text for determinism
             exprs.sort_by_key(|e| &e.text);
-            (k.to_string(), exprs)
+            (*k, exprs)
         })
-        .collect::<Vec<_>>()
-        .into_iter()
         .collect();
+    entries.sort_by_key(|(k, _)| *k);
 
-    // Use IndexMap's ordered serialization
-    let ordered: IndexMap<_, _> = sorted.into_iter().collect();
+    // Use IndexMap's ordered serialization (block-ID order preserved).
+    let ordered: IndexMap<String, Vec<&Expression>> = entries
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
     ordered.serialize(serializer)
+}
+
+/// Custom serializer for an expression set.
+///
+/// #74 (IT3-typescript-03): serializes a `HashSet<Expression>` as a sequence
+/// sorted by expression text so JSON array order is deterministic across runs.
+fn serialize_expr_set<S>(set: &HashSet<Expression>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+    let mut sorted: Vec<&Expression> = set.iter().collect();
+    sorted.sort_by(|a, b| a.text.cmp(&b.text));
+    let mut seq = serializer.serialize_seq(Some(sorted.len()))?;
+    for expr in sorted {
+        seq.serialize_element(expr)?;
+    }
+    seq.end()
 }
 
 /// Custom deserializer for avail_in/avail_out maps.
