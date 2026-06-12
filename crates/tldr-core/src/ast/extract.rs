@@ -4105,6 +4105,17 @@ fn extract_lua_lhs_name(var_list: &Node, source: &str) -> String {
                     return name.to_string();
                 }
             }
+            "bracket_index_expression" => {
+                // t["key"] = function() end  /  method_handlers["textDocument/x"] = ...
+                // The LHS uses a string (or other expression) subscript instead of
+                // dot syntax. Build a qualified name `table["key"]` from the AST
+                // `table` and `field` fields so the definition is uniquely named
+                // and visible (matching how dotted handlers are qualified).
+                let name = lua_bracket_index_name(&child, source);
+                if !name.is_empty() {
+                    return name;
+                }
+            }
             "identifier" => {
                 return get_node_text(&child, source);
             }
@@ -4112,6 +4123,30 @@ fn extract_lua_lhs_name(var_list: &Node, source: &str) -> String {
         }
     }
     String::new()
+}
+
+/// Build a qualified function name from a Lua `bracket_index_expression` LHS.
+///
+/// For `method_handlers["textDocument/completion"]` this returns
+/// `method_handlers["textDocument/completion"]`. The node exposes `table` and
+/// `field` fields (tree-sitter-lua); we read both directly from the AST rather
+/// than slicing source text, so nested/whitespace forms are handled correctly.
+fn lua_bracket_index_name(node: &Node, source: &str) -> String {
+    let table = node.child_by_field_name("table");
+    let field = node.child_by_field_name("field");
+
+    let (table, field) = match (table, field) {
+        (Some(t), Some(f)) => (t, f),
+        _ => return String::new(),
+    };
+
+    let table_text = get_node_text(&table, source);
+    let field_text = get_node_text(&field, source);
+    if table_text.is_empty() || field_text.is_empty() {
+        return String::new();
+    }
+
+    format!("{}[{}]", table_text, field_text)
 }
 
 fn extract_lua_function_info(node: &Node, source: &str) -> FunctionInfo {

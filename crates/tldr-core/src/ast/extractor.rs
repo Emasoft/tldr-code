@@ -2351,14 +2351,28 @@ fn extract_lua_assignment_function(node: &Node, source: &str, functions: &mut Ve
     if !has_function_def {
         return;
     }
-    // Get the variable name from variable_list
+    // Get the variable name from variable_list. The LHS may be:
+    //   - `identifier`                 -> `foo = function() end`
+    //   - `dot_index_expression`       -> `M.foo = function() end`
+    //   - `method_index_expression`    -> `M:foo = function() end`
+    //   - `bracket_index_expression`   -> `t["k"] = function() end`
+    // The latter three (`*_index_expression`) are `variable` supertypes and
+    // appear as direct children of `variable_list`. Each must yield a name so
+    // the definition is visible to `structure` (and downstream `dead`,
+    // `explain`, `impact`). We emit the full qualified text for index forms so
+    // distinct keys remain distinct (e.g. the 11
+    // `method_handlers["textDocument/..."]` handlers).
     let mut inner_cursor2 = node.walk();
     for inner in node.children(&mut inner_cursor2) {
         if inner.kind() == "variable_list" {
             if let Some(name_node) = inner.child(0) {
-                if name_node.kind() == "identifier" {
-                    functions.push(get_node_text(&name_node, source));
-                    return;
+                match name_node.kind() {
+                    "identifier" | "dot_index_expression" | "method_index_expression"
+                    | "bracket_index_expression" => {
+                        functions.push(get_node_text(&name_node, source));
+                        return;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2538,6 +2552,31 @@ fn collect_definitions(
         }
     }
 
+    // Lua: function-valued assignments are NOT `function_declaration` nodes,
+    // so they are invisible to `classify_definition_node`. Detect
+    //   `t.x = function() end`   (dot_index_expression LHS)
+    //   `t["k"] = function() end`(bracket_index_expression LHS)
+    //   `t:m = function() end`   (method_index_expression LHS)
+    //   `local f = function()`   (variable_declaration wrapping the above)
+    //   `f = function() end`     (identifier LHS)
+    // and emit them as `kind:"function"` definitions so `structure` (and the
+    // `definitions[]`-derived `functions[]` projection, plus downstream
+    // `explain` / `impact` / `dead`) see them. Without this, the 11
+    // `method_handlers["textDocument/..."]` LSP handlers were dropped
+    // (gaps IT3-lua-01 / IT3-lua-03 / IT3-lua-04). We push and then return,
+    // because the function body is recursed into explicitly below so nested
+    // definitions are still collected (and the `function_definition` RHS is
+    // NOT itself a named definition to double-emit).
+    if matches!(language, Language::Lua) {
+        if let Some((def_info, body)) = try_lua_function_assignment_definition(node, source) {
+            definitions.push(def_info);
+            if let Some(body) = body {
+                collect_definitions(body, source, language, definitions);
+            }
+            return;
+        }
+    }
+
     // Constants: detect const/static/UPPER_CASE assignments across languages.
     // cross-cutting-and-clear-fix-bugs-v1 (P18.Pattern-B): track whether
     // this node was already emitted as a constant. If so, suppress the
@@ -2706,6 +2745,99 @@ fn collect_definitions(
     for child in node.children(&mut cursor) {
         collect_definitions(child, source, language, definitions);
     }
+}
+
+/// Try to classify a Lua `assignment_statement` whose right-hand side is a
+/// `function_definition` as a `kind:"function"` definition.
+///
+/// In tree-sitter-lua a function value bound to a table slot or variable is an
+/// `assignment_statement` (optionally wrapped in a `variable_declaration` for
+/// `local`), NOT a `function_declaration`. The LHS `variable_list` holds one of
+/// the `variable` supertypes:
+///   - `identifier`               -> `f = function() end`            -> name `f`
+///   - `dot_index_expression`     -> `t.x = function() end`          -> name `t.x`
+///   - `method_index_expression`  -> `t:m = function() end`          -> name `t:m`
+///   - `bracket_index_expression` -> `t["k"] = function() end`       -> name `t["k"]`
+///
+/// The qualified text is used as the name so distinct table slots (e.g. the 11
+/// `method_handlers["textDocument/..."]` LSP handlers) remain distinguishable.
+///
+/// Returns `(DefinitionInfo, Option<body_block_node>)` so the caller can recurse
+/// into the function body for nested definitions.
+fn try_lua_function_assignment_definition<'a>(
+    node: Node<'a>,
+    source: &str,
+) -> Option<(DefinitionInfo, Option<Node<'a>>)> {
+    if node.kind() != "assignment_statement" {
+        return None;
+    }
+
+    // Locate the variable_list (LHS) and the function_definition RHS.
+    let mut var_node: Option<Node> = None;
+    let mut func_def: Option<Node> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "variable_list" => {
+                var_node = child.child(0);
+            }
+            "expression_list" => {
+                let mut inner = child.walk();
+                for expr in child.children(&mut inner) {
+                    if expr.kind() == "function_definition" {
+                        func_def = Some(expr);
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let var_node = var_node?;
+    let func_def = func_def?;
+
+    // The LHS must be a nameable `variable` supertype. Use the full qualified
+    // text directly from the AST node span.
+    let name = match var_node.kind() {
+        "identifier"
+        | "dot_index_expression"
+        | "method_index_expression"
+        | "bracket_index_expression" => get_node_text(&var_node, source),
+        _ => return None,
+    };
+    if name.is_empty() {
+        return None;
+    }
+
+    let line_start = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+    let signature = extract_def_signature(node, source);
+
+    // Recurse into the function body (block) for nested definitions.
+    let body = {
+        let mut b = None;
+        let mut fc = func_def.walk();
+        for part in func_def.children(&mut fc) {
+            if part.kind() == "block" {
+                b = Some(part);
+                break;
+            }
+        }
+        b
+    };
+
+    Some((
+        DefinitionInfo {
+            name,
+            kind: "function".to_string(),
+            line_start,
+            line_end,
+            signature,
+            is_test: false,
+        },
+        body,
+    ))
 }
 
 /// Try to classify a tree-sitter node as a constant definition.

@@ -226,6 +226,45 @@ impl LuaHandler {
         last_ident
     }
 
+    /// Build (simple_name, qualified_name) for a `bracket_index_expression` LHS.
+    ///
+    /// `method_handlers["textDocument/completion"]` ->
+    ///   simple    = `textDocument/completion`  (subscript content, quotes stripped)
+    ///   qualified = `method_handlers["textDocument/completion"]`
+    ///
+    /// Reads the `table` and `field` fields directly from the AST. Returns None
+    /// when either field is missing or empty.
+    fn extract_bracket_index_names(
+        &self,
+        node: &Node,
+        source: &[u8],
+    ) -> Option<(String, String)> {
+        let table = node.child_by_field_name("table")?;
+        let field = node.child_by_field_name("field")?;
+
+        let table_text = get_node_text(&table, source).to_string();
+        let field_text = get_node_text(&field, source).to_string();
+        if table_text.is_empty() || field_text.is_empty() {
+            return None;
+        }
+
+        // Simple name: if the subscript is a string literal, strip the
+        // surrounding quotes via the AST `string_content` child; otherwise fall
+        // back to the raw field text.
+        let simple = if field.kind() == "string" {
+            field
+                .named_child(0)
+                .filter(|c| c.kind() == "string_content")
+                .map(|c| get_node_text(&c, source).to_string())
+                .unwrap_or_else(|| field_text.clone())
+        } else {
+            field_text.clone()
+        };
+
+        let qualified = format!("{}[{}]", table_text, field_text);
+        Some((simple, qualified))
+    }
+
     /// Collect function name from variable declaration with function value.
     fn collect_function_from_variable_decl(
         &self,
@@ -988,6 +1027,16 @@ impl LuaHandler {
                                                     );
                                                     break;
                                                 }
+                                                "bracket_index_expression" => {
+                                                    // t["key"] = function() ... end
+                                                    if let Some((simple, qualified)) = self
+                                                        .extract_bracket_index_names(&var, source)
+                                                    {
+                                                        simple_name = Some(simple);
+                                                        qualified_name = Some(qualified);
+                                                    }
+                                                    break;
+                                                }
                                                 _ => {}
                                             }
                                         }
@@ -1074,6 +1123,16 @@ impl LuaHandler {
                                         // Get full qualified name
                                         qualified_name =
                                             Some(get_node_text(&var, source).to_string());
+                                        break;
+                                    }
+                                    "bracket_index_expression" => {
+                                        // Bracketed: t["key"] = function() end
+                                        if let Some((simple, qualified)) =
+                                            self.extract_bracket_index_names(&var, source)
+                                        {
+                                            simple_name = Some(simple);
+                                            qualified_name = Some(qualified);
+                                        }
                                         break;
                                     }
                                     _ => {}
