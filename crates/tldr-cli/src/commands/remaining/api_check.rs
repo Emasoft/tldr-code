@@ -61,6 +61,7 @@ pub(crate) enum ApiLanguage {
     Lua,
     Luau,
     Ocaml,
+    Solidity,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +123,13 @@ fn rule_applies_to_language(rule_id: &str, language: ApiLanguage) -> bool {
         ApiLanguage::Elixir => &["EX"],
         ApiLanguage::Lua | ApiLanguage::Luau => &["LU"],
         ApiLanguage::Ocaml => &["OC"],
+        // fix-pack-apicheck-v1 (v0.5.0 PACK-APICHECK): Solidity ERC
+        // conformance rules use the `ERC00x` id family. They are
+        // contract-level AST detectors (see `analyze_solidity_erc`), not
+        // line-driven, so they never flow through `check_rule` /
+        // `check_regex_rule`; this entry keeps the language-applicability
+        // backstop consistent for the rule-id namespace regardless.
+        ApiLanguage::Solidity => &["ERC"],
     };
     for prefix in prefix_lang {
         if let Some(rest) = rule_id.strip_prefix(prefix) {
@@ -1105,6 +1113,7 @@ const ALL_API_LANGUAGES: &[ApiLanguage] = &[
     ApiLanguage::Lua,
     ApiLanguage::Luau,
     ApiLanguage::Ocaml,
+    ApiLanguage::Solidity,
 ];
 
 // =============================================================================
@@ -1240,6 +1249,680 @@ fn rust_rules() -> Vec<APIRule> {
     ]
 }
 
+// =============================================================================
+// Solidity ERC conformance rules (fix-pack-apicheck-v1, v0.5.0 PACK-APICHECK)
+// =============================================================================
+//
+// These rules are CONTRACT-LEVEL and fully AST-driven. They never run through
+// the per-line `check_rule` / `check_regex_rule` path; `analyze_file`
+// dispatches Solidity files straight to `analyze_solidity_erc`, which walks
+// the tree-sitter-solidity parse (`contract_declaration` /
+// `interface_declaration`, `function_definition`, `event_definition`,
+// `inheritance_specifier`) and matches member SIGNATURES (name + arity +
+// parameter element types + return arity) against the EIP-defined surface.
+//
+//   * ERC001 — ERC20 conformance. A contract that CLAIMS ERC20 (inherits an
+//     ERC20 base/interface, OR declares a strong subset of the ERC20 surface)
+//     must expose `totalSupply / balanceOf / transfer / transferFrom /
+//     approve / allowance` with the right signatures, plus the `Transfer` and
+//     `Approval` events. Missing or mis-signed members are flagged.
+//   * ERC002 — ERC721 conformance (`balanceOf / ownerOf / safeTransferFrom /
+//     transferFrom / approve / setApprovalForAll / getApproved /
+//     isApprovedForAll` + `Transfer / Approval / ApprovalForAll` events).
+//   * ERC003 — SafeERC20 recommendation: a raw ERC20 `transfer` /
+//     `transferFrom` call whose boolean return value is discarded (not
+//     wrapped in `require(...)`, not assigned, not the RHS of a comparison).
+
+/// One required member of an ERC interface, matched by SIGNATURE against the
+/// AST (never by text). `param_types` are the canonical Solidity element
+/// types of each parameter, in order; `min_returns` is the number of return
+/// values the standard mandates. A function in the contract conforms to this
+/// spec when its name matches, its parameter element-type sequence matches,
+/// and it returns at least `min_returns` values.
+#[derive(Clone, Copy)]
+struct ErcMember {
+    /// Canonical member name (e.g. `transfer`).
+    name: &'static str,
+    /// Canonical element type of each parameter, in declaration order. We
+    /// compare the *element* type (`address`, `uint256`, `bool`, `bytes`)
+    /// extracted from each `parameter` node's `type_name`, ignoring data
+    /// location (`memory` / `calldata`) and the parameter's own name.
+    param_types: &'static [&'static str],
+    /// Minimum number of return values the EIP mandates.
+    min_returns: usize,
+}
+
+/// An ERC standard's required member + event surface.
+struct ErcStandard {
+    /// Rule id emitted for conformance violations (`ERC001` / `ERC002`).
+    rule_id: &'static str,
+    /// Human label (`ERC20` / `ERC721`).
+    label: &'static str,
+    /// Base / interface names whose inheritance is a positive "claims this
+    /// standard" signal (matched against `inheritance_specifier` bases).
+    claim_bases: &'static [&'static str],
+    /// Member names that are DISTINCTIVE to this standard — i.e. they do not
+    /// also appear in the surface of a sibling ERC standard. Declaring one of
+    /// these (without inheriting a base) is what marks a contract as
+    /// "claiming" this standard. ERC20 and ERC721 share `balanceOf` /
+    /// `transferFrom` / `approve`, so those are NOT distinctive; `allowance` /
+    /// `totalSupply` distinguish ERC20, and `ownerOf` / `setApprovalForAll` /
+    /// `getApproved` / `isApprovedForAll` distinguish ERC721.
+    distinctive_members: &'static [&'static str],
+    /// Required functions, by signature.
+    functions: &'static [ErcMember],
+    /// Required event names (matched against `event_definition` names).
+    events: &'static [&'static str],
+}
+
+/// ERC20 surface per EIP-20.
+const ERC20_STANDARD: ErcStandard = ErcStandard {
+    rule_id: "ERC001",
+    label: "ERC20",
+    claim_bases: &["IERC20", "ERC20", "IERC20Metadata", "ERC20Upgradeable"],
+    distinctive_members: &["allowance", "totalSupply"],
+    functions: &[
+        ErcMember { name: "totalSupply", param_types: &[], min_returns: 1 },
+        ErcMember { name: "balanceOf", param_types: &["address"], min_returns: 1 },
+        ErcMember { name: "transfer", param_types: &["address", "uint256"], min_returns: 1 },
+        ErcMember {
+            name: "transferFrom",
+            param_types: &["address", "address", "uint256"],
+            min_returns: 1,
+        },
+        ErcMember { name: "approve", param_types: &["address", "uint256"], min_returns: 1 },
+        ErcMember { name: "allowance", param_types: &["address", "address"], min_returns: 1 },
+    ],
+    events: &["Transfer", "Approval"],
+};
+
+/// ERC721 surface per EIP-721 (core, excluding the optional metadata /
+/// enumerable extensions). `safeTransferFrom` is overloaded; we require the
+/// 3-arg form (the 4-arg `bytes data` overload is also part of the standard
+/// but a contract exposing the 3-arg form satisfies the core requirement —
+/// the overload is matched leniently by name+arity in `member_present`).
+const ERC721_STANDARD: ErcStandard = ErcStandard {
+    rule_id: "ERC002",
+    label: "ERC721",
+    claim_bases: &["IERC721", "ERC721", "ERC721Upgradeable"],
+    // `ownerOf` and `getApproved` are EXCLUSIVE to ERC721 among the common
+    // token standards: ERC1155 (which also has `setApprovalForAll` /
+    // `isApprovedForAll`) defines neither, and its `balanceOf` takes
+    // `(address, uint256)`. Restricting the distinctive set to these two
+    // avoids misclassifying an ERC1155 contract as an incomplete ERC721.
+    distinctive_members: &["ownerOf", "getApproved"],
+    functions: &[
+        ErcMember { name: "balanceOf", param_types: &["address"], min_returns: 1 },
+        ErcMember { name: "ownerOf", param_types: &["uint256"], min_returns: 1 },
+        ErcMember {
+            name: "safeTransferFrom",
+            param_types: &["address", "address", "uint256"],
+            min_returns: 0,
+        },
+        ErcMember {
+            name: "transferFrom",
+            param_types: &["address", "address", "uint256"],
+            min_returns: 0,
+        },
+        ErcMember { name: "approve", param_types: &["address", "uint256"], min_returns: 0 },
+        ErcMember {
+            name: "setApprovalForAll",
+            param_types: &["address", "bool"],
+            min_returns: 0,
+        },
+        ErcMember { name: "getApproved", param_types: &["uint256"], min_returns: 1 },
+        ErcMember {
+            name: "isApprovedForAll",
+            param_types: &["address", "address"],
+            min_returns: 1,
+        },
+    ],
+    events: &["Transfer", "Approval", "ApprovalForAll"],
+};
+
+/// All ERC standards checked, in id order.
+const ERC_STANDARDS: &[&ErcStandard] = &[&ERC20_STANDARD, &ERC721_STANDARD];
+
+/// Built-in Solidity API misuse rules (ERC conformance + SafeERC20).
+fn solidity_rules() -> Vec<APIRule> {
+    vec![
+        APIRule {
+            id: "ERC001".to_string(),
+            name: "erc20-conformance".to_string(),
+            category: MisuseCategory::Security,
+            severity: MisuseSeverity::High,
+            description:
+                "Contract claims ERC20 but is missing or mis-signs a required member/event"
+                    .to_string(),
+            correct_usage:
+                "Expose totalSupply/balanceOf/transfer/transferFrom/approve/allowance with the EIP-20 signatures and emit Transfer/Approval"
+                    .to_string(),
+        },
+        APIRule {
+            id: "ERC002".to_string(),
+            name: "erc721-conformance".to_string(),
+            category: MisuseCategory::Security,
+            severity: MisuseSeverity::High,
+            description:
+                "Contract claims ERC721 but is missing or mis-signs a required member/event"
+                    .to_string(),
+            correct_usage:
+                "Expose balanceOf/ownerOf/safeTransferFrom/transferFrom/approve/setApprovalForAll/getApproved/isApprovedForAll and emit Transfer/Approval/ApprovalForAll"
+                    .to_string(),
+        },
+        APIRule {
+            id: "ERC003".to_string(),
+            name: "unchecked-erc20-transfer".to_string(),
+            category: MisuseCategory::Security,
+            severity: MisuseSeverity::Medium,
+            description:
+                "Raw ERC20 transfer/transferFrom return value is discarded; non-reverting tokens fail silently"
+                    .to_string(),
+            correct_usage:
+                "Use OpenZeppelin SafeERC20 (safeTransfer/safeTransferFrom) or wrap the call in require(...)"
+                    .to_string(),
+        },
+    ]
+}
+
+/// Entry point: analyze a Solidity source file for ERC conformance and
+/// SafeERC20 issues. Parses ONCE via tree-sitter-solidity and walks the AST;
+/// returns one `MisuseFinding` per violation. On a parse failure we return no
+/// findings (a parser hiccup must never produce phantom conformance errors).
+fn analyze_solidity_erc(content: &str, file: &str) -> Vec<MisuseFinding> {
+    let tree = match tldr_core::ast::parser::parse(content, Language::Solidity) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let rules = solidity_rules();
+    let rule_by_id = |id: &str| rules.iter().find(|r| r.id == id).cloned();
+
+    let mut findings = Vec::new();
+    let root = tree.root_node();
+
+    // Collect every top-level contract/interface declaration.
+    let mut contracts = Vec::new();
+    collect_solidity_contracts(root, &mut contracts);
+
+    for contract in &contracts {
+        let name = solidity_contract_name(contract, content);
+        let bases = solidity_contract_bases(contract, content);
+        let functions = solidity_contract_functions(contract, content);
+        let events = solidity_contract_events(contract, content);
+
+        // ERC001 / ERC002 conformance.
+        for standard in ERC_STANDARDS {
+            let inherits_base = bases
+                .iter()
+                .any(|b| standard.claim_bases.iter().any(|cb| b == cb));
+
+            // A contract that inherits the canonical standard interface/base
+            // (e.g. `contract Foo is IERC20`) DELEGATES its surface to that
+            // base: the required members and events are provided by the
+            // inherited interface, not necessarily redeclared in this body.
+            // Without cross-file inheritance resolution we cannot prove a
+            // member is genuinely absent, and flagging a non-redeclared
+            // member would be a false positive on every real implementation
+            // (OpenZeppelin `ERC20 is IERC20` redeclares none of the events).
+            // So strict member/event conformance is only enforced for
+            // SELF-CONTAINED declarations: interfaces / contracts that claim
+            // the standard by declaring its DISTINCTIVE members locally but
+            // do NOT inherit the canonical base.
+            if inherits_base {
+                continue;
+            }
+            if !contract_claims_standard(standard, &bases, &functions) {
+                continue;
+            }
+            let line = contract.start_position().row as u32 + 1;
+            let Some(rule) = rule_by_id(standard.rule_id) else {
+                continue;
+            };
+
+            for member in standard.functions {
+                if !member_present(&functions, member) {
+                    findings.push(MisuseFinding {
+                        file: file.to_string(),
+                        line,
+                        column: 1,
+                        rule: rule.clone(),
+                        api_call: format!("{}.{}", standard.label, member.name),
+                        message: format!(
+                            "{} contract `{}` is missing or mis-signs required member `{}({})`",
+                            standard.label,
+                            name,
+                            member.name,
+                            member.param_types.join(",")
+                        ),
+                        fix_suggestion: format!(
+                            "Declare `function {}({}) ...` matching the {} standard signature",
+                            member.name,
+                            member.param_types.join(", "),
+                            standard.label
+                        ),
+                        code_context: name.clone(),
+                    });
+                }
+            }
+            for ev in standard.events {
+                if !events.iter().any(|e| e == ev) {
+                    findings.push(MisuseFinding {
+                        file: file.to_string(),
+                        line,
+                        column: 1,
+                        rule: rule.clone(),
+                        api_call: format!("{}.{}", standard.label, ev),
+                        message: format!(
+                            "{} contract `{}` is missing required event `{}`",
+                            standard.label, name, ev
+                        ),
+                        fix_suggestion: format!("Declare `event {}(...)` per the {} standard", ev, standard.label),
+                        code_context: name.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // ERC003: SafeERC20 recommendation — raw transfer/transferFrom whose
+    // boolean return value is discarded.
+    if let Some(rule) = rule_by_id("ERC003") {
+        collect_unchecked_erc20_transfers(root, content, file, &rule, &mut findings);
+    }
+
+    findings
+}
+
+/// Recursively collect every `contract_declaration` / `interface_declaration`
+/// / `library_declaration` under `node`.
+fn collect_solidity_contracts<'a>(node: tree_sitter::Node<'a>, out: &mut Vec<tree_sitter::Node<'a>>) {
+    if matches!(
+        node.kind(),
+        "contract_declaration" | "interface_declaration" | "library_declaration"
+    ) {
+        out.push(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_solidity_contracts(child, out);
+    }
+}
+
+/// Textual name of a contract/interface/library declaration.
+fn solidity_contract_name(contract: &tree_sitter::Node, source: &str) -> String {
+    contract
+        .child_by_field_name("name")
+        .map(|n| source[n.byte_range()].to_string())
+        .unwrap_or_default()
+}
+
+/// Base names declared in the `is A, B` inheritance list, extracted from each
+/// `inheritance_specifier`'s `ancestor` (`user_defined_type`). Mirrors
+/// `crates/tldr-core/src/inheritance/solidity.rs::extract_solidity_bases`.
+fn solidity_contract_bases(contract: &tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut bases = Vec::new();
+    let mut cursor = contract.walk();
+    for child in contract.children(&mut cursor) {
+        if child.kind() != "inheritance_specifier" {
+            continue;
+        }
+        let ancestor = child.child_by_field_name("ancestor").or_else(|| {
+            let mut ic = child.walk();
+            let kids: Vec<_> = child.children(&mut ic).collect();
+            kids.into_iter().find(|c| c.kind() == "user_defined_type")
+        });
+        if let Some(anc) = ancestor {
+            // The base name is the first identifier / member_expression in
+            // the user_defined_type node.
+            let mut nc = anc.walk();
+            let mut pushed = false;
+            for n in anc.children(&mut nc) {
+                if matches!(n.kind(), "identifier" | "member_expression") {
+                    bases.push(source[n.byte_range()].to_string());
+                    pushed = true;
+                    break;
+                }
+            }
+            if !pushed {
+                bases.push(source[anc.byte_range()].trim().to_string());
+            }
+        }
+    }
+    bases
+}
+
+/// Body node of a contract/interface/library declaration.
+fn solidity_contract_body<'a>(contract: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    if let Some(body) = contract.child_by_field_name("body") {
+        return Some(body);
+    }
+    let mut cursor = contract.walk();
+    for child in contract.children(&mut cursor) {
+        if matches!(child.kind(), "contract_body" | "interface_body" | "library_body") {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// A function member parsed from a `function_definition`: name, ordered
+/// parameter element types, and return arity.
+struct SolFunction {
+    name: String,
+    param_types: Vec<String>,
+    return_count: usize,
+}
+
+/// Collect every `function_definition` directly under the contract body,
+/// parsing each into a `SolFunction` (name + parameter element types +
+/// return arity). Constructors / fallback-receive are not ERC members and
+/// are skipped.
+fn solidity_contract_functions(contract: &tree_sitter::Node, source: &str) -> Vec<SolFunction> {
+    let mut out = Vec::new();
+    let Some(body) = solidity_contract_body(contract) else {
+        return out;
+    };
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "function_definition" {
+            continue;
+        }
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        let name = source[name_node.byte_range()].to_string();
+        let param_types = solidity_function_param_types(&child, source);
+        let return_count = solidity_function_return_count(&child, source);
+        out.push(SolFunction { name, param_types, return_count });
+    }
+    out
+}
+
+/// Ordered canonical element types of a function's parameters. Each parameter
+/// is a `parameter` node; its declared type lives in the `type_name` field
+/// (or first `type_name` descendant). We normalize the element type so that
+/// `uint` -> `uint256` and strip data location / parameter name.
+fn solidity_function_param_types(func: &tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut types = Vec::new();
+    // Parameters live under a `parameter` list. Walk the function's direct
+    // children for the first parameter group, then collect `parameter` nodes.
+    // The grammar nests parameters under the function node; recurse one level
+    // to find `parameter` nodes that are NOT inside the return list.
+    let return_node = solidity_return_node(func);
+    let mut cursor = func.walk();
+    for child in func.children(&mut cursor) {
+        // Skip the return parameter list so its types aren't counted as
+        // input parameters.
+        if Some(child.id()) == return_node.map(|n| n.id()) {
+            continue;
+        }
+        collect_parameter_types(child, source, return_node, &mut types);
+    }
+    types
+}
+
+/// Recursively collect element types from every `parameter` node under
+/// `node`, skipping anything inside `return_node`.
+fn collect_parameter_types(
+    node: tree_sitter::Node,
+    source: &str,
+    return_node: Option<tree_sitter::Node>,
+    out: &mut Vec<String>,
+) {
+    if Some(node.id()) == return_node.map(|n| n.id()) {
+        return;
+    }
+    if node.kind() == "parameter" {
+        if let Some(t) = solidity_parameter_element_type(&node, source) {
+            out.push(t);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_parameter_types(child, source, return_node, out);
+    }
+}
+
+/// Canonical element type of a single `parameter` node.
+fn solidity_parameter_element_type(param: &tree_sitter::Node, source: &str) -> Option<String> {
+    let type_node = param.child_by_field_name("type").or_else(|| {
+        let mut cursor = param.walk();
+        let kids: Vec<_> = param.children(&mut cursor).collect();
+        kids.into_iter().find(|c| c.kind() == "type_name")
+    })?;
+    Some(normalize_solidity_type(&source[type_node.byte_range()]))
+}
+
+/// Normalize a Solidity type's textual form to its canonical element type:
+/// strip data location keywords, array suffixes, and alias `uint`->`uint256`.
+fn normalize_solidity_type(raw: &str) -> String {
+    let mut t = raw.trim().to_string();
+    for loc in [" memory", " calldata", " storage"] {
+        if let Some(idx) = t.find(loc) {
+            t.truncate(idx);
+        }
+    }
+    let t = t.trim();
+    // Element type of an array (`bytes32[]` -> `bytes32`, but we keep the
+    // base type for matching; ERC signatures use scalar params).
+    let base = t.split('[').next().unwrap_or(t).trim();
+    match base {
+        "uint" => "uint256".to_string(),
+        "int" => "int256".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The function's return parameter list node, if any. tree-sitter-solidity
+/// emits returns as a `return_type_definition` child.
+fn solidity_return_node<'a>(func: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = func.walk();
+    let kids: Vec<_> = func.children(&mut cursor).collect();
+    kids.into_iter()
+        .find(|c| c.kind() == "return_type_definition")
+}
+
+/// Number of return values the function declares, by counting `parameter`
+/// nodes inside the `return_type_definition`.
+fn solidity_function_return_count(func: &tree_sitter::Node, source: &str) -> usize {
+    let Some(ret) = solidity_return_node(func) else {
+        return 0;
+    };
+    let mut count = 0usize;
+    fn count_params(node: tree_sitter::Node, count: &mut usize) {
+        if node.kind() == "parameter" {
+            *count += 1;
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            count_params(child, count);
+        }
+    }
+    count_params(ret, &mut count);
+    let _ = source;
+    count
+}
+
+/// Collect event names declared in the contract body (`event_definition`
+/// `name` field).
+fn solidity_contract_events(contract: &tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(body) = solidity_contract_body(contract) else {
+        return out;
+    };
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "event_definition" {
+            if let Some(n) = child.child_by_field_name("name") {
+                out.push(source[n.byte_range()].to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Whether a SELF-CONTAINED declaration (one that does NOT inherit a canonical
+/// base — that case is handled by the caller) claims to implement `standard`.
+///
+/// The signal is a DISTINCTIVE member: a function whose name belongs to this
+/// standard's surface and does NOT also appear in a sibling ERC standard
+/// (e.g. ERC20's `allowance` / `totalSupply`, ERC721's `ownerOf` /
+/// `setApprovalForAll`). Declaring such a member is unambiguous evidence the
+/// contract is trying to be this standard. We additionally require that the
+/// contract declares at least 3 of the standard's members overall, so a
+/// utility contract that merely happens to define an `allowance(...)` helper
+/// is not mistaken for an incomplete token.
+fn contract_claims_standard(
+    standard: &ErcStandard,
+    _bases: &[String],
+    functions: &[SolFunction],
+) -> bool {
+    let declares_distinctive = functions
+        .iter()
+        .any(|f| standard.distinctive_members.iter().any(|d| f.name == *d));
+    if !declares_distinctive {
+        return false;
+    }
+    let declared = standard
+        .functions
+        .iter()
+        .filter(|m| functions.iter().any(|f| f.name == m.name))
+        .count();
+    declared >= 3
+}
+
+/// Whether a member matching `spec` (name + parameter element types + return
+/// arity) is present among `functions`. A function conforms when:
+///   * its name matches, AND
+///   * its parameter element-type sequence equals `spec.param_types`
+///     (overloads with a different arity do not count), AND
+///   * it returns at least `spec.min_returns` values.
+fn member_present(functions: &[SolFunction], spec: &ErcMember) -> bool {
+    functions.iter().any(|f| {
+        f.name == spec.name
+            && f.param_types.len() == spec.param_types.len()
+            && f
+                .param_types
+                .iter()
+                .zip(spec.param_types.iter())
+                .all(|(got, want)| got == want)
+            && f.return_count >= spec.min_returns
+    })
+}
+
+/// ERC003: walk the AST for raw ERC20 `transfer` / `transferFrom` calls whose
+/// boolean return value is discarded. A call is "unchecked" when its
+/// `call_expression` is the WHOLE expression of an `expression_statement`
+/// (i.e. `token.transfer(...);`) rather than being consumed by a
+/// `require(...)`, an assignment, a return, or a comparison. Pure AST: we
+/// detect the discarded-result shape via parent-node kind, never via text.
+fn collect_unchecked_erc20_transfers(
+    root: tree_sitter::Node,
+    source: &str,
+    file: &str,
+    rule: &APIRule,
+    findings: &mut Vec<MisuseFinding>,
+) {
+    fn visit(
+        node: tree_sitter::Node,
+        source: &str,
+        file: &str,
+        rule: &APIRule,
+        findings: &mut Vec<MisuseFinding>,
+    ) {
+        // A discarded call is an `expression_statement` whose sole inner
+        // expression is a `call_expression` to `<x>.transfer` /
+        // `<x>.transferFrom`. tree-sitter-solidity wraps the call in one or
+        // more `expression` / `primary_expression` nodes, so peel those off
+        // before checking. A `require(token.transferFrom(...))` is NOT an
+        // expression_statement whose direct expression is the transfer call
+        // (the transfer call is nested inside the `require(...)` argument
+        // list), so it is correctly excluded by this shape.
+        if node.kind() == "expression_statement" {
+            let inner = node.named_child(0).map(unwrap_solidity_expr_wrapper);
+            if let Some(call) = inner.filter(|n| n.kind() == "call_expression") {
+                if let Some(member) = erc20_transfer_member_name(&call, source) {
+                    let line = call.start_position().row as u32 + 1;
+                    findings.push(MisuseFinding {
+                        file: file.to_string(),
+                        line,
+                        column: (call.start_position().column as u32) + 1,
+                        rule: rule.clone(),
+                        api_call: member.clone(),
+                        message: format!(
+                            "Return value of ERC20 `{}` is discarded; non-reverting tokens fail silently",
+                            member
+                        ),
+                        fix_suggestion:
+                            "Use SafeERC20 (safeTransfer/safeTransferFrom) or wrap in require(...)"
+                                .to_string(),
+                        code_context: source[node.byte_range()]
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, file, rule, findings);
+        }
+    }
+    visit(root, source, file, rule, findings);
+}
+
+/// Peel `expression` / `primary_expression` wrapper nodes off `n` until the
+/// underlying meaningful node (`call_expression`, `member_expression`,
+/// `identifier`, …) is exposed. Mirrors
+/// `crates/tldr-core/src/security/solidity_vuln.rs::unwrap_expr_wrapper`.
+fn unwrap_solidity_expr_wrapper(mut n: tree_sitter::Node) -> tree_sitter::Node {
+    for _ in 0..6 {
+        if matches!(n.kind(), "expression" | "primary_expression") {
+            if let Some(c) = n.named_child(0) {
+                n = c;
+                continue;
+            }
+        }
+        break;
+    }
+    n
+}
+
+/// If `call` is a `call_expression` whose callee is a `member_expression`
+/// ending in `.transfer` / `.transferFrom`, return the member name. The
+/// callee (`token.transfer`) is the first child of the `call_expression`
+/// (peeled of `expression` wrappers); the member name is the LAST identifier
+/// of the `member_expression` (the `a "." b` property). All navigation is via
+/// AST node kinds, never string scanning.
+fn erc20_transfer_member_name(call: &tree_sitter::Node, source: &str) -> Option<String> {
+    let callee = call
+        .child_by_field_name("function")
+        .or_else(|| call.named_child(0))
+        .map(unwrap_solidity_expr_wrapper)?;
+    if callee.kind() != "member_expression" {
+        return None;
+    }
+    // The property of `a.b` is the last identifier child (no `property`
+    // field in this grammar fork). `member_expression` is `identifier "."
+    // identifier`, so collect identifiers and take the last.
+    let property = callee.child_by_field_name("property").or_else(|| {
+        let mut cursor = callee.walk();
+        let kids: Vec<_> = callee.children(&mut cursor).collect();
+        kids.into_iter().filter(|c| c.kind() == "identifier").last()
+    })?;
+    let prop = source[property.byte_range()].trim();
+    if prop == "transfer" || prop == "transferFrom" {
+        Some(prop.to_string())
+    } else {
+        None
+    }
+}
+
 fn regex_rule_specs_for_language(language: ApiLanguage) -> &'static [RegexRuleSpec] {
     match language {
         ApiLanguage::Python | ApiLanguage::Rust => &[],
@@ -1258,6 +1941,9 @@ fn regex_rule_specs_for_language(language: ApiLanguage) -> &'static [RegexRuleSp
         ApiLanguage::Elixir => ELIXIR_RULE_SPECS,
         ApiLanguage::Lua | ApiLanguage::Luau => LUA_RULE_SPECS,
         ApiLanguage::Ocaml => OCAML_RULE_SPECS,
+        // Solidity ERC conformance rules are not regex specs — they are
+        // contract-level AST detectors handled by `analyze_solidity_erc`.
+        ApiLanguage::Solidity => &[],
     }
 }
 
@@ -1472,12 +2158,11 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         Language::Lua => Some(ApiLanguage::Lua),
         Language::Luau => Some(ApiLanguage::Luau),
         Language::Ocaml => Some(ApiLanguage::Ocaml),
-        // v0.5.0 SOL-001 Solidity foundation. api-check (SARIF rule
-        // pack: deprecated patterns, abi.encodePacked + dynamic
-        // collision, etc.) lands in a later milestone. None preserves
-        // the "no rules, no filter applied" semantics for
-        // unsupported langs.
-        Language::Solidity => None,
+        // fix-pack-apicheck-v1 (v0.5.0 PACK-APICHECK): Solidity now has an
+        // api-check rule pack (ERC20 / ERC721 conformance + SafeERC20
+        // recommendation), so `--lang solidity` maps to the Solidity
+        // ApiLanguage and the per-file dispatch can filter on it.
+        Language::Solidity => Some(ApiLanguage::Solidity),
     }
 }
 
@@ -1501,6 +2186,7 @@ pub(crate) fn detect_language(path: &Path) -> Option<ApiLanguage> {
         Some("lua") => Some(ApiLanguage::Lua),
         Some("luau") => Some(ApiLanguage::Luau),
         Some("ml") | Some("mli") => Some(ApiLanguage::Ocaml),
+        Some("sol") => Some(ApiLanguage::Solidity),
         _ => None,
     }
 }
@@ -1509,6 +2195,7 @@ pub(crate) fn rules_for_language(language: ApiLanguage) -> Vec<APIRule> {
     match language {
         ApiLanguage::Python => python_rules(),
         ApiLanguage::Rust => rust_rules(),
+        ApiLanguage::Solidity => solidity_rules(),
         _ => regex_rule_specs_for_language(language)
             .iter()
             .copied()
@@ -1565,6 +2252,25 @@ fn language_fastpath_needles(language: ApiLanguage) -> Vec<String> {
             "tokio::spawn",
             "HashMap",
             ".clone(",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect(),
+        // fix-pack-apicheck-v1 (v0.5.0 PACK-APICHECK): Solidity ERC
+        // conformance runs a contract-level AST pass, not the per-line
+        // loop. The fast-path needle just decides whether to bother
+        // parsing the file at all: any file relevant to an ERC rule
+        // mentions one of these tokens (an ERC base/interface name, a
+        // core surface member, or a raw `transfer` call). Files with none
+        // of these cannot produce an ERC finding, so we skip the parse.
+        ApiLanguage::Solidity => [
+            "ERC20",
+            "ERC721",
+            "transfer",
+            "balanceOf",
+            "ownerOf",
+            "totalSupply",
+            "approve",
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -1805,6 +2511,15 @@ pub(crate) fn analyze_file(
         .any(|n| !n.is_empty() && content.contains(n.as_str()));
     if !needles.is_empty() && !any_needle_admits_universally && !any_needle_hit {
         return Ok(Vec::new());
+    }
+
+    // fix-pack-apicheck-v1 (v0.5.0 PACK-APICHECK): Solidity ERC conformance
+    // is a CONTRACT-level analysis, not a per-line/regex scan. Dispatch to
+    // the dedicated tree-sitter-driven analyzer and return its findings
+    // directly — the per-line loop below has no Solidity rules to run.
+    if matches!(language, ApiLanguage::Solidity) {
+        let file_str = path.display().to_string();
+        return Ok(analyze_solidity_erc(&content, &file_str));
     }
 
     let file_str = path.display().to_string();
@@ -2518,7 +3233,8 @@ fn is_comment_line(trimmed: &str, language: ApiLanguage) -> bool {
         | ApiLanguage::Kotlin
         | ApiLanguage::Swift
         | ApiLanguage::CSharp
-        | ApiLanguage::Scala => trimmed.starts_with("//"),
+        | ApiLanguage::Scala
+        | ApiLanguage::Solidity => trimmed.starts_with("//"),
         ApiLanguage::Php => trimmed.starts_with("//") || trimmed.starts_with('#'),
         ApiLanguage::Lua | ApiLanguage::Luau => trimmed.starts_with("--"),
         ApiLanguage::Ocaml => trimmed.starts_with("(*"),
