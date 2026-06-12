@@ -205,13 +205,47 @@ fn run_clones_strip_timing(dir: &Path) -> Value {
     // captures CONTENT determinism only — that's what the bug was
     // about. The fix made the `clone_pairs[]` order stable; timing
     // was never claimed to be byte-stable.
-    if let Some(meta) = v.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-        meta.remove("detection_time_ms");
-    }
-    if let Some(stats) = v.get_mut("stats").and_then(|s| s.as_object_mut()) {
-        stats.remove("detection_time_ms");
-    }
+    //
+    // fix-fix-clones-det-v1 (v0.5.0 FIX-CLONES-DET): the original strip
+    // only reached `metadata{}` and `stats{}`, but the AGG17-5 schema
+    // mirror (added AFTER this test) re-emits `detection_time_ms` inside
+    // the top-level `summary{}` object too. That unstripped timing field
+    // flips 1ms↔2ms run-to-run, so the byte comparison failed even though
+    // the actual clone CONTENT was already stable. Strip timing
+    // recursively (matching the sister `cl1r_determinism_v1::strip_timing`
+    // helper) so EVERY timing location is removed, leaving only content.
+    strip_timing_recursive(&mut v);
     v
+}
+
+/// Recursively remove wall-clock timing keys anywhere in the JSON tree.
+/// Timing is inherently variable and never claimed byte-stable.
+fn strip_timing_recursive(v: &mut Value) {
+    const TIMING_KEYS: &[&str] = &[
+        "detection_time_ms",
+        "scan_time_ms",
+        "analysis_time_ms",
+        "elapsed_ms",
+        "duration_ms",
+        "time_ms",
+        "search_time_ms",
+    ];
+    match v {
+        Value::Object(map) => {
+            for k in TIMING_KEYS {
+                map.remove(*k);
+            }
+            for (_, child) in map.iter_mut() {
+                strip_timing_recursive(child);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr.iter_mut() {
+                strip_timing_recursive(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]

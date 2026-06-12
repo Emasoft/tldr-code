@@ -285,21 +285,50 @@ fn compute_clone_classes_v2(pairs: &[ClonePair]) -> Vec<CloneClass> {
         );
     }
 
-    // Extract components
+    // Extract components.
+    //
+    // fix-fix-clones-det-v1 (v0.5.0 FIX-CLONES-DET): `UnionFind::components()`
+    // returns a `HashMap<usize, Vec<usize>>`, and the prior code walked it
+    // via `for (_root, member_indices) in components`, assigning the
+    // sequential `class_id` in DefaultHasher iteration order (randomized
+    // per-process). That made `clone_classes[]` order — and every class
+    // `id` — non-deterministic run-to-run, so `tldr clones --show-classes`
+    // emitted byte-different JSON on identical input, breaking CI byte-diff
+    // gates and any downstream consumer that hashes the report.
+    //
+    // We now impose a deterministic TOTAL ORDER at this emission boundary
+    // while preserving clone-detection semantics (same set of classes, same
+    // membership — only the order changes):
+    //   1. members within each class are sorted by
+    //      (file path, start_line, length=end_line-start_line),
+    //   2. the dominant-type tally tie-breaks deterministically
+    //      (highest count, then lowest `CloneType` ordinal) rather than
+    //      relying on `HashMap`-order `max_by_key`,
+    //   3. the classes themselves are sorted by their first member's
+    //      (file path, start_line, length), then size, then dominant type,
+    //   4. `id` is assigned sequentially AFTER the sort, so ids are stable.
     let components = uf.components();
+
+    // Stable per-member sort key: (file, start_line, length).
+    fn member_key(f: &CloneFragment) -> (std::path::PathBuf, usize, usize) {
+        (
+            f.file.clone(),
+            f.start_line,
+            f.end_line.saturating_sub(f.start_line),
+        )
+    }
+
     let mut classes: Vec<CloneClass> = Vec::new();
-    let mut class_id = 1;
 
     for (_root, member_indices) in components {
         if member_indices.len() < 2 {
             continue;
         }
 
-        let class_fragments: Vec<CloneFragment> = member_indices
-            .iter()
-            .map(|&i| fragments[i].clone())
-            .collect();
-
+        // Compute aggregate stats over the member set BEFORE reordering the
+        // exported fragments (stats are order-independent, but we keep the
+        // pairwise walk over `member_indices` so the `pair_similarities`
+        // keys still match).
         let mut total_sim = 0.0f64;
         let mut count = 0usize;
         let mut type_counts: HashMap<CloneType, usize> = HashMap::new();
@@ -323,20 +352,53 @@ fn compute_clone_classes_v2(pairs: &[ClonePair]) -> Vec<CloneClass> {
         } else {
             1.0
         };
+
+        // Deterministic dominant type: highest count wins; ties broken by
+        // the lowest `CloneType` ordinal (Type1 < Type2 < Type3) so the
+        // result no longer depends on `HashMap` iteration order.
         let dominant_type = type_counts
-            .into_iter()
-            .max_by_key(|&(_, c)| c)
-            .map(|(t, _)| t)
+            .iter()
+            .max_by(|a, b| {
+                a.1.cmp(b.1)
+                    .then_with(|| (*b.0 as u8).cmp(&(*a.0 as u8)))
+            })
+            .map(|(t, _)| *t)
             .unwrap_or(CloneType::Type1);
 
+        // Members sorted into the deterministic total order.
+        let mut class_fragments: Vec<CloneFragment> = member_indices
+            .iter()
+            .map(|&i| fragments[i].clone())
+            .collect();
+        class_fragments.sort_by(|a, b| member_key(a).cmp(&member_key(b)));
+
         classes.push(CloneClass {
-            id: class_id,
+            id: 0, // assigned after the class-level sort below
             clone_type: dominant_type,
             avg_similarity,
             size: class_fragments.len(),
             fragments: class_fragments,
         });
-        class_id += 1;
+    }
+
+    // Impose a deterministic total order over the classes themselves. The
+    // primary key is the first (already-sorted) member's
+    // (file, start_line, length); a class always has >= 2 members here, so
+    // `fragments[0]` exists. Remaining keys (size, dominant type) only
+    // matter for the degenerate case of two classes sharing a first member,
+    // which cannot happen (a fragment belongs to exactly one class) but are
+    // kept for a fully-defined total order.
+    classes.sort_by(|a, b| {
+        let ka = member_key(&a.fragments[0]);
+        let kb = member_key(&b.fragments[0]);
+        ka.cmp(&kb)
+            .then_with(|| a.size.cmp(&b.size))
+            .then_with(|| (a.clone_type as u8).cmp(&(b.clone_type as u8)))
+    });
+
+    // Assign sequential 1-indexed ids AFTER sorting so ids are stable.
+    for (i, class) in classes.iter_mut().enumerate() {
+        class.id = i + 1;
     }
 
     classes
