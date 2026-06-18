@@ -313,6 +313,7 @@ mod cross_file_call_edge_tests {
             dst_func: "helper".to_string(),
             call_type: CallType::Direct,
             via_import: Some("utils".to_string()),
+            call_line: None,
         };
 
         assert_eq!(edge.src_file, PathBuf::from("src/main.py"));
@@ -332,6 +333,7 @@ mod cross_file_call_edge_tests {
             dst_func: "inner".to_string(),
             call_type: CallType::Intra,
             via_import: None,
+            call_line: None,
         };
 
         // Same file for intra-file calls
@@ -349,6 +351,7 @@ mod cross_file_call_edge_tests {
             dst_func: "User.save".to_string(),
             call_type: CallType::Method,
             via_import: Some("models.user.User".to_string()),
+            call_line: None,
         };
 
         assert_eq!(edge.call_type, CallType::Method);
@@ -364,6 +367,7 @@ mod cross_file_call_edge_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         let edge2 = CrossFileCallEdge {
@@ -373,6 +377,7 @@ mod cross_file_call_edge_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         assert_eq!(edge1, edge2);
@@ -387,6 +392,7 @@ mod cross_file_call_edge_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         let edge2 = edge1.clone();
@@ -407,6 +413,7 @@ mod cross_file_call_edge_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         let edge2 = CrossFileCallEdge {
@@ -416,6 +423,7 @@ mod cross_file_call_edge_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Attr, // Different
             via_import: None,
+            call_line: None,
         };
 
         assert_ne!(edge1, edge2);
@@ -447,6 +455,7 @@ mod project_call_graph_v2_tests {
             dst_func: "helper".to_string(),
             call_type: CallType::Direct,
             via_import: Some("utils".to_string()),
+            call_line: None,
         };
 
         graph.add_edge(edge);
@@ -465,6 +474,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         graph.add_edge(edge.clone());
@@ -484,6 +494,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g1".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         graph.add_edge(CrossFileCallEdge {
@@ -493,6 +504,7 @@ mod project_call_graph_v2_tests {
             dst_func: "h".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         let edges: Vec<_> = graph.edges().collect();
@@ -511,6 +523,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         // c.h -> b.g
@@ -521,6 +534,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         // a.f -> d.i (different target)
@@ -531,6 +545,7 @@ mod project_call_graph_v2_tests {
             dst_func: "i".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         // Query: who calls b.g?
@@ -555,6 +570,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         // a.f -> c.h
@@ -565,6 +581,7 @@ mod project_call_graph_v2_tests {
             dst_func: "h".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         // a.f -> d.i
@@ -575,6 +592,7 @@ mod project_call_graph_v2_tests {
             dst_func: "i".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         });
 
         // Query: what does a.f call?
@@ -621,6 +639,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         graph.add_edge(edge.clone());
@@ -634,6 +653,7 @@ mod project_call_graph_v2_tests {
             dst_func: "w".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         assert!(!graph.contains(&other_edge));
@@ -651,6 +671,7 @@ mod project_call_graph_v2_tests {
             dst_func: "help".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
         };
 
         graph.add_edge(edge);
@@ -683,6 +704,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Direct,
             via_import: Some("b".to_string()),
+            call_line: None,
         });
 
         // Method call to same target
@@ -693,6 +715,7 @@ mod project_call_graph_v2_tests {
             dst_func: "g".to_string(),
             call_type: CallType::Method, // Different call type
             via_import: Some("b".to_string()),
+            call_line: None,
         });
 
         // These should be different edges (call_type differs)

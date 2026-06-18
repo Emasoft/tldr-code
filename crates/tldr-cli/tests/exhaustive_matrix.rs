@@ -1133,9 +1133,11 @@ fn check_explain(lang: &str) {
             "--quiet",
         ],
     );
-    if !json.is_object() || json.get("function_name").is_none() {
+    // cross-command-consistency-v1 (BUG-14, 66fa8bc): explain emits `function`
+    // (was `function_name`) so the field is identical across commands.
+    if !json.is_object() || json.get("function").is_none() {
         panic!(
-            "[explain × {lang}] SILENT_FAIL — missing `function_name` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
+            "[explain × {lang}] SILENT_FAIL — missing `function` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
             truncate(&stdout, 400)
         );
     }
@@ -1181,9 +1183,11 @@ fn check_taint(lang: &str) {
             "--quiet",
         ],
     );
-    if !json.is_object() || json.get("function_name").is_none() {
+    // cross-command-consistency-v1 (BUG-14, 66fa8bc): taint emits `function`
+    // (was `function_name`) so the field is identical across commands.
+    if !json.is_object() || json.get("function").is_none() {
         panic!(
-            "[taint × {lang}] SILENT_FAIL — missing `function_name` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
+            "[taint × {lang}] SILENT_FAIL — missing `function` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
             truncate(&stdout, 400)
         );
     }

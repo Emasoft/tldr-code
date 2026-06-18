@@ -319,6 +319,14 @@ fn lua_explain_m_open_cross_module_callers() {
     if !Path::new(repo).exists() {
         return;
     }
+    // Real-repo-gated per no-synthetic-fixtures-v1: some corpus snapshots
+    // ship only the repo skeleton (the `script/` tree — symlinked as `lua`
+    // — is absent and the snapshot carries no .lua source). Skip if the
+    // target source file is not present — tldr explain would otherwise
+    // fail with rc=5 "file not found".
+    if !Path::new(&format!("{}/script/files.lua", repo)).exists() {
+        return;
+    }
     let (rc, out) = run_tldr_in(
         repo,
         &["explain", "script/files.lua", "m.open", "--format", "json"],

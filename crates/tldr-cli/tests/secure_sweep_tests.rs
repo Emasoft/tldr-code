@@ -113,7 +113,8 @@ def vulnerable(user_input):
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("\"wrapper\": \"secure\""))
-        .stdout(predicate::str::contains("\"path\""));
+        // cross-command-consistency-v1 (BUG-14, 66fa8bc): `root` (was `path`).
+        .stdout(predicate::str::contains("\"root\""));
 }
 
 #[test]
@@ -320,7 +321,8 @@ fn test_secure_json_structure() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("\"wrapper\""))
-        .stdout(predicate::str::contains("\"path\""))
+        // cross-command-consistency-v1 (BUG-14, 66fa8bc): `root` (was `path`).
+        .stdout(predicate::str::contains("\"root\""))
         .stdout(predicate::str::contains("\"findings\""))
         .stdout(predicate::str::contains("\"summary\""))
         .stdout(predicate::str::contains("\"total_elapsed_ms\""));
@@ -440,7 +442,8 @@ fn test_secure_sub_results_structure() {
         "`details` should be absent from secure JSON; got: {stdout}"
     );
     // Required top-level keys per the new contract.
-    for key in ["wrapper", "path", "findings", "summary", "total_elapsed_ms"] {
+    // cross-command-consistency-v1 (BUG-14, 66fa8bc): `root` (was `path`).
+    for key in ["wrapper", "root", "findings", "summary", "total_elapsed_ms"] {
         assert!(
             obj.contains_key(key),
             "secure JSON missing required key `{key}`; got: {stdout}"

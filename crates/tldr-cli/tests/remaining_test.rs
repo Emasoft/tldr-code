@@ -186,7 +186,10 @@ mod remaining_types {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ExplainReport {
-        pub function_name: String,
+        // cross-command-consistency-v1 (BUG-14, 66fa8bc): function name is
+        // emitted in JSON as `function` (was `function_name`).
+        #[serde(rename = "function", alias = "function_name")]
+        pub function: String,
         pub file: String,
         pub line_start: u32,
         pub line_end: u32,
@@ -239,6 +242,9 @@ mod remaining_types {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct SecureReport {
         pub wrapper: String,
+        // cross-command-consistency-v1 (BUG-14, 66fa8bc): analyzed path is
+        // emitted in JSON as `root` (was `path`).
+        #[serde(rename = "root", alias = "path")]
         pub path: String,
         pub findings: Vec<SecureFinding>,
         pub summary: SecureSummary,
@@ -1129,7 +1135,7 @@ mod explain_command {
         let report: ExplainReport =
             serde_json::from_str(&stdout).expect("Should return valid JSON ExplainReport");
 
-        assert_eq!(report.function_name, "calculate_total");
+        assert_eq!(report.function, "calculate_total");
         assert!(
             !report.signature.params.is_empty(),
             "Should have parameters"
@@ -1318,7 +1324,8 @@ mod explain_command {
         let value: Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
 
         // Verify required fields
-        assert!(value.get("function_name").is_some());
+        // cross-command-consistency-v1 (BUG-14, 66fa8bc): `function` (was `function_name`).
+        assert!(value.get("function").is_some());
         assert!(value.get("file").is_some());
         assert!(value.get("line_start").is_some());
         assert!(value.get("signature").is_some());
@@ -1543,7 +1550,8 @@ mod secure_command {
         let value: Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
 
         assert!(value.get("wrapper").is_some());
-        assert!(value.get("path").is_some());
+        // cross-command-consistency-v1 (BUG-14, 66fa8bc): `root` (was `path`).
+        assert!(value.get("root").is_some());
         assert!(value.get("findings").is_some());
         assert!(value.get("summary").is_some());
 
@@ -1777,7 +1785,11 @@ result = len([1, 2, 3])
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sample.py", PYTHON_DEFINITION_SAMPLE);
 
-        // Command gracefully handles invalid positions (returns placeholder, exit 0)
+        // language-coverage-fixes-v1 (P4.BUG-N3, ef5f6cf): out-of-range
+        // positions are validated before parsing and return a typed
+        // `invalid_argument` error (exit 1) instead of the old placeholder
+        // (exit 0). Previously these walked tree-sitter's root node and
+        // echoed the whole source file back through the error message.
         tldr_assert_cmd()
             .args([
                 "definition",
@@ -1786,7 +1798,9 @@ result = len([1, 2, 3])
                 "0",
             ])
             .assert()
-            .success();
+            .failure()
+            .code(1)
+            .stderr(predicate::str::contains("out of range"));
     }
 
     // -------------------------------------------------------------------------

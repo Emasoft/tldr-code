@@ -21,6 +21,7 @@ fn create_simple_call_graph() -> ProjectCallGraph {
         src_func: "main".to_string(),
         dst_file: PathBuf::from("app.py"),
         dst_func: "process".to_string(),
+        call_line: None,
     });
 
     // process() calls helper()
@@ -29,6 +30,7 @@ fn create_simple_call_graph() -> ProjectCallGraph {
         src_func: "process".to_string(),
         dst_file: PathBuf::from("helpers.py"),
         dst_func: "helper".to_string(),
+        call_line: None,
     });
 
     // helper() calls utils()
@@ -37,6 +39,7 @@ fn create_simple_call_graph() -> ProjectCallGraph {
         src_func: "helper".to_string(),
         dst_file: PathBuf::from("utils.py"),
         dst_func: "utils".to_string(),
+        call_line: None,
     });
 
     // process() also calls validate()
@@ -45,6 +48,7 @@ fn create_simple_call_graph() -> ProjectCallGraph {
         src_func: "process".to_string(),
         dst_file: PathBuf::from("validators.py"),
         dst_func: "validate".to_string(),
+        call_line: None,
     });
 
     graph
@@ -62,6 +66,7 @@ fn create_multi_caller_graph() -> ProjectCallGraph {
         src_func: "func_a".to_string(),
         dst_file: PathBuf::from("shared.py"),
         dst_func: "shared".to_string(),
+        call_line: None,
     });
 
     // B() also calls shared()
@@ -70,6 +75,7 @@ fn create_multi_caller_graph() -> ProjectCallGraph {
         src_func: "func_b".to_string(),
         dst_file: PathBuf::from("shared.py"),
         dst_func: "shared".to_string(),
+        call_line: None,
     });
 
     // shared() calls util()
@@ -78,6 +84,7 @@ fn create_multi_caller_graph() -> ProjectCallGraph {
         src_func: "shared".to_string(),
         dst_file: PathBuf::from("util.py"),
         dst_func: "util".to_string(),
+        call_line: None,
     });
 
     graph
@@ -293,6 +300,7 @@ fn test_impact_analysis_with_file_filter() {
         src_func: "process".to_string(),
         dst_file: PathBuf::from("helpers.py"),
         dst_func: "helper".to_string(),
+        call_line: None,
     });
 
     // process() in other.py also calls something
@@ -301,6 +309,7 @@ fn test_impact_analysis_with_file_filter() {
         src_func: "process".to_string(),
         dst_file: PathBuf::from("util.py"),
         dst_func: "util".to_string(),
+        call_line: None,
     });
 
     // Act: Filter by specific file
@@ -334,6 +343,7 @@ fn test_impact_analysis_cyclic_call_detection() {
         src_func: "func_a".to_string(),
         dst_file: PathBuf::from("b.py"),
         dst_func: "func_b".to_string(),
+        call_line: None,
     });
 
     graph.add_edge(CallEdge {
@@ -341,6 +351,7 @@ fn test_impact_analysis_cyclic_call_detection() {
         src_func: "func_b".to_string(),
         dst_file: PathBuf::from("c.py"),
         dst_func: "func_c".to_string(),
+        call_line: None,
     });
 
     // Cycle back to A
@@ -349,6 +360,7 @@ fn test_impact_analysis_cyclic_call_detection() {
         src_func: "func_c".to_string(),
         dst_file: PathBuf::from("a.py"),
         dst_func: "func_a".to_string(),
+        call_line: None,
     });
 
     // Act: Analyze impact starting from func_c
@@ -609,6 +621,7 @@ fn test_impact_file_filter_respects_segment_boundary() {
         src_func: "main".to_string(),
         dst_file: PathBuf::from("helpers.py"),
         dst_func: "helper".to_string(),
+        call_line: None,
     });
 
     graph.add_edge(CallEdge {
@@ -616,6 +629,7 @@ fn test_impact_file_filter_respects_segment_boundary() {
         src_func: "main_d".to_string(),
         dst_file: PathBuf::from("data_helpers.py"),
         dst_func: "helper".to_string(),
+        call_line: None,
     });
 
     let report = impact_analysis(&graph, "helper", 3, Some(&PathBuf::from("helpers.py")))
