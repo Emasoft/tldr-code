@@ -139,7 +139,10 @@ fn test_halstead_info_empty_function() {
 #[test]
 fn test_halstead_info_n2_zero_caps_difficulty() {
     let hal = HalsteadInfo::from_counts(10, 0, 50, 100);
-    assert_eq!(hal.difficulty, 1000.0); // Capped at 1000 when n2=0
+    // AGG13-9 (quality-metrics-and-schema-v1): when n2 == 0 the difficulty
+    // falls back to the operator-only component n1/2 = 10/2, replacing the
+    // old sentinel 1000.0 that made trivial functions dominate aggregates.
+    assert_eq!(hal.difficulty, 5.0);
 }
 
 #[test]

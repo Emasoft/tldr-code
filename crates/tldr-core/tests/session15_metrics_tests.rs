@@ -681,12 +681,17 @@ mod hotspots_tests {
         let options = HotspotsOptions::new();
         let result = analyze_hotspots(temp_dir.path(), &options);
 
-        // Should fail because it's not a git repository
-        assert!(result.is_err(), "Should fail for non-git directory");
-        let err = result.unwrap_err();
+        // Non-git directories no longer error: analyze_hotspots now falls back
+        // to complexity-only scoring (analyze_hotspots_no_git) and surfaces a
+        // warning rather than failing outright. Verify the graceful fallback.
+        let report = result.expect("non-git directory should fall back, not error");
         assert!(
-            err.to_string().contains("Not a git repository"),
-            "Error should mention not a git repository"
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("Not a git repository")),
+            "Warnings should mention not a git repository, got: {:?}",
+            report.warnings
         );
     }
 
