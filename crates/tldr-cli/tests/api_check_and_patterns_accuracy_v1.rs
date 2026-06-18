@@ -19,6 +19,32 @@
 //!    now tracks block-comment state across lines and skips matches that
 //!    live inside a block comment.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -288,7 +314,7 @@ fn test_patterns_skips_default_ignore_dirs() {
 #[test]
 fn test_patterns_real_repo_cpp_tinyxml2() {
     let real_repo = Path::new("/tmp/repos/cpp-tinyxml2");
-    if !real_repo.exists() {
+    if !corpus_ready(real_repo) {
         eprintln!(
             "skipping test_patterns_real_repo_cpp_tinyxml2: {} not present",
             real_repo.display()

@@ -38,6 +38,32 @@
 //! tests in this file. Per-language baseline augmentation (3 tests) is in
 //! `rr_baseline_per_language_test.rs`.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use tldr_core::{Language, TaintInfo, TaintSinkType, TaintSourceType};
 
 #[path = "common/integ_helpers.rs"]

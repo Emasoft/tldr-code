@@ -8,6 +8,32 @@
 //! Note: contracts, specs, invariants, verify, and interface commands live in tldr-cli,
 //! not tldr-core. Those are tested separately in the CLI crate.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -1104,19 +1130,37 @@ fn test_inheritance_typescript() {
 
 #[test]
 fn test_inheritance_cpp_unsupported() {
-    // C++ is NOT in the inheritance module's supported languages.
-    // It falls through to `_ => Vec::new()` in extract_classes match.
-    // Verify graceful handling -- returns 0 classes without error.
+    // C++ inheritance IS now extracted by the inheritance module (the
+    // earlier `_ => Vec::new()` fall-through was replaced with a real
+    // C++ class/base-clause walker — see test_r4_inheritance_cpp_finds_edges).
+    // The fixture is a 3-class hierarchy Base -> Widget -> Button; assert
+    // the classes and edges are found rather than the obsolete 0-count.
     let dir = TempDir::new().unwrap();
     create_file(&dir, "widgets.cpp", fixtures::CPP_INHERITANCE_HIERARCHY);
 
     let opts = InheritanceOptions::default();
     let report = extract_inheritance(dir.path(), Some(Language::Cpp), &opts).unwrap();
 
-    // C++ inheritance extraction is not implemented; should return empty gracefully
     assert_eq!(
-        report.count, 0,
-        "C++ is not supported by inheritance module, should return 0 classes"
+        report.count, 3,
+        "C++ inheritance must extract all 3 classes (Base, Widget, Button); got {}",
+        report.count
+    );
+    assert!(
+        report
+            .edges
+            .iter()
+            .any(|e| e.child == "Widget" && e.parent == "Base"),
+        "Widget should extend Base; edges={:?}",
+        report.edges
+    );
+    assert!(
+        report
+            .edges
+            .iter()
+            .any(|e| e.child == "Button" && e.parent == "Widget"),
+        "Button should extend Widget; edges={:?}",
+        report.edges
     );
 }
 

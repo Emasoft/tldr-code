@@ -18,6 +18,46 @@
 //! Real-repo gated per no-synthetic-fixtures-v1: each test returns early when
 //! its `/tmp/repos/<repo>` corpus is absent.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -57,7 +97,7 @@ const KOTLIN_CORPUS: &str = "/tmp/repos/kotlin-datetime";
 // ============================================================================
 #[test]
 fn go_zero_external_still_emits_external_dependencies_object() {
-    if !Path::new(GO_CORPUS).exists() {
+    if !corpus_ready(GO_CORPUS) {
         eprintln!(
             "[skip] go_zero_external_still_emits_external_dependencies_object: corpus {} not present",
             GO_CORPUS
@@ -111,7 +151,7 @@ fn go_zero_external_still_emits_external_dependencies_object() {
 // ============================================================================
 #[test]
 fn kotlin_populated_external_dependencies_map_is_non_empty() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "[skip] kotlin_populated_external_dependencies_map_is_non_empty: corpus {} not present",
             KOTLIN_CORPUS

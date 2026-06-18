@@ -27,6 +27,43 @@
 use std::path::Path;
 use std::process::Command;
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file, i.e. the corpus working tree is actually checked out. Several CI
+/// / dev environments leave the corpus directories present as empty
+/// skeletons (a `git` clone with no working tree), in which case
+/// `Path::exists()` is `true` but every analysis returns 0 files. These
+/// real-repo tests must skip cleanly in that situation rather than assert
+/// against an empty result. Mirrors the eprintln+return guard convention
+/// used elsewhere in the CLI suite for optional corpora.
+fn corpus_ready(dir: &str) -> bool {
+    fn walk(p: &Path, depth: usize) -> bool {
+        if depth > 6 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = Path::new(dir);
+    root.exists() && walk(root, 0)
+}
+
 fn tldr_bin() -> std::path::PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
         .expect("CARGO_MANIFEST_DIR must be set under cargo test");
@@ -109,7 +146,7 @@ const KT_CORPUS: &str = "/tmp/repos/kotlin-datetime";
 
 #[test]
 fn kotlin_stdlib_classified_as_stdlib() {
-    if !Path::new(KT_CORPUS).exists() {
+    if !corpus_ready(KT_CORPUS) {
         eprintln!("[skip] {} not present", KT_CORPUS);
         return;
     }
@@ -129,7 +166,7 @@ fn kotlin_stdlib_classified_as_stdlib() {
 
 #[test]
 fn kotlin_non_stdlib_still_external() {
-    if !Path::new(KT_CORPUS).exists() {
+    if !corpus_ready(KT_CORPUS) {
         eprintln!("[skip] {} not present", KT_CORPUS);
         return;
     }
@@ -155,7 +192,7 @@ const CS_CORPUS: &str = "/tmp/repos/csharp-newtonsoft-bson";
 
 #[test]
 fn csharp_stdlib_classified_as_stdlib() {
-    if !Path::new(CS_CORPUS).exists() {
+    if !corpus_ready(CS_CORPUS) {
         eprintln!("[skip] {} not present", CS_CORPUS);
         return;
     }
@@ -173,7 +210,7 @@ fn csharp_stdlib_classified_as_stdlib() {
 
 #[test]
 fn csharp_non_stdlib_still_external() {
-    if !Path::new(CS_CORPUS).exists() {
+    if !corpus_ready(CS_CORPUS) {
         eprintln!("[skip] {} not present", CS_CORPUS);
         return;
     }
@@ -198,7 +235,7 @@ const SCALA_CORPUS: &str = "/tmp/repos/scala-cats-effect";
 
 #[test]
 fn scala_stdlib_classified_as_stdlib() {
-    if !Path::new(SCALA_CORPUS).exists() {
+    if !corpus_ready(SCALA_CORPUS) {
         eprintln!("[skip] {} not present", SCALA_CORPUS);
         return;
     }
@@ -216,7 +253,7 @@ fn scala_stdlib_classified_as_stdlib() {
 
 #[test]
 fn scala_non_stdlib_still_external() {
-    if !Path::new(SCALA_CORPUS).exists() {
+    if !corpus_ready(SCALA_CORPUS) {
         eprintln!("[skip] {} not present", SCALA_CORPUS);
         return;
     }
@@ -240,7 +277,7 @@ const ELIXIR_CORPUS: &str = "/tmp/repos/elixir-plug";
 
 #[test]
 fn elixir_stdlib_classified_as_stdlib() {
-    if !Path::new(ELIXIR_CORPUS).exists() {
+    if !corpus_ready(ELIXIR_CORPUS) {
         eprintln!("[skip] {} not present", ELIXIR_CORPUS);
         return;
     }
@@ -262,7 +299,7 @@ fn elixir_stdlib_classified_as_stdlib() {
 
 #[test]
 fn elixir_non_stdlib_or_skip() {
-    if !Path::new(ELIXIR_CORPUS).exists() {
+    if !corpus_ready(ELIXIR_CORPUS) {
         eprintln!("[skip] {} not present", ELIXIR_CORPUS);
         return;
     }
@@ -291,7 +328,7 @@ const OCAML_CORPUS: &str = "/tmp/repos/ocaml-dune";
 
 #[test]
 fn ocaml_stdlib_classified_as_stdlib() {
-    if !Path::new(OCAML_CORPUS).exists() {
+    if !corpus_ready(OCAML_CORPUS) {
         eprintln!("[skip] {} not present", OCAML_CORPUS);
         return;
     }
@@ -313,7 +350,7 @@ fn ocaml_stdlib_classified_as_stdlib() {
 
 #[test]
 fn ocaml_non_stdlib_still_external() {
-    if !Path::new(OCAML_CORPUS).exists() {
+    if !corpus_ready(OCAML_CORPUS) {
         eprintln!("[skip] {} not present", OCAML_CORPUS);
         return;
     }
@@ -338,7 +375,7 @@ const PHP_CORPUS: &str = "/tmp/repos/php-symfony-console";
 
 #[test]
 fn php_stdlib_classified_as_stdlib() {
-    if !Path::new(PHP_CORPUS).exists() {
+    if !corpus_ready(PHP_CORPUS) {
         eprintln!("[skip] {} not present", PHP_CORPUS);
         return;
     }
@@ -364,7 +401,7 @@ fn php_stdlib_classified_as_stdlib() {
 
 #[test]
 fn php_non_stdlib_still_external() {
-    if !Path::new(PHP_CORPUS).exists() {
+    if !corpus_ready(PHP_CORPUS) {
         eprintln!("[skip] {} not present", PHP_CORPUS);
         return;
     }
@@ -389,7 +426,7 @@ const RUBY_CORPUS: &str = "/tmp/repos/ruby-rubocop";
 
 #[test]
 fn ruby_stdlib_classified_as_stdlib() {
-    if !Path::new(RUBY_CORPUS).exists() {
+    if !corpus_ready(RUBY_CORPUS) {
         eprintln!("[skip] {} not present", RUBY_CORPUS);
         return;
     }
@@ -410,7 +447,7 @@ fn ruby_stdlib_classified_as_stdlib() {
 
 #[test]
 fn ruby_non_stdlib_still_external() {
-    if !Path::new(RUBY_CORPUS).exists() {
+    if !corpus_ready(RUBY_CORPUS) {
         eprintln!("[skip] {} not present", RUBY_CORPUS);
         return;
     }
@@ -434,7 +471,7 @@ const LUA_CORPUS: &str = "/tmp/repos/lua-lsp";
 
 #[test]
 fn lua_stdlib_classified_as_stdlib() {
-    if !Path::new(LUA_CORPUS).exists() {
+    if !corpus_ready(LUA_CORPUS) {
         eprintln!("[skip] {} not present", LUA_CORPUS);
         return;
     }
@@ -455,7 +492,7 @@ fn lua_stdlib_classified_as_stdlib() {
 
 #[test]
 fn lua_non_stdlib_still_external() {
-    if !Path::new(LUA_CORPUS).exists() {
+    if !corpus_ready(LUA_CORPUS) {
         eprintln!("[skip] {} not present", LUA_CORPUS);
         return;
     }
@@ -480,7 +517,7 @@ const SWIFT_CORPUS: &str = "/tmp/repos/swift-collections";
 
 #[test]
 fn swift_stdlib_classified_as_stdlib() {
-    if !Path::new(SWIFT_CORPUS).exists() {
+    if !corpus_ready(SWIFT_CORPUS) {
         eprintln!("[skip] {} not present", SWIFT_CORPUS);
         return;
     }
@@ -505,7 +542,7 @@ fn swift_stdlib_classified_as_stdlib() {
 
 #[test]
 fn swift_non_stdlib_still_external() {
-    if !Path::new(SWIFT_CORPUS).exists() {
+    if !corpus_ready(SWIFT_CORPUS) {
         eprintln!("[skip] {} not present", SWIFT_CORPUS);
         return;
     }
@@ -531,7 +568,7 @@ const JS_CORPUS: &str = "/tmp/repos/js-express";
 
 #[test]
 fn js_node_builtin_classified_as_stdlib() {
-    if !Path::new(JS_CORPUS).exists() {
+    if !corpus_ready(JS_CORPUS) {
         eprintln!("[skip] {} not present", JS_CORPUS);
         return;
     }
@@ -556,7 +593,7 @@ fn js_node_builtin_classified_as_stdlib() {
 
 #[test]
 fn js_npm_package_still_external() {
-    if !Path::new(JS_CORPUS).exists() {
+    if !corpus_ready(JS_CORPUS) {
         eprintln!("[skip] {} not present", JS_CORPUS);
         return;
     }
@@ -582,7 +619,7 @@ fn js_npm_package_still_external() {
 #[test]
 fn python_flask_externals_non_regression() {
     let corpus = "/tmp/repos/python-flask";
-    if !Path::new(corpus).exists() {
+    if !corpus_ready(corpus) {
         eprintln!("[skip] {} not present", corpus);
         return;
     }
@@ -601,7 +638,7 @@ fn python_flask_externals_non_regression() {
 #[test]
 fn go_httprouter_externals_non_regression() {
     let corpus = "/tmp/repos/go-httprouter";
-    if !Path::new(corpus).exists() {
+    if !corpus_ready(corpus) {
         eprintln!("[skip] {} not present", corpus);
         return;
     }

@@ -15,6 +15,46 @@
 //! exact AST shapes (functor parameters, multi-clause defs, `app.method
 //! = function name() {}`) the bugs depend on.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::path::Path;
@@ -31,7 +71,7 @@ fn run_tldr_json(args: &[&str]) -> Option<Value> {
 }
 
 fn require_repo(path: &str) -> bool {
-    Path::new(path).exists()
+    corpus_ready(path)
 }
 
 // =============================================================================
@@ -75,7 +115,7 @@ fn test_calls_ocaml_functor_body_resolved() {
 fn test_calls_ocaml_functor_baseline_consistent() {
     let dir = "/tmp/repos/ocaml-dune/src/dag";
     let file = "/tmp/repos/ocaml-dune/src/dag/dag.ml";
-    if !require_repo(dir) || !Path::new(file).exists() {
+    if !require_repo(dir) || !corpus_ready(file) {
         return;
     }
 
@@ -173,7 +213,7 @@ fn test_impact_js_commonjs_method_assignment() {
 #[test]
 fn test_explain_js_commonjs_callers() {
     let app_file = "/tmp/repos/express/lib/application.js";
-    if !Path::new(app_file).exists() {
+    if !corpus_ready(app_file) {
         return;
     }
 
@@ -255,7 +295,7 @@ fn test_deps_elixir_resolves_alias() {
 #[test]
 fn test_slice_elixir_returns_lines() {
     let file = "/tmp/repos/elixir-plug/lib/plug/conn.ex";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
 
@@ -283,7 +323,7 @@ fn test_slice_elixir_returns_lines() {
 #[test]
 fn test_interface_ocaml_module_name_populated() {
     let file = "/tmp/repos/ocaml-dune/src/dag/dag.ml";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
 
@@ -324,7 +364,7 @@ fn test_interface_ocaml_module_name_populated() {
 #[test]
 fn test_interface_ocaml_io_buffer_unchanged() {
     let file = "/tmp/repos/ocaml-dune/src/rpc/io_buffer.ml";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
 

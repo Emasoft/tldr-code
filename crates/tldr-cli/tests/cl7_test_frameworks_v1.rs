@@ -21,6 +21,46 @@
 //! each framework produced `total_specs == 0` (and for OCaml/Scala, the test
 //! functions themselves weren't even recognised).
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -77,7 +117,7 @@ fn specs_test_functions(dir: &str) -> u64 {
 #[test]
 fn jest_expect_member_assertions_yield_specs() {
     let dir = "/tmp/tldr_corpora/typescript-nest/sample/01-cats-app";
-    if !Path::new(dir).exists() {
+    if !corpus_ready(dir) {
         return skip("jest: typescript-nest corpus missing");
     }
     let total = specs_total(dir);
@@ -93,7 +133,7 @@ fn jest_expect_member_assertions_yield_specs() {
 #[test]
 fn xctest_expectequal_assertions_yield_specs() {
     let dir = "/tmp/tldr_corpora/swift-collections/Tests/SortedCollectionsTests/SortedSet";
-    if !Path::new(dir).exists() {
+    if !corpus_ready(dir) {
         return skip("xctest: swift-collections corpus missing");
     }
     let total = specs_total(dir);
@@ -111,7 +151,7 @@ fn xctest_expectequal_assertions_yield_specs() {
 #[test]
 fn rspec_expect_to_assertions_yield_specs() {
     let dir = "/tmp/tldr_corpora/ruby-rubocop/spec/tasks";
-    if !Path::new(dir).exists() {
+    if !corpus_ready(dir) {
         return skip("rspec: ruby-rubocop corpus missing");
     }
     let total = specs_total(dir);
@@ -132,7 +172,7 @@ fn scala_munit_property_and_asserts_yield_specs() {
     // ScalaCheck `property("...") { ... assertEquals(fut(x), y) }` suites.
     let dir =
         "/tmp/tldr_corpora/scala-cats-effect/tests/shared/src/test/scala/cats/effect/std/internal";
-    if !Path::new(dir).exists() {
+    if !corpus_ready(dir) {
         return skip("scala: cats-effect corpus missing");
     }
     // The `property(...)` blocks must be recognised as test functions.
@@ -157,7 +197,7 @@ fn scala_munit_property_and_asserts_yield_specs() {
 #[test]
 fn ocaml_dune_expect_tests_yield_specs() {
     let dir = "/tmp/tldr_corpora/ocaml-dune/test/expect-tests";
-    if !Path::new(dir).exists() {
+    if !corpus_ready(dir) {
         return skip("ocaml: dune corpus missing");
     }
     // `let%expect_test` / `let%test` blocks must be recognised as tests.
@@ -181,13 +221,13 @@ fn ocaml_dune_expect_tests_yield_specs() {
 #[test]
 fn invariants_cross_framework_observations_nonzero() {
     let test_dir = "/tmp/tldr_corpora/typescript-nest/sample/01-cats-app";
-    if !Path::new(test_dir).exists() {
+    if !corpus_ready(test_dir) {
         return skip("invariants: typescript-nest corpus missing");
     }
     // invariants needs a source file argument; any source file in the project
     // works since observations are gathered from the --from-tests path.
     let src = "/tmp/tldr_corpora/typescript-nest/sample/01-cats-app/src/cats/cats.service.ts";
-    if !Path::new(src).exists() {
+    if !corpus_ready(src) {
         return skip("invariants: source file missing");
     }
     let (code, stdout, stderr) = run_tldr(&[

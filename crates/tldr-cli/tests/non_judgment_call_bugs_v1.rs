@@ -74,6 +74,46 @@
 //! presence (`/tmp/repos/<repo>`) and uses numeric thresholds the
 //! canonical real-repo material guarantees.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -109,7 +149,7 @@ fn parse_json(out: &str) -> serde_json::Value {
 
 #[test]
 fn agg17_1_scala_importers_no_package_decl_false_positive() {
-    if !Path::new("/tmp/repos/scala-cats-effect").exists() {
+    if !corpus_ready("/tmp/repos/scala-cats-effect") {
         return;
     }
     let (exit, out) = run_tldr(&[
@@ -136,7 +176,7 @@ fn agg17_1_non_regression_scala_real_subpath_query() {
     // for `cats.effect` MUST still find files that `import
     // cats.effect.kernel.Resource.Pure` etc. via the forward-prefix
     // rule (`import_module.starts_with("{}.", target)`).
-    if !Path::new("/tmp/repos/scala-cats-effect").exists() {
+    if !corpus_ready("/tmp/repos/scala-cats-effect") {
         return;
     }
     let (exit, out) = run_tldr(&[
@@ -161,7 +201,7 @@ fn agg17_1_non_regression_scala_real_subpath_query() {
 fn agg17_1_non_regression_java_bare_class_name() {
     // Verify P15-C AGG15-3 (java importers Owner) still works after the
     // matcher tightening for top-level wildcards.
-    if !Path::new("/tmp/repos/spring-petclinic").exists() {
+    if !corpus_ready("/tmp/repos/spring-petclinic") {
         return;
     }
     let (exit, out) = run_tldr(&[
@@ -186,7 +226,7 @@ fn agg17_1_non_regression_java_bare_class_name() {
 fn agg17_1_non_regression_kotlin_importers() {
     // Kotlin shares the matcher with scala/java; pin a sanity check to
     // catch any cross-language regression.
-    if !Path::new("/tmp/repos/kotlin-datetime").exists() {
+    if !corpus_ready("/tmp/repos/kotlin-datetime") {
         return;
     }
     let (exit, out) = run_tldr(&[
@@ -212,7 +252,7 @@ fn agg17_1_non_regression_kotlin_importers() {
 
 #[test]
 fn agg17_4_lua_halstead_aggregate_consistent() {
-    if !Path::new("/tmp/repos/lua-lsp/script/files.lua").exists() {
+    if !corpus_ready("/tmp/repos/lua-lsp/script/files.lua") {
         return;
     }
     let (exit, out) = run_tldr(&[
@@ -268,7 +308,7 @@ fn agg17_4_non_regression_halstead_summary_other_langs() {
         ),
     ];
     for (path, lang) in pairs {
-        if !Path::new(path).exists() {
+        if !corpus_ready(path) {
             continue;
         }
         let (exit, out) = run_tldr(&["halstead", path, "--format", "json"]);
@@ -299,7 +339,7 @@ fn agg17_4_non_regression_halstead_summary_other_langs() {
 
 #[test]
 fn agg17_5_scala_clones_has_summary_key() {
-    if !Path::new("/tmp/repos/scala-cats-effect").exists() {
+    if !corpus_ready("/tmp/repos/scala-cats-effect") {
         return;
     }
     let (exit, out) = run_tldr(&[
@@ -340,7 +380,7 @@ fn agg17_5_non_regression_clones_summary_multi_lang() {
         ("/tmp/repos/c-sds", "c"),
     ];
     for (dir, lang) in dirs {
-        if !Path::new(dir).exists() {
+        if !corpus_ready(dir) {
             continue;
         }
         let (exit, out) = run_tldr(&["clones", dir, "--format", "json"]);
@@ -365,7 +405,7 @@ fn agg17_5_non_regression_clones_summary_multi_lang() {
 #[test]
 fn agg17_6_kotlin_chop_within_bounds_does_not_say_outside() {
     let kt = "/tmp/repos/kotlin-datetime/core/common/src/DateTimePeriod.kt";
-    if !Path::new(kt).exists() {
+    if !corpus_ready(kt) {
         return;
     }
     // First confirm explain reports the function bounds.
@@ -414,7 +454,7 @@ fn agg17_6_chop_outside_bounds_still_reports_outside() {
     // The fix must NOT silence the legitimate "outside function"
     // diagnostic when the line truly is outside the function bounds.
     let py = "/tmp/repos/flask/src/flask/app.py";
-    if !Path::new(py).exists() {
+    if !corpus_ready(py) {
         return;
     }
     let (exit_e, out_e) = run_tldr(&[
@@ -468,7 +508,7 @@ fn agg17_6_chop_outside_bounds_still_reports_outside() {
 #[test]
 fn agg17_2_ts_explain_callees_no_newlines() {
     let ts = "/tmp/repos/ts-dom-gen/src/build/emitter.ts";
-    if !Path::new(ts).exists() {
+    if !corpus_ready(ts) {
         return;
     }
     let (exit, out) = run_tldr(&["explain", ts, "emitWebIdl", "--format", "json"]);
@@ -506,7 +546,7 @@ fn agg17_2_ts_explain_callees_no_newlines() {
 #[test]
 fn agg17_2_non_regression_js_explain_callees_clean() {
     let js = "/tmp/repos/express/lib/application.js";
-    if !Path::new(js).exists() {
+    if !corpus_ready(js) {
         return;
     }
     let (exit, out) = run_tldr(&["explain", js, "render", "--format", "json"]);
@@ -537,7 +577,7 @@ fn agg17_2_non_regression_swift_explain_callees_no_corruption() {
     // fallbacks add a `navigation_expression` arm — verify swift
     // didn't regress.
     let swift = "/tmp/repos/swift-collections/Benchmarks/Sources/benchmark-tool/main.swift";
-    if !Path::new(swift).exists() {
+    if !corpus_ready(swift) {
         return;
     }
     let (exit, out) = run_tldr(&["structure", swift, "--format", "json"]);
@@ -589,7 +629,7 @@ fn agg17_2_non_regression_swift_explain_callees_no_corruption() {
 fn agg17_3_python_coupling_cross_module_edges() {
     let a = "/tmp/repos/flask/src/flask/app.py";
     let b = "/tmp/repos/flask/src/flask/sansio/app.py";
-    if !Path::new(a).exists() || !Path::new(b).exists() {
+    if !corpus_ready(a) || !corpus_ready(b) {
         return;
     }
     let (exit, out) = run_tldr(&["coupling", a, b, "--format", "json"]);
@@ -634,7 +674,7 @@ fn agg17_3_non_regression_java_coupling_param_typed() {
     // (parameter-typed method receivers) returns ≥ 5 cross-calls.
     let oc = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
     let o = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/Owner.java";
-    if !Path::new(oc).exists() || !Path::new(o).exists() {
+    if !corpus_ready(oc) || !corpus_ready(o) {
         return;
     }
     let (exit, out) = run_tldr(&["coupling", oc, o, "--format", "json"]);
@@ -657,7 +697,7 @@ fn agg17_3_non_regression_no_intra_file_double_count() {
     // narrow file pair from the same dir must have a sane count.
     let a = "/tmp/repos/express/lib/application.js";
     let b = "/tmp/repos/express/lib/express.js";
-    if !Path::new(a).exists() || !Path::new(b).exists() {
+    if !corpus_ready(a) || !corpus_ready(b) {
         return;
     }
     let (exit, out) = run_tldr(&["coupling", a, b, "--format", "json"]);

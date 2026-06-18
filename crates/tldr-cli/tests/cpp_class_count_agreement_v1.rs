@@ -52,6 +52,46 @@
 //! Real-repo gated per no-synthetic-fixtures-v1: each test returns
 //! early when its `/tmp/repos/<repo>` corpus is absent.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -94,7 +134,7 @@ const CORPUS_DIR: &str = "/tmp/repos/cpp-tinyxml2";
 // ============================================================================
 #[test]
 fn cpp_health_cohesion_agree_on_directory() {
-    if !Path::new(CORPUS_DIR).exists() {
+    if !corpus_ready(CORPUS_DIR) {
         eprintln!(
             "[skip] cpp_health_cohesion_agree_on_directory: corpus {} \
              not present",
@@ -173,7 +213,7 @@ fn cpp_health_cohesion_agree_on_directory() {
 // ============================================================================
 #[test]
 fn cpp_cohesion_lang_cpp_includes_headers() {
-    if !Path::new(CORPUS_DIR).exists() {
+    if !corpus_ready(CORPUS_DIR) {
         eprintln!(
             "[skip] cpp_cohesion_lang_cpp_includes_headers: corpus {} \
              not present",
@@ -226,7 +266,7 @@ fn cpp_cohesion_lang_cpp_includes_headers() {
 #[test]
 fn cpp_health_cohesion_agree_on_header_file() {
     let file = "/tmp/repos/cpp-tinyxml2/tinyxml2.h";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         eprintln!(
             "[skip] cpp_health_cohesion_agree_on_header_file: corpus \
              {} not present",
@@ -315,7 +355,7 @@ fn cpp_health_cohesion_agree_on_header_file() {
 // ============================================================================
 #[test]
 fn cpp_structure_ge_cohesion_on_directory() {
-    if !Path::new(CORPUS_DIR).exists() {
+    if !corpus_ready(CORPUS_DIR) {
         eprintln!(
             "[skip] cpp_structure_ge_cohesion_on_directory: corpus {} \
              not present",

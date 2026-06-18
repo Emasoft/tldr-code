@@ -25,8 +25,11 @@ fn test_file_structure_definitions_default_empty() {
 }
 
 #[test]
-fn test_file_structure_definitions_skip_when_empty() {
-    // When definitions is empty, it should NOT appear in serialized JSON
+fn test_file_structure_definitions_always_emitted_when_empty() {
+    // schema-cleanup: `definitions` is now ALWAYS emitted (the old
+    // `skip_serializing_if = "Vec::is_empty"` was removed) so downstream
+    // consumers see a stable shape — `definitions: []` rather than an
+    // absent key.
     let fs = FileStructure {
         path: std::path::PathBuf::from("test.py"),
         functions: vec!["foo".to_string()],
@@ -38,8 +41,8 @@ fn test_file_structure_definitions_skip_when_empty() {
     };
     let json = serde_json::to_string(&fs).unwrap();
     assert!(
-        !json.contains("definitions"),
-        "Empty definitions should be skipped in JSON"
+        json.contains("\"definitions\":[]"),
+        "Empty definitions should be emitted as [] for stable shape, got: {json}"
     );
 }
 

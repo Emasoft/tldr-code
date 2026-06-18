@@ -41,6 +41,32 @@
 //! stays portable across CI environments that haven't cloned the
 //! reference fixtures.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::path::Path;
@@ -66,7 +92,7 @@ fn run_json(args: &[&str]) -> Option<Value> {
 #[test]
 fn test_m112_c_surface_no_comment_or_attribute_garbage() {
     let corpus = Path::new("/tmp/repos/c-sds");
-    if !corpus.exists() {
+    if !corpus_ready(&corpus) {
         eprintln!(
             "skipping test_m112_c_surface_no_comment_or_attribute_garbage: \
              corpus {} missing",
@@ -274,7 +300,7 @@ fn test_m112_cpp_surface_no_dot_prefix_or_doc_comment_leakage() {
 #[test]
 fn test_m112_ruby_inheritance_no_lt_token_as_parent() {
     let corpus = Path::new("/tmp/repos/ruby-rubocop");
-    if !corpus.exists() {
+    if !corpus_ready(&corpus) {
         eprintln!(
             "skipping test_m112_ruby_inheritance_no_lt_token_as_parent: \
              corpus {} missing",
@@ -343,7 +369,7 @@ fn test_m112_ruby_inheritance_no_lt_token_as_parent() {
 #[test]
 fn test_m112_swift_surface_no_null_name_or_line() {
     let corpus = Path::new("/tmp/repos/swift-collections");
-    if !corpus.exists() {
+    if !corpus_ready(&corpus) {
         eprintln!(
             "skipping test_m112_swift_surface_no_null_name_or_line: \
              corpus {} missing",

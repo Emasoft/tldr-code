@@ -47,6 +47,46 @@
 //! presence (`/tmp/repos/<repo>`) and uses numeric thresholds the
 //! canonical real-repo material guarantees.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -88,7 +128,7 @@ fn parse_json(out: &str) -> serde_json::Value {
 #[test]
 fn cpp_h_sibling_resolves_to_cpp_with_classes() {
     let file = "/tmp/repos/cpp-tinyxml2/tinyxml2.h";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["extract", file, "--format", "json"]);
@@ -122,7 +162,7 @@ fn cpp_h_sibling_resolves_to_cpp_with_classes() {
 #[test]
 fn java_importers_bare_class_name_resolves() {
     let repo = "/tmp/repos/spring-petclinic";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["importers", "Owner", repo, "--format", "json"]);
@@ -146,7 +186,7 @@ fn java_importers_bare_class_name_resolves() {
 #[test]
 fn java_importers_fqn_still_resolves() {
     let repo = "/tmp/repos/spring-petclinic";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&[
@@ -190,7 +230,7 @@ fn java_importers_fqn_still_resolves() {
 #[test]
 fn scala_importers_cats_effect_io_resolves() {
     let repo = "/tmp/repos/scala-cats-effect";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["importers", "cats.effect.IO", repo, "--format", "json"]);
@@ -216,7 +256,7 @@ fn scala_importers_cats_effect_io_resolves() {
 #[test]
 fn scala_importers_cats_effect_kernel_resolves() {
     let repo = "/tmp/repos/scala-cats-effect";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["importers", "cats.effect.kernel", repo, "--format", "json"]);
@@ -250,7 +290,7 @@ fn patterns_schema_no_top_level_patterns_key_across_langs() {
         ("/tmp/repos/ripgrep", "rust"),
     ];
     for (repo, lang) in cases {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["patterns", repo, "--format", "json"]);
@@ -301,7 +341,7 @@ fn smells_top_level_total_mirrors_summary_across_langs() {
         ("/tmp/repos/cpp-tinyxml2", "cpp"),
     ];
     for (repo, lang) in repos {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["smells", repo, "--format", "json"]);
@@ -336,7 +376,7 @@ fn debt_top_level_minutes_mirrors_summary_across_langs() {
         ("/tmp/repos/scala-cats-effect", "scala"),
     ];
     for (repo, lang) in repos {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["debt", repo, "--format", "json"]);
@@ -366,7 +406,7 @@ fn loc_top_level_files_mirrors_summary_across_langs() {
         ("/tmp/repos/flask", "python"),
     ];
     for (repo, lang) in repos {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["loc", repo, "--format", "json"]);
@@ -397,7 +437,7 @@ fn api_check_top_level_findings_mirrors_summary_across_langs() {
         ("/tmp/repos/ts-dom-gen", "typescript"),
     ];
     for (repo, lang) in repos {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["api-check", repo, "--format", "json"]);
@@ -428,7 +468,7 @@ fn clones_top_level_total_mirrors_stats_across_langs() {
         ("/tmp/repos/scala-cats-effect", "scala"),
     ];
     for (repo, lang) in repos {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["clones", repo, "--format", "json"]);
@@ -464,7 +504,7 @@ fn clones_top_level_total_mirrors_stats_across_langs() {
 #[test]
 fn ts_dead_walks_into_src_build_dir() {
     let repo = "/tmp/repos/ts-dom-gen";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["dead", repo, "--format", "json"]);
@@ -495,7 +535,7 @@ fn ts_dead_walks_into_src_build_dir() {
 #[test]
 fn ts_dead_non_build_path_unaffected() {
     let path = "/tmp/repos/ts-dom-gen/src/build/emitter.ts";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["dead", path, "--format", "json"]);
@@ -524,7 +564,7 @@ fn dead_other_langs_unaffected_by_walker_hint() {
         ("/tmp/repos/spring-petclinic", "java", 50u64),
     ];
     for (repo, lang, min_funcs) in cases {
-        if !Path::new(repo).exists() {
+        if !corpus_ready(repo) {
             continue;
         }
         let (rc, out) = run_tldr(&["dead", repo, "--format", "json"]);

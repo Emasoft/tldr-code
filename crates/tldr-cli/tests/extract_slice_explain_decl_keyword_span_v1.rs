@@ -33,6 +33,46 @@
 //! scala (`@deprecated`), swift (`@inlinable`). 12 assertions
 //! (4 langs × 3 commands).
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -124,7 +164,7 @@ fn parse_slice_min_line(stdout: &str) -> Option<u32> {
 
 #[test]
 fn extract_java_method_decl_keyword_line() {
-    if !Path::new(PETCLINIC_CORPUS).exists() {
+    if !corpus_ready(PETCLINIC_CORPUS) {
         eprintln!("[skip] java extract: corpus missing");
         return;
     }
@@ -145,7 +185,7 @@ fn extract_java_method_decl_keyword_line() {
 
 #[test]
 fn slice_java_method_decl_keyword_line() {
-    if !Path::new(PETCLINIC_CORPUS).exists() {
+    if !corpus_ready(PETCLINIC_CORPUS) {
         eprintln!("[skip] java slice: corpus missing");
         return;
     }
@@ -169,7 +209,7 @@ fn slice_java_method_decl_keyword_line() {
 
 #[test]
 fn explain_java_method_decl_keyword_line() {
-    if !Path::new(PETCLINIC_CORPUS).exists() {
+    if !corpus_ready(PETCLINIC_CORPUS) {
         eprintln!("[skip] java explain: corpus missing");
         return;
     }
@@ -196,7 +236,7 @@ fn explain_java_method_decl_keyword_line() {
 
 #[test]
 fn extract_kotlin_function_decl_keyword_line() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!("[skip] kotlin extract: corpus missing");
         return;
     }
@@ -214,7 +254,7 @@ fn extract_kotlin_function_decl_keyword_line() {
 
 #[test]
 fn slice_kotlin_function_decl_keyword_line() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!("[skip] kotlin slice: corpus missing");
         return;
     }
@@ -233,7 +273,7 @@ fn slice_kotlin_function_decl_keyword_line() {
 
 #[test]
 fn explain_kotlin_function_decl_keyword_line() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!("[skip] kotlin explain: corpus missing");
         return;
     }
@@ -258,7 +298,7 @@ fn explain_kotlin_function_decl_keyword_line() {
 
 #[test]
 fn extract_scala_method_decl_keyword_line() {
-    if !Path::new(SCALA_CORPUS).exists() {
+    if !corpus_ready(SCALA_CORPUS) {
         eprintln!("[skip] scala extract: corpus missing");
         return;
     }
@@ -313,7 +353,7 @@ fn extract_scala_method_decl_keyword_line() {
 
 #[test]
 fn slice_scala_method_decl_keyword_line() {
-    if !Path::new(SCALA_CORPUS).exists() {
+    if !corpus_ready(SCALA_CORPUS) {
         eprintln!("[skip] scala slice: corpus missing");
         return;
     }
@@ -336,7 +376,7 @@ fn slice_scala_method_decl_keyword_line() {
 
 #[test]
 fn explain_scala_method_decl_keyword_line() {
-    if !Path::new(SCALA_CORPUS).exists() {
+    if !corpus_ready(SCALA_CORPUS) {
         eprintln!("[skip] scala explain: corpus missing");
         return;
     }
@@ -363,7 +403,7 @@ fn explain_scala_method_decl_keyword_line() {
 
 #[test]
 fn extract_swift_method_decl_keyword_line() {
-    if !Path::new(SWIFT_CORPUS).exists() {
+    if !corpus_ready(SWIFT_CORPUS) {
         eprintln!("[skip] swift extract: corpus missing");
         return;
     }
@@ -384,7 +424,7 @@ fn extract_swift_method_decl_keyword_line() {
 
 #[test]
 fn slice_swift_method_decl_keyword_line() {
-    if !Path::new(SWIFT_CORPUS).exists() {
+    if !corpus_ready(SWIFT_CORPUS) {
         eprintln!("[skip] swift slice: corpus missing");
         return;
     }
@@ -413,7 +453,7 @@ fn slice_swift_method_decl_keyword_line() {
 
 #[test]
 fn explain_swift_method_decl_keyword_line() {
-    if !Path::new(SWIFT_CORPUS).exists() {
+    if !corpus_ready(SWIFT_CORPUS) {
         eprintln!("[skip] swift explain: corpus missing");
         return;
     }

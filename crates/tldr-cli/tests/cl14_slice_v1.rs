@@ -45,6 +45,32 @@
 //!   5. backward != forward (direction is actually honored — the bug made
 //!      them identical).
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::process::Command;
 
 /// Swift corpus: `_HeapNode.swift` `init(offset:level:)` spans lines 23-30 as
@@ -181,6 +207,10 @@ fn assert_forward_excludes_before(file: &str, function: &str, criterion: u32, la
 
 #[test]
 fn swift_backward_slice_excludes_statements_after_criterion() {
+    if !corpus_ready(SWIFT_FILE) {
+        eprintln!("[skip] swift slice: corpus file not present");
+        return;
+    }
     // Criterion line 28 (`self.offset = offset`). Line 29 (`self.level = level`)
     // runs after it and must be excluded from the backward slice.
     assert_backward_excludes_after(SWIFT_FILE, "init", 28, "swift/_HeapNode.init");
@@ -188,6 +218,10 @@ fn swift_backward_slice_excludes_statements_after_criterion() {
 
 #[test]
 fn swift_forward_slice_excludes_statements_before_criterion() {
+    if !corpus_ready(SWIFT_FILE) {
+        eprintln!("[skip] swift slice: corpus file not present");
+        return;
+    }
     // Criterion line 29 (`self.level = level`). Lines 24/26/28 run before it
     // and must be excluded from the forward slice.
     assert_forward_excludes_before(SWIFT_FILE, "init", 29, "swift/_HeapNode.init");
@@ -195,6 +229,10 @@ fn swift_forward_slice_excludes_statements_before_criterion() {
 
 #[test]
 fn swift_backward_and_forward_differ() {
+    if !corpus_ready(SWIFT_FILE) {
+        eprintln!("[skip] swift slice: corpus file not present");
+        return;
+    }
     // The bug made backward == forward (both = whole body). They must differ.
     let back = run_slice(SWIFT_FILE, "init", 28, "backward");
     let fwd = run_slice(SWIFT_FILE, "init", 28, "forward");
@@ -207,6 +245,10 @@ fn swift_backward_and_forward_differ() {
 
 #[test]
 fn scala_backward_slice_excludes_statements_after_criterion() {
+    if !corpus_ready(SCALA_FILE) {
+        eprintln!("[skip] scala slice: corpus file not present");
+        return;
+    }
     // push: criterion line 42 (`val s = (c >> 3) + 1`). Lines 43-46 run after
     // it and must be excluded from the backward slice.
     assert_backward_excludes_after(SCALA_FILE, "push", 42, "scala/ByteStack.push");
@@ -214,6 +256,10 @@ fn scala_backward_slice_excludes_statements_after_criterion() {
 
 #[test]
 fn scala_forward_slice_excludes_statements_before_criterion() {
+    if !corpus_ready(SCALA_FILE) {
+        eprintln!("[skip] scala slice: corpus file not present");
+        return;
+    }
     // push: criterion line 43 (`val shift = (c & 7) << 2`). Lines 40-42 run
     // before it and must be excluded from the forward slice.
     assert_forward_excludes_before(SCALA_FILE, "push", 43, "scala/ByteStack.push");
@@ -221,6 +267,10 @@ fn scala_forward_slice_excludes_statements_before_criterion() {
 
 #[test]
 fn scala_backward_and_forward_differ() {
+    if !corpus_ready(SCALA_FILE) {
+        eprintln!("[skip] scala slice: corpus file not present");
+        return;
+    }
     let back = run_slice(SCALA_FILE, "push", 43, "backward");
     let fwd = run_slice(SCALA_FILE, "push", 43, "forward");
     assert_ne!(

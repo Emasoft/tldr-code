@@ -100,6 +100,46 @@
 //! presence (`/tmp/repos/<repo>`) and uses numeric thresholds the
 //! canonical real-repo material guarantees.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -136,7 +176,7 @@ fn parse_json(out: &str) -> serde_json::Value {
 #[test]
 fn p18_x3_lua_impact_m_open_callers_match_explain() {
     let repo = "/tmp/repos/lua-lsp";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "m.open", repo, "--format", "json"]);
@@ -160,7 +200,7 @@ fn p18_x3_lua_impact_m_open_callers_match_explain() {
 #[test]
 fn p18_x3_lua_whatbreaks_m_open_direct_callers_nonzero() {
     let repo = "/tmp/repos/lua-lsp";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["whatbreaks", "m.open", repo, "--format", "json"]);
@@ -183,7 +223,7 @@ fn p18_x3_lua_whatbreaks_m_open_direct_callers_nonzero() {
 #[test]
 fn p18_b1_scala_reaching_defs_no_definite_uninit_for_params_this_objects() {
     let file = "/tmp/repos/scala-cats-effect/core/shared/src/main/scala/cats/effect/IO.scala";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["reaching-defs", file, "flatMap", "--format", "json"]);
@@ -217,7 +257,7 @@ fn p18_b1_scala_reaching_defs_no_definite_uninit_for_params_this_objects() {
 #[test]
 fn p18_r2_swift_impact_heapify_targets_real_definition_only() {
     let repo = "/tmp/repos/swift-collections";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "_heapify", repo, "--format", "json"]);
@@ -257,7 +297,7 @@ fn p18_r2_swift_impact_heapify_targets_real_definition_only() {
 #[test]
 fn p18_x4_ts_loc_src_with_only_build_subdir_returns_files() {
     let repo = "/tmp/repos/ts-dom-gen";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["loc", &format!("{}/src", repo), "--format", "json"]);
@@ -280,7 +320,7 @@ fn p18_x4_ts_loc_src_with_only_build_subdir_returns_files() {
 #[test]
 fn p18_x1_halstead_java_no_double_emission() {
     let file = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["halstead", file, "--format", "json"]);
@@ -298,7 +338,7 @@ fn p18_x1_halstead_java_no_double_emission() {
 #[test]
 fn p18_x1_halstead_elixir_no_double_emission() {
     let file = "/tmp/repos/elixir-plug/lib/plug/conn.ex";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["halstead", file, "--format", "json"]);
@@ -321,7 +361,7 @@ fn p18_x1_halstead_elixir_no_double_emission() {
 #[test]
 fn p18_pattern_b_swift_explain_callees_no_bare_qualified_dup() {
     let file = "/tmp/repos/swift-collections/Sources/HeapModule/Heap+UnsafeHandle.swift";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["explain", file, "_heapify", "--format", "json"]);
@@ -358,7 +398,7 @@ fn p18_pattern_b_swift_explain_callees_no_bare_qualified_dup() {
 #[test]
 fn p18_pattern_b_csharp_todo_no_bare_qualified_dup() {
     let file = "/tmp/repos/csharp-newtonsoft-bson-full/Src/Newtonsoft.Json.Bson/Utilities/DateTimeParser.cs";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["todo", file, "--format", "json"]);
@@ -385,7 +425,7 @@ fn p18_pattern_b_csharp_todo_no_bare_qualified_dup() {
 #[test]
 fn p18_pattern_b_java_structure_constant_not_emitted_as_field() {
     let file = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["structure", file, "--format", "json"]);
@@ -436,7 +476,7 @@ fn p18_pattern_b_java_structure_constant_not_emitted_as_field() {
 #[test]
 fn p18_kot_3_kotlin_specs_per_function_emitter_populated() {
     let file = "/tmp/repos/kotlin-datetime/core/common/test/InstantTest.kt";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["specs", "--from-tests", file, "--format", "json"]);
@@ -472,7 +512,7 @@ fn p18_kot_3_kotlin_specs_per_function_emitter_populated() {
 #[test]
 fn p18_b8_scala_importers_brace_list_line_accuracy() {
     let repo = "/tmp/repos/scala-cats-effect";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&[
@@ -510,7 +550,7 @@ fn p18_b8_scala_importers_brace_list_line_accuracy() {
 #[test]
 fn p18_nonreg_lua_explain_m_open_still_18_callers() {
     let repo = "/tmp/repos/lua-lsp";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&[
@@ -534,7 +574,7 @@ fn p18_nonreg_lua_explain_m_open_still_18_callers() {
 #[test]
 fn p18_nonreg_java_reaching_defs_no_field_definite_fp() {
     let file = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["reaching-defs", file, "processFindForm", "--format", "json"]);
@@ -566,7 +606,7 @@ fn p18_nonreg_rust_halstead_per_function_preserved() {
         "/tmp/repos/ripgrep/crates/core/flags/hiargs.rs",
         "/tmp/repos/ripgrep/crates/printer/src/standard.rs",
     ];
-    let file = match candidates.iter().find(|p| Path::new(p).exists()) {
+    let file = match candidates.iter().find(|p| corpus_ready(p)) {
         Some(p) => *p,
         None => return,
     };
@@ -617,7 +657,7 @@ fn p18_nonreg_walker_node_modules_excluded() {
 #[test]
 fn p18_nonreg_rust_loc_ripgrep_crates() {
     let path = "/tmp/repos/ripgrep/crates";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["loc", path, "--format", "json"]);
@@ -635,7 +675,7 @@ fn p18_nonreg_rust_loc_ripgrep_crates() {
 #[test]
 fn p18_nonreg_java_importers_owner() {
     let repo = "/tmp/repos/spring-petclinic";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let (rc, out) = run_tldr(&["importers", "Owner", repo, "--format", "json"]);
@@ -653,7 +693,7 @@ fn p18_nonreg_java_importers_owner() {
 #[test]
 fn p18_nonreg_go_specs_from_tests() {
     let file = "/tmp/repos/go-httprouter/tree_test.go";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["specs", "--from-tests", file, "--format", "json"]);

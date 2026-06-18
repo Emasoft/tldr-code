@@ -34,6 +34,46 @@
 //! if `/tmp/repos/scala-cats-effect` (or `/tmp/repos/ripgrep` for the
 //! non-regression case) is absent.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -86,7 +126,7 @@ const RUST_REPO: &str = "/tmp/repos/ripgrep";
 // ============================================================================
 #[test]
 fn scala_structure_path_preserves_absolute_input() {
-    if !Path::new(SCALA_FILE_ABS).exists() {
+    if !corpus_ready(SCALA_FILE_ABS) {
         return;
     }
     let (rc, out) = run_tldr(&["structure", SCALA_FILE_ABS]);
@@ -109,7 +149,7 @@ fn scala_structure_path_preserves_absolute_input() {
 // ============================================================================
 #[test]
 fn scala_definition_path_preserves_absolute_input() {
-    if !Path::new(SCALA_FILE_ABS).exists() {
+    if !corpus_ready(SCALA_FILE_ABS) {
         return;
     }
     let (rc, out) = run_tldr(&[
@@ -148,7 +188,7 @@ fn scala_definition_path_preserves_absolute_input() {
 // ============================================================================
 #[test]
 fn scala_api_check_path_preserves_absolute_input() {
-    if !Path::new(SCALA_FILE_ABS).exists() {
+    if !corpus_ready(SCALA_FILE_ABS) {
         return;
     }
     let (rc, out) = run_tldr(&["api-check", SCALA_FILE_ABS]);
@@ -174,7 +214,7 @@ fn scala_api_check_path_preserves_absolute_input() {
 // ============================================================================
 #[test]
 fn scala_references_path_preserves_absolute_input() {
-    if !Path::new(SCALA_REPO).exists() {
+    if !corpus_ready(SCALA_REPO) {
         return;
     }
     let (rc, out) = run_tldr(&["references", "ExitCode", SCALA_REPO]);
@@ -214,7 +254,10 @@ fn scala_references_path_preserves_absolute_input() {
 #[test]
 fn scala_structure_path_preserves_relative_input() {
     let repo = Path::new(SCALA_REPO);
-    if !repo.exists() {
+    // The corpus dir can exist as an empty skeleton (git clone with no
+    // working tree); require the actual target source file to be present.
+    if !corpus_ready(repo.join(SCALA_FILE_REL)) {
+        eprintln!("[skip] scala_structure_path_preserves_relative_input: corpus file not present");
         return;
     }
     let (rc, out) = run_tldr_in(repo, &["structure", SCALA_FILE_REL]);
@@ -238,10 +281,10 @@ fn scala_structure_path_preserves_relative_input() {
 #[test]
 fn rust_structure_path_preserves_absolute_input() {
     let rust_file = format!("{}/crates/core/src/lib.rs", RUST_REPO);
-    if !Path::new(&rust_file).exists() {
+    if !corpus_ready(&rust_file) {
         // Try a fallback path inside ripgrep's layout
         let alt = format!("{}/crates/grep/src/lib.rs", RUST_REPO);
-        if !Path::new(&alt).exists() {
+        if !corpus_ready(&alt) {
             return;
         }
         let (rc, out) = run_tldr(&["structure", &alt]);
@@ -276,7 +319,7 @@ fn rust_structure_path_preserves_absolute_input() {
 // ============================================================================
 #[test]
 fn scala_context_path_preserves_absolute_input() {
-    if !Path::new(SCALA_FILE_ABS).exists() {
+    if !corpus_ready(SCALA_FILE_ABS) {
         return;
     }
     let entry = format!("{}:apply", SCALA_FILE_ABS);

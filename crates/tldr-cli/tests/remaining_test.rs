@@ -15,6 +15,32 @@
 //! - MEDIUM: definition, diff, diff_impact
 //! - HIGH: api_check, equivalence, vuln
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command as AssertCommand;
 use predicates::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -628,6 +654,18 @@ def weak_crypto():
     """Using weak hash algorithm."""
     import hashlib
     return hashlib.md5(b"password").hexdigest()
+
+def tainted_flow():
+    """End-to-end taint: request source -> command-execution sink.
+
+    The taint engine is AST/dataflow-driven (fix-regex-vuln-v1 dropped the
+    legacy name/substring source heuristic, so a bare param named
+    `user_input` is no longer treated as a source). This function provides
+    a real source (`request.args.get`) flowing into a real sink
+    (`os.system`) so the taint sub-analysis fires deterministically.
+    """
+    cmd = request.args.get("cmd")
+    os.system(cmd)
 "#;
 
 /// Python code for definition command

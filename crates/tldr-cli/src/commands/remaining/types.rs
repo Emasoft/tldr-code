@@ -47,7 +47,7 @@ impl std::fmt::Display for OutputFormat {
 /// filtering and `order()` ranking, but JSON serialization is now
 /// projected onto the canonical 3-level vocabulary:
 ///
-///   ```
+///   ```text
 ///   Critical → "error"
 ///   High     → "error"
 ///   Medium   → "warn"

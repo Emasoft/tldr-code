@@ -115,7 +115,11 @@ def handler(req):
     }
 }
 
-/// BUG-17: `extract` exposes a unified `line` alongside `line_number`.
+/// BUG-17 + schema-cleanup-v1 BUG-23: `extract` emits the unified `line`
+/// field (and `line_end`). The legacy `line_number` JSON key was a
+/// redundant duplicate of `line` and is no longer serialized (types.rs
+/// FunctionInfo: JSON output is `line` + `line_end`); the struct field is
+/// still named `line_number` internally for call-site compatibility.
 #[test]
 fn test_extract_emits_line_alias() {
     let temp = TempDir::new().unwrap();
@@ -133,17 +137,22 @@ fn test_extract_emits_line_alias() {
         .expect("extract output should have .functions array");
     assert!(!funcs.is_empty(), "expected at least one function");
     let f0 = &funcs[0];
-    let line_number = f0
-        .get("line_number")
-        .and_then(Value::as_u64)
-        .expect("functions[0].line_number missing");
+    // Canonical unified field present and 1-indexed.
     let line = f0
         .get("line")
         .and_then(Value::as_u64)
         .expect("functions[0].line missing — schema-unification-v1 alias");
-    assert_eq!(
-        line_number, line,
-        "line and line_number must agree (alias mapping)"
+    assert!(line >= 1, "line should be 1-indexed, got {line}");
+    // BUG-23: the legacy duplicate `line_number` JSON key is dropped.
+    assert!(
+        f0.get("line_number").is_none(),
+        "BUG-23 regression: extract function still emits legacy 'line_number' \
+         (duplicate of 'line'); should be dropped from JSON. got: {f0}"
+    );
+    // BUG-23: `line_end` is emitted for parity with DefinitionInfo/MethodInfo.
+    assert!(
+        f0.get("line_end").and_then(Value::as_u64).is_some(),
+        "BUG-23: extract function missing 'line_end': {f0}"
     );
 }
 

@@ -51,7 +51,7 @@ use std::path::PathBuf;
 /// (`error|warning|info|hint`) and serialized as such. After M-024 the
 /// JSON `severity` field is projected onto the canonical 3-level set:
 ///
-///   ```
+///   ```text
 ///   Error       → "error"
 ///   Warning     → "warn"
 ///   Information → "info"

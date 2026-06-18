@@ -27,8 +27,58 @@
 //!
 //! Real-repo gated per no-synthetic-fixtures-v1: each test returns
 //! early when its `/tmp/repos/<repo>` corpus is absent.
+//!
+//! Feature gate: the `semantic` subcommand exercised here is compiled in
+//! only under `--features semantic` (see main.rs:
+//! `#[cfg(feature = "semantic")] Semantic(SemanticArgs)`). Under default
+//! features the subcommand does not exist, so `tldr semantic …` returns
+//! "unrecognized subcommand" (rc=2) and these assertions are not
+//! meaningful. Mirror the suite convention (semantic_lang_flag_test.rs,
+//! med_cleanup_bundle_v1.rs::m16_similar_help_lists_by_chunk_flag) and
+//! only compile this module when the feature — and thus the subcommand —
+//! is present.
+#![cfg(feature = "semantic")]
 
-use std::path::Path;
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::process::Command;
 
 fn tldr_bin() -> std::path::PathBuf {
@@ -75,7 +125,7 @@ fn semantic_results(v: &serde_json::Value) -> &Vec<serde_json::Value> {
 /// is enough to prove the splitter fires; tests that target
 /// header-dominated repos raise this to assert headers no longer win.
 fn assert_chunker_fires(lang_label: &str, query: &str, path: &str, min_hits_with_fn_name: usize) {
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         eprintln!("[skip] {lang_label}: corpus {path} not present");
         return;
     }
@@ -149,7 +199,7 @@ fn assert_chunker_fires(lang_label: &str, query: &str, path: &str, min_hits_with
 /// OR we synthesise by running semantic over just the file and
 /// counting distinct (line_start, line_end) pairs.
 fn assert_file_emits_multiple_chunks(lang_label: &str, file_path: &str, query: &str) {
-    if !Path::new(file_path).exists() {
+    if !corpus_ready(file_path) {
         eprintln!("[skip] {lang_label}: file {file_path} not present");
         return;
     }
@@ -308,7 +358,7 @@ fn elixir_semantic_chunker_emits_function_chunks() {
 #[test]
 fn kotlin_headers_do_not_dominate() {
     let path = "/tmp/repos/kotlin-datetime";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         eprintln!("[skip] kotlin_headers_do_not_dominate: corpus {path} not present");
         return;
     }
@@ -363,7 +413,7 @@ fn kotlin_headers_do_not_dominate() {
 #[test]
 fn swift_headers_do_not_dominate() {
     let path = "/tmp/repos/swift-collections";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         eprintln!("[skip] swift_headers_do_not_dominate: corpus {path} not present");
         return;
     }

@@ -147,10 +147,21 @@ fn m14_smells_notes_deep_only_analyzers() {
         .args(["smells", temp.path().to_str().unwrap()])
         .output()
         .unwrap();
+    // determinism-and-stderr-hygiene-v1 (BUG-18): the deep-only hint was
+    // relocated OFF stderr (which broke the JSON-mode stderr-hygiene
+    // contract) and INTO SmellsReport.warnings — surfaced on stdout in
+    // text mode. Assert the notice is now on stdout, and that stderr
+    // stays clean.
+    let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("--deep") && stderr.contains("smell analyzers require"),
-        "Expected --deep notice on stderr; got: {}",
+        stdout.contains("--deep") && stdout.contains("smell analyzers require"),
+        "Expected --deep notice on stdout (BUG-18 relocated it from stderr); got stdout: {}",
+        stdout
+    );
+    assert!(
+        !stderr.contains("smell analyzers require"),
+        "BUG-18 regression: deep-only hint must NOT be on stderr (stderr-hygiene); got: {}",
         stderr
     );
 }
@@ -206,6 +217,14 @@ fn m15_churn_text_suppress_warning_string_present() {
 // absent) is covered by the binary verification recorded in the
 // CHANGELOG against /tmp/repos/express/lib/application.js (file-level
 // rows now appear instead of unrelated 4-9 line helper chunks).
+// The `similar` subcommand (and its `--by-chunk` flag) is gated behind
+// the `semantic` cargo feature (see main.rs: `#[cfg(feature =
+// "semantic")] Similar(SimilarArgs)`). Mirror the suite convention
+// (semantic_lang_flag_test.rs, pdg_bounds_and_stdout_hygiene_v1.rs) and
+// only run this assertion when the feature — and thus the subcommand —
+// is compiled in. Under default features the subcommand does not exist,
+// so the help-text assertion is not meaningful.
+#[cfg(feature = "semantic")]
 #[test]
 fn m16_similar_help_lists_by_chunk_flag() {
     let out = tldr_cmd().args(["similar", "--help"]).output().unwrap();

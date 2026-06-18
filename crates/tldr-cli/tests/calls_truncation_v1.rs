@@ -23,6 +23,46 @@
 //! Tests are real-repo gated; skip with a printed reason when the corpus
 //! is not present (matches the pattern used elsewhere in this test suite).
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -60,7 +100,7 @@ fn run_tldr(args: &[&str]) -> (i32, String, String) {
 // =============================================================================
 #[test]
 fn calls_json_kotlin_emits_all_edges() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "[skip] calls_json_kotlin_emits_all_edges: corpus {} not present",
             KOTLIN_CORPUS
@@ -126,7 +166,7 @@ fn calls_json_kotlin_emits_all_edges() {
 // =============================================================================
 #[test]
 fn calls_json_swift_emits_all_edges() {
-    if !Path::new(SWIFT_CORPUS).exists() {
+    if !corpus_ready(SWIFT_CORPUS) {
         eprintln!(
             "[skip] calls_json_swift_emits_all_edges: corpus {} not present",
             SWIFT_CORPUS
@@ -180,7 +220,7 @@ fn calls_json_swift_emits_all_edges() {
 // =============================================================================
 #[test]
 fn calls_text_keeps_cap_and_warns() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "[skip] calls_text_keeps_cap_and_warns: corpus {} not present",
             KOTLIN_CORPUS
@@ -224,7 +264,7 @@ fn calls_text_keeps_cap_and_warns() {
 // =============================================================================
 #[test]
 fn calls_text_max_items_override() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "[skip] calls_text_max_items_override: corpus {} not present",
             KOTLIN_CORPUS

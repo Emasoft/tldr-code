@@ -32,6 +32,32 @@
 //! corpus the same way the AST extractor would), so the assertions stay
 //! exact even if the pinned corpus is refreshed.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -42,7 +68,7 @@ use std::path::{Path, PathBuf};
 /// exist (so the suite degrades to a skip rather than a hard failure on a
 /// machine without the corpora checked out).
 fn run_importers(module: &str, path: &Path, lang: &str) -> Option<Value> {
-    if !path.exists() {
+    if !corpus_ready(path) {
         eprintln!("SKIP: corpus {} not present", path.display());
         return None;
     }

@@ -25,6 +25,46 @@
 //!
 //! See /tmp/audit_phase22/iteration1/aggregated_clusters.md#CLUSTER-M-008.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -151,7 +191,7 @@ const JS_REPO: &str = "/tmp/repos/express";
 // =============================================================================
 #[test]
 fn impact_go_path_shape_homogeneous() {
-    if !Path::new(GO_REPO).exists() {
+    if !corpus_ready(GO_REPO) {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "ServeHTTP", GO_REPO]);
@@ -171,7 +211,7 @@ fn impact_go_path_shape_homogeneous() {
 // =============================================================================
 #[test]
 fn verify_python_no_private_leak() {
-    if !Path::new(PY_REPO).exists() {
+    if !corpus_ready(PY_REPO) {
         return;
     }
     let (rc, out) = run_tldr(&["verify", PY_REPO]);
@@ -198,7 +238,7 @@ fn verify_python_no_private_leak() {
 // =============================================================================
 #[test]
 fn impact_python_path_shape_homogeneous() {
-    if !Path::new(PY_REPO).exists() {
+    if !corpus_ready(PY_REPO) {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "create_app", PY_REPO]);
@@ -222,7 +262,7 @@ fn impact_python_path_shape_homogeneous() {
 // =============================================================================
 #[test]
 fn impact_scala_path_shape_homogeneous() {
-    if !Path::new(SCALA_REPO).exists() {
+    if !corpus_ready(SCALA_REPO) {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "interpret", SCALA_REPO]);
@@ -241,7 +281,7 @@ fn impact_scala_path_shape_homogeneous() {
 // =============================================================================
 #[test]
 fn impact_javascript_path_shape_homogeneous() {
-    if !Path::new(JS_REPO).exists() {
+    if !corpus_ready(JS_REPO) {
         return;
     }
     let (rc, out) = run_tldr(&["impact", "Router", JS_REPO]);

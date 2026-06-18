@@ -30,6 +30,46 @@
 //! Tests are real-repo gated; skipped with a printed reason when a
 //! corpus or required tool is missing.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -84,7 +124,7 @@ fn run_tldr_with_env(args: &[&str], env: &[(&str, &str)]) -> (i32, String, Strin
 /// 45s ceiling AND report `success: true` for luacheck.
 #[test]
 fn luacheck_large_output_does_not_deadlock_on_pipes() {
-    if !Path::new(LUA_LSP_CORPUS).exists() {
+    if !corpus_ready(LUA_LSP_CORPUS) {
         eprintln!("SKIP: {} not present", LUA_LSP_CORPUS);
         return;
     }
@@ -141,7 +181,7 @@ fn luacheck_large_output_does_not_deadlock_on_pipes() {
 /// writing once stderr filled (~64KB on macOS).
 #[test]
 fn kotlinc_large_stderr_does_not_deadlock_on_pipes() {
-    if !Path::new(KOTLIN_DATETIME_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_DATETIME_CORPUS) {
         eprintln!("SKIP: {} not present", KOTLIN_DATETIME_CORPUS);
         return;
     }
@@ -200,7 +240,7 @@ fn kotlinc_large_stderr_does_not_deadlock_on_pipes() {
 /// block forever on a still-buffered pipe.
 #[test]
 fn short_timeout_is_enforced_with_bounded_grace() {
-    if !Path::new(KOTLIN_DATETIME_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_DATETIME_CORPUS) {
         eprintln!("SKIP: {} not present", KOTLIN_DATETIME_CORPUS);
         return;
     }
@@ -256,7 +296,7 @@ fn short_timeout_is_enforced_with_bounded_grace() {
 /// a "done"/"timeout" line at finish, so users see progress.
 #[test]
 fn progress_env_var_emits_stderr_events() {
-    if !Path::new(LUA_LSP_CORPUS).exists() {
+    if !corpus_ready(LUA_LSP_CORPUS) {
         eprintln!("SKIP: {} not present", LUA_LSP_CORPUS);
         return;
     }
@@ -297,7 +337,7 @@ fn progress_env_var_emits_stderr_events() {
 /// accidental always-on regression.
 #[test]
 fn progress_silent_by_default() {
-    if !Path::new(LUA_LSP_CORPUS).exists() {
+    if !corpus_ready(LUA_LSP_CORPUS) {
         eprintln!("SKIP: {} not present", LUA_LSP_CORPUS);
         return;
     }

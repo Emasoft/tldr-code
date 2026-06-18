@@ -20,6 +20,46 @@
 //! its corpus is absent and otherwise asserts against hand-counted ground
 //! truth from the iter-3b audit.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -56,7 +96,7 @@ const QUEUE_SCALA: &str = "/tmp/repos/scala-cats-effect/std/shared/src/main/scal
 // ============================================================================
 #[test]
 fn cl4_java_interface_methods_carry_distinct_decl_lines() {
-    if !Path::new(PETCONTROLLER).exists() {
+    if !corpus_ready(PETCONTROLLER) {
         return;
     }
     let (rc, out) = run_tldr(&["interface", PETCONTROLLER, "--format", "json"]);
@@ -101,7 +141,7 @@ fn cl4_java_interface_methods_carry_distinct_decl_lines() {
 // ============================================================================
 #[test]
 fn cl4_java_interface_lines_match_structure() {
-    if !Path::new(PETCONTROLLER).exists() {
+    if !corpus_ready(PETCONTROLLER) {
         return;
     }
     let (rc_i, out_i) = run_tldr(&["interface", PETCONTROLLER, "--format", "json"]);
@@ -138,7 +178,7 @@ fn cl4_java_interface_lines_match_structure() {
 // ============================================================================
 #[test]
 fn cl4_scala_explain_captures_value_param_not_type_param() {
-    if !Path::new(QUEUE_SCALA).exists() {
+    if !corpus_ready(QUEUE_SCALA) {
         return;
     }
     let (rc, out) = run_tldr(&["explain", QUEUE_SCALA, "bounded", "--format", "json"]);
@@ -169,7 +209,7 @@ fn cl4_scala_explain_captures_value_param_not_type_param() {
 
 #[test]
 fn cl4_scala_interface_signature_includes_value_clause() {
-    if !Path::new(QUEUE_SCALA).exists() {
+    if !corpus_ready(QUEUE_SCALA) {
         return;
     }
     let (rc, out) = run_tldr(&["interface", QUEUE_SCALA, "--format", "json"]);
@@ -201,7 +241,7 @@ fn cl4_scala_interface_signature_includes_value_clause() {
 
 #[test]
 fn cl4_scala_contracts_precondition_is_value_param() {
-    if !Path::new(QUEUE_SCALA).exists() {
+    if !corpus_ready(QUEUE_SCALA) {
         return;
     }
     let (rc, out) = run_tldr(&["contracts", QUEUE_SCALA, "bounded", "--format", "json"]);
@@ -235,7 +275,7 @@ fn cl4_scala_contracts_precondition_is_value_param() {
 #[test]
 fn cl4_js_references_resolves_member_assigned_function() {
     let dir = "/tmp/tldr_corpora/js-express";
-    if !Path::new(dir).exists() {
+    if !corpus_ready(dir) {
         return;
     }
     // `app.defaultConfiguration = function defaultConfiguration() {...}` is a
@@ -276,7 +316,7 @@ fn cl4_js_references_resolves_member_assigned_function() {
 #[test]
 fn cl4_cpp_structure_classes_exclude_enums() {
     let file = "/tmp/repos/cpp-tinyxml2/tinyxml2.h";
-    if !Path::new(file).exists() {
+    if !corpus_ready(file) {
         return;
     }
     let (rc, out) = run_tldr(&["structure", file, "--lang", "cpp", "--format", "json"]);

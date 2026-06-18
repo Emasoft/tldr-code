@@ -24,6 +24,32 @@
 //! cargo test -p tldr-core --test bench_remaining_multilang
 //! ```
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -818,7 +844,18 @@ def new_function(a, b):
 
         let options = HotspotsOptions::new();
         let result = analyze_hotspots(dir.path(), &options);
-        assert!(result.is_err(), "non-git directory should produce an error");
+        // fix-testdebt-c-metrics-v1: non-git directories no longer error —
+        // analyze_hotspots falls back to complexity-only scoring and surfaces
+        // a warning rather than failing outright. Verify the graceful fallback.
+        let report = result.expect("non-git directory should fall back, not error");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("Not a git repository")),
+            "warnings should mention not a git repository, got: {:?}",
+            report.warnings
+        );
     }
 
     #[test]

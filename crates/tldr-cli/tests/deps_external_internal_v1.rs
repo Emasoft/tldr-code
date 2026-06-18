@@ -36,6 +36,46 @@
 //! Real-repo gated per no-synthetic-fixtures-v1: each test returns early
 //! when its `/tmp/repos/<repo>` corpus is absent.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -84,7 +124,7 @@ fn deps_schema_parity_across_langs() {
         ("ruby", RUBY_CORPUS),
     ];
     for (lang, corpus) in corpora {
-        if !Path::new(corpus).exists() {
+        if !corpus_ready(corpus) {
             eprintln!(
                 "[skip] deps_schema_parity_across_langs/{}: corpus {} not present",
                 lang, corpus
@@ -129,7 +169,7 @@ fn deps_schema_parity_across_langs() {
 // ============================================================================
 #[test]
 fn java_external_packages_keep_namespace_precision() {
-    if !Path::new(JAVA_CORPUS).exists() {
+    if !corpus_ready(JAVA_CORPUS) {
         eprintln!(
             "[skip] java_external_packages_keep_namespace_precision: corpus {} not present",
             JAVA_CORPUS
@@ -194,7 +234,7 @@ fn java_external_packages_keep_namespace_precision() {
 // ============================================================================
 #[test]
 fn kotlin_external_packages_keep_namespace_precision() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "[skip] kotlin_external_packages_keep_namespace_precision: corpus {} not present",
             KOTLIN_CORPUS
@@ -247,7 +287,7 @@ fn kotlin_external_packages_keep_namespace_precision() {
 // ============================================================================
 #[test]
 fn csharp_external_packages_keep_namespace_precision() {
-    if !Path::new(CSHARP_CORPUS).exists() {
+    if !corpus_ready(CSHARP_CORPUS) {
         eprintln!(
             "[skip] csharp_external_packages_keep_namespace_precision: corpus {} not present",
             CSHARP_CORPUS
@@ -291,7 +331,7 @@ fn csharp_external_packages_keep_namespace_precision() {
 // ============================================================================
 #[test]
 fn go_same_package_does_not_create_spurious_cycles() {
-    if !Path::new(GO_CORPUS).exists() {
+    if !corpus_ready(GO_CORPUS) {
         eprintln!(
             "[skip] go_same_package_does_not_create_spurious_cycles: corpus {} not present",
             GO_CORPUS
@@ -320,7 +360,7 @@ fn go_same_package_does_not_create_spurious_cycles() {
 #[test]
 fn rust_deps_glob_does_not_crash() {
     const RG_CORPUS: &str = "/tmp/repos/ripgrep";
-    if !Path::new(RG_CORPUS).exists() {
+    if !corpus_ready(RG_CORPUS) {
         eprintln!(
             "[skip] rust_deps_glob_does_not_crash: corpus {} not present",
             RG_CORPUS
@@ -338,7 +378,7 @@ fn rust_deps_glob_does_not_crash() {
 // ============================================================================
 #[test]
 fn ruby_gem_requires_count_as_external() {
-    if !Path::new(RUBY_CORPUS).exists() {
+    if !corpus_ready(RUBY_CORPUS) {
         eprintln!(
             "[skip] ruby_gem_requires_count_as_external: corpus {} not present",
             RUBY_CORPUS

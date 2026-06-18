@@ -31,6 +31,46 @@
 //! Languages covered: rust (ripgrep), go (go-httprouter), typescript/js
 //! (express), java (spring-petclinic). Real-repo gated.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -101,7 +141,7 @@ fn affected_test_count(report: &serde_json::Value) -> u64 {
 // =============================================================================
 #[test]
 fn rust_function_target_wires_all_three_sub_runners() {
-    if !Path::new(RIPGREP_CORPUS).exists() {
+    if !corpus_ready(RIPGREP_CORPUS) {
         eprintln!("[skip] {} missing", RIPGREP_CORPUS);
         return;
     }
@@ -158,7 +198,7 @@ fn rust_function_target_wires_all_three_sub_runners() {
 // =============================================================================
 #[test]
 fn go_function_target_populates_affected_test_count() {
-    if !Path::new(HTTPROUTER_CORPUS).exists() {
+    if !corpus_ready(HTTPROUTER_CORPUS) {
         eprintln!("[skip] {} missing", HTTPROUTER_CORPUS);
         return;
     }
@@ -215,7 +255,7 @@ fn go_function_target_populates_affected_test_count() {
 // =============================================================================
 #[test]
 fn ts_function_target_importers_subrunner_has_data() {
-    if !Path::new(EXPRESS_CORPUS).exists() {
+    if !corpus_ready(EXPRESS_CORPUS) {
         eprintln!("[skip] {} missing", EXPRESS_CORPUS);
         return;
     }
@@ -274,7 +314,7 @@ fn ts_function_target_importers_subrunner_has_data() {
 // =============================================================================
 #[test]
 fn java_function_target_quick_skips_change_impact_but_keeps_importers() {
-    if !Path::new(PETCLINIC_CORPUS).exists() {
+    if !corpus_ready(PETCLINIC_CORPUS) {
         eprintln!("[skip] {} missing", PETCLINIC_CORPUS);
         return;
     }
@@ -334,7 +374,7 @@ fn java_function_target_quick_skips_change_impact_but_keeps_importers() {
 // =============================================================================
 #[test]
 fn function_target_sub_results_keys_are_complete() {
-    if !Path::new(RIPGREP_CORPUS).exists() {
+    if !corpus_ready(RIPGREP_CORPUS) {
         eprintln!("[skip] {} missing", RIPGREP_CORPUS);
         return;
     }

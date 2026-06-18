@@ -27,6 +27,32 @@
 //!
 //! Reference: VAL-006.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command;
 use std::fs;
 use std::path::Path;
@@ -173,28 +199,31 @@ fn test_vuln_errors_on_unsupported_autodetected_lang() {
     let mut cmd = tldr_cmd();
     cmd.arg("vuln").arg(root).arg("--format").arg("json");
 
-    let output = cmd.assert().failure().get_output().clone();
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(
-        exit_code, 2,
-        "unsupported autodetected language should exit 2; got {}\nstderr:\n{}",
-        exit_code, stderr
-    );
-    // The error message must identify the problem and point at a fix.
+    // ux-and-explain-completeness-v1 (AGG12-16) + SOL-014 M4: the
+    // `is_natively_analyzed` autodetect gate was brought in lockstep with
+    // the taint engine, which covers ALL 19 supported languages — Java
+    // included. So `tldr vuln <java-dir>` (no --lang) is no longer an
+    // error: the Maven project is autodetected as Java and scanned
+    // cleanly. (The previous behavior — exit 2 with a "not yet supported"
+    // message — only held while the gate was frozen at {Python, Rust,
+    // TS, JS}.) Assert the new contract: autodetected Java succeeds and
+    // emits a well-formed report whose files_scanned counts the App.java.
+    let output = cmd.assert().success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(&stdout).expect("vuln must emit valid JSON on autodetected Java");
+    let scanned = v
+        .pointer("/files_scanned")
+        .and_then(serde_json::Value::as_u64)
+        .expect("vuln JSON must report files_scanned");
     assert!(
-        stderr.contains("not yet supported") || stderr.contains("java"),
-        "stderr should explain Java is not yet supported by autodetect; got:\n{}",
-        stderr
+        scanned >= 1,
+        "autodetected Java vuln scan should enumerate the source file(s); \
+         got files_scanned={scanned}\nstdout:\n{stdout}"
     );
     assert!(
-        stderr.contains("--lang python")
-            || stderr.contains("--lang rust")
-            || stderr.contains("--lang typescript")
-            || stderr.contains("--lang javascript"),
-        "stderr should suggest an explicit --lang from the supported set; got:\n{}",
-        stderr
+        v.get("findings").map(|f| f.is_array()).unwrap_or(false),
+        "vuln JSON must carry a findings array; got:\n{stdout}"
     );
 }
 

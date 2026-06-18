@@ -18,6 +18,46 @@
 //! - AGG14-16 Java `explain` callees + caller.line populated
 //! - AGG14-17 Java `interface` flattening class methods to functions[]
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -59,7 +99,7 @@ fn parse_json(out: &str) -> serde_json::Value {
 #[test]
 fn java_mockmvc_specs_from_tests() {
     let path = "/tmp/repos/spring-petclinic/src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["specs", "--from-tests", path, "--format", "json"]);
@@ -88,7 +128,7 @@ fn java_mockmvc_specs_from_tests() {
 #[test]
 fn typescript_call_graph_under_src_build() {
     let path = "/tmp/repos/ts-dom-gen";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["calls", path, "--format", "json"]);
@@ -115,7 +155,7 @@ fn typescript_call_graph_under_src_build() {
 #[test]
 fn rust_specs_inline_test_module() {
     let path = "/tmp/repos/ripgrep/crates/globset/src/lib.rs";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["specs", "--from-tests", path, "--format", "json"]);
@@ -142,7 +182,7 @@ fn rust_specs_inline_test_module() {
 #[test]
 fn rust_interface_impl_methods() {
     let path = "/tmp/repos/ripgrep/crates/globset/src/lib.rs";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["interface", path, "--format", "json"]);
@@ -179,7 +219,7 @@ fn rust_interface_impl_methods() {
 #[test]
 fn scala_importers_fqcn_subpath() {
     let path = "/tmp/repos/scala-cats-effect";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     // The repo has files importing `cats.effect.kernel.X` — a query for
@@ -203,7 +243,7 @@ fn scala_importers_fqcn_subpath() {
 #[test]
 fn java_reaching_defs_no_class_field_fp() {
     let path = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&[
@@ -233,7 +273,7 @@ fn java_reaching_defs_no_class_field_fp() {
 #[test]
 fn java_api_check_no_null_comparison_fp() {
     let path = "/tmp/repos/spring-petclinic/src/main/java";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["api-check", path, "--format", "json"]);
@@ -263,7 +303,7 @@ fn java_api_check_no_null_comparison_fp() {
 #[test]
 fn java_explain_callees_and_caller_line() {
     let path = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&[
@@ -306,7 +346,7 @@ fn java_explain_callees_and_caller_line() {
 #[test]
 fn java_interface_flattens_methods_to_functions() {
     let path = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["interface", path, "--format", "json"]);
@@ -329,7 +369,7 @@ fn java_interface_flattens_methods_to_functions() {
 #[test]
 fn nonreg_go_specs_still_works() {
     let path = "/tmp/repos/go-httprouter";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["specs", "--from-tests", path, "--format", "json"]);
@@ -342,7 +382,7 @@ fn nonreg_go_specs_still_works() {
 #[test]
 fn nonreg_php_specs_still_works() {
     let path = "/tmp/repos/php-symfony-string";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["specs", "--from-tests", path, "--format", "json"]);
@@ -355,7 +395,7 @@ fn nonreg_php_specs_still_works() {
 #[test]
 fn nonreg_python_interface_still_works() {
     let path = "/tmp/repos/flask/src/flask/app.py";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["interface", path, "--format", "json"]);
@@ -381,7 +421,7 @@ fn nonreg_python_interface_still_works() {
 #[test]
 fn nonreg_lua_smells_kind_populated() {
     let path = "/tmp/repos/lua-lsp/script";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["smells", path, "--format", "json"]);
@@ -406,7 +446,7 @@ fn nonreg_lua_smells_kind_populated() {
 #[test]
 fn nonreg_ts_interface_free_functions_still_flat() {
     let path = "/tmp/repos/ts-dom-gen/src/build/emitter.ts";
-    if !Path::new(path).exists() {
+    if !corpus_ready(path) {
         return;
     }
     let (rc, out) = run_tldr(&["interface", path, "--format", "json"]);

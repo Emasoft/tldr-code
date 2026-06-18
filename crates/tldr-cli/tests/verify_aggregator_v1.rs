@@ -28,6 +28,46 @@
 //! Tests are gated on `/tmp/repos/<name>` so the suite is a no-op when
 //! the audit fixtures aren't seeded.
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::path::Path;
@@ -79,7 +119,7 @@ fn contracts_data_len(v: &Value) -> usize {
 #[test]
 fn test_verify_c_files_analyzed() {
     let repo = "/tmp/repos/c-sds";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -107,7 +147,7 @@ fn test_verify_c_files_analyzed() {
 #[test]
 fn test_verify_kotlin_files_analyzed() {
     let repo = "/tmp/repos/kotlin-datetime";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -129,7 +169,7 @@ fn test_verify_kotlin_files_analyzed() {
 #[test]
 fn test_verify_scala_files_analyzed() {
     let repo = "/tmp/repos/scala-cats-effect";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -151,7 +191,7 @@ fn test_verify_scala_files_analyzed() {
 #[test]
 fn test_verify_cpp_files_analyzed() {
     let repo = "/tmp/repos/cpp-tinyxml2";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -173,7 +213,7 @@ fn test_verify_cpp_files_analyzed() {
 #[test]
 fn test_verify_swift_files_analyzed() {
     let repo = "/tmp/repos/swift-collections";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -188,7 +228,7 @@ fn test_verify_swift_files_analyzed() {
 #[test]
 fn test_verify_ocaml_files_analyzed() {
     let repo = "/tmp/repos/ocaml-dune";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -209,7 +249,7 @@ fn test_verify_ocaml_files_analyzed() {
 #[test]
 fn test_verify_schema_no_unwired_keys_cli() {
     let repo = "/tmp/repos/c-sds";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo]).expect("verify produced JSON");
@@ -235,7 +275,7 @@ fn test_verify_schema_no_unwired_keys_cli() {
 #[test]
 fn test_verify_explicit_lang_kotlin() {
     let repo = "/tmp/repos/kotlin-datetime";
-    if !Path::new(repo).exists() {
+    if !corpus_ready(repo) {
         return;
     }
     let v = run_tldr_json(&["verify", repo, "--lang", "kotlin"])

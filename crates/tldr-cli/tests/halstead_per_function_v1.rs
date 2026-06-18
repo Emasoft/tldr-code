@@ -22,6 +22,46 @@
 //! Tests are real-repo gated; skip with a printed reason when the corpus
 //! is not present (matches the pattern used elsewhere in this test suite).
 
+/// True when `dir` exists AND contains at least one non-`.git` regular
+/// file (or is itself a regular file). CI/dev environments sometimes
+/// leave the corpus directories present as empty skeletons (a `git`
+/// clone with no working tree); `Path::exists()` is then `true` but every
+/// analysis returns 0 files. These real-repo tests must skip cleanly in
+/// that case rather than assert against empty output.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Ok(rd) = std::fs::read_dir(p) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => {
+                    if walk(&path, depth + 1) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() {
+        return true;
+    }
+    root.exists() && walk(root, 0)
+}
+
+
 use std::path::Path;
 use std::process::Command;
 
@@ -61,7 +101,7 @@ fn run_tldr(args: &[&str]) -> (i32, String, String) {
 // =============================================================================
 #[test]
 fn kotlin_overloaded_functions_have_distinct_metrics() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "SKIP: corpus not present at {} — real-repo gated test",
             KOTLIN_CORPUS
@@ -132,7 +172,7 @@ fn kotlin_overloaded_functions_have_distinct_metrics() {
 // =============================================================================
 #[test]
 fn kotlin_file_aggregate_broadcast_detection() {
-    if !Path::new(KOTLIN_CORPUS).exists() {
+    if !corpus_ready(KOTLIN_CORPUS) {
         eprintln!(
             "SKIP: corpus not present at {} — real-repo gated test",
             KOTLIN_CORPUS
@@ -192,7 +232,7 @@ fn kotlin_file_aggregate_broadcast_detection() {
 // =============================================================================
 #[test]
 fn elixir_multiclause_send_resp_distinct_metrics() {
-    if !Path::new(ELIXIR_CORPUS).exists() {
+    if !corpus_ready(ELIXIR_CORPUS) {
         eprintln!(
             "SKIP: corpus not present at {} — real-repo gated test",
             ELIXIR_CORPUS

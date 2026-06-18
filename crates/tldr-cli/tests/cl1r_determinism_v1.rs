@@ -31,6 +31,32 @@
 //! They are skipped (with a loud eprintln) only if the corpus is not
 //! present, so they never silently pass on a machine without corpora.
 
+/// True when `p` exists AND contains at least one non-`.git` regular file
+/// (or is itself a regular file). Corpus dirs may be present as empty
+/// skeletons (git clone with no working tree) where `Path::exists()` is
+/// `true` but analysis sees 0 files; these tests must skip in that case.
+#[allow(dead_code)]
+fn corpus_ready<P: AsRef<std::path::Path>>(p: P) -> bool {
+    fn walk(p: &std::path::Path, depth: usize) -> bool {
+        if depth > 8 { return false; }
+        let Ok(rd) = std::fs::read_dir(p) else { return false; };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") { continue; }
+            match entry.file_type() {
+                Ok(ft) if ft.is_file() => return true,
+                Ok(ft) if ft.is_dir() => { if walk(&path, depth + 1) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    let root = p.as_ref();
+    if root.is_file() { return true; }
+    root.exists() && walk(root, 0)
+}
+
+
 use assert_cmd::Command;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -114,7 +140,7 @@ fn to_canonical_string(v: &Value) -> String {
 
 fn flask_or_skip(name: &str) -> Option<PathBuf> {
     let c = flask_corpus();
-    if !c.exists() {
+    if !corpus_ready(&c) {
         eprintln!(
             "SKIP {name}: corpus {} not present; \
              determinism test requires /tmp/tldr_corpora/python-flask",
@@ -127,7 +153,7 @@ fn flask_or_skip(name: &str) -> Option<PathBuf> {
 
 fn go_or_skip(name: &str) -> Option<PathBuf> {
     let c = go_corpus();
-    if !c.exists() {
+    if !corpus_ready(&c) {
         eprintln!(
             "SKIP {name}: corpus {} not present; \
              determinism test requires /tmp/tldr_corpora/go-httprouter",
