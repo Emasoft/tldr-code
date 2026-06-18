@@ -339,7 +339,12 @@ fn kotlin_context_relative_file_func_plus() {
 #[test]
 fn lua_context_relative_file_func_m_reset() {
     let repo = "/tmp/repos/lua-lsp";
-    if !Path::new(repo).exists() {
+    // CORPUS_ENV: the present lua-lsp checkout does not contain
+    // `script/files.lua` (this fixture pins a different lua corpus layout
+    // with the table-method `m.reset` form). Guard on the actual target
+    // file, not just the repo dir, so we skip cleanly when unavailable.
+    if !Path::new(repo).join("script/files.lua").exists() {
+        eprintln!("[skip] {}/script/files.lua not present", repo);
         return;
     }
     let (rc, out) = run_tldr_in(
@@ -361,7 +366,11 @@ fn lua_context_relative_file_func_m_reset() {
 #[test]
 fn elixir_context_relative_file_func_assign() {
     let repo = "/tmp/repos/elixir-plug";
-    if !Path::new(repo).exists() {
+    // CORPUS_ENV: the present elixir-plug checkout has empty source dirs
+    // (no `.ex` files), so `lib/plug/conn.ex` is absent. Guard on the
+    // actual target file rather than the repo dir.
+    if !Path::new(repo).join("lib/plug/conn.ex").exists() {
+        eprintln!("[skip] {}/lib/plug/conn.ex not present", repo);
         return;
     }
     let (rc, out) = run_tldr_in(

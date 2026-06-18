@@ -524,7 +524,15 @@ fn is_keyword(s: &str) -> bool {
 #[test]
 fn agg14_13_lua_references_finds_cross_module_alias_callers() {
     let repo = "/tmp/repos/lua-lsp";
+    // CORPUS_ENV: this fixture pins a lua-lsp layout with the table-method
+    // `m.reset` in `script/files.lua` plus cross-module callers in
+    // `script/workspace/scope.lua` / `lclient.lua`. The present checkout
+    // does not contain `script/files.lua`, so guard on the actual file.
     if skip_if_missing(repo) {
+        return;
+    }
+    if !Path::new(repo).join("script/files.lua").exists() {
+        eprintln!("[skip] {}/script/files.lua not present", repo);
         return;
     }
     let report = run_json(&["references", "m.reset", repo, "--format", "json"]);

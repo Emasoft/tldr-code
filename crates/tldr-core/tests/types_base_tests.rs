@@ -17,7 +17,8 @@ use tldr_core::types::*;
 #[test]
 fn test_language_all_variants() {
     let all = Language::all();
-    assert_eq!(all.len(), 18);
+    // v0.5.0 SOL-001: Solidity added as the 19th language.
+    assert_eq!(all.len(), 19);
 
     // Verify all expected languages are present
     let expected = vec![
@@ -39,6 +40,7 @@ fn test_language_all_variants() {
         Language::Luau,
         Language::Elixir,
         Language::Ocaml,
+        Language::Solidity,
     ];
 
     for lang in &expected {
@@ -63,7 +65,12 @@ fn test_language_extensions() {
 
     // P2 Languages
     assert_eq!(Language::C.extensions(), &[".c", ".h"]);
-    assert_eq!(Language::Cpp.extensions(), &[".cpp", ".cc", ".cxx", ".hpp"]);
+    // kotlin-extract-and-cpp-extensions-v1 (P6.BUG-N2): Cpp gained the
+    // rare-but-valid `.c++`, `.hh`, `.hxx`, `.h++` spellings.
+    assert_eq!(
+        Language::Cpp.extensions(),
+        &[".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++"]
+    );
     assert_eq!(Language::Ruby.extensions(), &[".rb"]);
     assert_eq!(Language::Kotlin.extensions(), &[".kt", ".kts"]);
     assert_eq!(Language::Swift.extensions(), &[".swift"]);
@@ -74,6 +81,8 @@ fn test_language_extensions() {
     assert_eq!(Language::Luau.extensions(), &[".luau"]);
     assert_eq!(Language::Elixir.extensions(), &[".ex", ".exs"]);
     assert_eq!(Language::Ocaml.extensions(), &[".ml", ".mli"]);
+    // v0.5.0 SOL-001: Solidity single canonical extension.
+    assert_eq!(Language::Solidity.extensions(), &[".sol"]);
 }
 
 #[test]
@@ -596,6 +605,7 @@ fn test_call_edge_creation() {
         src_func: "caller".to_string(),
         dst_file: PathBuf::from("/b.py"),
         dst_func: "callee".to_string(),
+        call_line: None,
     };
 
     assert_eq!(edge.src_file, PathBuf::from("/a.py"));
@@ -615,6 +625,7 @@ fn test_project_call_graph_basic() {
         src_func: "foo".to_string(),
         dst_file: PathBuf::from("/b.py"),
         dst_func: "bar".to_string(),
+        call_line: None,
     };
 
     graph.add_edge(edge.clone());
@@ -631,12 +642,14 @@ fn test_project_call_graph_edges_iterator() {
         src_func: "foo".to_string(),
         dst_file: PathBuf::from("/b.py"),
         dst_func: "bar".to_string(),
+        call_line: None,
     };
     let edge2 = CallEdge {
         src_file: PathBuf::from("/b.py"),
         src_func: "bar".to_string(),
         dst_file: PathBuf::from("/c.py"),
         dst_func: "baz".to_string(),
+        call_line: None,
     };
 
     graph.add_edge(edge1.clone());
@@ -654,6 +667,7 @@ fn test_project_call_graph_duplicate_edges() {
         src_func: "foo".to_string(),
         dst_file: PathBuf::from("/b.py"),
         dst_func: "bar".to_string(),
+        call_line: None,
     };
 
     // Add same edge twice
@@ -706,6 +720,7 @@ fn test_typed_call_edge_from_call_edge() {
         src_func: "caller".to_string(),
         dst_file: PathBuf::from("/b.py"),
         dst_func: "callee".to_string(),
+        call_line: None,
     };
 
     let typed = TypedCallEdge::from_call_edge(&call_edge, 42);

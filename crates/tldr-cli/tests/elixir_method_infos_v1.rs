@@ -60,20 +60,15 @@ fn test_structure_elixir_method_infos_populated() {
     assert_eq!(files.len(), 1, "exactly one elixir file expected");
     let f0 = &files[0];
 
-    let methods = f0
-        .get("methods")
-        .and_then(Value::as_array)
-        .expect("methods array present");
-    let method_names: Vec<&str> = methods.iter().filter_map(Value::as_str).collect();
+    // schema-cleanup-v1 BUG-13: the legacy `methods: [String]` array is no
+    // longer emitted in JSON output (the custom FileStructure::serialize impl
+    // emits only path/functions/classes/method_infos/imports/definitions).
+    // Consumers must use the structured `method_infos` objects instead. This
+    // test was stale: it asserted the removed `methods` key still existed.
     assert!(
-        method_names.contains(&"bar"),
-        "legacy methods[] must contain `bar`, got {:?}",
-        method_names
-    );
-    assert!(
-        method_names.contains(&"baz"),
-        "legacy methods[] must contain `baz`, got {:?}",
-        method_names
+        f0.get("methods").is_none(),
+        "legacy `methods` JSON key must NOT be emitted (BUG-13); got {:?}",
+        f0.get("methods")
     );
 
     let mi = f0
@@ -124,10 +119,15 @@ fn test_structure_elixir_method_infos_populated() {
 }
 
 /// elixir-method-infos-v1: count parity invariant. For an Elixir source file
-/// where every `def`/`defp` lives inside a single `defmodule`, the legacy
-/// `methods: [String]` field and the new `method_infos: [MethodInfo]` field
-/// MUST report the same length — they describe the same set of declarations
-/// from two angles (string view vs structured view).
+/// where every `def`/`defp` lives inside a single `defmodule`, the structured
+/// `method_infos: [MethodInfo]` field and the canonical `definitions[]`
+/// entries with `kind == "method"` MUST report the same length — they describe
+/// the same set of defmodule-scoped declarations from two angles.
+///
+/// schema-cleanup-v1 BUG-13: the legacy `methods: [String]` JSON array was
+/// removed, so parity is now checked against `definitions[kind=="method"]`
+/// (the canonical source `method_infos` is projected from) rather than the
+/// dropped string array.
 #[test]
 fn test_structure_elixir_method_infos_count_matches_methods() {
     let temp = TempDir::new().unwrap();
@@ -137,7 +137,13 @@ fn test_structure_elixir_method_infos_count_matches_methods() {
     let v = run_structure(&temp);
     let f0 = &v.get("files").and_then(Value::as_array).unwrap()[0];
 
-    let methods_len = f0.get("methods").and_then(Value::as_array).unwrap().len();
+    let method_defs_len = f0
+        .get("definitions")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .filter(|d| d.get("kind").and_then(Value::as_str) == Some("method"))
+        .count();
     let mi_len = f0
         .get("method_infos")
         .and_then(Value::as_array)
@@ -145,8 +151,8 @@ fn test_structure_elixir_method_infos_count_matches_methods() {
         .len();
 
     assert_eq!(
-        methods_len, mi_len,
-        "elixir-method-infos-v1: methods.len() ({}) must equal method_infos.len() ({}); they describe the same defmodule-scoped declarations",
-        methods_len, mi_len
+        method_defs_len, mi_len,
+        "elixir-method-infos-v1: definitions[kind==method].len() ({}) must equal method_infos.len() ({}); they describe the same defmodule-scoped declarations",
+        method_defs_len, mi_len
     );
 }
