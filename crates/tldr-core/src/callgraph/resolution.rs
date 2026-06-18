@@ -1286,6 +1286,20 @@ pub fn resolve_call_with_receiver(
 /// deliberately excluded so their permissive variable-receiver fuzzy
 /// resolution is unchanged.
 fn receiver_is_type_spelling(receiver: &str) -> bool {
+    // fix-testdebt-repair-r2: a receiver that carries call-expression syntax
+    // (`(`/`)`) is an *instance produced by invoking a constructor* (e.g.
+    // Python `Scaffold().route(...)`, where the receiver token is
+    // `Scaffold()`), NOT a bare type spelling. Such instance receivers must
+    // keep the permissive method-resolution path so `.route` binds to
+    // `Scaffold.route`. The cl-3b strict gate only targets bare type tokens
+    // (`HashSet`, `std::collections::HashSet`) whose `::new()` call has no
+    // user-defined definition — those never contain parentheses in the
+    // receiver token itself. Restricting the strict gate to paren-free
+    // receivers preserves the cl-3b `HashSet::new` guard while no longer
+    // mis-declining instance-method calls.
+    if receiver.contains('(') || receiver.contains(')') {
+        return false;
+    }
     let last_segment = receiver
         .rsplit("::")
         .next()

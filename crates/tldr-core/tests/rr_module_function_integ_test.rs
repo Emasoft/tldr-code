@@ -212,14 +212,26 @@ end
     assert_has_sink_of_type(&ast_only, TaintSinkType::ShellExec, "ast_only");
 }
 
-/// Ruby: bare `gets` (UserInput, AST-native via `call_names: ["gets"]`) ->
+/// Ruby: parenthesized `gets()` (UserInput, AST-native via the
+/// `call_names: ["gets"]` entry in `RUBY_AST_SOURCES`) ->
 /// `IO.popen(cmd)` ShellExec sink. The sink side requires structured
 /// Module.function matching — fails under AST-only at HEAD pre-M2.
+///
+/// NOTE (fix-testdebt-repair-r2): the fixture uses `gets()` with explicit
+/// parentheses, NOT the bare `gets`. tree-sitter-ruby parses bare `gets`
+/// as an `identifier` node (verified via AST dump), so the AST
+/// `call_names: ["gets"]` source entry — which gates on
+/// `descendant.kind() ∈ call_node_kinds` (taint.rs:5222-5230) — cannot fire
+/// on it; bare `gets` is detected ONLY via the retained `\bgets\b` regex in
+/// `RUBY_PATTERNS.sources` (taint.rs:701-704), which `analyze_ast_only`
+/// deliberately empties. `gets()` parses as a `call` node, so the source is
+/// genuinely AST-native under the AST-only dispatch, matching this test's
+/// intent (UserInput source -> IO.popen ShellExec, both via the AST bank).
 #[test]
 fn ruby_io_popen_with_user_input_via_compute_taint() {
     let src = "\
 def handler
-    cmd = gets
+    cmd = gets()
     IO.popen(cmd)
 end
 ";
@@ -227,7 +239,9 @@ end
     assert_has_source_of_type(&regular, TaintSourceType::UserInput, "regular");
     assert_has_sink_of_type(&regular, TaintSinkType::ShellExec, "regular");
     let ast_only = analyze_ast_only(src, Language::Ruby, "handler");
-    // Source side already AST-native; the failure point at HEAD is the sink.
+    // Source side AST-native via `call_names: ["gets"]` on the `gets()`
+    // call node; the structured-Module.function sink (`IO.popen`) was the
+    // original pre-M2 failure point and is now AST-native too.
     assert_has_source_of_type(&ast_only, TaintSourceType::UserInput, "ast_only");
     assert_has_sink_of_type(&ast_only, TaintSinkType::ShellExec, "ast_only");
 }
