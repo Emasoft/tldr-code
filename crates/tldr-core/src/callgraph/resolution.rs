@@ -1064,6 +1064,27 @@ fn is_stdlib_type(name: &str) -> bool {
 /// Check if a method name is commonly defined on builtin types (dict, list, str, etc.).
 /// When the receiver has no inferred type, these names are too ambiguous to resolve
 /// via class scanning -- they'd match project classes that happen to define the same method.
+///
+/// # Relationship to the cardinality gate
+///
+/// This is a small, fixed per-language *leaf vocabulary* of method names that
+/// belong to language builtins (Python dict/list/set/str/io, Go's JSON/text
+/// marshalling). It is deliberately retained ALONGSIDE the index-derived
+/// [`count_unrelated_method_definers`] cardinality gate, because the two cover
+/// different cases and neither subsumes the other:
+///
+/// * The cardinality gate declines a name defined on >1 unrelated class, but a
+///   builtin name (e.g. `items`) defined on exactly ONE project class would
+///   slip past it and bind — even though an untyped receiver calling `.items()`
+///   is far more likely a real `dict` than that lone class. This blocklist
+///   suppresses that single-definer case.
+/// * Conversely, this blocklist only knows a fixed set of names; the gate
+///   handles arbitrary project method names (e.g. `speak` on Animal/Robot/Plant)
+///   that no hand-maintained list could enumerate.
+///
+/// It is NOT a structural decision over source text — it only classifies an
+/// already-AST-extracted identifier against a language-builtin vocabulary, which
+/// is permitted under the AST-driven mandate (named leaf tables are allowed).
 fn is_builtin_method_name(name: &str) -> bool {
     matches!(
         name,
@@ -1085,6 +1106,42 @@ fn is_builtin_method_name(name: &str) -> bool {
         | "invoke" | "call" | "run" | "execute" | "send" | "receive"
         | "start" | "stop" | "reset" | "setup" | "teardown"
     )
+}
+
+/// Count how many *mutually-unrelated* classes in the AST-built `class_index`
+/// declare a method named `method_name`.
+///
+/// "Unrelated" means not joined by inheritance: an overriding subclass and its
+/// base both declaring `speak` count as ONE definer (they are the same dispatch
+/// target up the MRO), whereas `Animal`, `Robot`, and `Plant` each declaring an
+/// independent `speak` count as THREE. This is the index-derived ambiguity
+/// signal used by the untyped-receiver fuzzy gate: a bare method defined on >1
+/// unrelated class cannot be bound without a receiver type, so the call is
+/// declined rather than mis-bound to an order-dependent survivor.
+///
+/// Purely structural: it consults only the AST-extracted `ClassEntry.methods`
+/// and `ClassEntry.bases` (via [`is_in_inheritance_chain`]); no source text or
+/// name heuristics are involved.
+fn count_unrelated_method_definers(method_name: &str, class_index: &ClassIndex) -> usize {
+    // Classes (by name) that declare the method directly.
+    let definers: Vec<&str> = class_index
+        .iter()
+        .filter(|(_name, entry)| entry.methods.iter().any(|m| m == method_name))
+        .map(|(name, _entry)| name)
+        .collect();
+
+    // Collapse inheritance-linked definers into a single representative so a
+    // base/override pair is not double-counted.
+    let mut representatives: Vec<&str> = Vec::new();
+    for &class in &definers {
+        let linked_to_existing = representatives
+            .iter()
+            .any(|&rep| is_in_inheritance_chain(class, rep, class_index));
+        if !linked_to_existing {
+            representatives.push(class);
+        }
+    }
+    representatives.len()
 }
 
 /// Check if `candidate_class` is in the inheritance chain of `receiver_class`.
@@ -1666,7 +1723,22 @@ fn resolve_local_fuzzy_match(
     class_index: &ClassIndex,
     current_file: &Path,
 ) -> Option<ResolvedTarget> {
-    if type_filter.is_none() && is_builtin_method_name(bare_target) {
+    // T4-py untyped-receiver ambiguity gate. Decline a bare method on an
+    // untyped receiver when EITHER:
+    //  (1) it is a well-known builtin-type method name (`items`, `append`,
+    //      Go's `MarshalJSON`, ...): the receiver is far more likely a real
+    //      builtin than a same-named project class, even at cardinality 1; or
+    //  (2) it is declared on >1 mutually-unrelated class in the AST-built
+    //      class_index: a genuinely ambiguous duck-typed dispatch with no
+    //      single correct target.
+    // These are complementary — (1) catches single-definer builtin names that
+    // the cardinality signal (2) cannot, while (2) catches arbitrary project
+    // names (e.g. `speak` across Animal/Robot/Plant) that the fixed-vocabulary
+    // blocklist (1) never enumerated. See `count_unrelated_method_definers`.
+    if type_filter.is_none()
+        && (is_builtin_method_name(bare_target)
+            || count_unrelated_method_definers(bare_target, class_index) > 1)
+    {
         return None;
     }
 
@@ -1770,7 +1842,14 @@ fn resolve_global_fuzzy_match(
     func_index: &FuncIndex,
     class_index: &ClassIndex,
 ) -> Option<ResolvedTarget> {
-    if type_filter.is_none() && is_builtin_method_name(bare_target) {
+    // T4-py untyped-receiver ambiguity gate (see `resolve_local_fuzzy_match`
+    // for the full rationale): decline when the bare method is a known builtin
+    // name OR is declared on >1 mutually-unrelated class. The two checks are
+    // complementary; neither subsumes the other.
+    if type_filter.is_none()
+        && (is_builtin_method_name(bare_target)
+            || count_unrelated_method_definers(bare_target, class_index) > 1)
+    {
         return None;
     }
 
@@ -3233,5 +3312,348 @@ mod tests {
             "Python must not get the PHP __call redirect; absent `query` stays unresolved. Got: {:?}",
             resolved
         );
+    }
+
+    // =================================================================
+    // T4-py: Python duck-typing dispatch.
+    //
+    // ROOT CAUSE: the bare-method key (module, name) collides when several
+    // classes in the same module define a method of the same name (e.g.
+    // Animal.speak / Robot.speak / Plant.speak under ("x","speak")). The
+    // FuncIndex MUST keep all colliding entries so the decline-on-ambiguity
+    // guard (candidates.len() == 1) sees the true cardinality. The builder
+    // indexes each method under BOTH its bare name (module, name) AND its
+    // qualified name (module, "Class.method"); these tests mirror that exact
+    // double-insert so the collision is reproduced realistically.
+    // =================================================================
+
+    /// Helper: index a method under both the bare and the qualified key,
+    /// exactly as `builder_v2` does, so same-name methods collide on the
+    /// bare key inside a single module.
+    fn index_method_both_keys(
+        func_index: &mut FuncIndex,
+        module: &str,
+        class: &str,
+        method: &str,
+        file: &str,
+        line: u32,
+    ) {
+        let entry = FuncEntry::method(PathBuf::from(file), line, line + 5, class.to_string());
+        // Bare-name key — this is where same-name methods collide.
+        func_index.insert(module, method, entry.clone());
+        // Qualified-name key — unique per class.
+        let qualified = format!("{}.{}", class, method);
+        func_index.insert(module, &qualified, entry);
+    }
+
+    /// (a) `thing.speak()` with THREE unrelated classes each defining `speak`
+    /// and an untyped receiver must DECLINE (the call is genuinely ambiguous).
+    /// Before the index fix the three bare-key inserts collapsed to one entry,
+    /// the len()==1 guard was satisfied, and a survivor was bound — an
+    /// order-dependent false positive.
+    #[test]
+    fn test_py_duck_typing_three_classes_untyped_receiver_declines() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // All three classes live in the SAME module "x" (this is what makes
+        // the bare ("x","speak") key collide in the real builder).
+        index_method_both_keys(&mut func_index, "x", "Animal", "speak", "x.py", 10);
+        index_method_both_keys(&mut func_index, "x", "Robot", "speak", "x.py", 30);
+        index_method_both_keys(&mut func_index, "x", "Plant", "speak", "x.py", 50);
+
+        for (name, line) in [("Animal", 5u32), ("Robot", 25), ("Plant", 45)] {
+            class_index.insert(
+                name,
+                ClassEntry::new(
+                    PathBuf::from("x.py"),
+                    line,
+                    line + 15,
+                    vec!["speak".to_string()],
+                    vec![],
+                ),
+            );
+        }
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `thing.speak()` — receiver "thing" is an untyped variable (no
+        // receiver_type, not self/cls). Three unrelated classes define speak.
+        let result = resolve_call_with_receiver!(
+            "speak",
+            "thing",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("."),
+            "python",
+        );
+
+        assert_eq!(
+            result, None,
+            "thing.speak() with 3 unrelated classes defining speak must DECLINE (ambiguous), got {:?}",
+            result
+        );
+    }
+
+    /// (b) `thing.speak()` with EXACTLY ONE class defining `speak` must BIND
+    /// to that class — the decline-on-ambiguity guard fires only on >1.
+    #[test]
+    fn test_py_duck_typing_single_class_untyped_receiver_binds() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        index_method_both_keys(&mut func_index, "x", "Animal", "speak", "x.py", 10);
+        class_index.insert(
+            "Animal",
+            ClassEntry::new(
+                PathBuf::from("x.py"),
+                5,
+                20,
+                vec!["speak".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "speak",
+            "thing",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("."),
+            "python",
+        );
+
+        let resolved = result.expect("thing.speak() with exactly 1 class defining speak must BIND");
+        assert_eq!(
+            resolved.class_name.as_deref(),
+            Some("Animal"),
+            "single-class duck call must bind to Animal.speak, got {:?}",
+            resolved.class_name
+        );
+        assert_eq!(resolved.file, PathBuf::from("x.py"));
+    }
+
+    /// (c) A Go `MarshalJSON` bare call on an untyped receiver, defined on >1
+    /// unrelated (non-inheritance-linked) struct, must stay SUPPRESSED. This
+    /// is the cardinality gate subsuming the old hand-maintained blocklist:
+    /// the same-name collision now survives the index, so the ambiguity guard
+    /// declines exactly as the blocklist used to.
+    #[test]
+    fn test_go_marshaljson_untyped_receiver_stays_suppressed() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // Two unrelated Go structs both define MarshalJSON in the same package.
+        index_method_both_keys(&mut func_index, "pkg", "User", "MarshalJSON", "user.go", 10);
+        index_method_both_keys(&mut func_index, "pkg", "Order", "MarshalJSON", "order.go", 20);
+        class_index.insert(
+            "User",
+            ClassEntry::new(
+                PathBuf::from("user.go"),
+                5,
+                30,
+                vec!["MarshalJSON".to_string()],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Order",
+            ClassEntry::new(
+                PathBuf::from("order.go"),
+                5,
+                40,
+                vec!["MarshalJSON".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "go");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `v.MarshalJSON()` — untyped receiver, two unrelated definers.
+        let result = resolve_call_with_receiver!(
+            "MarshalJSON",
+            "v",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.go"),
+            Path::new("."),
+            "go",
+        );
+
+        assert_eq!(
+            result, None,
+            "v.MarshalJSON() defined on 2 unrelated structs must stay suppressed, got {:?}",
+            result
+        );
+    }
+
+    /// Locks in the COMPLEMENTARY relationship between the two untyped-receiver
+    /// gates: a builtin-named method (`items`) defined on exactly ONE project
+    /// class must STILL be suppressed. The cardinality gate alone cannot do
+    /// this (one unrelated definer => not >1), so this proves the blocklist
+    /// retains coverage the gate does not — i.e. the blocklist must not be
+    /// deleted in favour of the gate. Guards against a future half-deleted
+    /// state.
+    #[test]
+    fn test_py_single_class_builtin_name_still_suppressed() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // Exactly ONE class defines the builtin-named method `items`.
+        index_method_both_keys(&mut func_index, "x", "MyDict", "items", "x.py", 10);
+        class_index.insert(
+            "MyDict",
+            ClassEntry::new(
+                PathBuf::from("x.py"),
+                5,
+                20,
+                vec!["items".to_string()],
+                vec![],
+            ),
+        );
+
+        // Cardinality alone would NOT suppress (only one unrelated definer).
+        assert_eq!(
+            count_unrelated_method_definers("items", &class_index),
+            1,
+            "precondition: exactly one unrelated class defines items"
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `d.items()` — untyped receiver, builtin-named method, single definer.
+        let result = resolve_call_with_receiver!(
+            "items",
+            "d",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("."),
+            "python",
+        );
+
+        assert_eq!(
+            result, None,
+            "d.items() (builtin name, single project class) must stay suppressed by the blocklist, got {:?}",
+            result
+        );
+    }
+
+    /// `count_unrelated_method_definers` must collapse an inheritance-linked
+    /// base/override pair into ONE definer (so an overridden method is not
+    /// mistaken for genuine cross-class ambiguity), while counting independent
+    /// classes separately.
+    #[test]
+    fn test_count_unrelated_method_definers_collapses_inheritance() {
+        let mut class_index = ClassIndex::new();
+        // Base + override of speak -> ONE logical definer.
+        class_index.insert(
+            "Base",
+            ClassEntry::new(
+                PathBuf::from("a.py"),
+                1,
+                10,
+                vec!["speak".to_string()],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Derived",
+            ClassEntry::new(
+                PathBuf::from("a.py"),
+                11,
+                20,
+                vec!["speak".to_string()],
+                vec!["Base".to_string()],
+            ),
+        );
+        assert_eq!(
+            count_unrelated_method_definers("speak", &class_index),
+            1,
+            "Base + Derived override of speak must count as ONE unrelated definer"
+        );
+
+        // Add an unrelated third class -> TWO logical definers.
+        class_index.insert(
+            "Robot",
+            ClassEntry::new(
+                PathBuf::from("b.py"),
+                1,
+                10,
+                vec!["speak".to_string()],
+                vec![],
+            ),
+        );
+        assert_eq!(
+            count_unrelated_method_definers("speak", &class_index),
+            2,
+            "Base-family + unrelated Robot must count as TWO unrelated definers"
+        );
+    }
+
+    /// Direct unit test of the FuncIndex fix: same-name/different-class methods
+    /// inserted under the SAME (module, bare-name) key must all survive and be
+    /// returned by `find_by_name` (this is the property the ambiguity guard
+    /// depends on).
+    #[test]
+    fn test_func_index_same_name_methods_survive_collision() {
+        let mut func_index = FuncIndex::new();
+        index_method_both_keys(&mut func_index, "x", "Animal", "speak", "x.py", 10);
+        index_method_both_keys(&mut func_index, "x", "Robot", "speak", "x.py", 30);
+        index_method_both_keys(&mut func_index, "x", "Plant", "speak", "x.py", 50);
+
+        let speak_methods: Vec<_> = func_index
+            .find_by_name("speak")
+            .filter(|e| e.is_method)
+            .collect();
+        assert_eq!(
+            speak_methods.len(),
+            3,
+            "find_by_name(speak) must return all 3 colliding methods, got {}",
+            speak_methods.len()
+        );
+
+        let mut classes: Vec<_> = speak_methods
+            .iter()
+            .filter_map(|e| e.class_name.clone())
+            .collect();
+        classes.sort();
+        assert_eq!(classes, vec!["Animal", "Plant", "Robot"]);
     }
 }

@@ -444,8 +444,17 @@ impl ClassEntry {
 /// ```
 #[derive(Debug, Default)]
 pub struct FuncIndex {
-    /// Maps (module_path, func_name) -> FuncEntry
-    entries: HashMap<(String, String), FuncEntry>,
+    /// Maps (module_path, func_name) -> all entries sharing that key.
+    ///
+    /// A single (module, name) key can legitimately map to MULTIPLE entries:
+    /// when several classes in the same module each define a method of the
+    /// same bare name (e.g. `Animal.speak`, `Robot.speak`, `Plant.speak` all
+    /// indexed under `("x", "speak")`), every one must survive. Storing a
+    /// `Vec` (rather than overwriting) is what lets `find_by_name` report the
+    /// true cardinality so the decline-on-ambiguity guards in `resolution`
+    /// (which require exactly one candidate) can fire correctly instead of
+    /// binding an order-dependent survivor.
+    entries: HashMap<(String, String), Vec<FuncEntry>>,
 }
 
 impl FuncIndex {
@@ -463,45 +472,84 @@ impl FuncIndex {
         }
     }
 
-    /// Inserts a function entry.
+    /// Inserts a function entry under `(module, func_name)`.
+    ///
+    /// Multiple distinct entries may share a key (see the type doc). Inserts
+    /// are deduplicated by `(file_path, line, class_name)` so that the same
+    /// definition reached via more than one module alias (e.g. the full and
+    /// simple module spellings) does not inflate the candidate count and
+    /// spuriously trip the ambiguity guards.
     pub fn insert(
         &mut self,
         module: impl Into<String>,
         func_name: impl Into<String>,
         entry: FuncEntry,
     ) {
-        self.entries
-            .insert((module.into(), func_name.into()), entry);
+        let bucket = self.entries.entry((module.into(), func_name.into()));
+        let vec = bucket.or_default();
+        if !vec.iter().any(|e| {
+            e.file_path == entry.file_path
+                && e.line == entry.line
+                && e.class_name == entry.class_name
+        }) {
+            vec.push(entry);
+        }
     }
 
     /// Looks up a function by module and name.
+    ///
+    /// Returns the first entry stored under the key. When a key holds several
+    /// distinct same-name methods, callers that need to reason about
+    /// ambiguity must use [`find_by_name`](Self::find_by_name) (or
+    /// [`get_all`](Self::get_all)) instead — `get` preserves the historical
+    /// single-result API for the common, unique-key lookups.
     pub fn get(&self, module: &str, func_name: &str) -> Option<&FuncEntry> {
         self.entries
             .get(&(module.to_string(), func_name.to_string()))
+            .and_then(|v| v.first())
     }
 
-    /// Returns the number of entries in the index.
+    /// Returns all entries stored under `(module, func_name)`.
+    pub fn get_all(&self, module: &str, func_name: &str) -> &[FuncEntry] {
+        self.entries
+            .get(&(module.to_string(), func_name.to_string()))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Returns the total number of entries in the index (summed across all
+    /// keys, so colliding same-name methods each count).
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.values().map(|v| v.len()).sum()
     }
 
     /// Returns true if the index is empty.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.values().all(|v| v.is_empty())
     }
 
     /// Merges another FuncIndex into this one.
     ///
-    /// Used to combine results from parallel processing.
+    /// Used to combine results from parallel processing. Entries are appended
+    /// per key (with the same `(file_path, line, class_name)` dedup as
+    /// [`insert`](Self::insert)) so same-name methods from different shards
+    /// all survive.
     pub fn merge(&mut self, other: FuncIndex) {
-        self.entries.extend(other.entries);
+        for ((module, name), entries) in other.entries {
+            for entry in entries {
+                self.insert(module.clone(), name.clone(), entry);
+            }
+        }
     }
 
     /// Returns an iterator over all entries.
+    ///
+    /// Each `((module, name), entry)` pair is yielded once; keys holding
+    /// several same-name methods produce one item per entry.
     pub fn iter(&self) -> impl Iterator<Item = ((&str, &str), &FuncEntry)> {
-        self.entries
-            .iter()
-            .map(|((m, f), e)| ((m.as_str(), f.as_str()), e))
+        self.entries.iter().flat_map(|((m, f), entries)| {
+            entries.iter().map(move |e| ((m.as_str(), f.as_str()), e))
+        })
     }
 
     /// Finds all entries matching a given function name across all modules.
@@ -513,14 +561,22 @@ impl FuncIndex {
         self.entries
             .iter()
             .filter(move |((_m, f), _)| f.as_str() == func_name)
-            .map(|(_, e)| e)
+            .flat_map(|(_, entries)| entries.iter())
     }
 
     /// Convert to path map for TypeAwareCallResolver compatibility.
+    ///
+    /// The path map is single-valued per `(module, name)` key; when several
+    /// entries share a key the first one's path is used (the resolver only
+    /// needs a representative file for type-table seeding).
     pub fn to_path_map(&self) -> std::collections::HashMap<(String, String), std::path::PathBuf> {
         self.entries
             .iter()
-            .map(|((m, f), e)| ((m.clone(), f.clone()), e.file_path.clone()))
+            .filter_map(|((m, f), entries)| {
+                entries
+                    .first()
+                    .map(|e| ((m.clone(), f.clone()), e.file_path.clone()))
+            })
             .collect()
     }
 }
