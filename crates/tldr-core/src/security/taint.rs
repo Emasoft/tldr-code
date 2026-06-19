@@ -1585,6 +1585,214 @@ fn identifier_in_text(text: &str, ident: &str) -> bool {
     false
 }
 
+/// Normalize an identifier-node's source text to its bare head name so it can be
+/// compared against a taint-tracked variable name.
+///
+/// The taint engine stores tracked variable names in their bare form: PHP `$id`
+/// is tracked as `id` (see [`extract_first_identifier_arg_ast`], which does
+/// `trim_start_matches('$')`), and dotted accesses like `obj.attr` are tracked
+/// under their leading segment `obj`. This mirrors exactly that normalization so
+/// an `identifier`/`variable_name` leaf node text lines up with the stored name.
+fn normalize_ident_head(text: &str) -> &str {
+    let head = text.split('.').next().unwrap_or(text);
+    let head = head.split("->").next().unwrap_or(head);
+    head.trim_start_matches('&').trim_start_matches('$')
+}
+
+/// G5-O1 (T2-G5-taint): AST argument-subtree membership test that replaces the
+/// `identifier_in_text` substring "indirect match" used to promote a sink to
+/// tainted.
+///
+/// Returns `true` iff the tainted variable `tvar`'s **defining identifier node**
+/// appears as a descendant of an **argument** of a call located on `sink_line`.
+/// This is a purely structural check: it walks the call's argument subtree
+/// (`arguments` field / `argument_list` / `argument`-kind / `call_suffix`
+/// children — the same arg-bearing shapes [`extract_first_identifier_arg_ast`]
+/// recognizes) and matches a leaf whose kind is in
+/// [`identifier_node_kinds`] and whose normalized text equals `tvar`.
+///
+/// Because the walk descends through every named node inside the argument
+/// subtree, **interpolation sinks are handled by construction**: an f-string
+/// `cursor.execute(f"...{x}")` exposes `x` as an `identifier` leaf inside a
+/// Python `interpolation` node; a JS template literal `` query(`...${x}`) ``
+/// exposes `x` inside a `template_substitution`; a Ruby `system("...#{cmd}")`
+/// exposes `cmd` inside an `interpolation`; a PHP `query("...$id")` exposes
+/// `$id` as a `variable_name` child of the `encapsed_string`. Conversely, plain
+/// string *literal* characters are NOT identifier nodes, so a tainted variable
+/// name that appears only inside literal text (or in a comment, which is not
+/// inside the argument subtree at all) does NOT promote the sink — closing the
+/// over-taint hole of the old substring test.
+///
+/// The flow gate downstream is preserved: this only decides argument-subtree
+/// membership; it does not bypass the `if !sink_tainted continue` gate.
+fn tainted_ident_in_call_args(
+    root: &tree_sitter::Node,
+    source: &[u8],
+    language: Language,
+    sink_line: u32,
+    tvar: &str,
+) -> bool {
+    let call_kinds = call_node_kinds(language);
+    let construct_kinds = arg_bearing_construct_kinds(language);
+    let ident_kinds = identifier_node_kinds(language);
+    // Normalize the taint-tracked variable name ONCE to its bare head so it
+    // lines up with the normalized identifier-leaf text. The taint engine
+    // stores some names WITH a sigil (PHP `$cmd`) and some bare (`cmd`); the
+    // sink-side var-extraction strips the sigil, so both sides must be
+    // normalized for the comparison to be symmetric.
+    let want = normalize_ident_head(tvar);
+
+    for node in walk_descendants(*root) {
+        let kind = node.kind();
+        let is_call = call_kinds.contains(&kind);
+        let is_construct = construct_kinds.contains(&kind);
+        if !is_call && !is_construct {
+            continue;
+        }
+        // Only consider nodes whose own span covers the sink line so we don't
+        // match an unrelated call elsewhere in the block. Multi-line calls are
+        // anchored at their opening line (matching how sinks are recorded by
+        // line).
+        let node_line = node.start_position().row as u32 + 1;
+        let node_end_line = node.end_position().row as u32 + 1;
+        if sink_line < node_line || sink_line > node_end_line {
+            continue;
+        }
+        // For canonical call nodes, scan only the ARGUMENT subtree (so the
+        // call receiver / callee name cannot match). For language-construct
+        // sinks (PHP `include`/`require` — which have no `arguments` field and
+        // whose operand is the dangerous value), scan the whole construct
+        // subtree minus the leading keyword token (the keyword is not an
+        // identifier-kind node anyway).
+        let scan_root = if is_call {
+            match find_args_subtree(&node) {
+                Some(a) => a,
+                None => continue,
+            }
+        } else {
+            node
+        };
+        if ident_leaf_in_subtree(&scan_root, source, &ident_kinds, want) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Tree-sitter node kinds for argument-bearing **language constructs** that are
+/// sinks but are NOT call expressions (so [`call_node_kinds`] misses them).
+///
+/// PHP `include` / `require` / `include_once` / `require_once` parse as
+/// `include_expression` / `require_expression` — a language construct whose
+/// operand (a `variable_name`, possibly wrapped in `parenthesized_expression`)
+/// is the path that flows in. They have no `arguments` field, so the canonical
+/// call-arg path cannot reach them; we scan their whole subtree instead. This
+/// mirrors the dedicated `include_expression` / `require_expression` arm in
+/// [`extract_first_identifier_arg_ast`].
+fn arg_bearing_construct_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::Php => &["include_expression", "require_expression"],
+        _ => &[],
+    }
+}
+
+/// Locate a call node's argument-bearing subtree.
+///
+/// Mirrors [`extract_first_identifier_arg_ast`]'s generic arg-finding: prefer
+/// the `arguments` field, else the first child whose kind contains `"argument"`
+/// or equals `"call_suffix"`. (PHP `function_call_expression` /
+/// `member_call_expression` expose an `arguments` field whose children are
+/// `argument` nodes; Python/Ruby use `argument_list`.)
+fn find_args_subtree<'a>(call: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    call.child_by_field_name("arguments").or_else(|| {
+        for i in 0..call.child_count() {
+            if let Some(child) = call.child(i) {
+                let kind = child.kind();
+                if kind.contains("argument") || kind == "call_suffix" {
+                    return Some(child);
+                }
+            }
+        }
+        None
+    })
+}
+
+/// BFS the given subtree for an identifier-kind leaf whose normalized head text
+/// equals `want` (already-normalized taint variable name).
+///
+/// We deliberately do NOT skip string-literal subtrees: interpolation
+/// identifier leaves (Python `interpolation`, JS `template_substitution`, Ruby
+/// `interpolation`, PHP `encapsed_string` `variable_name` children) live UNDER a
+/// string node, and those are the real flows we must keep. Literal text inside a
+/// string is not an identifier-kind node, so it can never match `want`.
+fn ident_leaf_in_subtree(
+    subtree: &tree_sitter::Node,
+    source: &[u8],
+    ident_kinds: &[&str],
+    want: &str,
+) -> bool {
+    let mut stack: Vec<tree_sitter::Node> = vec![*subtree];
+    while let Some(n) = stack.pop() {
+        if ident_kinds.contains(&n.kind()) {
+            let text = node_text(&n, source);
+            if normalize_ident_head(text) == want {
+                return true;
+            }
+        }
+        // Push all named children. (PHP models `$id` as a `variable_name` whose
+        // child is a `name` leaf; Python/JS/Ruby nest `identifier` under
+        // interpolation nodes. Walking all named children covers every shape.)
+        for i in 0..n.child_count() {
+            if let Some(child) = n.child(i) {
+                if child.is_named() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// G5-O1 (T2-G5-taint): decide whether tainted variable `tvar` flows into the
+/// sink call's arguments — replacing the old `identifier_in_text` substring
+/// "indirect match" promotion.
+///
+/// When an AST (`tree` + `source`) is available, this is a purely structural
+/// argument-subtree membership check via [`tainted_ident_in_call_args`]: `tvar`
+/// must appear as a descendant identifier node of an ARGUMENT of the call on
+/// `sink_line` (handling interpolation sinks by construction, and refusing to
+/// promote on a comment / unrelated identifier).
+///
+/// When no AST is available (regex-only backward-compat path, e.g.
+/// `compute_taint` callers that pass `tree = None`), it falls back to the
+/// historical word-boundary substring scan over the sink block's joined
+/// statement text so the no-tree behavior is unchanged.
+#[allow(clippy::too_many_arguments)]
+fn indirect_arg_match(
+    tree: Option<&tree_sitter::Tree>,
+    source: Option<&[u8]>,
+    language: Language,
+    cfg: &CfgInfo,
+    statements: &HashMap<u32, String>,
+    sink_block: usize,
+    sink_line: u32,
+    tvar: &str,
+) -> bool {
+    if let (Some(tree), Some(source)) = (tree, source) {
+        return tainted_ident_in_call_args(&tree.root_node(), source, language, sink_line, tvar);
+    }
+    // No-AST fallback: word-boundary substring scan over the block's text.
+    if let Some(block) = cfg.blocks.iter().find(|b| b.id == sink_block) {
+        let block_text: String = (block.lines.0..=block.lines.1)
+            .filter_map(|l| statements.get(&l))
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return identifier_in_text(&block_text, tvar);
+    }
+    false
+}
+
 /// Check if a statement contains only a constant string (no taint).
 ///
 /// Used to reduce false positives - string literals are not tainted.
@@ -1642,8 +1850,8 @@ pub fn is_orm_safe_pattern(statement: &str) -> bool {
 
 use super::ast_utils::{
     call_node_kinds, extract_call_name, extract_member_access_receiver_and_field,
-    find_parent_assignment_var, is_in_comment, is_in_string, node_text, string_node_kinds,
-    walk_descendants,
+    find_parent_assignment_var, identifier_node_kinds, is_in_comment, is_in_string, node_text,
+    string_node_kinds, walk_descendants,
 };
 
 /// AST-based source pattern: matches call names and member access patterns.
@@ -6238,6 +6446,12 @@ pub fn compute_taint_with_tree(
     result.tainted_vars = stripped;
 
     // Phase 5: Detect vulnerabilities
+    //
+    // G5-O1 (T2-G5-taint): capture the byte-source param under a distinct name
+    // BEFORE the flow-pairing loop below shadows `source` with a `TaintSource`,
+    // so the AST argument-subtree indirect-match helper always receives the
+    // source bytes (not the per-iteration TaintSource).
+    let src_bytes: Option<&[u8]> = source;
     for sink in &mut result.sinks {
         if let Some(&sink_block) = line_to_block.get(&sink.line) {
             if let (Some(tainted_ssa), Some(ssa_ref)) = (ssa_tainted_per_block.as_ref(), ssa) {
@@ -6280,22 +6494,31 @@ pub fn compute_taint_with_tree(
                         && !result.sanitized_vars.contains(&sink.var)
                     {
                         if let Some(tainted_at_block) = tainted.get(&sink_block) {
-                            if let Some(block) =
-                                cfg.blocks.iter().find(|b| b.id == sink_block)
-                            {
-                                let block_text: String = (block.lines.0..=block.lines.1)
-                                    .filter_map(|l| statements.get(&l))
-                                    .map(|s| s.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                for tvar in tainted_at_block {
-                                    if result.sanitized_vars.contains(tvar) {
-                                        continue;
-                                    }
-                                    if identifier_in_text(&block_text, tvar) {
-                                        sink.tainted = true;
-                                        break;
-                                    }
+                            for tvar in tainted_at_block {
+                                if result.sanitized_vars.contains(tvar) {
+                                    continue;
+                                }
+                                // G5-O1 (T2-G5-taint): AST argument-subtree
+                                // membership replaces the old substring test
+                                // over the joined block text. A tainted var
+                                // promotes the sink iff its defining identifier
+                                // node is a descendant of an ARGUMENT of the
+                                // call on the sink line (covering interpolation
+                                // sinks structurally). Falls back to the
+                                // word-boundary text check only when no tree is
+                                // available (no-AST backward-compat path).
+                                if indirect_arg_match(
+                                    tree,
+                                    src_bytes,
+                                    language,
+                                    cfg,
+                                    statements,
+                                    sink_block,
+                                    sink.line,
+                                    tvar,
+                                ) {
+                                    sink.tainted = true;
+                                    break;
                                 }
                             }
                         }
@@ -6306,21 +6529,26 @@ pub fn compute_taint_with_tree(
                 if tainted_at_block.contains(&sink.var) {
                     sink.tainted = true;
                 } else if !tainted_at_block.is_empty() {
-                    // Indirect match: check if any tainted variable appears
-                    // in the block's statements. Handles multi-line calls where
-                    // the tainted argument is on a different line than the sink
-                    // function name (e.g., conn.execute(\n "..." + username))
-                    if let Some(block) = cfg.blocks.iter().find(|b| b.id == sink_block) {
-                        let block_text: String = (block.lines.0..=block.lines.1)
-                            .filter_map(|l| statements.get(&l))
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        for tvar in tainted_at_block {
-                            if identifier_in_text(&block_text, tvar) {
-                                sink.tainted = true;
-                                break;
-                            }
+                    // Indirect match: a tainted variable flows through the sink
+                    // call's argument subtree (e.g. the f-string / interpolation
+                    // / concat argument of a multi-line `conn.execute(...)`).
+                    // G5-O1 (T2-G5-taint): AST argument-subtree membership
+                    // replaces the substring scan over joined block text;
+                    // falls back to the word-boundary text check only with no
+                    // tree (no-AST backward-compat path).
+                    for tvar in tainted_at_block {
+                        if indirect_arg_match(
+                            tree,
+                            src_bytes,
+                            language,
+                            cfg,
+                            statements,
+                            sink_block,
+                            sink.line,
+                            tvar,
+                        ) {
+                            sink.tainted = true;
+                            break;
                         }
                     }
                 }
@@ -6362,8 +6590,13 @@ pub fn compute_taint_with_tree(
                     // tainted variable (`name`) flows through the f-string /
                     // interpolation / concat argument, accept the flow if the
                     // source's variable is tainted at the sink block AND its
-                    // identifier appears in the sink statement text. Mirrors
-                    // the indirect-match logic used to set `sink.tainted` above.
+                    // defining identifier node is a descendant of an ARGUMENT of
+                    // the call on the sink line. Mirrors the indirect-match
+                    // logic used to set `sink.tainted` above.
+                    // G5-O1 (T2-G5-taint): AST argument-subtree membership
+                    // replaces the `identifier_in_text(stmt, ...)` substring
+                    // test; falls back to the word-boundary text check only with
+                    // no tree (no-AST backward-compat path).
                     let indirect = if direct {
                         false
                     } else if !result.sanitized_vars.contains(&source.var)
@@ -6372,10 +6605,16 @@ pub fn compute_taint_with_tree(
                             .map(|t| t.contains(&source.var))
                             .unwrap_or(false)
                     {
-                        match &sink_statement {
-                            Some(stmt) => identifier_in_text(stmt, &source.var),
-                            None => false,
-                        }
+                        indirect_arg_match(
+                            tree,
+                            src_bytes,
+                            language,
+                            cfg,
+                            statements,
+                            sink_block,
+                            sink_line,
+                            &source.var,
+                        )
                     } else {
                         false
                     };
@@ -7577,6 +7816,349 @@ def vuln(user_input):
             sink_types.contains(&TaintSinkType::CodeEval),
             "Should detect eval as CodeEval sink, got: {:?}",
             sink_types
+        );
+    }
+
+    // =====================================================================
+    // G5-O1 (T2-G5-taint): AST argument-subtree membership replaces the
+    // `identifier_in_text` substring "indirect match" promotion.
+    // =====================================================================
+
+    /// Unit-level guard on the AST primitive. A tainted var passed inside a
+    /// Python f-string argument is found as an argument-subtree descendant.
+    /// If the Python interpolation node kind were dropped this fails LOUDLY.
+    #[test]
+    fn test_tainted_ident_in_call_args_python_fstring() {
+        use crate::ast::ParserPool;
+        let code = "cursor.execute(f\"SELECT {name} FROM t\")\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Python).unwrap();
+        assert!(
+            tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::Python,
+                1,
+                "name"
+            ),
+            "tainted var `name` inside f-string interpolation must be detected as an arg-subtree descendant"
+        );
+        // A bare receiver / unrelated identifier that is NOT inside the
+        // argument subtree must not match.
+        assert!(
+            !tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::Python,
+                1,
+                "cursor"
+            ),
+            "the call receiver `cursor` is not an argument and must not match"
+        );
+    }
+
+    /// Per-language guard: JS template literal `${x}` exposes `x` as an
+    /// argument-subtree descendant.
+    #[test]
+    fn test_tainted_ident_in_call_args_js_template_literal() {
+        use crate::ast::ParserPool;
+        let code = "db.query(`SELECT ${userId} FROM t`)\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::JavaScript).unwrap();
+        assert!(
+            tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::JavaScript,
+                1,
+                "userId"
+            ),
+            "tainted var inside JS template_substitution must be detected"
+        );
+    }
+
+    /// Per-language guard: Ruby string interpolation `#{cmd}` exposes `cmd`.
+    #[test]
+    fn test_tainted_ident_in_call_args_ruby_interpolation() {
+        use crate::ast::ParserPool;
+        let code = "system(\"echo #{cmd} done\")\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Ruby).unwrap();
+        assert!(
+            tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::Ruby,
+                1,
+                "cmd"
+            ),
+            "tainted var inside Ruby interpolation must be detected"
+        );
+    }
+
+    /// Per-language guard: PHP encapsed-string `$id` and concat `. $id`.
+    #[test]
+    fn test_tainted_ident_in_call_args_php_encapsed_and_concat() {
+        use crate::ast::ParserPool;
+        let pool = ParserPool::new();
+
+        let enc = "<?php $db->query(\"SELECT $id FROM t\"); ?>\n";
+        let tree = pool.parse(enc, Language::Php).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&tree.root_node(), enc.as_bytes(), Language::Php, 1, "id"),
+            "PHP `$id` interpolated in an encapsed_string argument must be detected (stored bare as `id`)"
+        );
+        // Receiver `$db` is not an argument.
+        assert!(
+            !tainted_ident_in_call_args(&tree.root_node(), enc.as_bytes(), Language::Php, 1, "db"),
+            "PHP receiver `$db` is not an argument and must not match"
+        );
+
+        let cat = "<?php $db->query(\"SELECT \" . $id); ?>\n";
+        let tree2 = pool.parse(cat, Language::Php).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&tree2.root_node(), cat.as_bytes(), Language::Php, 1, "id"),
+            "PHP `$id` in a binary_expression (string concat) argument must be detected"
+        );
+
+        // Sigil-normalization: the taint engine stores PHP vars WITH the `$`
+        // sigil (`$id`); passing the sigiled name must still match the bare
+        // `name`/`variable_name` leaf (both sides normalized). Regression guard
+        // for the pack-vuln-v1 PHP positives.
+        assert!(
+            tainted_ident_in_call_args(&tree2.root_node(), cat.as_bytes(), Language::Php, 1, "$id"),
+            "PHP sigiled tvar `$id` must match after normalization"
+        );
+
+        // Bare function-call sink `system($cmd)` (function_call_expression).
+        let sys = "<?php system($cmd); ?>\n";
+        let tsys = pool.parse(sys, Language::Php).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&tsys.root_node(), sys.as_bytes(), Language::Php, 1, "$cmd"),
+            "PHP `system($cmd)` must detect the tainted `$cmd` argument"
+        );
+
+        // `include($page)` parses as `include_expression`, NOT a call node —
+        // covered via arg_bearing_construct_kinds. A missing construct kind
+        // here would silently drop the PHP file-inclusion (path traversal)
+        // flow, so this fails LOUDLY.
+        let inc = "<?php include($page); ?>\n";
+        let tinc = pool.parse(inc, Language::Php).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&tinc.root_node(), inc.as_bytes(), Language::Php, 1, "$page"),
+            "PHP `include($page)` (include_expression) must detect the tainted `$page` operand"
+        );
+    }
+
+    /// Over-taint guard (the core CL-11 defect): a tainted variable whose name
+    /// appears ONLY in a comment or as an unrelated identifier on the sink line
+    /// must NOT promote / pair the sink. The OLD substring `identifier_in_text`
+    /// check matched the comment text and over-tainted; the AST argument-subtree
+    /// check does not, because a comment is not inside the call's arguments.
+    #[test]
+    fn test_no_overtaint_from_comment_token() {
+        use crate::ast::ParserPool;
+        use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType, RefType, VarRef};
+        // `tainted` is a genuine source (request.args.get) and IS in the
+        // tainted set at the sink block. The sink `os.system(safe)` passes a
+        // DIFFERENT, clean variable; `tainted` appears only on its own
+        // definition line (line 4) and in a comment on the sink line (line 5)
+        // — never inside the sink call's argument subtree.
+        //
+        // OLD BEHAVIOR (the CL-11 defect): the indirect match joined the whole
+        // block's statement text ("tainted = ...  safe = ...  os.system(safe) #
+        // ... tainted ...") and `identifier_in_text` matched the `tainted`
+        // token from line 4 / the comment, over-promoting the line-5 sink and
+        // emitting a spurious flow. The AST argument-subtree check only inspects
+        // the call's arguments (`safe`), so it does NOT over-taint.
+        let code = "import os\n\
+\n\
+def vuln(request):\n\
+    tainted = request.args.get(\"x\")\n\
+    safe = \"ls\"\n\
+    os.system(safe)  # never pass tainted directly\n";
+
+        let cfg = CfgInfo {
+            function: "vuln".to_string(),
+            blocks: vec![
+                CfgBlock {
+                    id: 0,
+                    block_type: BlockType::Entry,
+                    lines: (3, 3),
+                    calls: Vec::new(),
+                },
+                // Lines 4-6 in ONE block so the old joined-block-text scan
+                // would see `tainted` from line 4 / the line-6 comment.
+                CfgBlock {
+                    id: 1,
+                    block_type: BlockType::Body,
+                    lines: (4, 6),
+                    calls: vec!["request.args.get".to_string(), "os.system".to_string()],
+                },
+            ],
+            edges: vec![CfgEdge {
+                from: 0,
+                to: 1,
+                edge_type: EdgeType::Unconditional,
+                condition: None,
+            }],
+            entry_block: 0,
+            exit_blocks: vec![1],
+            cyclomatic_complexity: 1,
+            nested_functions: HashMap::new(),
+        };
+        let refs = vec![
+            VarRef {
+                name: "tainted".to_string(),
+                ref_type: RefType::Definition,
+                line: 4,
+                column: 0,
+                context: None,
+                group_id: None,
+            },
+            VarRef {
+                name: "safe".to_string(),
+                ref_type: RefType::Definition,
+                line: 5,
+                column: 0,
+                context: None,
+                group_id: None,
+            },
+        ];
+        let mut statements: HashMap<u32, String> = HashMap::new();
+        for (i, line) in code.lines().enumerate() {
+            statements.insert((i + 1) as u32, line.to_string());
+        }
+
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Python).ok();
+        let result = compute_taint_with_tree(
+            &cfg,
+            &refs,
+            &statements,
+            tree.as_ref(),
+            Some(code.as_bytes()),
+            Language::Python,
+            None,
+        )
+        .unwrap();
+
+        // Sanity: `tainted` must actually be tracked as tainted at the block,
+        // otherwise this test would vacuously pass.
+        assert!(
+            result
+                .tainted_vars
+                .get(&1)
+                .map(|s| s.contains("tainted"))
+                .unwrap_or(false),
+            "sanity: `tainted` must be in the tainted set at block 1; tainted_vars={:?}",
+            result.tainted_vars
+        );
+
+        // The os.system(safe) sink must NOT be marked tainted by the `tainted`
+        // token appearing elsewhere in the block (definition line / comment).
+        let shell_sink = result
+            .sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::ShellExec && s.line == 6);
+        assert!(
+            shell_sink.is_some(),
+            "sanity: os.system on line 6 should be a ShellExec sink; sinks={:?}",
+            result.sinks
+        );
+        assert!(
+            !shell_sink.unwrap().tainted,
+            "os.system(safe) must NOT be tainted from a `tainted` token outside the call's arguments"
+        );
+        assert!(
+            result.flows.is_empty(),
+            "no taint flow expected (tainted never enters the sink args); got {:?}",
+            result.flows
+        );
+    }
+
+    /// End-to-end positive: a tainted source flowing into an f-string SQL sink
+    /// is detected as a taint flow (interpolation handled structurally).
+    #[test]
+    fn test_fstring_interpolation_sink_is_detected_end_to_end() {
+        use crate::ast::ParserPool;
+        let code = "import sqlite3\n\
+\n\
+def vuln(request, cursor):\n\
+    name = request.args.get(\"name\")\n\
+    cursor.execute(f\"SELECT * FROM users WHERE n = {name}\")\n";
+
+        use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType, RefType, VarRef};
+        let cfg = CfgInfo {
+            function: "vuln".to_string(),
+            blocks: vec![
+                CfgBlock {
+                    id: 0,
+                    block_type: BlockType::Entry,
+                    lines: (3, 3),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 1,
+                    block_type: BlockType::Body,
+                    lines: (4, 5),
+                    calls: vec!["request.args.get".to_string(), "cursor.execute".to_string()],
+                },
+            ],
+            edges: vec![CfgEdge {
+                from: 0,
+                to: 1,
+                edge_type: EdgeType::Unconditional,
+                condition: None,
+            }],
+            entry_block: 0,
+            exit_blocks: vec![1],
+            cyclomatic_complexity: 1,
+            nested_functions: HashMap::new(),
+        };
+        let refs = vec![VarRef {
+            name: "name".to_string(),
+            ref_type: RefType::Definition,
+            line: 4,
+            column: 0,
+            context: None,
+            group_id: None,
+        }];
+        let mut statements: HashMap<u32, String> = HashMap::new();
+        for (i, line) in code.lines().enumerate() {
+            statements.insert((i + 1) as u32, line.to_string());
+        }
+
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Python).ok();
+        let result = compute_taint_with_tree(
+            &cfg,
+            &refs,
+            &statements,
+            tree.as_ref(),
+            Some(code.as_bytes()),
+            Language::Python,
+            None,
+        )
+        .unwrap();
+
+        // The SQL sink on line 5 should be tainted via the f-string argument.
+        let sql_sink = result
+            .sinks
+            .iter()
+            .find(|s| s.line == 5 && s.sink_type == TaintSinkType::SqlQuery);
+        assert!(
+            sql_sink.is_some(),
+            "sanity: cursor.execute(...) on line 5 should be a SqlQuery sink; sinks: {:?}",
+            result.sinks
+        );
+        assert!(
+            sql_sink.unwrap().tainted,
+            "the f-string SQL sink must be tainted via the interpolated `name` argument"
+        );
+        assert!(
+            !result.flows.is_empty(),
+            "expected a taint flow from request.args.get -> cursor.execute f-string"
         );
     }
 }
