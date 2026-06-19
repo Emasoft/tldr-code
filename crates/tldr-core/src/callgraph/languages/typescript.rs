@@ -469,6 +469,21 @@ impl TypeScriptHandler {
         }
     }
 
+    /// CLUSTER T3-G3 (3A): return true iff `node` is a descendant of an
+    /// `arguments` node — i.e. it sits inside a call's argument list, e.g.
+    /// `defineGetter(req, 'query', function query(){...})`. Decision is purely
+    /// structural (`node.kind()` of ancestors); no source text is inspected.
+    fn node_is_in_call_arguments(node: &Node) -> bool {
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            if parent.kind() == "arguments" {
+                return true;
+            }
+            current = parent.parent();
+        }
+        false
+    }
+
     /// Collect all function, class, and arrow function definitions, plus a
     /// receiver-keyed index mapping each CommonJS / prototype method name to
     /// the set of receiver roots it was defined on.
@@ -539,6 +554,25 @@ impl TypeScriptHandler {
                 "method_definition" => {
                     if let Some(name_node) = node.child_by_field_name("name") {
                         functions.insert(get_node_text(&name_node, source).to_string());
+                    }
+                }
+                "function_expression" | "arrow_function" | "generator_function" => {
+                    // CLUSTER T3-G3 (3A): a NAMED function expression passed as
+                    // a call ARGUMENT — the Express `defineGetter(req,'query',
+                    // function query(){...})` getter pattern — is collected as
+                    // a def keyed by its OWN name. The named/anonymous split is
+                    // self-enforcing: anonymous callbacks have no `name` field
+                    // and are excluded by construction. Lands AFTER T3-G1 (1A)
+                    // so these names are contained by receiver-keying and do
+                    // NOT widen the flat collapse (they register no receiver
+                    // root, so `obj.method()` collapse is unaffected).
+                    if Self::node_is_in_call_arguments(&node) {
+                        if let Some(name_node) = node.child_by_field_name("name") {
+                            let name = get_node_text(&name_node, source).to_string();
+                            if !name.is_empty() {
+                                functions.insert(name);
+                            }
+                        }
                     }
                 }
                 "assignment_expression" => {
@@ -2780,6 +2814,128 @@ function setup() {
                 Some("this.router"),
                 "nested receiver should be captured as `this.router`; got {:?}",
                 param_call
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // CLUSTER T3-G3+G2: named function-expression arguments + computed-member
+    // placeholder defs.
+    //
+    // GAP 3 (3A): named function expressions / arrows passed as call arguments
+    // (the Express `defineGetter(req,'query',function query(){...})` getter
+    // pattern) are collected as defs keyed by their OWN name. Anonymous
+    // callbacks have no `name` field and are excluded by construction.
+    //
+    // GAP 2 (2B): `app[method] = fn` (subscript LHS with an identifier index)
+    // emits a virtual/computed placeholder keyed on the object (`app.[computed]`)
+    // that must NOT enter the bare `defined_funcs` collapse set, so it cannot
+    // create a false bare-name Intra edge.
+    // -------------------------------------------------------------------------
+
+    mod arg_and_computed_tests {
+        use super::*;
+
+        fn collect_defs(source: &str) -> (HashSet<String>, HashMap<String, HashSet<String>>) {
+            let handler = TypeScriptHandler::new();
+            let tree = handler.parse_source(source).unwrap();
+            let (funcs, _classes, receivers) = handler.collect_definitions(&tree, source.as_bytes());
+            (funcs, receivers)
+        }
+
+        // (a) A named function expression passed as a call argument is
+        // collected as a def keyed by its own name.
+        #[test]
+        fn test_named_function_expression_arg_collected_by_own_name() {
+            let source = r#"
+defineGetter(req, 'query', function query() { return 1; });
+defineGetter(req, 'protocol', function protocol() { return 2; });
+"#;
+            let (funcs, _receivers) = collect_defs(source);
+            assert!(
+                funcs.contains("query"),
+                "named function-expression arg `function query()` must be in defined_funcs; got {:?}",
+                funcs
+            );
+            assert!(
+                funcs.contains("protocol"),
+                "named function-expression arg `function protocol()` must be in defined_funcs; got {:?}",
+                funcs
+            );
+        }
+
+        // (b) An anonymous callback argument is NOT collected (no `name`
+        // field). The string arg name (`fresh`) must never become a def.
+        #[test]
+        fn test_anonymous_callback_arg_not_collected() {
+            let source = r#"
+defineGetter(req, 'fresh', function() { return 3; });
+arr.forEach(function(x) { return x; });
+list.map((y) => y + 1);
+"#;
+            let (funcs, _receivers) = collect_defs(source);
+            assert!(
+                !funcs.contains("fresh"),
+                "anonymous callback must NOT be collected under the string arg name; got {:?}",
+                funcs
+            );
+            // No function-like name should leak from anonymous argument callbacks.
+            // (defineGetter / forEach / map are call targets, not defs.)
+            assert!(
+                funcs.is_empty(),
+                "no anonymous argument callback may enter defined_funcs; got {:?}",
+                funcs
+            );
+        }
+
+        // (c) `app[method] = fn` produces a computed/virtual placeholder def on
+        // `app` that is NOT added to the bare-name collapse set (defined_funcs),
+        // and cannot create a false bare-name Intra edge at a call site.
+        #[test]
+        fn test_computed_member_assignment_not_in_collapse_set() {
+            let source = r#"
+app[method] = function() { return 1; };
+
+function dispatch() {
+    method();
+}
+"#;
+            let (funcs, receivers) = collect_defs(source);
+
+            // The dynamic index name must NOT become a bare def.
+            assert!(
+                !funcs.contains("method"),
+                "computed index `method` must NOT enter the bare defined_funcs collapse set; got {:?}",
+                funcs
+            );
+            // No `.[computed]` placeholder may pollute the callgraph collapse set
+            // either — the bare set must stay clean of computed members.
+            assert!(
+                !funcs.iter().any(|f| f.contains(".[computed]")),
+                "computed-member placeholder must not enter defined_funcs; got {:?}",
+                funcs
+            );
+            // And it must not register a receiver root for `method` (no false
+            // receiver-keyed collapse for `app.method()` either).
+            assert!(
+                !receivers.contains_key("method"),
+                "computed member must not register a receiver root for `method`; got {:?}",
+                receivers
+            );
+
+            // A bare `method()` call site must therefore resolve Direct (the
+            // computed assignment created no statically-known `method` def).
+            let calls = extract_calls(source);
+            let dispatch_calls = calls.get("dispatch").expect("dispatch should have calls");
+            let method_call = dispatch_calls
+                .iter()
+                .find(|c| c.target == "method")
+                .expect("expected a bare method() call");
+            assert_eq!(
+                method_call.call_type,
+                CallType::Direct,
+                "computed member must not create a false Intra/bare edge for method(); got {:?}",
+                method_call
             );
         }
     }

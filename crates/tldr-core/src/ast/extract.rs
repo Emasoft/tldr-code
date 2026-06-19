@@ -2083,6 +2083,96 @@ fn extract_ocaml_module_constants(root: &Node, source: &str) -> Vec<FieldInfo> {
 // TypeScript detailed extraction
 // =============================================================================
 
+/// (fix-T3-G3G2-args-v1, GAP 3 / Option 3A) Return true iff `node` is a
+/// descendant of an `arguments` node — i.e. it sits inside a call's argument
+/// list, e.g. `defineGetter(req, 'query', function query(){...})`.
+///
+/// Walking parents is purely structural (node.kind()); no source text is
+/// inspected to make this decision.
+fn ts_node_is_in_call_arguments(node: &Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "arguments" {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// (fix-T3-G3G2-args-v1, GAP 2 / Option 2B) If `assignment` is a
+/// computed-member assignment whose LHS is a `subscript_expression` with an
+/// `object:(identifier)` and an `index:(identifier)` and whose RHS is a
+/// function-like node, emit ONE virtual/computed placeholder def keyed on the
+/// object as `obj.[computed]`, WITHOUT resolving the dynamic index name.
+///
+/// A static string index (`obj["x"] = fn`, `index:(string)`) is NOT the
+/// computed case and is intentionally left out of scope. The placeholder's
+/// `.[computed]` suffix guarantees it can never collide with a bare method
+/// name, so it cannot masquerade as a syntactic def or feed a bare-name
+/// collapse. Callgraph LINKAGE for computed members (const/import propagation)
+/// is out of scope — this records the def's existence only.
+fn extract_ts_computed_member_assignment(
+    assignment: &Node,
+    source: &str,
+    functions: &mut Vec<FunctionInfo>,
+) {
+    let Some(left) = assignment.child_by_field_name("left") else {
+        return;
+    };
+    if left.kind() != "subscript_expression" {
+        return;
+    }
+    let Some(right) = assignment.child_by_field_name("right") else {
+        return;
+    };
+    if !matches!(
+        right.kind(),
+        "arrow_function" | "function_expression" | "function"
+    ) {
+        return;
+    }
+    // Object must be a bare identifier; index must be an identifier (dynamic
+    // key). A `string` index is a static key and is out of scope.
+    let Some(object) = left.child_by_field_name("object") else {
+        return;
+    };
+    if object.kind() != "identifier" {
+        return;
+    }
+    let Some(index) = left.child_by_field_name("index") else {
+        return;
+    };
+    if index.kind() != "identifier" {
+        return;
+    }
+
+    let obj_name = get_node_text(&object, source);
+    if obj_name.is_empty() {
+        return;
+    }
+    // Virtual placeholder name: `obj.[computed]`. The `.[computed]` marker is
+    // not a valid bare identifier, so this can never create a false bare edge.
+    let name = format!("{}.[computed]", obj_name);
+    let line_number = assignment.start_position().row as u32 + 1;
+    let line_end = assignment.end_position().row as u32 + 1;
+
+    functions.push(FunctionInfo {
+        name,
+        params: Vec::new(),
+        return_type: None,
+        docstring: None,
+        is_method: false,
+        is_async: false,
+        decorators: Vec::new(),
+        // Member-style assignment is an externally-visible binding shape.
+        visibility: Some("public".to_string()),
+        line_number,
+        line_end,
+        state_mutability: None,
+    });
+}
+
 fn extract_ts_functions_detailed(
     node: &Node,
     source: &str,
@@ -2147,6 +2237,25 @@ fn extract_ts_functions_detailed(
                 // Handle: export const foo = () => {} and export function foo() {}
                 extract_ts_functions_detailed(&child, source, functions, is_method);
             }
+            "function_expression" | "arrow_function" | "generator_function" => {
+                // (fix-T3-G3G2-args-v1, GAP 3 / Option 3A) A NAMED function
+                // expression passed as a call ARGUMENT — the Express
+                // `defineGetter(req,'query',function query(){...})` getter
+                // pattern — surfaces as a def keyed by its OWN name. The
+                // named/anonymous split is self-enforcing: anonymous callbacks
+                // have no `name` field, so the guard below excludes them.
+                if !is_method
+                    && child.child_by_field_name("name").is_some()
+                    && ts_node_is_in_call_arguments(&child)
+                {
+                    let info = extract_ts_function_info(&child, source, false);
+                    if !info.name.is_empty() {
+                        functions.push(info);
+                    }
+                }
+                // Recurse into the body for any nested definitions.
+                extract_ts_functions_detailed(&child, source, functions, is_method);
+            }
             "assignment_expression" => {
                 // js-extract-function-expressions-v1: handle
                 //   app.use = function() {}
@@ -2155,6 +2264,11 @@ fn extract_ts_functions_detailed(
                 // and recurse for any nested function definitions in the RHS.
                 if !is_method {
                     extract_ts_assignment_function(&child, source, functions);
+                    // (fix-T3-G3G2-args-v1, GAP 2 / Option 2B) computed-member
+                    // assignment `app[method] = fn` -> virtual `app.[computed]`
+                    // placeholder (the regular extractor above skips subscript
+                    // LHS because the name is dynamic).
+                    extract_ts_computed_member_assignment(&child, source, functions);
                 }
                 extract_ts_functions_detailed(&child, source, functions, is_method);
             }
@@ -10294,6 +10408,117 @@ module.exports = {{
             "Missing 'baz' (pair: arrow) in {:?}",
             names
         );
+    }
+
+    /// (fix-T3-G3G2-args-v1, GAP 3 / Option 3A) A NAMED function expression
+    /// passed as a call ARGUMENT — the Express `defineGetter(req, 'query',
+    /// function query(){...})` getter pattern — must surface as a definition
+    /// keyed by the function's OWN name (`query`). Anonymous callbacks have no
+    /// `name` field and are excluded by construction.
+    #[test]
+    fn test_extract_js_named_function_expression_argument() {
+        let mut file = NamedTempFile::with_suffix(".js").unwrap();
+        write!(
+            file,
+            r#"
+defineGetter(req, 'query', function query() {{ return 1; }});
+defineGetter(req, 'protocol', function protocol() {{ return 2; }});
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"query"),
+            "named function-expression arg `function query()` must be collected, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"protocol"),
+            "named function-expression arg `function protocol()` must be collected, got {:?}",
+            names
+        );
+    }
+
+    /// (fix-T3-G3G2-args-v1, GAP 3 / Option 3A) An ANONYMOUS callback passed
+    /// as a call argument has no `name` field, so it must NOT be collected.
+    /// The named/anonymous split is self-enforcing.
+    #[test]
+    fn test_extract_js_anonymous_callback_argument_not_collected() {
+        let mut file = NamedTempFile::with_suffix(".js").unwrap();
+        write!(
+            file,
+            r#"
+defineGetter(req, 'fresh', function() {{ return 3; }});
+arr.forEach(function(x) {{ return x; }});
+list.map((y) => y + 1);
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        // The only top-level call targets here are `defineGetter`/`forEach`/`map`
+        // (call sites, not defs). No anonymous callback may appear as a def.
+        assert!(
+            !names.contains(&"fresh"),
+            "anonymous callback must NOT be collected under the string-arg name, got {:?}",
+            names
+        );
+        assert!(
+            names.is_empty(),
+            "no anonymous argument callback may produce a def, got {:?}",
+            names
+        );
+    }
+
+    /// (fix-T3-G3G2-args-v1, GAP 2 / Option 2B) A computed-member assignment
+    /// `app[method] = function() {}` (LHS subscript_expression with an
+    /// identifier index) must emit ONE virtual/computed placeholder def keyed
+    /// on the object as `app.[computed]`, WITHOUT resolving the dynamic name.
+    /// A static string key (`obj["x"] = fn`) is NOT the computed case and is
+    /// left out of scope.
+    #[test]
+    fn test_extract_js_computed_member_assignment_placeholder() {
+        let mut file = NamedTempFile::with_suffix(".js").unwrap();
+        write!(
+            file,
+            r#"
+app[method] = function() {{ return 1; }};
+app[other] = (x) => x;
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"app.[computed]"),
+            "computed-member assignment must emit a `app.[computed]` placeholder, got {:?}",
+            names
+        );
+        // The dynamic index name must NOT be resolved into a bare def.
+        assert!(
+            !names.contains(&"method"),
+            "the dynamic index `method` must NOT be resolved as a def name, got {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"other"),
+            "the dynamic index `other` must NOT be resolved as a def name, got {:?}",
+            names
+        );
+        // The placeholder name can never collide with a bare method name (the
+        // `.[computed]` suffix guarantees it cannot create a false bare edge).
+        for f in &info.functions {
+            if f.name == "app.[computed]" {
+                assert!(
+                    f.name.contains(".[computed]"),
+                    "placeholder must carry the .[computed] marker"
+                );
+            }
+        }
     }
 
     #[test]
