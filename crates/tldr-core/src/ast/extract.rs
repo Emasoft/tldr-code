@@ -2101,6 +2101,21 @@ fn extract_ts_functions_detailed(
             }
             "method_definition" | "method_signature" => {
                 if is_method {
+                    // (fix-T3-G4-overload-v1) TypeScript overload signatures.
+                    // A `method_signature` — or a `method_definition` that
+                    // lacks a `body` field — is a declaration-only entry. When
+                    // an implementation sibling (a `method_definition` WITH a
+                    // body) exists in this SAME class_body and shares the same
+                    // (name, static?, accessor-kind) key, this declaration is
+                    // a redundant overload signature and is suppressed so the
+                    // single implementation is kept exactly once. Decision is
+                    // purely structural (body-field presence + name/static/
+                    // accessor match), never source-text heuristics.
+                    if !ts_method_has_body(&child)
+                        && ts_method_has_impl_sibling(node, &child, source)
+                    {
+                        continue;
+                    }
                     let info = extract_ts_function_info(&child, source, true);
                     functions.push(info);
                 } else if let Some(parent) = child.parent() {
@@ -2462,6 +2477,99 @@ fn extract_ts_arrow_params(node: &Node, source: &str) -> Vec<String> {
     }
 
     params
+}
+
+/// (fix-T3-G4-overload-v1) True iff a TypeScript class member node owns a
+/// method body. The tree-sitter-typescript grammar attaches the implementation
+/// block under the `body` field (a `statement_block`) on `method_definition`;
+/// `method_signature` nodes (overload declarations, ambient/`declare class`
+/// members) have no `body` field. This is the structural discriminator between
+/// an implementation and a declaration-only signature.
+fn ts_method_has_body(node: &Node) -> bool {
+    node.child_by_field_name("body").is_some()
+}
+
+/// (fix-T3-G4-overload-v1) True iff this class member is declared `static`. In
+/// tree-sitter-typescript the `static` modifier is an anonymous child token of
+/// kind `"static"` on the `method_definition` / `method_signature` node (not a
+/// named field), so we scan the direct children for it.
+fn ts_method_is_static(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        if c.kind() == "static" {
+            return true;
+        }
+    }
+    false
+}
+
+/// (fix-T3-G4-overload-v1) The accessor kind of a class member, if any:
+/// `Some("get")` / `Some("set")` for accessors, `None` for a plain method. In
+/// tree-sitter-typescript `get` / `set` appear as anonymous child tokens of
+/// kind `"get"` / `"set"`. Accessor kind participates in the overload dedup key
+/// so a `get x()` and `set x()` pair (same name) are never collapsed together.
+fn ts_method_accessor_kind(node: &Node) -> Option<&'static str> {
+    let mut cursor = node.walk();
+    for c in node.children(&mut cursor) {
+        match c.kind() {
+            "get" => return Some("get"),
+            "set" => return Some("set"),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// (fix-T3-G4-overload-v1) True iff `class_body` contains an implementation
+/// sibling (a member WITH a body) that shares the overload dedup key —
+/// `(name, static?, accessor-kind)` — with the declaration-only `decl` node.
+///
+/// Scope is STRICTLY the direct children of the supplied `class_body` node, so
+/// two classes in one file that each define a same-named method are never
+/// collapsed across class boundaries. The accessor kind keeps `get`/`set`
+/// distinct, and the static flag keeps a static overload from matching an
+/// instance implementation (and vice versa). When no implementation sibling
+/// exists (ambient / `declare class` / `.d.ts` declaration-only members) this
+/// returns false and the declaration is retained.
+fn ts_method_has_impl_sibling(class_body: &Node, decl: &Node, source: &str) -> bool {
+    let decl_name = decl
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source));
+    let Some(decl_name) = decl_name else {
+        return false;
+    };
+    let decl_static = ts_method_is_static(decl);
+    let decl_accessor = ts_method_accessor_kind(decl);
+
+    let mut cursor = class_body.walk();
+    for sibling in class_body.children(&mut cursor) {
+        // Only `method_definition` nodes can carry an implementation body.
+        if sibling.kind() != "method_definition" {
+            continue;
+        }
+        // Skip the decl itself; an impl sibling is a different node.
+        if sibling.id() == decl.id() {
+            continue;
+        }
+        if !ts_method_has_body(&sibling) {
+            continue;
+        }
+        let same_name = sibling
+            .child_by_field_name("name")
+            .map(|n| get_node_text(&n, source))
+            .is_some_and(|n| n == decl_name);
+        if !same_name {
+            continue;
+        }
+        if ts_method_is_static(&sibling) != decl_static {
+            continue;
+        }
+        if ts_method_accessor_kind(&sibling) != decl_accessor {
+            continue;
+        }
+        return true;
+    }
+    false
 }
 
 fn extract_ts_function_info(node: &Node, source: &str, is_method: bool) -> FunctionInfo {
@@ -10231,6 +10339,167 @@ Klass.prototype.method = function method(arg: number) {{ return arg; }};
             names.contains(&"method"),
             "TS: missing 'method' (prototype) in {:?}",
             names
+        );
+    }
+
+    /// (fix-T3-G4-overload-v1) TypeScript overload signatures must collapse to
+    /// the single implementation. A `method_signature` (or body-less
+    /// `method_definition`) that shares (name, static?, accessor-kind) with an
+    /// implementation sibling in the SAME class_body is dropped — but only the
+    /// signatures, the impl (with body) is kept exactly once.
+    #[test]
+    fn test_extract_ts_overload_signatures_collapse_to_impl() {
+        let mut file = NamedTempFile::with_suffix(".ts").unwrap();
+        write!(
+            file,
+            r#"
+class NestFactoryStatic {{
+  public create(a: string): void;
+  public create(a: number): void;
+  public create(a: any): void {{
+    return;
+  }}
+
+  static make(): void;
+  static make(): void {{
+    return;
+  }}
+
+  get value(): string {{
+    return "x";
+  }}
+  set value(v: string) {{}}
+}}
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let class = info
+            .classes
+            .iter()
+            .find(|c| c.name == "NestFactoryStatic")
+            .expect("NestFactoryStatic class");
+        let method_names: Vec<&str> = class.methods.iter().map(|m| m.name.as_str()).collect();
+
+        // Three `create` overload entries collapse to one implementation.
+        let create_count = method_names.iter().filter(|n| **n == "create").count();
+        assert_eq!(
+            create_count, 1,
+            "overloaded `create` should collapse to one impl, got {:?}",
+            method_names
+        );
+
+        // The retained `create` must be the implementation (the one with a body):
+        // its source line range spans multiple lines, not the single-line sigs.
+        let create = class
+            .methods
+            .iter()
+            .find(|m| m.name == "create")
+            .expect("create method retained");
+        assert!(
+            create.line_end > create.line_number,
+            "retained `create` should be the multi-line impl, got lines {}-{}",
+            create.line_number,
+            create.line_end
+        );
+
+        // Static overload also collapses to its impl.
+        let make_count = method_names.iter().filter(|n| **n == "make").count();
+        assert_eq!(
+            make_count, 1,
+            "overloaded static `make` should collapse to one impl, got {:?}",
+            method_names
+        );
+
+        // get/set accessors share a name but must NOT be collapsed — both kept.
+        let value_count = method_names.iter().filter(|n| **n == "value").count();
+        assert_eq!(
+            value_count, 2,
+            "get/set `value` accessors must both be retained, got {:?}",
+            method_names
+        );
+    }
+
+    /// (fix-T3-G4-overload-v1) Guard: a declaration-only method with NO
+    /// implementation sibling (ambient / `declare class` / `.d.ts`) must be
+    /// retained — there is nothing to dedup against.
+    #[test]
+    fn test_extract_ts_ambient_declaration_only_method_retained() {
+        let mut file = NamedTempFile::with_suffix(".ts").unwrap();
+        write!(
+            file,
+            r#"
+declare class Ambient {{
+  onlyDecl(x: number): void;
+  alsoDecl(): string;
+}}
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let class = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Ambient")
+            .expect("Ambient class");
+        let method_names: Vec<&str> = class.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            method_names.contains(&"onlyDecl"),
+            "declaration-only `onlyDecl` must be retained, got {:?}",
+            method_names
+        );
+        assert!(
+            method_names.contains(&"alsoDecl"),
+            "declaration-only `alsoDecl` must be retained, got {:?}",
+            method_names
+        );
+    }
+
+    /// (fix-T3-G4-overload-v1) Guard: two classes in one file may each define a
+    /// `create`. Dedup is scoped STRICTLY to one class_body — both must survive.
+    #[test]
+    fn test_extract_ts_same_name_methods_in_different_classes_both_kept() {
+        let mut file = NamedTempFile::with_suffix(".ts").unwrap();
+        write!(
+            file,
+            r#"
+class First {{
+  create(): void {{
+    return;
+  }}
+}}
+
+class Second {{
+  create(): void {{
+    return;
+  }}
+}}
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let first = info
+            .classes
+            .iter()
+            .find(|c| c.name == "First")
+            .expect("First class");
+        let second = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Second")
+            .expect("Second class");
+        assert_eq!(
+            first.methods.iter().filter(|m| m.name == "create").count(),
+            1,
+            "First::create must be kept"
+        );
+        assert_eq!(
+            second.methods.iter().filter(|m| m.name == "create").count(),
+            1,
+            "Second::create must be kept (never deduped across classes)"
         );
     }
 }
