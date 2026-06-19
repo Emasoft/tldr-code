@@ -1310,7 +1310,15 @@ fn walk_for_test_bodies(
     path: &Path,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) {
-    if super::test_recognizer::is_test_function_node(&node, source, language) {
+    // T1-specs (v0.5.0 DESIGN-TAIL, G3-a): the shared `is_test_function_node`
+    // recogniser only matches the XCTest `func test*()` naming convention, so
+    // swift-testing `@Test func anyName()` bodies (whose names do NOT start
+    // with `test`) were never descended into — their `#expect` macros went
+    // totally unharvested. Recognise the `@Test`-attributed declaration here
+    // (structurally, via the attribute node) so the harvest reaches them.
+    let is_test = super::test_recognizer::is_test_function_node(&node, source, language)
+        || (matches!(language, Language::Swift) && swift_is_testing_attr_function(&node, source));
+    if is_test {
         let test_name = test_function_display_name(&node, source);
 
         // cluster-misc-v2 (M-029): snapshot spec counts before harvesting so
@@ -1474,13 +1482,31 @@ fn walk_for_assertion_calls(
     // `expect(...)`; the expected value is the matcher's argument. Neither
     // shape has a flat `assertEquals`-style callee, so the generic
     // tail-name classifier never fired. Handle them structurally here.
+    //
+    // T1-specs (v0.5.0 DESIGN-TAIL, G2-a): chai chained matchers
+    // (`expect(x).to.eql(y)`) descend through intervening `.to` / `.be` /
+    // `.deep` member segments, so the carrier is reached by a structural
+    // SPINE descent rather than a single hop. The no-arg boolean form
+    // (`expect(x).to.be.true`) is a bare `member_expression` (no call), so we
+    // also dispatch on `member_expression`.
     if matches!(language, Language::JavaScript | Language::TypeScript)
-        && node.kind() == "call_expression"
+        && matches!(node.kind(), "call_expression" | "member_expression")
     {
         if try_extract_js_expect_assertion(&node, source, test_func_name, specs) {
             // Recurse still (nested expects inside callbacks), but the
             // matched node itself is consumed.
         }
+    }
+
+    // T1-specs (v0.5.0 DESIGN-TAIL, G3-a): swift-testing `#expect` /
+    // `#require` macros. tree-sitter-swift models these as a
+    // `macro_invocation` whose callee `simple_identifier` is `expect` /
+    // `require`; the single value-argument is commonly a binary comparison
+    // (`#expect(a == b)`) or a bare boolean (`#expect(x.isEmpty)`). The
+    // conventional `XCTAssertEqual`-shaped flat call never appears, so these
+    // suites previously yielded `total_specs = 0`.
+    if matches!(language, Language::Swift) && node.kind() == "macro_invocation" {
+        try_extract_swift_expect_assertion(&node, source, test_func_name, specs);
     }
     if matches!(language, Language::Ruby) && node.kind() == "call" {
         if try_extract_ruby_expect_assertion(&node, source, test_func_name, specs) {
@@ -1905,57 +1931,86 @@ fn classify_mockmvc_matcher(node: Node, source: &[u8]) -> String {
 /// (when it is itself a call); the expected value is the matcher's argument.
 /// Returns true when a spec was emitted.
 fn try_extract_js_expect_assertion(
-    call: &Node,
+    outer: &Node,
     source: &[u8],
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> bool {
-    // outer call_expression -> function: member_expression
-    let member = match call.child_by_field_name("function") {
-        Some(m) if m.kind() == "member_expression" => m,
-        _ => return false,
+    js_expect_inner(outer, source, test_func_name, specs).unwrap_or(false)
+}
+
+/// Inner resolver for [`try_extract_js_expect_assertion`]. Returns
+/// `Some(true)` when a spec was emitted, `Some(false)`/`None` otherwise. Split
+/// out so the structural resolution can use the `?` operator.
+fn js_expect_inner(
+    outer: &Node,
+    source: &[u8],
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) -> Option<bool> {
+    // The assertion's tail member node carries the matcher name in its
+    // `property` field, and its `object` chain descends (by structure) to
+    // the `expect(<actual>)` carrier:
+    //
+    //   call_expression          expect(parse(x)).to.eql(y)   (Jest / chai .eql(y))
+    //     function: member_expression  expect(parse(x)).to.eql
+    //   member_expression        expect(flag).to.be.true       (chai no-arg boolean)
+    //
+    // For a `call_expression` outer node the matcher takes an argument (the
+    // expected value); for a bare `member_expression` outer node the matcher
+    // is a no-arg leaf (`.to.be.true` / `.to.be.null`).
+    let (member, matcher_args): (Node, Option<Vec<Node>>) = match outer.kind() {
+        "call_expression" => {
+            let f = outer.child_by_field_name("function")?;
+            if f.kind() != "member_expression" {
+                return Some(false);
+            }
+            (f, Some(collect_call_args(*outer)))
+        }
+        "member_expression" => (*outer, None),
+        _ => return Some(false),
     };
-    // member.property is the matcher name.
-    let matcher = match member.child_by_field_name("property") {
-        Some(p) => get_node_text(p, source),
-        None => return false,
-    };
-    // member.object must be an `expect(<actual>)` call.
-    let object = match member.child_by_field_name("object") {
-        Some(o) if o.kind() == "call_expression" => o,
-        _ => return false,
-    };
-    let inner_callee = match object.child_by_field_name("function") {
-        Some(f) => get_node_text(f, source),
-        None => return false,
-    };
-    if inner_callee != "expect" {
-        return false;
+
+    // matcher = the spine LEAF (`eql`, `equal`, `toBe`, `true`, `throw`, ...).
+    let matcher_node = member.child_by_field_name("property")?;
+    let matcher = get_node_text(matcher_node, source);
+
+    // Classify the matcher from the named leaf table. A `member_expression`
+    // outer node is only a standalone assertion when its leaf is a no-arg
+    // terminal (boolean / null) — otherwise it is just the `.function` of an
+    // enclosing call we will visit separately, so bail to avoid emitting a
+    // spec without a matcher argument.
+    let kind = js_classify_matcher(matcher)?;
+    if matcher_args.is_none() && !kind.is_no_arg_leaf() {
+        return Some(false);
     }
 
-    // First positional argument of `expect(...)` is the actual / FUT call.
-    let expect_args = collect_call_args(object);
-    let actual = match expect_args.first() {
-        Some(a) => *a,
-        None => return false,
-    };
-    let fut = match first_callable_inside(actual) {
-        Some(c) => c,
-        None => return false,
-    };
-    let (fname, inputs) = match generic_extract_call_info(fut, source) {
-        Some(v) => v,
-        None => return false,
-    };
+    // SPINE DESCENT: from `member.object`, walk down the member_expression
+    // chain BY STRUCTURE (descend through any non-leaf segment) until the
+    // bottom `expect(<actual>)` call (Jest / chai) or, for should-style
+    // chains (`subject.should.equal(y)`), the bottom subject node.
+    let carrier = member.child_by_field_name("object")?;
+    let (fut_node, fut_is_call_arg) = js_descend_to_carrier(carrier, source)?;
 
-    let line = call.start_position().row as u32 + 1;
+    // The FUT call: for `expect(<actual>)` the actual is inside the call's
+    // args; for should-style the subject node IS the actual.
+    let fut = if fut_is_call_arg {
+        let expect_args = collect_call_args(fut_node);
+        let actual = *expect_args.first()?;
+        first_callable_inside(actual)?
+    } else {
+        first_callable_inside(fut_node)?
+    };
+    let (fname, inputs) = generic_extract_call_info(fut, source)?;
+
+    let line = outer.start_position().row as u32 + 1;
     let fs = ensure_entry(specs, &fname);
-    match matcher {
-        "toBe" | "toEqual" | "toStrictEqual" | "toMatchObject" => {
+    match kind {
+        JsMatcherKind::Equality => {
             // Equality matcher: matcher arg is the expected output.
-            let matcher_args = collect_call_args(*call);
             let output = matcher_args
-                .first()
+                .as_ref()
+                .and_then(|a| a.first())
                 .map(|n| try_eval_literal(*n, source))
                 .unwrap_or(serde_json::Value::Null);
             fs.input_output_specs.push(InputOutputSpec {
@@ -1966,9 +2021,9 @@ fn try_extract_js_expect_assertion(
                 line,
                 confidence: Confidence::High,
             });
-            true
+            Some(true)
         }
-        "toBeNull" | "toBeUndefined" => {
+        JsMatcherKind::Null => {
             fs.property_specs.push(PropertySpec {
                 function: fname,
                 property_type: "null".to_string(),
@@ -1977,9 +2032,9 @@ fn try_extract_js_expect_assertion(
                 line,
                 confidence: Confidence::Medium,
             });
-            true
+            Some(true)
         }
-        "toBeDefined" | "toBeTruthy" => {
+        JsMatcherKind::Truthy => {
             fs.property_specs.push(PropertySpec {
                 function: fname,
                 property_type: "truthy".to_string(),
@@ -1988,9 +2043,9 @@ fn try_extract_js_expect_assertion(
                 line,
                 confidence: Confidence::Medium,
             });
-            true
+            Some(true)
         }
-        "toBeFalsy" => {
+        JsMatcherKind::Falsy => {
             fs.property_specs.push(PropertySpec {
                 function: fname,
                 property_type: "falsy".to_string(),
@@ -1999,9 +2054,9 @@ fn try_extract_js_expect_assertion(
                 line,
                 confidence: Confidence::Medium,
             });
-            true
+            Some(true)
         }
-        "toThrow" | "toThrowError" => {
+        JsMatcherKind::Throw => {
             fs.exception_specs.push(ExceptionSpec {
                 function: fname,
                 exception_type: "Error".to_string(),
@@ -2011,9 +2066,98 @@ fn try_extract_js_expect_assertion(
                 line,
                 confidence: Confidence::Medium,
             });
-            true
+            Some(true)
         }
-        _ => false,
+    }
+}
+
+/// cl7/T1-specs (v0.5.0): the kind of a JS/TS assertion matcher leaf.
+///
+/// Used ONLY to classify the spine leaf — never to gate the structural
+/// descent to the `expect(...)` carrier (an unbounded chai-connector word
+/// list would silently drop specs).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JsMatcherKind {
+    Equality,
+    Null,
+    Truthy,
+    Falsy,
+    Throw,
+}
+
+impl JsMatcherKind {
+    /// True when the matcher is a no-argument terminal that can appear as a
+    /// bare property access (`expect(x).to.be.true`) rather than a call.
+    fn is_no_arg_leaf(self) -> bool {
+        matches!(
+            self,
+            JsMatcherKind::Null | JsMatcherKind::Truthy | JsMatcherKind::Falsy
+        )
+    }
+}
+
+/// cl7/T1-specs (v0.5.0): classify a JS/TS matcher LEAF name.
+///
+/// Small, named, per-framework matcher-leaf table (Jest + chai + should).
+/// This is a CLASSIFICATION leaf table only — it does not drive the
+/// structural spine descent. Returns `None` for non-matcher property names
+/// (chai connectors like `to` / `be` / `deep`), which keeps intermediate
+/// `member_expression` nodes from emitting spurious specs.
+fn js_classify_matcher(matcher: &str) -> Option<JsMatcherKind> {
+    match matcher {
+        // Equality matchers: Jest (`toBe` family) and chai/should
+        // (`eql` / `equal` / `equals` / `eq`; `.deep.equal` leaf is `equal`).
+        "toBe" | "toEqual" | "toStrictEqual" | "toMatchObject" | "eql" | "equal" | "equals"
+        | "eq" => Some(JsMatcherKind::Equality),
+        // Nullish terminals.
+        "toBeNull" | "toBeUndefined" | "null" | "undefined" => Some(JsMatcherKind::Null),
+        // Truthy terminals (`.to.be.true` / `.to.be.ok` / Jest `toBeTruthy`).
+        "toBeDefined" | "toBeTruthy" | "true" | "ok" => Some(JsMatcherKind::Truthy),
+        // Falsy terminals.
+        "toBeFalsy" | "false" => Some(JsMatcherKind::Falsy),
+        // Throwing matchers.
+        "toThrow" | "toThrowError" | "throw" | "throws" => Some(JsMatcherKind::Throw),
+        _ => None,
+    }
+}
+
+/// cl7/T1-specs (v0.5.0): structurally descend a JS/TS assertion spine to
+/// its FUT carrier.
+///
+/// Walks down the `member_expression` `.object` chain BY STRUCTURE (through
+/// any number of intervening segments — `to`, `be`, `deep`, ... — without
+/// enumerating a connector wordlist). Stops at:
+///   - the bottom `call_expression` named `expect` (Jest / chai
+///     `expect(actual).…`), returning `(call, true)` so the caller pulls the
+///     actual from the call's arguments; or
+///   - the bottom non-`expect` node of a should-style chain
+///     (`subject.should.equal(y)`), returning `(subject, false)` so the
+///     caller treats the subject node itself as the actual.
+fn js_descend_to_carrier<'a>(node: Node<'a>, source: &[u8]) -> Option<(Node<'a>, bool)> {
+    let mut cur = node;
+    loop {
+        match cur.kind() {
+            "call_expression" => {
+                // `expect(actual)` carrier → actual lives in the args.
+                let callee = cur
+                    .child_by_field_name("function")
+                    .map(|f| get_node_text(f, source));
+                if callee == Some("expect") {
+                    return Some((cur, true));
+                }
+                // A call that is not `expect(...)` is the should-style
+                // subject itself (`svc.find(1).should.equal(2)`): treat the
+                // call as the actual.
+                return Some((cur, false));
+            }
+            "member_expression" => {
+                // Descend through the connector segment by structure.
+                cur = cur.child_by_field_name("object")?;
+            }
+            // Bottom of a should-style chain is a plain subject (identifier
+            // / parenthesised expr / ...): the subject is the actual.
+            _ => return Some((cur, false)),
+        }
     }
 }
 
@@ -2563,6 +2707,287 @@ fn swift_member_equality<'a>(
                 .into_iter()
                 .collect::<Vec<_>>();
             return Some((name, inputs, value));
+        }
+    }
+    None
+}
+
+/// T1-specs (v0.5.0 DESIGN-TAIL, G3-a): true when `node` is a swift-testing
+/// `@Test`-attributed function declaration.
+///
+/// swift-testing marks test cases with the `@Test` attribute on a normal
+/// `func` whose name need not start with `test` (e.g. `@Test func
+/// computesValue()`). tree-sitter-swift parses this as a
+/// `function_declaration` carrying a `modifiers` child that contains an
+/// `attribute` whose `user_type`/`type_identifier` tail is `Test`. We match
+/// that structure (no name-prefix heuristic) so the harvest can descend into
+/// swift-testing bodies and reach their `#expect` macros.
+fn swift_is_testing_attr_function(node: &Node, source: &[u8]) -> bool {
+    if !matches!(
+        node.kind(),
+        "function_declaration" | "protocol_function_declaration"
+    ) {
+        return false;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "modifiers" {
+            continue;
+        }
+        let mut mc = child.walk();
+        for attr in child.children(&mut mc) {
+            if attr.kind() != "attribute" {
+                continue;
+            }
+            // The attribute name is its `user_type`/`type_identifier` tail.
+            // Walk the attribute subtree for the first `type_identifier`.
+            let mut ac = attr.walk();
+            let mut stack: Vec<Node> = attr.children(&mut ac).collect();
+            while let Some(n) = stack.pop() {
+                if matches!(n.kind(), "type_identifier" | "simple_identifier")
+                    && get_node_text(n, source) == "Test"
+                {
+                    return true;
+                }
+                let mut nc = n.walk();
+                for ch in n.children(&mut nc) {
+                    stack.push(ch);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// T1-specs (v0.5.0 DESIGN-TAIL, G3-a): swift-testing `#expect` / `#require`.
+///
+/// tree-sitter-swift parses `#expect(<arg>)` as a `macro_invocation`:
+///   `#`  `simple_identifier`("expect"|"require")  `call_suffix`
+///     `call_suffix` -> `value_arguments` -> `value_argument` (field `value`)
+///
+/// The single value-argument is dispatched purely on AST shape:
+///   * a binary expression (`equality_expression` / `comparison_expression` /
+///     `infix_expression`) carrying a `op` field — read the operator from the
+///     AST op node and the two operands from the `lhs` / `rhs` fields. The
+///     function-under-test is taken from whichever operand carries a call /
+///     navigation (member) read; the other operand is the expected value.
+///       - `==` => InputOutputSpec
+///       - `!=` => inequality PropertySpec
+///       - `<` / `>` / `<=` / `>=` => bounds PropertySpec
+///   * a bare boolean expression (no `op` field, e.g. `#expect(x.isEmpty)`)
+///     => truthy PropertySpec.
+///
+/// Property reads (`set.count`, `coords[0].x`) attribute to the accessor tail
+/// via the existing `swift_member_equality` convention; genuine function
+/// calls (`compute()`) attribute via `generic_extract_call_info`.
+fn try_extract_swift_expect_assertion(
+    call: &Node,
+    source: &[u8],
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) {
+    // Callee identifier: the `simple_identifier` child (after the `#` token).
+    let mut callee: Option<&str> = None;
+    let mut suffix: Option<Node> = None;
+    let mut cursor = call.walk();
+    for child in call.children(&mut cursor) {
+        match child.kind() {
+            "simple_identifier" if callee.is_none() => {
+                callee = Some(get_node_text(child, source));
+            }
+            "call_suffix" => suffix = Some(child),
+            _ => {}
+        }
+    }
+    if !matches!(callee, Some("expect") | Some("require")) {
+        return;
+    }
+    let suffix = match suffix {
+        Some(s) => s,
+        None => return,
+    };
+
+    // call_suffix -> value_arguments -> first value_argument (field `value`).
+    let value_arguments = {
+        let mut found = None;
+        let mut sc = suffix.walk();
+        for ch in suffix.children(&mut sc) {
+            if ch.kind() == "value_arguments" {
+                found = Some(ch);
+                break;
+            }
+        }
+        match found {
+            Some(v) => v,
+            None => return,
+        }
+    };
+    let first_value_arg = {
+        let mut found = None;
+        let mut vc = value_arguments.walk();
+        for ch in value_arguments.children(&mut vc) {
+            if ch.kind() == "value_argument" {
+                found = Some(ch);
+                break;
+            }
+        }
+        match found {
+            Some(v) => v,
+            None => return,
+        }
+    };
+    // Skip labelled arguments (`#expect(processExitsWith: .failure) { … }`,
+    // `#expect(throws:) { … }`) — these are exit-test / throwing directives,
+    // not value comparisons. The presence of a `value_argument_label` child
+    // is the structural signal.
+    {
+        let mut lc = first_value_arg.walk();
+        for ch in first_value_arg.children(&mut lc) {
+            if ch.kind() == "value_argument_label" {
+                return;
+            }
+        }
+    }
+    let arg = match first_value_arg.child_by_field_name("value") {
+        Some(a) => a,
+        None => return,
+    };
+
+    let line = call.start_position().row as u32 + 1;
+
+    // Binary comparison: dispatch on the AST `op` node.
+    if let Some(op_node) = arg.child_by_field_name("op") {
+        let lhs = match arg.child_by_field_name("lhs") {
+            Some(n) => n,
+            None => return,
+        };
+        let rhs = match arg.child_by_field_name("rhs") {
+            Some(n) => n,
+            None => return,
+        };
+        let op = get_node_text(op_node, source).trim();
+
+        // Resolve (actual_fut, inputs, expected_node). Prefer the LEFT
+        // operand as actual (Swift convention), accepting either side.
+        let resolved = swift_resolve_expect_operands(lhs, rhs, source);
+        let (fname, inputs, expected) = match resolved {
+            Some(v) => v,
+            None => return,
+        };
+
+        match op {
+            "==" => {
+                let output = try_eval_literal(expected, source);
+                let fs = ensure_entry(specs, &fname);
+                fs.input_output_specs.push(InputOutputSpec {
+                    function: fname,
+                    inputs,
+                    output,
+                    test_function: test_func_name.to_string(),
+                    line,
+                    confidence: Confidence::High,
+                });
+            }
+            "!=" => {
+                let val = get_node_text(expected, source);
+                let fs = ensure_entry(specs, &fname);
+                fs.property_specs.push(PropertySpec {
+                    function: fname,
+                    property_type: "inequality".to_string(),
+                    constraint: format!("result != {}", val),
+                    test_function: test_func_name.to_string(),
+                    line,
+                    confidence: Confidence::Medium,
+                });
+            }
+            "<" | ">" | "<=" | ">=" => {
+                let val = get_node_text(expected, source);
+                let fs = ensure_entry(specs, &fname);
+                fs.property_specs.push(PropertySpec {
+                    function: fname,
+                    property_type: "bounds".to_string(),
+                    constraint: format!("result {} {}", op, val),
+                    test_function: test_func_name.to_string(),
+                    line,
+                    confidence: Confidence::Medium,
+                });
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // No operator: a bare boolean expression (`#expect(x.isEmpty)` /
+    // `#expect(flag())`) => truthy property on the accessor / call FUT.
+    // (Property specs carry no inputs, so the receiver observation is dropped.)
+    if let Some((fname, _inputs)) = swift_operand_fut(arg, source) {
+        let fs = ensure_entry(specs, &fname);
+        fs.property_specs.push(PropertySpec {
+            function: fname,
+            property_type: "truthy".to_string(),
+            constraint: "result is truthy".to_string(),
+            test_function: test_func_name.to_string(),
+            line,
+            confidence: Confidence::Medium,
+        });
+    }
+}
+
+/// T1-specs (v0.5.0 DESIGN-TAIL, G3-a): pick the actual/expected operands of
+/// a swift-testing comparison.
+///
+/// Returns `(fut_name, inputs, expected_node)` where the function-under-test
+/// is resolved from whichever operand carries a member read / call (preferring
+/// the left), and `expected_node` is the OTHER operand. `None` when neither
+/// operand is a member read or call (a pure value-vs-value comparison we can't
+/// attribute).
+fn swift_resolve_expect_operands<'a>(
+    lhs: Node<'a>,
+    rhs: Node<'a>,
+    source: &[u8],
+) -> Option<(String, Vec<serde_json::Value>, Node<'a>)> {
+    for (actual, expected) in [(lhs, rhs), (rhs, lhs)] {
+        if let Some((fname, inputs)) = swift_operand_fut(actual, source) {
+            return Some((fname, inputs, expected));
+        }
+    }
+    None
+}
+
+/// T1-specs (v0.5.0 DESIGN-TAIL, G3-a): resolve the FUT name + inputs for a
+/// single swift-testing operand.
+///
+/// * A `navigation_expression` (member/property read such as `set.count` or
+///   `coords[0].x`) attributes to the accessor tail via the existing
+///   `swift_member_equality` convention (tail = FUT, receiver = input).
+/// * Otherwise, if the operand contains a genuine `call_expression`
+///   (`compute()`), attribute via `generic_extract_call_info`.
+///
+/// Returns `None` for pure literals / values.
+fn swift_operand_fut(operand: Node, source: &[u8]) -> Option<(String, Vec<serde_json::Value>)> {
+    if operand.kind() == "navigation_expression" {
+        // Reuse the accessor-tail convention: `swift_member_equality` reads
+        // the tail accessor as the FUT name and the receiver as the input.
+        // The third tuple element (the "value") is irrelevant here, so pass
+        // the operand itself as the throwaway second node.
+        if let Some((name, inputs, _)) =
+            swift_member_equality(operand, operand, source, Language::Swift)
+        {
+            return Some((name, inputs));
+        }
+    }
+    // Genuine function call inside the operand (`compute()`,
+    // `OpaquePointer(bitPattern: i)`): attribute to the call.
+    if let Some(c) = first_callable_inside(operand) {
+        // Subscripts (`coords[0]`) also parse as `call_expression` in
+        // tree-sitter-swift; their callee is itself an expression, not a
+        // plain function name, so `generic_extract_call_info` would yield the
+        // subscript receiver. That case is already covered by the
+        // navigation_expression branch above (the subscript is the receiver
+        // of a `.member` read), so by the time we reach here a bare call is a
+        // real function call.
+        if let Some((fname, inputs)) = generic_extract_call_info(c, source) {
+            return Some((fname, inputs));
         }
     }
     None
@@ -3769,5 +4194,277 @@ def test_membership():
         let expr = find_expr_node(root.child(0).unwrap());
         let val = try_eval_literal(expr, &source);
         assert_eq!(val, serde_json::json!([1, 2, 3]));
+    }
+
+    // ====================================================================
+    // T1-specs (v0.5.0 DESIGN-TAIL): test-framework assertion extraction.
+    // ====================================================================
+
+    /// G3-a: swift-testing `#expect` / `#require` macro recognition.
+    ///
+    /// The dominant swift-testing shape is `@Test func name() { #expect(a == b) }`.
+    /// Function names do NOT start with `test`, and the assertion is a
+    /// `macro_invocation` (callee `expect`/`require`) rather than an
+    /// `XCTAssertEqual` flat call — so the file previously yielded
+    /// `total_specs = 0`. This encodes the repro.
+    #[test]
+    fn test_specs_swift_expect_macro_equality() {
+        let temp = TempDir::new().unwrap();
+        // File name must satisfy the Swift `*Tests.swift` candidate gate.
+        let test_path = temp.path().join("WidgetTests.swift");
+        let src = r#"
+import Testing
+
+@Suite("widget tests")
+struct WidgetTests {
+  @Test func computesValue() {
+    #expect(compute() == 42)
+  }
+
+  @Test("reads property") func readsCount() {
+    #expect(set.count == 3)
+  }
+
+  @Test func subscriptRead() {
+    #expect(coords[0].x == 1)
+  }
+
+  @Test func booleanFlag() {
+    #expect(widget.isEmpty)
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+
+        let report = run_specs(&test_path, None).unwrap();
+
+        // The macro sites must now produce specs (previously total = 0).
+        assert!(
+            report.summary.total_specs > 0,
+            "swift-testing #expect should yield specs, got {}",
+            report.summary.total_specs
+        );
+
+        // `compute()` is a genuine call on the actual side: equality => IO spec.
+        let compute = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "compute")
+            .expect("should record FUT `compute` from #expect(compute() == 42)");
+        assert!(
+            !compute.input_output_specs.is_empty(),
+            "compute should have an input/output spec from the == comparison"
+        );
+
+        // `set.count` is a pure property read: attribute to accessor tail
+        // `count` (the swift_member_equality convention), expected = 3.
+        let count = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "count")
+            .expect("should record accessor `count` from #expect(set.count == 3)");
+        assert!(
+            !count.input_output_specs.is_empty(),
+            "count accessor should have an input/output spec"
+        );
+
+        // Subscript-bearing navigation `coords[0].x` attributes to accessor `x`.
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "x"),
+            "should record accessor `x` from #expect(coords[0].x == 1)"
+        );
+
+        // Boolean-only `#expect(widget.isEmpty)` => truthy property on `isEmpty`.
+        let is_empty = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "isEmpty")
+            .expect("should record accessor `isEmpty` from boolean #expect");
+        assert!(
+            is_empty
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "truthy"),
+            "boolean #expect should yield a truthy property"
+        );
+    }
+
+    /// G3-a: swift-testing `#require` and comparison/inequality operators.
+    #[test]
+    fn test_specs_swift_require_and_comparisons() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("BoundsTests.swift");
+        let src = r#"
+import Testing
+
+struct BoundsTests {
+  @Test func bounds() {
+    #expect(value.size > 0)
+  }
+
+  @Test func notEqual() {
+    #expect(thing.kind != 5)
+  }
+
+  @Test func required() {
+    #require(parsed.count == 7)
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+
+        let report = run_specs(&test_path, None).unwrap();
+        assert!(
+            report.summary.total_specs > 0,
+            "comparison/inequality/#require should yield specs"
+        );
+
+        // `> 0` => bounds property on accessor `size`.
+        let size = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "size")
+            .expect("should record accessor `size`");
+        assert!(
+            size.property_specs
+                .iter()
+                .any(|p| p.property_type == "bounds"),
+            "`size > 0` should be a bounds property"
+        );
+
+        // `!= 5` => inequality property on accessor `kind`.
+        let kind = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "kind")
+            .expect("should record accessor `kind`");
+        assert!(
+            kind.property_specs
+                .iter()
+                .any(|p| p.property_type == "inequality"),
+            "`kind != 5` should be an inequality property"
+        );
+
+        // `#require(parsed.count == 7)` => IO spec on accessor `count`.
+        assert!(
+            report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "count"),
+            "#require equality should record accessor `count`"
+        );
+    }
+
+    /// G2-a: chai chained matchers `expect(x).to.eql(y)` (two-hop spine).
+    ///
+    /// The previous one-hop Jest handler hard-required
+    /// `member.object.kind() == "call_expression"` named `expect`, so chai's
+    /// `expect(...).to.eql(...)` (with an intervening `.to` member) was
+    /// silently dropped. This encodes the repro.
+    #[test]
+    fn test_specs_js_chai_chained_matchers() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("service.spec.ts");
+        let src = r#"
+describe('service', () => {
+  it('parses', () => {
+    expect(parse(input)).to.eql(expected);
+  });
+
+  it('finds', () => {
+    expect(svc.find(1)).to.equal(2);
+  });
+
+  it('flags', () => {
+    expect(check(x)).to.be.true;
+  });
+});
+"#;
+        fs::write(&test_path, src).unwrap();
+
+        let report = run_specs(&test_path, None).unwrap();
+        assert!(
+            report.summary.total_specs > 0,
+            "chai chained matchers should yield specs, got {}",
+            report.summary.total_specs
+        );
+
+        // `expect(parse(input)).to.eql(expected)` => IO spec on `parse`.
+        let parse = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "parse")
+            .expect("should record FUT `parse` from expect(parse(input)).to.eql(...)");
+        assert!(
+            !parse.input_output_specs.is_empty(),
+            "`.to.eql` should produce an input/output spec for parse"
+        );
+
+        // `.to.equal(2)` is also an equality matcher.
+        let find = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "find")
+            .expect("should record FUT `find` from expect(svc.find(1)).to.equal(2)");
+        assert!(
+            !find.input_output_specs.is_empty(),
+            "`.to.equal` should produce an input/output spec for find"
+        );
+
+        // `.to.be.true` is a no-arg boolean leaf => truthy property on `check`.
+        let check = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "check")
+            .expect("should record FUT `check` from expect(check(x)).to.be.true");
+        assert!(
+            check
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "truthy"),
+            "`.to.be.true` should produce a truthy property for check"
+        );
+    }
+
+    /// Regression guard: the spine-descent walker must still serve the
+    /// classic one-hop Jest shape `expect(f(x)).toBe(y)`.
+    #[test]
+    fn test_specs_js_jest_one_hop_still_works() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("calc.test.js");
+        let src = r#"
+describe('calc', () => {
+  test('adds', () => {
+    expect(add(2, 3)).toBe(5);
+  });
+  test('nullish', () => {
+    expect(lookup(0)).toBeNull();
+  });
+});
+"#;
+        fs::write(&test_path, src).unwrap();
+
+        let report = run_specs(&test_path, None).unwrap();
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("Jest one-hop expect(add(2,3)).toBe(5) must still work");
+        assert!(
+            !add.input_output_specs.is_empty(),
+            "Jest toBe should still produce an input/output spec"
+        );
+        let lookup = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "lookup")
+            .expect("Jest one-hop toBeNull must still work");
+        assert!(
+            lookup
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "null"),
+            "toBeNull should still produce a null property"
+        );
     }
 }
