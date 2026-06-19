@@ -1448,6 +1448,34 @@ impl CallGraphLanguageSupport for RubyHandler {
                     let end_line = node.end_position().row as u32 + 1;
                     classes.push(ClassDef::simple(module_name, line, end_line));
                 }
+                "call" => {
+                    // Metaprogramming: `define_method(:literal) { … }` /
+                    // `… do … end` SYNTHESIZES a real method node (Option B),
+                    // mirroring the `def` convention so `impact`/`dead`/the
+                    // callgraph node listing see the generated method as
+                    // DEFINED. We emit ONE `FuncDef`; the indexer registers it
+                    // under BOTH the bare name and `Class.method` exactly as it
+                    // does for a normal method (see builder_v2 indexing).
+                    //
+                    // A computed `define_method(expr)` arg0 yields `None` from
+                    // `define_method_literal` (no literal symbol/string), so we
+                    // synthesize NOTHING and leave the method unresolved — we do
+                    // not guess a name. `send`/`public_send`/`__send__` are not
+                    // definitions and never reach this branch.
+                    if let Some((method_name, _block_body)) =
+                        define_method_literal(&node, source_bytes)
+                    {
+                        let line = node.start_position().row as u32 + 1;
+                        let end_line = node.end_position().row as u32 + 1;
+                        if let Some(class_name) =
+                            self.find_enclosing_class_or_module_name(&node, source_bytes)
+                        {
+                            funcs.push(FuncDef::method(method_name, class_name, line, end_line));
+                        } else {
+                            funcs.push(FuncDef::function(method_name, line, end_line));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1474,6 +1502,14 @@ mod tests {
         let tree = handler.parse_source(source).unwrap();
         handler
             .extract_calls(Path::new("test.rb"), source, &tree)
+            .unwrap()
+    }
+
+    fn extract_definitions(source: &str) -> (Vec<FuncDef>, Vec<ClassDef>) {
+        let handler = RubyHandler::new();
+        let tree = handler.parse_source(source).unwrap();
+        handler
+            .extract_definitions(source, Path::new("test.rb"), &tree)
             .unwrap()
     }
 
@@ -1978,28 +2014,81 @@ end
         }
 
         #[test]
-        fn test_define_method_computed_name_is_unresolved() {
-            // define_method(computed_name) — arg0 is an identifier, NOT a
-            // literal. We must NOT guess a method name. No synthesized
-            // `Widget.<something>` method should appear, and the body call
-            // stays attributed to the enclosing class (current fall-through).
+        fn test_define_method_literal_synthesizes_funcdef_computed_does_not() {
+            // DISCRIMINATION PROOF (one test, two arms):
+            //  * A LITERAL `define_method(:greet)` MUST synthesize a real
+            //    `FuncDef` for `Widget.greet` in the definitions index — so
+            //    `impact`/`dead`/the callgraph node listing see it as DEFINED.
+            //    This arm fails on code that does not synthesize literal defs.
+            //  * A COMPUTED `define_method(:"x_#{n}")` (delimited/interpolated
+            //    symbol, NOT a static literal) MUST synthesize NOTHING — we do
+            //    not guess a name.
             let source = r#"
 class Widget
-  define_method(some_name) do
+  define_method(:greet) do
+    build_greeting
+  end
+
+  define_method(:"x_#{n}") do
     inner_call
   end
 end
 "#;
-            let calls = extract_calls(source);
-            // No fabricated method name from the computed arg.
+            let (funcs, _classes) = extract_definitions(source);
+
+            // --- Literal arm: the synthesized method MUST be a real FuncDef. ---
+            let greet = funcs
+                .iter()
+                .find(|f| f.qualified_name() == "Widget.greet")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "literal define_method(:greet) must synthesize a FuncDef \
+                         `Widget.greet`. Got defs: {:?}",
+                        funcs
+                            .iter()
+                            .map(|f| f.qualified_name())
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert_eq!(greet.name, "greet", "synthesized def keeps the bare name");
+            assert!(greet.is_method, "synthesized def must be a method");
+            assert_eq!(greet.class_name.as_deref(), Some("Widget"));
+
+            // --- Computed arm: NO fabricated name from the interpolated arg. ---
+            // The `delimited_symbol` `:"x_#{n}"` is not a static literal, so no
+            // FuncDef may be invented for it. We assert no synthesized def
+            // carries the interpolation fragment, AND that the only synthesized
+            // method on Widget is the literal one.
             assert!(
-                !calls.contains_key("Widget.some_name"),
-                "computed define_method arg must not synthesize a named method. Keys: {:?}",
+                !funcs.iter().any(|f| f.name.contains("x_") || f.name.contains('#')),
+                "computed define_method(:\"x_#{{n}}\") must not fabricate a FuncDef. \
+                 Got defs: {:?}",
+                funcs.iter().map(|f| f.qualified_name()).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                funcs
+                    .iter()
+                    .filter(|f| f.class_name.as_deref() == Some("Widget"))
+                    .count(),
+                1,
+                "exactly one method (the literal :greet) should be synthesized on \
+                 Widget; the computed one must be skipped. Got defs: {:?}",
+                funcs.iter().map(|f| f.qualified_name()).collect::<Vec<_>>()
+            );
+
+            // The call-graph view must mirror the same discrimination: the
+            // literal key exists, the computed name is never guessed.
+            let calls = extract_calls(source);
+            assert!(
+                calls.contains_key("Widget.greet"),
+                "literal define_method(:greet) should also surface in the call \
+                 graph. Keys: {:?}",
                 calls.keys().collect::<Vec<_>>()
             );
             assert!(
-                !calls.contains_key("Widget.computed_name"),
-                "computed define_method arg must not be guessed. Keys: {:?}",
+                !calls.keys().any(|k| k.contains("x_") || k.contains('#')),
+                "computed define_method arg must not be guessed into a call key. \
+                 Keys: {:?}",
                 calls.keys().collect::<Vec<_>>()
             );
         }
@@ -2084,6 +2173,40 @@ end
                         && c.receiver.as_deref() == Some("self")
                 }),
                 "receiverless send(:do_thing) should rewrite to Attr self.do_thing. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_dunder_send_literal_symbol_resolves_via_attr() {
+            // obj.__send__(:do_thing) -> Attr call, target = obj.do_thing.
+            // `__send__` is in the send-family vocab and must resolve exactly
+            // like `send`/`public_send`.
+            let source = r#"
+class Runner
+  def run
+    obj.__send__(:do_thing)
+  end
+end
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("Runner.run")
+                .or_else(|| calls.get("run"))
+                .expect("Runner.run should have calls");
+            assert!(
+                run_calls.iter().any(|c| {
+                    c.target == "obj.do_thing"
+                        && c.call_type == CallType::Attr
+                        && c.receiver.as_deref() == Some("obj")
+                }),
+                "obj.__send__(:do_thing) should rewrite to Attr obj.do_thing. Got: {:?}",
+                run_calls
+            );
+            // The literal `__send__` itself must not leak as a Direct call.
+            assert!(
+                !run_calls.iter().any(|c| c.target == "__send__"),
+                "rewritten __send__ must not also emit a `__send__` call. Got: {:?}",
                 run_calls
             );
         }
