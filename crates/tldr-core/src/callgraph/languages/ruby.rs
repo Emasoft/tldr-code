@@ -328,6 +328,41 @@ impl RubyHandler {
         // -----------------------------------------------------------------
         for child in walk_tree(*node) {
             if child.kind() == "call" {
+                // Metaprogramming: skip calls that live inside a synthesized
+                // `define_method(:literal)` block body — those are re-parented
+                // to `Class.method` by the synthesis path, not the current
+                // caller.
+                if is_in_define_method_literal_body(&child, source, node) {
+                    continue;
+                }
+
+                // Metaprogramming: a literal `define_method(:name) { … }` call
+                // itself defines a method; it is NOT a call edge to a function
+                // named `define_method`. Its block body is handled by the
+                // synthesis path. (A computed-name `define_method(expr)` falls
+                // through to ordinary handling below and stays a plain call.)
+                if define_method_literal(&child, source).is_some() {
+                    continue;
+                }
+
+                // Metaprogramming: rewrite a literal `send`/`public_send`/
+                // `__send__` to an Attr call on its receiver so the normal
+                // receiver-resolution chain can bind it.
+                if let Some(method) = child.child_by_field_name("method") {
+                    if method.kind() == "identifier"
+                        && metaprogramming_kind(get_node_text(&method, source))
+                            == Some(MetaprogrammingKind::Send)
+                    {
+                        if let Some(site) = rewrite_send_call(&child, source, caller) {
+                            calls.push(site);
+                        }
+                        // Whether or not arg0 was a literal we can resolve, do
+                        // NOT fall through: a computed `send(var)` must be left
+                        // UNRESOLVED (no spurious `obj.send` edge, no guess).
+                        continue;
+                    }
+                }
+
                 let line = child.start_position().row as u32 + 1;
 
                 // Parse call structure
@@ -420,6 +455,21 @@ impl RubyHandler {
             } else if child.kind() == "identifier"
                 && is_bareword_method_call(&child, source, &bindings)
             {
+                // Metaprogramming: a bareword inside a synthesized
+                // `define_method(:literal)` block body belongs to the
+                // synthesized method, not the current caller.
+                if is_in_define_method_literal_body(&child, source, node) {
+                    continue;
+                }
+
+                // Metaprogramming: the dynamic-name argument of a `send`-family
+                // call is data, not a call. `send(some_var)` must not surface
+                // `some_var` as a call edge (the computed dispatch is left
+                // UNRESOLVED).
+                if is_send_call_argument(&child, source) {
+                    continue;
+                }
+
                 let text = get_node_text(&child, source).to_string();
 
                 // Skip import-related barewords (defensive — these usually
@@ -813,6 +863,210 @@ fn is_bareword_method_call(node: &Node, source: &[u8], bindings: &HashSet<String
     true
 }
 
+// =============================================================================
+// Metaprogramming: define_method / send / public_send / __send__
+//
+// Ruby ships a small, fixed set of reflective dispatch built-ins. This is a
+// LANGUAGE-DEFINED set (like `require`/`include`), NOT a curated framework DSL
+// dictionary — we deliberately do NOT recognize Rails/ActiveSupport macros
+// (has_many, validates, …); those stay opaque and flow through the normal
+// class-body DSL path. We only handle the literal-argument subset (Option B):
+// when the dynamic name is given as a `simple_symbol` (`:foo`) or string
+// literal we can resolve it AST-only; when it is a computed expression we
+// leave it UNRESOLVED rather than guess.
+// =============================================================================
+
+/// The reflective-dispatch Ruby built-in a `call`'s method name denotes, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetaprogrammingKind {
+    /// `define_method(:name) { … }` / `define_method(:name) do … end`.
+    DefineMethod,
+    /// `send` / `public_send` / `__send__` — dynamic dispatch.
+    Send,
+}
+
+/// Classify a bareword method name against the fixed Ruby reflective-dispatch
+/// built-in set. Returns `None` for anything outside that language-defined set.
+fn metaprogramming_kind(name: &str) -> Option<MetaprogrammingKind> {
+    match name {
+        "define_method" => Some(MetaprogrammingKind::DefineMethod),
+        "send" | "public_send" | "__send__" => Some(MetaprogrammingKind::Send),
+        _ => None,
+    }
+}
+
+/// Extract a method name from arg0 of an `argument_list` IFF it is a literal:
+/// a `simple_symbol` (`:foo` → `foo`) or a `string` literal (`"foo"` → `foo`).
+///
+/// AST-only: we read the first NAMED child of the `argument_list` (skipping the
+/// `(`/`)`/`,` anonymous tokens) and inspect its node kind. A `simple_symbol`'s
+/// own text carries a leading `:` which we strip by reading the symbol's leaf
+/// content; a `string` exposes its content via a `string_content` child. Any
+/// other arg0 kind (notably a computed `identifier`) yields `None` — the caller
+/// must then leave the dispatch UNRESOLVED.
+fn literal_symbol_or_string_arg0(arg_list: &Node, source: &[u8]) -> Option<String> {
+    let arg0 = arg_list.named_child(0)?;
+    match arg0.kind() {
+        "simple_symbol" => {
+            // `:foo` — the literal text includes the leading colon. Strip the
+            // single leading `:` by slicing past it on the byte text rather
+            // than trimming arbitrary characters.
+            let text = get_node_text(&arg0, source);
+            text.strip_prefix(':')
+                .filter(|rest| !rest.is_empty())
+                .map(|rest| rest.to_string())
+        }
+        "string" => {
+            // Read the `string_content` child to get the bare contents,
+            // avoiding the surrounding quote tokens. Skip interpolated /
+            // empty strings (no single static `string_content`).
+            let mut content: Option<String> = None;
+            for i in 0..arg0.named_child_count() {
+                let Some(child) = arg0.named_child(i) else {
+                    continue;
+                };
+                match child.kind() {
+                    "string_content" => {
+                        if content.is_some() {
+                            // Multiple content chunks (interpolation) — not a
+                            // simple literal; bail out.
+                            return None;
+                        }
+                        content = Some(get_node_text(&child, source).to_string());
+                    }
+                    "interpolation" => return None,
+                    _ => {}
+                }
+            }
+            content.filter(|s| !s.is_empty())
+        }
+        _ => None,
+    }
+}
+
+/// Given a `call` node whose method name is a `send`-family built-in with a
+/// literal arg0, build the rewritten Attr `CallSite` (target = the resolved
+/// method name on the receiver). Returns `None` when the call is not a literal
+/// `send` we can resolve (no method-name field, not a send built-in, or a
+/// computed arg0) so the caller can fall back to UNRESOLVED handling.
+///
+/// The receiver is taken from the `call`'s `receiver` field when present
+/// (`obj.send(:m)` → receiver `obj`); a receiverless `send(:m)` denotes
+/// implicit-self dispatch and uses the `"self"` receiver convention so the
+/// type-aware resolver binds it to the enclosing class.
+fn rewrite_send_call(call: &Node, source: &[u8], caller: &str) -> Option<CallSite> {
+    // Confirm this is a `send`-family built-in via the method-name field.
+    let method = call.child_by_field_name("method")?;
+    if method.kind() != "identifier" {
+        return None;
+    }
+    if metaprogramming_kind(get_node_text(&method, source)) != Some(MetaprogrammingKind::Send) {
+        return None;
+    }
+
+    // arg0 must be a literal symbol / string, else leave UNRESOLVED.
+    let args = call.child_by_field_name("arguments")?;
+    let target_method = literal_symbol_or_string_arg0(&args, source)?;
+
+    // Receiver: explicit `obj.send(...)` receiver, or implicit `self`.
+    let receiver = match call.child_by_field_name("receiver") {
+        Some(recv) => get_node_text(&recv, source).to_string(),
+        None => "self".to_string(),
+    };
+
+    let line = call.start_position().row as u32 + 1;
+    let target = format!("{}.{}", receiver, target_method);
+    Some(CallSite::new(
+        caller.to_string(),
+        target,
+        CallType::Attr,
+        Some(line),
+        None,
+        Some(receiver),
+        None,
+    ))
+}
+
+/// If `call` is `define_method(:literal) { … }` / `… do … end` with a literal
+/// symbol arg0, return `(method_name, block_body_node)`. The block body is the
+/// `body` field of the `block` (brace form, body kind `block_body`) or
+/// `do_block` (do/end form, body kind `body_statement`). Returns `None` for a
+/// computed arg0 (leave UNRESOLVED — do not guess) or a blockless call.
+fn define_method_literal<'a>(call: &Node<'a>, source: &[u8]) -> Option<(String, Node<'a>)> {
+    let method = call.child_by_field_name("method")?;
+    if method.kind() != "identifier" {
+        return None;
+    }
+    if metaprogramming_kind(get_node_text(&method, source)) != Some(MetaprogrammingKind::DefineMethod)
+    {
+        return None;
+    }
+
+    let args = call.child_by_field_name("arguments")?;
+    let name = literal_symbol_or_string_arg0(&args, source)?;
+
+    // Require a block to re-parent. tree-sitter-ruby exposes the block via the
+    // `block` field for both the brace (`block`) and do/end (`do_block`) forms.
+    let block = call.child_by_field_name("block")?;
+    if !matches!(block.kind(), "block" | "do_block") {
+        return None;
+    }
+    let body = block.child_by_field_name("body")?;
+    Some((name, body))
+}
+
+/// True iff `node` lives inside the block body of a `define_method(:literal)`
+/// call (a `block`/`do_block` whose parent `call` is a literal define_method),
+/// searching only the ancestors strictly between `node` and `stop_at`.
+///
+/// Such nodes are owned by the SYNTHESIZED method and must NOT be attributed to
+/// the enclosing caller during the ordinary body walk; the synthesis path
+/// re-parents them to `Class.method`. The `stop_at` bound is the body node the
+/// caller is currently scanning, so we never look past the method/class scope.
+fn is_in_define_method_literal_body(node: &Node, source: &[u8], stop_at: &Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.id() == stop_at.id() {
+            return false;
+        }
+        if matches!(n.kind(), "block" | "do_block") {
+            if let Some(parent_call) = n.parent() {
+                if parent_call.kind() == "call"
+                    && define_method_literal(&parent_call, source).is_some()
+                {
+                    return true;
+                }
+            }
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// True iff `node` is an argument inside the `argument_list` of a `send`-family
+/// call (`send`/`public_send`/`__send__`). Used to suppress bareword edges for
+/// the dynamic-name argument: `send(some_var)` must not surface `some_var` as a
+/// call, and `send(:sym)`'s symbol is naturally not an identifier.
+fn is_send_call_argument(node: &Node, source: &[u8]) -> bool {
+    let Some(arg_list) = node.parent() else {
+        return false;
+    };
+    if arg_list.kind() != "argument_list" {
+        return false;
+    }
+    let Some(call) = arg_list.parent() else {
+        return false;
+    };
+    if call.kind() != "call" {
+        return false;
+    }
+    let Some(method) = call.child_by_field_name("method") else {
+        return false;
+    };
+    method.kind() == "identifier"
+        && metaprogramming_kind(get_node_text(&method, source)) == Some(MetaprogrammingKind::Send)
+}
+
 impl CallGraphLanguageSupport for RubyHandler {
     fn name(&self) -> &str {
         "ruby"
@@ -1015,6 +1269,78 @@ impl CallGraphLanguageSupport for RubyHandler {
                             if current_class.is_some() {
                                 calls_by_func.insert(name, all_calls);
                             }
+                        }
+                    }
+                }
+                "call" => {
+                    // Metaprogramming: `define_method(:literal) { … }` /
+                    // `… do … end` SYNTHESIZES a method on the enclosing class
+                    // (Option B). We create a real `Class.method` (or top-level
+                    // `method`) entry and re-parent the block body's calls to
+                    // it, instead of letting them fall through to the enclosing
+                    // class/module caller. A computed `define_method(expr)` is
+                    // left UNRESOLVED (no synthesis) and flows through the
+                    // ordinary recursion below.
+                    if let Some((method_name, block_body)) =
+                        define_method_literal(&node, source)
+                    {
+                        let full_name = if let Some(ref class) = current_class {
+                            format!("{}.{}", class, method_name)
+                        } else {
+                            method_name.clone()
+                        };
+
+                        // Factor the block's own parameters (`do |x| …`) into
+                        // the bareword-binding set so block-param reads inside
+                        // the body aren't misclassified as calls.
+                        let block_params = node
+                            .child_by_field_name("block")
+                            .and_then(|b| b.child_by_field_name("parameters"));
+
+                        let body_calls = handler.extract_calls_from_node_with_params(
+                            &block_body,
+                            source,
+                            defined_methods,
+                            defined_classes,
+                            &full_name,
+                            block_params,
+                        );
+
+                        if !body_calls.is_empty() {
+                            calls_by_func
+                                .entry(full_name.clone())
+                                .or_default()
+                                .extend(body_calls.clone());
+                            // Mirror the `def` convention: also index under the
+                            // simple name when nested in a class/module.
+                            if current_class.is_some() {
+                                calls_by_func
+                                    .entry(method_name)
+                                    .or_default()
+                                    .extend(body_calls);
+                            }
+                        } else {
+                            // Ensure the synthesized method exists as a node
+                            // even with an empty body so downstream consumers
+                            // can see the definition.
+                            calls_by_func.entry(full_name).or_default();
+                        }
+                    }
+
+                    // Recurse into children regardless: a non-define_method
+                    // `call` (or a computed define_method) may still contain
+                    // nested defs / calls to process.
+                    for i in 0..node.child_count() {
+                        if let Some(child) = node.child(i) {
+                            process_node(
+                                child,
+                                source,
+                                defined_methods,
+                                defined_classes,
+                                calls_by_func,
+                                current_class,
+                                handler,
+                            );
                         }
                     }
                 }
@@ -1563,6 +1889,236 @@ end
                 calls.contains_key("Order.calculate_total")
                     || calls.contains_key("calculate_total"),
                 "calculate_total method should also be tracked"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Metaprogramming: define_method / send / public_send / __send__
+    // (Option B — literal-argument subset, AST-only)
+    // -------------------------------------------------------------------------
+
+    mod metaprogramming_tests {
+        use super::*;
+
+        #[test]
+        fn test_define_method_literal_symbol_synthesizes_method() {
+            // define_method(:greet) { ... } should SYNTHESIZE a method
+            // `Widget.greet`, and the block body's calls must attach to
+            // `Widget.greet`, NOT to the enclosing class `Widget`.
+            let source = r#"
+class Widget
+  define_method(:greet) do
+    build_greeting
+    other.render
+  end
+end
+"#;
+            let calls = extract_calls(source);
+
+            // The synthesized method key must exist.
+            let greet_calls = calls.get("Widget.greet").unwrap_or_else(|| {
+                panic!(
+                    "define_method(:greet) should synthesize `Widget.greet`. Keys: {:?}",
+                    calls.keys().collect::<Vec<_>>()
+                )
+            });
+
+            // Block body calls attach to the synthesized method.
+            assert!(
+                greet_calls.iter().any(|c| c.target == "build_greeting"),
+                "bareword call inside define_method body should attach to Widget.greet. Got: {:?}",
+                greet_calls
+            );
+            assert!(
+                greet_calls
+                    .iter()
+                    .any(|c| c.target == "other.render" && c.call_type == CallType::Attr),
+                "receiver call inside define_method body should attach to Widget.greet. Got: {:?}",
+                greet_calls
+            );
+
+            // CRITICAL: those body calls must NOT be re-parented to the
+            // enclosing class `Widget`.
+            if let Some(widget_calls) = calls.get("Widget") {
+                assert!(
+                    !widget_calls.iter().any(|c| c.target == "build_greeting"),
+                    "define_method body call must NOT attach to enclosing class Widget. Got: {:?}",
+                    widget_calls
+                );
+                assert!(
+                    !widget_calls.iter().any(|c| c.target == "other.render"),
+                    "define_method body receiver call must NOT attach to Widget. Got: {:?}",
+                    widget_calls
+                );
+            }
+        }
+
+        #[test]
+        fn test_define_method_brace_block_synthesizes_method() {
+            // Brace-block form `define_method(:wave) { ... }` (block node,
+            // block_body body) must behave the same as the do/end form.
+            let source = r#"
+class Widget
+  define_method(:wave) { wave_helper }
+end
+"#;
+            let calls = extract_calls(source);
+            let wave_calls = calls.get("Widget.wave").unwrap_or_else(|| {
+                panic!(
+                    "define_method(:wave) {{ }} should synthesize `Widget.wave`. Keys: {:?}",
+                    calls.keys().collect::<Vec<_>>()
+                )
+            });
+            assert!(
+                wave_calls.iter().any(|c| c.target == "wave_helper"),
+                "brace-block body call should attach to Widget.wave. Got: {:?}",
+                wave_calls
+            );
+        }
+
+        #[test]
+        fn test_define_method_computed_name_is_unresolved() {
+            // define_method(computed_name) — arg0 is an identifier, NOT a
+            // literal. We must NOT guess a method name. No synthesized
+            // `Widget.<something>` method should appear, and the body call
+            // stays attributed to the enclosing class (current fall-through).
+            let source = r#"
+class Widget
+  define_method(some_name) do
+    inner_call
+  end
+end
+"#;
+            let calls = extract_calls(source);
+            // No fabricated method name from the computed arg.
+            assert!(
+                !calls.contains_key("Widget.some_name"),
+                "computed define_method arg must not synthesize a named method. Keys: {:?}",
+                calls.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                !calls.contains_key("Widget.computed_name"),
+                "computed define_method arg must not be guessed. Keys: {:?}",
+                calls.keys().collect::<Vec<_>>()
+            );
+        }
+
+        #[test]
+        fn test_send_literal_symbol_resolves_via_attr() {
+            // obj.send(:do_thing) -> Attr call, target = obj.do_thing.
+            let source = r#"
+class Runner
+  def run
+    obj.send(:do_thing)
+  end
+end
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("Runner.run")
+                .or_else(|| calls.get("run"))
+                .expect("Runner.run should have calls");
+            assert!(
+                run_calls.iter().any(|c| {
+                    c.target == "obj.do_thing"
+                        && c.call_type == CallType::Attr
+                        && c.receiver.as_deref() == Some("obj")
+                }),
+                "obj.send(:do_thing) should rewrite to Attr obj.do_thing. Got: {:?}",
+                run_calls
+            );
+            // The literal `send` itself must not leak as a Direct call target.
+            assert!(
+                !run_calls.iter().any(|c| c.target == "send"),
+                "rewritten send must not also emit a `send` call. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_public_send_string_literal_resolves_via_attr() {
+            // obj.public_send("do_thing") with a string literal arg0.
+            let source = r#"
+class Runner
+  def run
+    obj.public_send("do_thing")
+  end
+end
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("Runner.run")
+                .or_else(|| calls.get("run"))
+                .expect("Runner.run should have calls");
+            assert!(
+                run_calls.iter().any(|c| {
+                    c.target == "obj.do_thing"
+                        && c.call_type == CallType::Attr
+                        && c.receiver.as_deref() == Some("obj")
+                }),
+                "obj.public_send(\"do_thing\") should rewrite to Attr obj.do_thing. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_send_receiverless_literal_resolves_self() {
+            // send(:do_thing) with no explicit receiver -> implicit self.
+            let source = r#"
+class Runner
+  def run
+    send(:do_thing)
+  end
+end
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("Runner.run")
+                .or_else(|| calls.get("run"))
+                .expect("Runner.run should have calls");
+            assert!(
+                run_calls.iter().any(|c| {
+                    c.target == "self.do_thing"
+                        && c.call_type == CallType::Attr
+                        && c.receiver.as_deref() == Some("self")
+                }),
+                "receiverless send(:do_thing) should rewrite to Attr self.do_thing. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_send_variable_arg_stays_unresolved() {
+            // send(some_var) -> arg0 is a computed identifier. We must NOT
+            // guess. No Attr edge for a fabricated method name, and no
+            // bareword `some_var` call edge (it is the send argument).
+            let source = r#"
+class Runner
+  def run
+    obj.send(some_var)
+  end
+end
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("Runner.run")
+                .or_else(|| calls.get("run"))
+                .cloned()
+                .unwrap_or_default();
+            // No Attr edge targeting a fabricated method name.
+            assert!(
+                !run_calls
+                    .iter()
+                    .any(|c| c.target == "obj.some_var" && c.call_type == CallType::Attr),
+                "computed send arg must not be guessed into an Attr edge. Got: {:?}",
+                run_calls
+            );
+            // The variable name must not leak as a bareword Direct call.
+            assert!(
+                !run_calls.iter().any(|c| c.target == "some_var"),
+                "send argument identifier must not become a call. Got: {:?}",
+                run_calls
             );
         }
     }
