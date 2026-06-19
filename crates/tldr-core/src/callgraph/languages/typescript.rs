@@ -642,34 +642,77 @@ impl TypeScriptHandler {
     /// CLUSTER T3-G1 (1C): same-scope simple-identifier aliases only. The
     /// initializer must be a single `identifier` or `this` node — anything
     /// more complex (member access, call, etc.) is ignored, so this is a
-    /// deliberately shallow alias hop, not a dataflow analysis. No shadowing
-    /// machinery: the last simple binding for a name wins.
+    /// deliberately shallow alias hop, not a dataflow analysis.
+    ///
+    /// SCOPE FENCE: aliases are collected for the CURRENT function body only.
+    /// Descent stops at any nested function/arrow/method boundary so an inner
+    /// `const r = otherObj` cannot clobber an outer `const r = app`. Within the
+    /// single scope, the last simple binding for a name wins (no block-level
+    /// shadowing is modelled — that is out of the 1C spec).
     fn collect_body_aliases(&self, body: &Node, source: &[u8]) -> HashMap<String, String> {
         let mut aliases: HashMap<String, String> = HashMap::new();
-        for child in walk_tree(*body) {
-            if child.kind() != "variable_declarator" {
+        self.collect_scope_aliases(body, source, &mut aliases);
+        aliases
+    }
+
+    /// Recursive helper for [`collect_body_aliases`]: walks `node`'s children
+    /// but never descends into nested function-like bodies, so the alias map
+    /// stays scoped to the function whose body was passed to
+    /// `collect_body_aliases`.
+    fn collect_scope_aliases(
+        &self,
+        node: &Node,
+        source: &[u8],
+        aliases: &mut HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            // Stop at nested function boundaries: bindings inside a nested
+            // function/arrow/method belong to that inner scope, not this one.
+            if matches!(
+                child.kind(),
+                "function_declaration"
+                    | "function_expression"
+                    | "function"
+                    | "arrow_function"
+                    | "generator_function"
+                    | "generator_function_declaration"
+                    | "method_definition"
+            ) {
                 continue;
             }
-            let Some(name_node) = child.child_by_field_name("name") else {
-                continue;
-            };
-            if name_node.kind() != "identifier" {
-                continue;
-            }
-            let Some(value_node) = child.child_by_field_name("value") else {
-                continue;
-            };
-            // Only single-identifier / `this` initializers qualify as aliases.
-            match value_node.kind() {
-                "identifier" | "this" => {
-                    let alias = get_node_text(&name_node, source).to_string();
-                    let target = get_node_text(&value_node, source).to_string();
+
+            if child.kind() == "variable_declarator" {
+                if let Some(alias_pair) = Self::simple_alias_binding(&child, source) {
+                    let (alias, target) = alias_pair;
                     aliases.insert(alias, target);
                 }
-                _ => {}
             }
+
+            // Recurse into non-function children (statement blocks, if/for
+            // bodies, etc.) so same-scope nested blocks still contribute.
+            self.collect_scope_aliases(&child, source, aliases);
         }
-        aliases
+    }
+
+    /// Extract a same-scope simple alias `(name, target)` from a
+    /// `variable_declarator` whose value is a bare `identifier` or `this`.
+    /// Returns `None` for any non-simple binding (destructuring, member
+    /// initializer, call initializer, etc.).
+    fn simple_alias_binding(declarator: &Node, source: &[u8]) -> Option<(String, String)> {
+        let name_node = declarator.child_by_field_name("name")?;
+        if name_node.kind() != "identifier" {
+            return None;
+        }
+        let value_node = declarator.child_by_field_name("value")?;
+        match value_node.kind() {
+            "identifier" | "this" => {
+                let alias = get_node_text(&name_node, source).to_string();
+                let target = get_node_text(&value_node, source).to_string();
+                Some((alias, target))
+            }
+            _ => None,
+        }
     }
 
     /// Extract calls from a function body.
@@ -755,6 +798,21 @@ impl TypeScriptHandler {
                                             // CLUSTER T3-G1: this.method() with
                                             // a plain local method name resolves
                                             // Intra; otherwise Attr.
+                                            //
+                                            // INTENTIONAL BOUNDARY: `this.X()`
+                                            // deliberately BYPASSES the
+                                            // receiver-keyed `method_receivers`
+                                            // check used for named receivers
+                                            // below. `this` denotes genuine
+                                            // self/prototype dispatch, so any
+                                            // in-file method `X` (membership in
+                                            // `defined_funcs`) is a valid Intra
+                                            // target regardless of which object
+                                            // `X` was assigned onto. This is why
+                                            // it uses `defined_funcs.contains`
+                                            // rather than `method_receivers`.
+                                            // Pinned by
+                                            // test_this_method_plain_self_dispatch_is_intra.
                                             let call_type = if defined_funcs.contains(&method) {
                                                 CallType::Intra
                                             } else {
@@ -2716,6 +2774,12 @@ function mount() {
 
         // (b) app.init() still resolves Intra — BUG-AGG12-7 preserved. The
         // receiver `app` matches the receiver root of `app.init = ...`.
+        //
+        // DISCRIMINATING CONTROL (falsifies the OLD flat-HashSet code that
+        // collapsed any `*.init()` to Intra): the SAME body also calls
+        // `wrongObj.init()`, whose receiver is NOT the receiver root of `init`.
+        // It MUST stay Attr. Removing receiver-keying makes wrongObj.init()
+        // collapse to a false Intra `init` edge, failing assertion (2).
         #[test]
         fn test_app_init_resolves_intra_agg12_7_preserved() {
             let source = r#"
@@ -2723,14 +2787,16 @@ app.init = function init() { configure(); };
 
 function boot() {
     app.init();
+    wrongObj.init();
 }
 "#;
             let calls = extract_calls(source);
             let boot_calls = calls.get("boot").expect("boot should have calls");
 
+            // (1) app.init() resolves Intra (receiver root match) — AGG12-7.
             let init_call = boot_calls
                 .iter()
-                .find(|c| c.target == "init")
+                .find(|c| c.target == "init" && c.receiver.as_deref() == Some("app"))
                 .expect("app.init() should resolve to bare `init` (AGG12-7)");
             assert_eq!(
                 init_call.call_type,
@@ -2743,10 +2809,47 @@ function boot() {
                 Some("app".to_string()),
                 "Intra method call should retain the receiver `app`"
             );
+
+            // (2) wrongObj.init() must be Attr: `wrongObj` is not the receiver
+            // root of `init`. On the old over-collapsing code this would be a
+            // false Intra `init` edge.
+            let wrong_call = boot_calls
+                .iter()
+                .find(|c| c.receiver.as_deref() == Some("wrongObj"))
+                .expect("expected a wrongObj.init() call site");
+            assert_eq!(
+                wrong_call.call_type,
+                CallType::Attr,
+                "wrongObj.init() must be Attr (wrongObj is not the receiver root of `init`); got {:?}",
+                wrong_call
+            );
+            assert_eq!(
+                wrong_call.target, "wrongObj.init",
+                "foreign receiver must keep obj.method form; got {:?}",
+                wrong_call
+            );
+            // Exactly one Intra `init` edge (app.init), never two.
+            let intra_init_count = boot_calls
+                .iter()
+                .filter(|c| c.target == "init" && c.call_type == CallType::Intra)
+                .count();
+            assert_eq!(
+                intra_init_count, 1,
+                "exactly one Intra `init` edge expected (app.init); got {} in {:?}",
+                intra_init_count, boot_calls
+            );
         }
 
         // (c) const r = app; r.use() resolves via the one-hop alias to app's
         // method, producing an Intra edge to `use`.
+        //
+        // DISCRIMINATING CONTROL (falsifies the OLD flat-HashSet code that
+        // over-collapsed every `*.use()` to Intra): the SAME body also calls
+        // `foreignObj.use()`, where `foreignObj` is neither the receiver root
+        // of `use` nor an alias of one. The contrast pins BOTH mechanisms:
+        //   - drop the alias map  → `r.use()` becomes Attr → assertion (1) fails
+        //   - drop receiver-keying → `foreignObj.use()` becomes Intra →
+        //                            assertion (2) fails
         #[test]
         fn test_alias_const_r_app_resolves_intra() {
             let source = r#"
@@ -2755,15 +2858,21 @@ app.use = function use(fn) { return fn; };
 function mount() {
     const r = app;
     r.use(handler);
+    foreignObj.use(other);
 }
 "#;
             let calls = extract_calls(source);
             let mount_calls = calls.get("mount").expect("mount should have calls");
 
+            // (1) ALIAS proof: r.use() resolves Intra via r -> app.
             let use_call = mount_calls
                 .iter()
-                .find(|c| c.target == "use" && c.call_type == CallType::Intra)
-                .expect("r.use() should resolve Intra via alias r -> app");
+                .find(|c| {
+                    c.target == "use"
+                        && c.call_type == CallType::Intra
+                        && c.receiver.as_deref() == Some("r")
+                })
+                .expect("r.use() should resolve Intra via alias r -> app (receiver `r`)");
             // Receiver should reflect the alias actually written at the call site.
             assert_eq!(
                 use_call.receiver,
@@ -2778,6 +2887,97 @@ function mount() {
                 "alias-resolved call must not also emit an Attr `r.use` edge; got {:?}",
                 mount_calls
             );
+
+            // (2) RECEIVER-KEYING proof: foreignObj is NOT a receiver root of
+            // `use` and NOT aliased, so foreignObj.use() MUST stay Attr. On the
+            // old over-collapsing code this would be a false Intra `use` edge.
+            let foreign_call = mount_calls
+                .iter()
+                .find(|c| c.receiver.as_deref() == Some("foreignObj"))
+                .expect("expected a foreignObj.use() call site");
+            assert_eq!(
+                foreign_call.call_type,
+                CallType::Attr,
+                "foreignObj.use() must be Attr (foreignObj is not a receiver root of `use` nor an alias); got {:?}",
+                foreign_call
+            );
+            assert_eq!(
+                foreign_call.target, "foreignObj.use",
+                "foreign receiver must keep the obj.method form, not collapse to bare `use`; got {:?}",
+                foreign_call
+            );
+            // Exactly one Intra `use` edge total (the alias), never two — the
+            // foreign call must not also collapse.
+            let intra_use_count = mount_calls
+                .iter()
+                .filter(|c| c.target == "use" && c.call_type == CallType::Intra)
+                .count();
+            assert_eq!(
+                intra_use_count, 1,
+                "exactly one Intra `use` edge expected (the alias `r.use`); got {} in {:?}",
+                intra_use_count, mount_calls
+            );
+        }
+
+        // (c2) SCOPE FENCE: an outer `const r = app` must NOT be clobbered by a
+        // `const r = something` bound inside a NESTED function body. The 1C
+        // alias spec is same-scope only; descent must stop at the nested
+        // function boundary. Reverting the fence (walking the whole subtree,
+        // last-binding-wins) makes the inner `const r = otherObj` win, so the
+        // outer `r.use()` mis-resolves to Attr and this test fails.
+        #[test]
+        fn test_outer_alias_not_clobbered_by_nested_function_binding() {
+            let source = r#"
+app.use = function use(fn) { return fn; };
+
+function outer() {
+    const r = app;
+    function inner() {
+        const r = otherObj;
+        r.use(deep);
+    }
+    r.use(handler);
+}
+"#;
+            let calls = extract_calls(source);
+            let outer_calls = calls.get("outer").expect("outer should have calls");
+
+            // The outer r.use() (receiver root resolves through alias r -> app)
+            // must remain Intra despite the nested `const r = otherObj`.
+            let outer_use = outer_calls
+                .iter()
+                .find(|c| {
+                    c.target == "use"
+                        && c.call_type == CallType::Intra
+                        && c.receiver.as_deref() == Some("r")
+                })
+                .expect(
+                    "outer r.use() must stay Intra via outer alias r -> app, \
+                     not be clobbered by nested const r = otherObj",
+                );
+            assert_eq!(
+                outer_use.receiver,
+                Some("r".to_string()),
+                "outer alias call should retain receiver `r`; got {:?}",
+                outer_use
+            );
+
+            // The nested `inner` is a distinct caller; its `r` is otherObj, which
+            // is NOT a receiver root of `use`, so its r.use() must be Attr. This
+            // confirms the inner binding stays inside the inner scope.
+            if let Some(inner_calls) = calls.get("inner") {
+                if let Some(inner_use) = inner_calls
+                    .iter()
+                    .find(|c| c.receiver.as_deref() == Some("r"))
+                {
+                    assert_eq!(
+                        inner_use.call_type,
+                        CallType::Attr,
+                        "inner r.use() (r = otherObj) must be Attr; got {:?}",
+                        inner_use
+                    );
+                }
+            }
         }
 
         // (d) this.router.param(...) must NOT collapse to a bare `param`
@@ -2814,6 +3014,50 @@ function setup() {
                 Some("this.router"),
                 "nested receiver should be captured as `this.router`; got {:?}",
                 param_call
+            );
+        }
+
+        // (e) DOCUMENTED BOUNDARY: `this.X()` with a plain in-file method name
+        // `X` resolves Intra as genuine self/prototype dispatch, even when `X`
+        // was assigned onto a DIFFERENT object (here `app.handle = ...`, not
+        // `this`). Unlike named receivers, `this.X()` intentionally bypasses the
+        // receiver-keyed `method_receivers` check and uses `defined_funcs`
+        // membership. This test PINS that choice: if `this.X()` were made
+        // receiver-keyed (requiring `this` to be a receiver root of `handle`),
+        // this call would become Attr and the test would fail.
+        #[test]
+        fn test_this_method_plain_self_dispatch_is_intra() {
+            let source = r#"
+app.handle = function handle() { return 1; };
+
+function dispatch() {
+    this.handle(req);
+}
+"#;
+            let calls = extract_calls(source);
+            let dispatch_calls = calls.get("dispatch").expect("dispatch should have calls");
+
+            let handle_call = dispatch_calls
+                .iter()
+                .find(|c| c.receiver.as_deref() == Some("this"))
+                .expect("expected a this.handle() call site");
+            assert_eq!(
+                handle_call.call_type,
+                CallType::Intra,
+                "this.handle() must resolve Intra as genuine self-dispatch (plain in-file \
+                 method `handle`), bypassing receiver-keying; got {:?}",
+                handle_call
+            );
+            assert_eq!(
+                handle_call.target, "handle",
+                "self-dispatch must collapse to the bare method name `handle`; got {:?}",
+                handle_call
+            );
+            assert_eq!(
+                handle_call.receiver.as_deref(),
+                Some("this"),
+                "self-dispatch Intra edge should retain receiver `this`; got {:?}",
+                handle_call
             );
         }
     }
