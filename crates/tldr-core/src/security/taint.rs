@@ -1599,17 +1599,56 @@ fn normalize_ident_head(text: &str) -> &str {
     head.trim_start_matches('&').trim_start_matches('$')
 }
 
+/// Identifier-**leaf** node kinds to match inside a call's argument subtree.
+///
+/// Starts from the shared [`identifier_node_kinds`] table and adds the small set
+/// of variable-reference leaf kinds that table omits for the argument-scan
+/// purpose (verified by debug-parsing the grammars actually linked here):
+///   - **Kotlin** (`tree-sitter-kotlin-ng`): a bare variable reference inside a
+///     `value_argument` is an `identifier` leaf (the shared table lists only
+///     `simple_identifier`, which this grammar version does not emit for a plain
+///     variable use — confirmed: the fixture's `id` operand parses as
+///     `binary_expression → [right] identifier`). Both kinds are kept so neither
+///     a `simple_identifier` (if a future grammar revision emits one) nor the
+///     current `identifier` leaf is missed.
+///
+/// All other languages defer entirely to [`identifier_node_kinds`].
+fn arg_ident_leaf_kinds(language: Language) -> Vec<&'static str> {
+    let mut kinds: Vec<&'static str> = identifier_node_kinds(language).to_vec();
+    if language == Language::Kotlin && !kinds.contains(&"identifier") {
+        kinds.push("identifier");
+    }
+    kinds
+}
+
 /// G5-O1 (T2-G5-taint): AST argument-subtree membership test that replaces the
 /// `identifier_in_text` substring "indirect match" used to promote a sink to
 /// tainted.
 ///
 /// Returns `true` iff the tainted variable `tvar`'s **defining identifier node**
-/// appears as a descendant of an **argument** of a call located on `sink_line`.
-/// This is a purely structural check: it walks the call's argument subtree
-/// (`arguments` field / `argument_list` / `argument`-kind / `call_suffix`
-/// children — the same arg-bearing shapes [`extract_first_identifier_arg_ast`]
-/// recognizes) and matches a leaf whose kind is in
-/// [`identifier_node_kinds`] and whose normalized text equals `tvar`.
+/// appears as a descendant of an **argument** of a call within the sink's
+/// statement region. This is a purely structural check: it walks each call's
+/// argument subtree(s) (see [`arg_subtrees`] for the audited per-language
+/// argument-container shapes) and matches a leaf whose kind is in
+/// [`arg_ident_leaf_kinds`] and whose normalized text equals `tvar`.
+///
+/// **Candidate region (`block_lines`).** Several grammars record the structural
+/// sink on the source-assignment line rather than the line of the dangerous
+/// call (e.g. Ruby/Lua/Luau detect the sink one line above the actual
+/// `db.execute(...)` / `db:query(...)` call). The old substring "indirect
+/// match" scanned the whole CFG **block** text, so this misattribution did not
+/// matter. To preserve that reach AST-drivenly, callers pass the sink block's
+/// `(start, end)` line range as `block_lines`; a candidate call/construct
+/// qualifies when its span OVERLAPS that range. When `block_lines` is `None`
+/// (direct unit-test callers), the candidate must cover `sink_line` exactly.
+///
+/// Scanning every call in the block (not just one) is also what lets a tainted
+/// value buried in a sink's RECEIVER chain be found — e.g. Kotlin/Scala
+/// `ObjectInputStream(ByteArrayInputStream(d)).readObject()`, where the outer
+/// `readObject()` call has empty args but the inner constructor call carries
+/// `d` in its argument subtree. This stays strictly MORE precise than the old
+/// substring scan: the tainted name must appear as an identifier leaf in an
+/// ARGUMENT position, never in a comment, string literal, or assignment LHS.
 ///
 /// Because the walk descends through every named node inside the argument
 /// subtree, **interpolation sinks are handled by construction**: an f-string
@@ -1630,11 +1669,13 @@ fn tainted_ident_in_call_args(
     source: &[u8],
     language: Language,
     sink_line: u32,
+    block_lines: Option<(u32, u32)>,
     tvar: &str,
 ) -> bool {
     let call_kinds = call_node_kinds(language);
+    let extra_call_kinds = extra_arg_bearing_call_kinds(language);
     let construct_kinds = arg_bearing_construct_kinds(language);
-    let ident_kinds = identifier_node_kinds(language);
+    let ident_kinds = arg_ident_leaf_kinds(language);
     // Normalize the taint-tracked variable name ONCE to its bare head so it
     // lines up with the normalized identifier-leaf text. The taint engine
     // stores some names WITH a sigil (PHP `$cmd`) and some bare (`cmd`); the
@@ -1642,37 +1683,43 @@ fn tainted_ident_in_call_args(
     // normalized for the comparison to be symmetric.
     let want = normalize_ident_head(tvar);
 
+    // The line window a candidate call/construct must overlap. Prefer the sink
+    // block's range (covers the grammar-misattributed-line case); fall back to
+    // the exact sink line for direct callers.
+    let (lo, hi) = match block_lines {
+        Some((lo, hi)) => (lo, hi),
+        None => (sink_line, sink_line),
+    };
+
     for node in walk_descendants(*root) {
         let kind = node.kind();
-        let is_call = call_kinds.contains(&kind);
+        let is_call = call_kinds.contains(&kind) || extra_call_kinds.contains(&kind);
         let is_construct = construct_kinds.contains(&kind);
         if !is_call && !is_construct {
             continue;
         }
-        // Only consider nodes whose own span covers the sink line so we don't
-        // match an unrelated call elsewhere in the block. Multi-line calls are
-        // anchored at their opening line (matching how sinks are recorded by
-        // line).
+        // Consider nodes whose span OVERLAPS the candidate window so we reach
+        // the dangerous call even when the structural sink was recorded on a
+        // neighbouring line within the same block. A multi-line call counts if
+        // any part of it falls in the window.
         let node_line = node.start_position().row as u32 + 1;
         let node_end_line = node.end_position().row as u32 + 1;
-        if sink_line < node_line || sink_line > node_end_line {
+        if node_end_line < lo || node_line > hi {
             continue;
         }
-        // For canonical call nodes, scan only the ARGUMENT subtree (so the
+        // For canonical call nodes, scan only the ARGUMENT subtree(s) (so the
         // call receiver / callee name cannot match). For language-construct
-        // sinks (PHP `include`/`require` — which have no `arguments` field and
-        // whose operand is the dangerous value), scan the whole construct
-        // subtree minus the leading keyword token (the keyword is not an
-        // identifier-kind node anyway).
-        let scan_root = if is_call {
-            match find_args_subtree(&node) {
-                Some(a) => a,
-                None => continue,
+        // sinks (PHP `include`/`require`/`echo`/`print` — which have no
+        // `arguments` field and whose operand is the dangerous value), scan the
+        // whole construct subtree (the leading keyword token is not an
+        // identifier-kind node, so it cannot match).
+        if is_call {
+            for args in arg_subtrees(&node, language) {
+                if ident_leaf_in_subtree(&args, source, &ident_kinds, want) {
+                    return true;
+                }
             }
-        } else {
-            node
-        };
-        if ident_leaf_in_subtree(&scan_root, source, &ident_kinds, want) {
+        } else if ident_leaf_in_subtree(&node, source, &ident_kinds, want) {
             return true;
         }
     }
@@ -1685,36 +1732,143 @@ fn tainted_ident_in_call_args(
 /// PHP `include` / `require` / `include_once` / `require_once` parse as
 /// `include_expression` / `require_expression` — a language construct whose
 /// operand (a `variable_name`, possibly wrapped in `parenthesized_expression`)
-/// is the path that flows in. They have no `arguments` field, so the canonical
-/// call-arg path cannot reach them; we scan their whole subtree instead. This
-/// mirrors the dedicated `include_expression` / `require_expression` arm in
+/// is the path that flows in. PHP `echo` / `print` parse as `echo_statement` /
+/// `print_intrinsic` whose operand is the value being emitted (XSS sink). None
+/// of these have an `arguments` field, so the canonical call-arg path cannot
+/// reach them; we scan their whole subtree instead. This mirrors the dedicated
+/// `include_expression` / `echo_statement` arms in
 /// [`extract_first_identifier_arg_ast`].
 fn arg_bearing_construct_kinds(language: Language) -> &'static [&'static str] {
     match language {
-        Language::Php => &["include_expression", "require_expression"],
+        Language::Php => &[
+            "include_expression",
+            "require_expression",
+            "echo_statement",
+            "print_intrinsic",
+        ],
         _ => &[],
     }
 }
 
-/// Locate a call node's argument-bearing subtree.
+/// Extra **call-like** node kinds (beyond the shared [`call_node_kinds`]) that
+/// expose an argument subtree and can carry a tainted value into a sink — but
+/// which the shared call-kind table omits because they are not "calls" in the
+/// call-graph sense.
 ///
-/// Mirrors [`extract_first_identifier_arg_ast`]'s generic arg-finding: prefer
-/// the `arguments` field, else the first child whose kind contains `"argument"`
-/// or equals `"call_suffix"`. (PHP `function_call_expression` /
-/// `member_call_expression` expose an `arguments` field whose children are
-/// `argument` nodes; Python/Ruby use `argument_list`.)
-fn find_args_subtree<'a>(call: &tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
-    call.child_by_field_name("arguments").or_else(|| {
-        for i in 0..call.child_count() {
-            if let Some(child) = call.child(i) {
-                let kind = child.kind();
-                if kind.contains("argument") || kind == "call_suffix" {
-                    return Some(child);
-                }
+/// **Scala `instance_expression`** (`new T(arg, ...)`): a constructor invocation
+/// that the Scala grammar models as its own node (NOT a `call_expression`), with
+/// an `arguments` FIELD child. A deserialization sink such as
+/// `new ObjectInputStream(new ByteArrayInputStream(d.getBytes)).readObject()`
+/// buries the tainted `d` inside these nested constructor argument lists; the
+/// outer `readObject()` `call_expression` has empty args, so without treating
+/// `instance_expression` as arg-bearing the flow is missed. These are scanned
+/// via their ARGUMENT subtree only (like real calls), so the constructed type
+/// path (`java`, `io`, `ObjectInputStream`) cannot match the taint variable.
+/// (Kotlin needs no analogue: it models `ObjectInputStream(...)` as a plain
+/// `call_expression`, already covered.)
+fn extra_arg_bearing_call_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        Language::Scala => &["instance_expression"],
+        _ => &[],
+    }
+}
+
+/// Explicit, audited per-language tree-sitter node kinds that wrap a call's
+/// **argument list** (verified by debug-parsing each grammar — see the fixtures
+/// under `tests/fixtures/vuln_migration_v1/<lang>/`). Used by
+/// [`arg_subtrees`] instead of a `kind.contains("argument")` substring test so a
+/// future grammar node whose name merely contains "argument" cannot silently
+/// become an argument container.
+///
+/// Languages whose argument container is exposed via the `arguments` FIELD
+/// (Python/JS/TS/Go/Java/C/Cpp/CSharp/Ruby/Scala/Lua/Luau/Solidity) are handled
+/// by the field lookup in [`arg_subtrees`] and need no kind entry here; the
+/// kinds below cover grammars where the args are positional FIELD children
+/// (OCaml `application_expression`) or where the field name is absent.
+fn argument_container_kinds(language: Language) -> &'static [&'static str] {
+    match language {
+        // Python `call` → `argument_list`.
+        Language::Python => &["argument_list"],
+        // JS/TS `call_expression` → `arguments`.
+        Language::TypeScript | Language::JavaScript => &["arguments"],
+        // Go `call_expression` → `argument_list`.
+        Language::Go => &["argument_list"],
+        // Java `method_invocation` / `object_creation_expression` → `argument_list`.
+        Language::Java => &["argument_list"],
+        // Kotlin `call_expression` → `value_arguments` (no `arguments` field).
+        Language::Kotlin => &["value_arguments", "call_suffix"],
+        // Rust `call_expression` → `arguments`; `macro_invocation` → `token_tree`.
+        Language::Rust => &["arguments", "token_tree"],
+        // C/Cpp `call_expression` → `argument_list`.
+        Language::C | Language::Cpp => &["argument_list"],
+        // Ruby `call` / `method_call` → `argument_list`.
+        Language::Ruby => &["argument_list"],
+        // Swift `call_expression` → `call_suffix` (value arguments live under it).
+        Language::Swift => &["call_suffix", "value_arguments"],
+        // C# `invocation_expression` / `object_creation_expression` → `argument_list`.
+        Language::CSharp => &["argument_list"],
+        // Scala `call_expression` → `arguments`.
+        Language::Scala => &["arguments"],
+        // PHP `function_call_expression` / `member_call_expression` → `arguments`.
+        Language::Php => &["arguments"],
+        // Lua/Luau `function_call` → `arguments`.
+        Language::Lua | Language::Luau => &["arguments"],
+        // Elixir `call` → `arguments`.
+        Language::Elixir => &["arguments"],
+        // OCaml `application_expression` exposes each operand as a positional
+        // `argument`-FIELD child whose KIND is the operand expression itself
+        // (`value_path`, `parenthesized_expression`, `string`, ...). There is no
+        // single wrapper node, so [`arg_subtrees`] collects the field children
+        // directly; no wrapper kind applies here.
+        Language::Ocaml => &[],
+        // Solidity `call_expression` → `call_argument` children (no wrapper).
+        Language::Solidity => &["call_argument"],
+    }
+}
+
+/// Collect a call node's argument-bearing subtree(s).
+///
+/// Strategy, in order:
+///   1. The `arguments` FIELD child (most grammars: Python `argument_list`,
+///      JS/Scala/PHP/Lua `arguments`, ...). Single wrapper covering all args.
+///   2. Children reached via the `argument` / `arguments` FIELD NAME. OCaml's
+///      `application_expression` exposes each operand under the `argument` field
+///      with no wrapper node, so we gather every such field child.
+///   3. Child nodes whose KIND is in the audited [`argument_container_kinds`]
+///      set (Kotlin `value_arguments`, Swift `call_suffix`, Solidity
+///      `call_argument`, ...). This replaces the former
+///      `kind.contains("argument")` substring fallback.
+///
+/// Returns every argument subtree found; the caller scans each for a tainted
+/// identifier leaf. Returning ALL args (not just the first) is required for
+/// multi-arg sinks like OCaml `Stmt.execute stmt (... ^ id)` where the tainted
+/// value is the SECOND operand.
+fn arg_subtrees<'a>(call: &tree_sitter::Node<'a>, language: Language) -> Vec<tree_sitter::Node<'a>> {
+    let mut out: Vec<tree_sitter::Node<'a>> = Vec::new();
+    // (1) `arguments` field — a single wrapper covering the whole arg list.
+    if let Some(args) = call.child_by_field_name("arguments") {
+        out.push(args);
+    }
+    let allowed = argument_container_kinds(language);
+    let mut cursor = call.walk();
+    let mut idx = 0u32;
+    for child in call.children(&mut cursor) {
+        let field = call.field_name_for_child(idx);
+        idx += 1;
+        // (2) positional argument FIELD children (OCaml `application_expression`).
+        if matches!(field, Some("argument") | Some("arguments")) {
+            // Avoid double-pushing the `arguments`-field wrapper already added.
+            if !out.iter().any(|n| n.id() == child.id()) {
+                out.push(child);
             }
+            continue;
         }
-        None
-    })
+        // (3) audited argument-container KINDS (no field name).
+        if allowed.contains(&child.kind()) && !out.iter().any(|n| n.id() == child.id()) {
+            out.push(child);
+        }
+    }
+    out
 }
 
 /// BFS the given subtree for an identifier-kind leaf whose normalized head text
@@ -1759,14 +1913,26 @@ fn ident_leaf_in_subtree(
 ///
 /// When an AST (`tree` + `source`) is available, this is a purely structural
 /// argument-subtree membership check via [`tainted_ident_in_call_args`]: `tvar`
-/// must appear as a descendant identifier node of an ARGUMENT of the call on
-/// `sink_line` (handling interpolation sinks by construction, and refusing to
-/// promote on a comment / unrelated identifier).
+/// must appear as a descendant identifier node of an ARGUMENT of a call whose
+/// span overlaps the sink **block's** line range (handling interpolation sinks
+/// by construction, tolerating grammars that record the sink one line off the
+/// dangerous call, and refusing to promote on a comment / unrelated
+/// identifier).
 ///
 /// When no AST is available (regex-only backward-compat path, e.g.
 /// `compute_taint` callers that pass `tree = None`), it falls back to the
 /// historical word-boundary substring scan over the sink block's joined
 /// statement text so the no-tree behavior is unchanged.
+///
+/// **No-AST fallback over-taint caveat (audited, characterized by
+/// `test_indirect_arg_match_no_tree_substring_overtaints`).** Identifying a
+/// comment or string-literal is itself a structural (grammar) decision, so the
+/// tree=None path *cannot* exclude a `tvar` token that appears only in a comment
+/// without re-introducing a parser — it would no longer be a "no-AST" path. The
+/// over-taint hole therefore remains ONLY on this fallback, which the in-tree
+/// pipeline never takes ([`compute_taint_with_tree`] always supplies a tree for
+/// every supported language). The behavior is asserted explicitly so it is not
+/// silent; the AST path (the only one the `vuln` CLI uses) is comment-safe.
 #[allow(clippy::too_many_arguments)]
 fn indirect_arg_match(
     tree: Option<&tree_sitter::Tree>,
@@ -1778,12 +1944,28 @@ fn indirect_arg_match(
     sink_line: u32,
     tvar: &str,
 ) -> bool {
+    // Sink block's line range — used as the candidate window for the AST walk
+    // (so a sink recorded on a neighbouring line within the block still reaches
+    // its dangerous call) and as the text region for the no-AST fallback.
+    let block_lines = cfg
+        .blocks
+        .iter()
+        .find(|b| b.id == sink_block)
+        .map(|b| b.lines);
+
     if let (Some(tree), Some(source)) = (tree, source) {
-        return tainted_ident_in_call_args(&tree.root_node(), source, language, sink_line, tvar);
+        return tainted_ident_in_call_args(
+            &tree.root_node(),
+            source,
+            language,
+            sink_line,
+            block_lines,
+            tvar,
+        );
     }
     // No-AST fallback: word-boundary substring scan over the block's text.
-    if let Some(block) = cfg.blocks.iter().find(|b| b.id == sink_block) {
-        let block_text: String = (block.lines.0..=block.lines.1)
+    if let Some((lo, hi)) = block_lines {
+        let block_text: String = (lo..=hi)
             .filter_map(|l| statements.get(&l))
             .map(|s| s.as_str())
             .collect::<Vec<_>>()
@@ -7839,6 +8021,7 @@ def vuln(user_input):
                 code.as_bytes(),
                 Language::Python,
                 1,
+                None,
                 "name"
             ),
             "tainted var `name` inside f-string interpolation must be detected as an arg-subtree descendant"
@@ -7851,6 +8034,7 @@ def vuln(user_input):
                 code.as_bytes(),
                 Language::Python,
                 1,
+                None,
                 "cursor"
             ),
             "the call receiver `cursor` is not an argument and must not match"
@@ -7871,6 +8055,7 @@ def vuln(user_input):
                 code.as_bytes(),
                 Language::JavaScript,
                 1,
+                None,
                 "userId"
             ),
             "tainted var inside JS template_substitution must be detected"
@@ -7890,6 +8075,7 @@ def vuln(user_input):
                 code.as_bytes(),
                 Language::Ruby,
                 1,
+                None,
                 "cmd"
             ),
             "tainted var inside Ruby interpolation must be detected"
@@ -7905,19 +8091,19 @@ def vuln(user_input):
         let enc = "<?php $db->query(\"SELECT $id FROM t\"); ?>\n";
         let tree = pool.parse(enc, Language::Php).unwrap();
         assert!(
-            tainted_ident_in_call_args(&tree.root_node(), enc.as_bytes(), Language::Php, 1, "id"),
+            tainted_ident_in_call_args(&tree.root_node(), enc.as_bytes(), Language::Php, 1, None, "id"),
             "PHP `$id` interpolated in an encapsed_string argument must be detected (stored bare as `id`)"
         );
         // Receiver `$db` is not an argument.
         assert!(
-            !tainted_ident_in_call_args(&tree.root_node(), enc.as_bytes(), Language::Php, 1, "db"),
+            !tainted_ident_in_call_args(&tree.root_node(), enc.as_bytes(), Language::Php, 1, None, "db"),
             "PHP receiver `$db` is not an argument and must not match"
         );
 
         let cat = "<?php $db->query(\"SELECT \" . $id); ?>\n";
         let tree2 = pool.parse(cat, Language::Php).unwrap();
         assert!(
-            tainted_ident_in_call_args(&tree2.root_node(), cat.as_bytes(), Language::Php, 1, "id"),
+            tainted_ident_in_call_args(&tree2.root_node(), cat.as_bytes(), Language::Php, 1, None, "id"),
             "PHP `$id` in a binary_expression (string concat) argument must be detected"
         );
 
@@ -7926,7 +8112,7 @@ def vuln(user_input):
         // `name`/`variable_name` leaf (both sides normalized). Regression guard
         // for the pack-vuln-v1 PHP positives.
         assert!(
-            tainted_ident_in_call_args(&tree2.root_node(), cat.as_bytes(), Language::Php, 1, "$id"),
+            tainted_ident_in_call_args(&tree2.root_node(), cat.as_bytes(), Language::Php, 1, None, "$id"),
             "PHP sigiled tvar `$id` must match after normalization"
         );
 
@@ -7934,7 +8120,7 @@ def vuln(user_input):
         let sys = "<?php system($cmd); ?>\n";
         let tsys = pool.parse(sys, Language::Php).unwrap();
         assert!(
-            tainted_ident_in_call_args(&tsys.root_node(), sys.as_bytes(), Language::Php, 1, "$cmd"),
+            tainted_ident_in_call_args(&tsys.root_node(), sys.as_bytes(), Language::Php, 1, None, "$cmd"),
             "PHP `system($cmd)` must detect the tainted `$cmd` argument"
         );
 
@@ -7945,8 +8131,191 @@ def vuln(user_input):
         let inc = "<?php include($page); ?>\n";
         let tinc = pool.parse(inc, Language::Php).unwrap();
         assert!(
-            tainted_ident_in_call_args(&tinc.root_node(), inc.as_bytes(), Language::Php, 1, "$page"),
+            tainted_ident_in_call_args(&tinc.root_node(), inc.as_bytes(), Language::Php, 1, None, "$page"),
             "PHP `include($page)` (include_expression) must detect the tainted `$page` operand"
+        );
+
+        // PHP `echo "<h1>" . $name . "</h1>";` is an echo_statement (a
+        // language construct, not a call) — covered via
+        // arg_bearing_construct_kinds. Regression guard for php_xss_positive.
+        let echo = "<?php echo \"<h1>\" . $name . \"</h1>\"; ?>\n";
+        let techo = pool.parse(echo, Language::Php).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&techo.root_node(), echo.as_bytes(), Language::Php, 1, None, "$name"),
+            "PHP `echo ... $name ...` (echo_statement) must detect the tainted `$name` operand"
+        );
+    }
+
+    /// Per-language guard: Kotlin (`tree-sitter-kotlin-ng`) exposes a call's
+    /// arguments under `value_arguments` (NOT an `arguments` field) and a bare
+    /// variable use as an `identifier` leaf (NOT `simple_identifier`). Both the
+    /// argument-container kind and the leaf kind must be recognized.
+    /// Regression guard for kotlin_sql_injection_positive.
+    #[test]
+    fn test_tainted_ident_in_call_args_kotlin_value_arguments() {
+        use crate::ast::ParserPool;
+        let code = "fun f(stmt: Any, id: String) { stmt.executeQuery(\"SELECT \" + id) }\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Kotlin).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&tree.root_node(), code.as_bytes(), Language::Kotlin, 1, None, "id"),
+            "Kotlin `id` inside value_arguments (identifier leaf) must be detected"
+        );
+        // Receiver `stmt` is not an argument.
+        assert!(
+            !tainted_ident_in_call_args(&tree.root_node(), code.as_bytes(), Language::Kotlin, 1, None, "stmt"),
+            "Kotlin call receiver `stmt` is not an argument and must not match"
+        );
+    }
+
+    /// Per-language guard: a tainted value buried in a sink call's RECEIVER
+    /// chain (nested constructor args) is found via the block-scoped walk.
+    /// Kotlin models `ObjectInputStream(...)` as a plain `call_expression`;
+    /// the outer `.readObject()` has empty args but the inner constructor call
+    /// carries `d`. The block range must be supplied so the walk reaches it.
+    /// Regression guard for kotlin_deserialization_positive.
+    #[test]
+    fn test_tainted_ident_in_call_args_kotlin_receiver_chain() {
+        use crate::ast::ParserPool;
+        let code = "fun f(d: ByteArray) {\n    java.io.ObjectInputStream(java.io.ByteArrayInputStream(d)).readObject()\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Kotlin).unwrap();
+        // sink recorded on the call line (2); supply the function-body block.
+        assert!(
+            tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::Kotlin,
+                2,
+                Some((1, 3)),
+                "d"
+            ),
+            "Kotlin tainted `d` in a nested constructor (sink receiver chain) must be detected"
+        );
+    }
+
+    /// Per-language guard: Scala `new T(...)` is an `instance_expression`
+    /// (NOT a `call_expression`), so it is reached via
+    /// `extra_arg_bearing_call_kinds`. The deserialization sink buries the
+    /// tainted `d` in nested constructor argument lists.
+    /// Regression guard for scala_deserialization_positive.
+    #[test]
+    fn test_tainted_ident_in_call_args_scala_instance_expression() {
+        use crate::ast::ParserPool;
+        let code = "object O {\n  def f(d: Array[Byte]): Unit = {\n    new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(d)).readObject()\n  }\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Scala).unwrap();
+        assert!(
+            tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::Scala,
+                3,
+                Some((2, 4)),
+                "d"
+            ),
+            "Scala tainted `d` inside a `new ...(...)` instance_expression arg must be detected"
+        );
+        // The constructed type path (`java`) is not the taint variable and must
+        // not match when scanning only the argument subtree.
+        assert!(
+            !tainted_ident_in_call_args(
+                &tree.root_node(),
+                code.as_bytes(),
+                Language::Scala,
+                3,
+                Some((2, 4)),
+                "ObjectInputStream"
+            ),
+            "Scala constructed type name must NOT match (args-only scan)"
+        );
+    }
+
+    /// Per-language guard: OCaml `application_expression` exposes each operand as
+    /// a positional `argument`-FIELD child with no wrapper node. The tainted
+    /// value is the SECOND operand of `Stmt.execute stmt ("..." ^ id)`, so all
+    /// argument field children must be collected (not just the first).
+    /// Regression guard for ocaml_sql_injection_positive.
+    #[test]
+    fn test_tainted_ident_in_call_args_ocaml_application() {
+        use crate::ast::ParserPool;
+        let code = "let f stmt id = Mariadb.Stmt.execute stmt (\"SELECT \" ^ id)\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Ocaml).unwrap();
+        assert!(
+            tainted_ident_in_call_args(&tree.root_node(), code.as_bytes(), Language::Ocaml, 1, None, "id"),
+            "OCaml tainted `id` (second application argument) must be detected"
+        );
+    }
+
+    /// Block-range guard: when a grammar records the structural sink one line
+    /// ABOVE the dangerous call (Ruby/Lua/Luau), the candidate walk must use the
+    /// block's line range to still reach the call. With only the (off-by-one)
+    /// sink line and no block range, the strict-line fallback would miss it;
+    /// with the block range it is found. Regression guard for
+    /// ruby_sql_injection_positive.
+    #[test]
+    fn test_tainted_ident_in_call_args_block_range_off_by_one_line() {
+        use crate::ast::ParserPool;
+        // The `.execute(... + id)` call is on line 2; pretend the sink was
+        // recorded on line 1 (as Ruby's detector does relative to its call).
+        let code = "id = params\nActiveRecord::Base.connection.execute(\"SELECT \" + id)\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Ruby).unwrap();
+        // Strict single-line anchor at the (wrong) line 1 finds nothing.
+        assert!(
+            !tainted_ident_in_call_args(&tree.root_node(), code.as_bytes(), Language::Ruby, 1, None, "id"),
+            "without a block range, the off-by-one sink line must NOT reach the call (baseline)"
+        );
+        // Supplying the block range (lines 1-2) reaches the line-2 call.
+        assert!(
+            tainted_ident_in_call_args(&tree.root_node(), code.as_bytes(), Language::Ruby, 1, Some((1, 2)), "id"),
+            "with the block range, the tainted `id` in the line-2 call must be detected"
+        );
+    }
+
+    /// Characterization guard for the no-AST (`tree = None`) fallback inside
+    /// [`indirect_arg_match`]. Excluding a comment/string token from a NON-AST
+    /// path is impossible without re-introducing a parser, so the substring
+    /// fallback still over-taints when the tainted name appears only in a
+    /// comment. This test pins that behavior explicitly so it is not silent;
+    /// the AST path (the only one the `vuln` CLI takes) is comment-safe, as
+    /// proven by `test_no_overtaint_from_comment_token`.
+    #[test]
+    fn test_indirect_arg_match_no_tree_substring_overtaints() {
+        use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType};
+        let cfg = CfgInfo {
+            function: "f".to_string(),
+            blocks: vec![CfgBlock {
+                id: 0,
+                block_type: BlockType::Body,
+                lines: (1, 2),
+                calls: Vec::new(),
+            }],
+            edges: Vec::<CfgEdge>::new(),
+            entry_block: 0,
+            exit_blocks: vec![0],
+            cyclomatic_complexity: 1,
+            nested_functions: HashMap::new(),
+        };
+        let mut statements: HashMap<u32, String> = HashMap::new();
+        statements.insert(1, "os.system(safe)  # tainted appears only here".to_string());
+        statements.insert(2, "pass".to_string());
+
+        // tree = None forces the substring fallback. `tainted` is only in the
+        // line-1 comment, yet the word-boundary substring scan matches it.
+        assert!(
+            indirect_arg_match(
+                None,
+                None,
+                Language::Python,
+                &cfg,
+                &statements,
+                0,
+                1,
+                "tainted"
+            ),
+            "no-AST fallback substring scan over-taints from a comment token (documented; AST path does not)"
         );
     }
 
