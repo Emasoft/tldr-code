@@ -979,6 +979,58 @@ pub(crate) fn resolve_method_in_bases(
     None
 }
 
+/// The PHP magic method invoked when an inaccessible / undefined instance
+/// method is called: `public function __call($name, $args)`. This is a PHP
+/// *language constant* (symmetric with `__construct`), not a heuristic
+/// dictionary — see `constructor_method_candidates`.
+const PHP_MAGIC_CALL_METHOD: &str = "__call";
+
+/// T4-php sub-gap 2: find the class (the receiver class itself or the nearest
+/// base) that defines the PHP `__call` magic method, used to redirect a call
+/// to an undefined instance method.
+///
+/// Returns a `ResolvedTarget` pointing at `<Owner>.__call` when an owner is
+/// found, where `<Owner>` is `receiver_class` or whichever ancestor declares
+/// `__call`. Uses the same BFS over `bases` as `resolve_method_in_bases` and
+/// only consults the AST-extracted `methods` list (`__call` is a real declared
+/// method), so this never fabricates an owner.
+fn resolve_magic_call_owner(
+    receiver_class: &str,
+    class_index: &ClassIndex,
+    func_index: &FuncIndex,
+    language: &str,
+) -> Option<ResolvedTarget> {
+    // Self first.
+    if let Some(resolved) =
+        resolve_method_in_class(receiver_class, PHP_MAGIC_CALL_METHOD, class_index, func_index, language)
+    {
+        return Some(resolved);
+    }
+    // Then bases (BFS, bounded by `seen`).
+    resolve_method_in_bases(receiver_class, PHP_MAGIC_CALL_METHOD, class_index, func_index, language)
+}
+
+/// T4-php sub-gap 2: a method is "provably absent" from `receiver_class` (and
+/// its bases) when neither the func_index nor the AST-extracted `methods` list
+/// of the class or any reachable base declares it. This is exactly the
+/// negation of `resolve_method_in_class_or_bases`, but we additionally require
+/// that the class is actually KNOWN in `class_index` — if we have no class
+/// entry we cannot prove absence and must stay conservative (return false).
+fn method_is_provably_absent(
+    receiver_class: &str,
+    method_name: &str,
+    class_index: &ClassIndex,
+    func_index: &FuncIndex,
+    language: &str,
+) -> bool {
+    if class_index.get(receiver_class).is_none() {
+        // Unknown class: cannot prove absence.
+        return false;
+    }
+    resolve_method_in_class_or_bases(receiver_class, method_name, class_index, func_index, language)
+        .is_none()
+}
+
 /// Check if a type name is a known Python/Ruby/etc stdlib or builtin type.
 ///
 /// These types' methods should never resolve to project-internal classes via
@@ -1153,6 +1205,43 @@ pub fn resolve_call_with_receiver(
         language,
     ) {
         return Some(resolved);
+    }
+
+    // T4-php sub-gap 2: PHP `__call` magic-method redirect.
+    //
+    // When the receiver's type is KNOWN (a real user class) but the called
+    // method is provably absent from that class and all of its bases, and the
+    // class (or a base) declares `__call`, PHP routes the call through
+    // `__call` at runtime. Redirect the edge to `<Owner>.__call` so the
+    // dependency is captured instead of being dropped or mis-bound by the
+    // permissive fuzzy fallbacks below.
+    //
+    // This is gated to PHP only (the shared resolver also serves Python/Ruby
+    // etc., which must be unaffected). `__call` is a PHP language constant, not
+    // a heuristic. It runs only AFTER `resolve_with_receiver_type` declined,
+    // so a method that genuinely exists on the class/bases is never diverted.
+    // Conservative by construction: `method_is_provably_absent` requires a
+    // known class entry, so when the type is uncertain (e.g. unresolved trait
+    // composition leaves the methods list incomplete and the class itself
+    // missing) we do NOT redirect.
+    if language.eq_ignore_ascii_case("php") {
+        if let Some(receiver_class) = receiver_type {
+            // `method_is_provably_absent` already requires a KNOWN class entry,
+            // so an unknown receiver type can never trigger the redirect.
+            if method_is_provably_absent(
+                receiver_class,
+                bare_target,
+                class_index,
+                func_index,
+                language,
+            ) {
+                if let Some(resolved) =
+                    resolve_magic_call_owner(receiver_class, class_index, func_index, language)
+                {
+                    return Some(resolved);
+                }
+            }
+        }
     }
 
     if let Some(resolved) = resolve_self_receiver_in_current_file(
@@ -2876,5 +2965,264 @@ mod tests {
         let target2 = resolved2.unwrap();
         assert_eq!(target2.name, "NewUserService");
         assert_eq!(target2.file, PathBuf::from("pkg/service/service.go"));
+    }
+
+    // =================================================================
+    // T4-php sub-gap 2: PHP `__call` magic-method redirect
+    //
+    // When a known-typed receiver calls a method that is provably absent
+    // from the class (and bases) and the class/base defines `__call`, the
+    // edge must redirect to `<Owner>.__call`. It must NOT fire when the
+    // method exists, when `__call` is undefined, or for non-PHP languages.
+    // =================================================================
+
+    /// Helper: a ClassIndex with a single PHP class `Proxy` that defines
+    /// only `__call` and `__construct` (no `query` method).
+    fn php_proxy_class_index(extra_methods: Vec<&str>) -> ClassIndex {
+        let mut class_index = ClassIndex::new();
+        let mut methods: Vec<String> = vec!["__construct".to_string(), "__call".to_string()];
+        methods.extend(extra_methods.into_iter().map(str::to_string));
+        class_index.insert(
+            "Proxy",
+            ClassEntry::new(PathBuf::from("Proxy.php"), 10, 100, methods, vec![]),
+        );
+        class_index
+    }
+
+    #[test]
+    fn test_php_magic_call_redirect_fires_when_method_absent() {
+        // Proxy defines __call but NOT query(); $p->query() must redirect to
+        // Proxy.__call.
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            "Proxy",
+            "Proxy.__call",
+            FuncEntry::method(PathBuf::from("Proxy.php"), 40, 50, "Proxy".to_string()),
+        );
+        let class_index = php_proxy_class_index(vec![]);
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "php");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver!(
+            "query",
+            "$p",
+            Some("Proxy"),
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.php"),
+            Path::new("/project"),
+            "php",
+        );
+
+        let target = resolved.expect("absent method on __call-defining class should redirect");
+        assert_eq!(target.name, "__call", "should redirect to the __call method");
+        assert_eq!(target.class_name, Some("Proxy".to_string()));
+        assert!(target.is_method);
+    }
+
+    #[test]
+    fn test_php_magic_call_redirect_uses_base_class_owner() {
+        // Child has no __call and no query(); Base defines __call.
+        // $c->query() must redirect to Base.__call.
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            "Base",
+            "Base.__call",
+            FuncEntry::method(PathBuf::from("Base.php"), 40, 50, "Base".to_string()),
+        );
+
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Base",
+            ClassEntry::new(
+                PathBuf::from("Base.php"),
+                10,
+                100,
+                vec!["__call".to_string()],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Child",
+            ClassEntry::new(
+                PathBuf::from("Child.php"),
+                10,
+                100,
+                vec!["doChildThing".to_string()],
+                vec!["Base".to_string()],
+            ),
+        );
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "php");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver!(
+            "query",
+            "$c",
+            Some("Child"),
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.php"),
+            Path::new("/project"),
+            "php",
+        );
+
+        let target = resolved.expect("absent method should redirect to base __call");
+        assert_eq!(target.name, "__call");
+        assert_eq!(
+            target.class_name,
+            Some("Base".to_string()),
+            "owner of __call is the base class"
+        );
+    }
+
+    #[test]
+    fn test_php_magic_call_does_not_fire_when_method_exists() {
+        // Proxy defines a real query() method -> resolve to it, NOT __call.
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            "Proxy",
+            "Proxy.query",
+            FuncEntry::method(PathBuf::from("Proxy.php"), 60, 70, "Proxy".to_string()),
+        );
+        func_index.insert(
+            "Proxy",
+            "Proxy.__call",
+            FuncEntry::method(PathBuf::from("Proxy.php"), 40, 50, "Proxy".to_string()),
+        );
+        let class_index = php_proxy_class_index(vec!["query"]);
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "php");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver!(
+            "query",
+            "$p",
+            Some("Proxy"),
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.php"),
+            Path::new("/project"),
+            "php",
+        );
+
+        let target = resolved.expect("real method should resolve");
+        assert_eq!(
+            target.name, "query",
+            "existing method must resolve to itself, never to __call"
+        );
+    }
+
+    #[test]
+    fn test_php_magic_call_does_not_fire_when_no_call_defined() {
+        // Plain class with no __call and no query(): must NOT fabricate a
+        // __call edge. (No fuzzy fallback exists for a single bare method
+        // with a known type that has no candidates, so this stays None.)
+        let func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Plain",
+            ClassEntry::new(
+                PathBuf::from("Plain.php"),
+                10,
+                100,
+                vec!["__construct".to_string(), "doThing".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "php");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver!(
+            "query",
+            "$p",
+            Some("Plain"),
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.php"),
+            Path::new("/project"),
+            "php",
+        );
+
+        assert!(
+            resolved.is_none() || resolved.as_ref().unwrap().name != "__call",
+            "no __call defined -> must not redirect to __call. Got: {:?}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn test_php_magic_call_redirect_is_php_only() {
+        // Same shape as the firing case but language = python. The Python
+        // `__call` symbol must NOT be treated as a magic dispatch redirect.
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            "Proxy",
+            "Proxy.__call",
+            FuncEntry::method(PathBuf::from("proxy.py"), 40, 50, "Proxy".to_string()),
+        );
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Proxy",
+            ClassEntry::new(
+                PathBuf::from("proxy.py"),
+                10,
+                100,
+                vec!["__call".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver!(
+            "query",
+            "p",
+            Some("Proxy"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("/project"),
+            "python",
+        );
+
+        assert!(
+            resolved.is_none() || resolved.as_ref().unwrap().name != "__call",
+            "Python must not get the PHP __call redirect. Got: {:?}",
+            resolved
+        );
     }
 }

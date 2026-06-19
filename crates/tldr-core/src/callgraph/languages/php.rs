@@ -40,6 +40,13 @@ use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
+/// Synthetic target emitted for a dynamic (runtime-computed) method dispatch
+/// such as `$obj->$method()` or `$this->{$expr}()`. The method name is only
+/// known at runtime, so the call cannot be resolved statically; this fixed
+/// marker keeps the call site visible as an unresolved dynamic dispatch
+/// without splicing the dynamic name token into a misleading target string.
+const DYNAMIC_DISPATCH_TARGET: &str = "<dynamic>";
+
 // =============================================================================
 // PHP Handler
 // =============================================================================
@@ -296,6 +303,35 @@ impl PhpHandler {
                     let name_node = child.child_by_field_name("name");
 
                     if let (Some(obj), Some(name)) = (obj_node, name_node) {
+                        // T4-php sub-gap 1: dynamic method name dispatch.
+                        //
+                        // The `name` field is the grammar node `name` ONLY for a
+                        // *literal* method call (`$this->bar()`). For a dynamic
+                        // dispatch the verified grammar shapes are:
+                        //   $this->$method()  -> name field kind = variable_name
+                        //   $obj->$dyn()      -> name field kind = variable_name
+                        //   $this->{$expr}()  -> name field resolves to the inner
+                        //                        variable_name of the {…} block
+                        // (verified against the pinned tree-sitter-php 0.23.11
+                        // grammar via a debug parse). We allowlist on the literal
+                        // `name` kind: any other kind is a runtime-computed method
+                        // name we cannot resolve statically. Emit a dynamic /
+                        // unresolved Attr call with NO receiver and NO junk
+                        // `$this->{token}` target so resolution cannot fabricate
+                        // an edge from the dynamic name token.
+                        if name.kind() != "name" {
+                            calls.push(CallSite::new(
+                                caller.to_string(),
+                                DYNAMIC_DISPATCH_TARGET.to_string(),
+                                CallType::Attr,
+                                Some(line),
+                                None,
+                                None,
+                                None,
+                            ));
+                            continue;
+                        }
+
                         let obj_name = get_node_text(&obj, source).to_string();
                         let method_name = get_node_text(&name, source).to_string();
 
@@ -1458,6 +1494,204 @@ class Child extends Base {
                 ctor.iter().any(|c| c.target == "createConfig"),
                 "Should find createConfig() in parent:: args. Got: {:?}",
                 ctor
+            );
+        }
+    }
+
+    // =================================================================
+    // T4-php Sub-gap 1: dynamic method name $obj->$method()
+    //
+    // The `name` field of a member_call_expression is `name` only for a
+    // *literal* method call (`$this->bar()`); for a dynamic dispatch
+    // (`$this->$method()`, `$this->{$expr}()`, `$obj->$dyn()`) tree-sitter
+    // gives the field kind `variable_name`. The handler must NOT splice the
+    // dynamic token into a junk `$this->method` / `obj->method` target; it
+    // must tag the call as dynamic/unresolved with no junk target string.
+    // =================================================================
+
+    mod dynamic_dispatch_tests {
+        use super::*;
+
+        /// The synthetic dynamic marker emitted for an unresolvable dynamic
+        /// method dispatch. Asserting on this constant keeps the tests
+        /// resilient while still proving the junk target was dropped.
+        const DYNAMIC_TARGET: &str = "<dynamic>";
+
+        #[test]
+        fn test_dynamic_this_method_name_is_tagged_unresolved() {
+            let source = r#"<?php
+class A {
+    public function run() {
+        $method = 'baz';
+        $this->$method();
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("A::run")
+                .or_else(|| calls.get("run"))
+                .expect("A::run should have calls");
+
+            // No junk target derived from the dynamic name token.
+            assert!(
+                !run_calls
+                    .iter()
+                    .any(|c| c.target.contains("$this->$method")
+                        || c.target.contains("$this->method")
+                        || c.target == "method"
+                        || c.target == "$method"),
+                "Dynamic $this->$method() must not produce a junk target. Got: {:?}",
+                run_calls
+            );
+
+            // A dynamic Attr call with no fabricated receiver is present.
+            let dynamic = run_calls
+                .iter()
+                .find(|c| c.target == DYNAMIC_TARGET)
+                .expect("Should emit a dynamic-tagged call site");
+            assert_eq!(dynamic.call_type, CallType::Attr);
+            assert!(
+                dynamic.receiver.is_none(),
+                "Dynamic dispatch must drop the receiver so resolution cannot fabricate an edge. Got: {:?}",
+                dynamic
+            );
+        }
+
+        #[test]
+        fn test_dynamic_member_on_other_object_is_tagged_unresolved() {
+            let source = r#"<?php
+class A {
+    public function run($obj) {
+        $obj->$dyn();
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("A::run")
+                .or_else(|| calls.get("run"))
+                .expect("A::run should have calls");
+
+            assert!(
+                !run_calls
+                    .iter()
+                    .any(|c| c.target.contains("$obj->$dyn")
+                        || c.target.contains("$obj->dyn")
+                        || c.target == "dyn"
+                        || c.target == "$dyn"),
+                "Dynamic $obj->$dyn() must not produce a junk target. Got: {:?}",
+                run_calls
+            );
+            assert!(
+                run_calls.iter().any(|c| c.target == DYNAMIC_TARGET
+                    && c.call_type == CallType::Attr
+                    && c.receiver.is_none()),
+                "Should emit a dynamic-tagged unresolved call. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_dynamic_block_expr_method_name_is_tagged_unresolved() {
+            let source = r#"<?php
+class A {
+    public function run() {
+        $this->{$expr}();
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("A::run")
+                .or_else(|| calls.get("run"))
+                .expect("A::run should have calls");
+
+            assert!(
+                !run_calls.iter().any(|c| c.target.contains("expr")),
+                "Dynamic $this->{{$expr}}() must not splice the expression token into a target. Got: {:?}",
+                run_calls
+            );
+            assert!(
+                run_calls.iter().any(|c| c.target == DYNAMIC_TARGET
+                    && c.call_type == CallType::Attr
+                    && c.receiver.is_none()),
+                "Should emit a dynamic-tagged unresolved call. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_literal_method_name_still_resolves_normally() {
+            // Regression guard: literal (name-kind) method calls must keep
+            // their existing target shape and never be treated as dynamic.
+            let source = r#"<?php
+class A {
+    public function run($obj) {
+        $this->validate();
+        $obj->save();
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("A::run")
+                .or_else(|| calls.get("run"))
+                .expect("A::run should have calls");
+
+            // $this->validate() -> Attr target "$this->validate" (validate
+            // not defined in this single-file fixture).
+            assert!(
+                run_calls
+                    .iter()
+                    .any(|c| c.target == "$this->validate" && c.call_type == CallType::Attr),
+                "Literal $this->validate() must keep its normal target. Got: {:?}",
+                run_calls
+            );
+            // $obj->save() -> Attr target "$obj->save" with receiver "$obj".
+            assert!(
+                run_calls.iter().any(|c| c.target == "$obj->save"
+                    && c.call_type == CallType::Attr
+                    && c.receiver.as_deref() == Some("$obj")),
+                "Literal $obj->save() must keep its normal target/receiver. Got: {:?}",
+                run_calls
+            );
+            // And no dynamic marker leaked in.
+            assert!(
+                !run_calls.iter().any(|c| c.target == DYNAMIC_TARGET),
+                "Literal calls must not be tagged dynamic. Got: {:?}",
+                run_calls
+            );
+        }
+
+        #[test]
+        fn test_dynamic_dispatch_still_extracts_argument_calls() {
+            // The dynamic-dispatch early-out must not prune nested calls in the
+            // argument list -- `walk_tree` visits every descendant, so the
+            // `helper()` argument must still be extracted as its own call.
+            let source = r#"<?php
+class A {
+    public function run() {
+        $this->$method(helper());
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("A::run")
+                .or_else(|| calls.get("run"))
+                .expect("A::run should have calls");
+
+            assert!(
+                run_calls.iter().any(|c| c.target == "helper"),
+                "Argument call helper() inside a dynamic dispatch must still be extracted. Got: {:?}",
+                run_calls
+            );
+            // And the dynamic dispatch itself is still tagged.
+            assert!(
+                run_calls.iter().any(|c| c.target == DYNAMIC_TARGET),
+                "Dynamic dispatch should still be tagged. Got: {:?}",
+                run_calls
             );
         }
     }
