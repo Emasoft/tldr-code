@@ -8,9 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use lazy_static::lazy_static;
-use regex::Regex;
-
 use super::cross_file_types::{FileIR, ImportDef, ResolvedImport};
 use super::import_resolver::{ImportResolver, ReExportTracer, DEFAULT_MAX_DEPTH};
 use super::languages::base::{get_node_text, walk_tree};
@@ -313,46 +310,286 @@ pub fn augment_go_module_imports(
 // JS/TS Default Export Detection
 // =============================================================================
 
+/// Resolve the default-export *name* of a JS/TS module by walking its
+/// tree-sitter AST (no regex).
+///
+/// Handles, in priority order:
+/// - ESM `export default function foo() {}` / `class Bar {}` → the declared name
+/// - ESM `export default <ident>` → the identifier value
+/// - CommonJS `module.exports = X` / `exports.default = X` → the RHS
+/// - Chained `exports = module.exports = createApplication` → innermost RHS ident
+/// - RE-EXPORT `module.exports = require('./other')` → resolved transitively by
+///   following the required module's own default export (NOT the literal
+///   `require`).
+///
+/// Transitive `require(...)` re-exports are protected against cycles by an
+/// M2.2-style visited set of canonical file paths (mirrors
+/// `module_index::load_tsconfig_chain` and `type_aware_resolver`).
 pub(crate) fn find_js_ts_default_export_name(path: &Path) -> Option<String> {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    find_js_ts_default_export_name_inner(path, &mut visited)
+}
+
+/// Inner worker for [`find_js_ts_default_export_name`] that threads the
+/// circular-re-export `visited` set (M2.2 mechanism) across transitive
+/// `require(...)` hops. Each distinct file is read and parsed exactly once.
+fn find_js_ts_default_export_name_inner(
+    path: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Option<String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if !matches!(ext, "js" | "jsx" | "ts" | "tsx" | "mjs" | "cjs") {
         return None;
     }
 
+    // M2.2 cycle guard: canonicalize when possible so the same file reached by
+    // different relative specifiers maps to one key. Fall back to the raw path
+    // when canonicalization fails (e.g. the file does not exist yet).
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(key) {
+        return None;
+    }
+
     let source = fs::read_to_string(path).ok()?;
+    // Parse the file ONCE; every shape decision below walks this single tree.
+    let tree = parse_source(&source, "javascript").ok()?;
+    let src_bytes = source.as_bytes();
+    let root = tree.root_node();
 
-    lazy_static! {
-        static ref RE_EXPORT_DEFAULT_FN: Regex =
-            Regex::new(r"(?m)^\s*export\s+default\s+function\s+([A-Za-z_$][\w$]*)").unwrap();
-        static ref RE_EXPORT_DEFAULT_CLASS: Regex =
-            Regex::new(r"(?m)^\s*export\s+default\s+class\s+([A-Za-z_$][\w$]*)").unwrap();
-        static ref RE_EXPORT_DEFAULT_IDENT: Regex =
-            Regex::new(r"(?m)^\s*export\s+default\s+([A-Za-z_$][\w$]*)").unwrap();
-        static ref RE_EXPORTS_DEFAULT: Regex =
-            Regex::new(r"(?m)^\s*exports\.default\s*=\s*([A-Za-z_$][\w$]*)").unwrap();
-        static ref RE_MODULE_EXPORTS: Regex =
-            Regex::new(r"(?m)^\s*module\.exports\s*=\s*([A-Za-z_$][\w$]*)").unwrap();
-    }
-
-    if let Some(caps) = RE_EXPORT_DEFAULT_FN.captures(&source) {
-        return Some(caps[1].to_string());
-    }
-    if let Some(caps) = RE_EXPORT_DEFAULT_CLASS.captures(&source) {
-        return Some(caps[1].to_string());
-    }
-    if let Some(caps) = RE_EXPORT_DEFAULT_IDENT.captures(&source) {
-        let ident = caps[1].to_string();
-        if ident != "function" && ident != "class" {
-            return Some(ident);
+    // Walk top-level statements. `export default ...` and CommonJS
+    // `module.exports`/`exports.default` assignments live directly under the
+    // program; we inspect them in source order and return the first match.
+    let mut cursor = root.walk();
+    for stmt in root.children(&mut cursor) {
+        match stmt.kind() {
+            "export_statement" => {
+                if let Some(name) = export_default_name(&stmt, src_bytes) {
+                    return Some(name);
+                }
+            }
+            // CommonJS assignments are wrapped in an expression_statement.
+            "expression_statement" => {
+                if let Some(assign) = first_child_of_kind(&stmt, "assignment_expression") {
+                    if let Some(name) =
+                        commonjs_export_name(&assign, src_bytes, path, visited)
+                    {
+                        return Some(name);
+                    }
+                }
+            }
+            _ => {}
         }
     }
-    if let Some(caps) = RE_EXPORTS_DEFAULT.captures(&source) {
-        return Some(caps[1].to_string());
+
+    None
+}
+
+/// Extract the default-export name from an `export_statement` node, but only
+/// when it carries the `default` keyword. Returns the declared
+/// function/class name, or the identifier when the value is a bare identifier.
+fn export_default_name(stmt: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    // Confirm this is `export default ...` by looking for the `default` keyword
+    // child (anonymous node). `export { foo }` / `export const x` have no such
+    // child and must be ignored here.
+    let mut has_default = false;
+    let mut walk = stmt.walk();
+    for child in stmt.children(&mut walk) {
+        if child.kind() == "default" {
+            has_default = true;
+            break;
+        }
     }
-    if let Some(caps) = RE_MODULE_EXPORTS.captures(&source) {
-        return Some(caps[1].to_string());
+    if !has_default {
+        return None;
     }
 
+    // `export default function foo` / `class Bar` → named declaration child.
+    if let Some(decl) = stmt.child_by_field_name("declaration") {
+        match decl.kind() {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "class_declaration"
+            | "class" => {
+                if let Some(name_node) = decl.child_by_field_name("name") {
+                    return Some(get_node_text(&name_node, src).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // `export default <ident>` → bare identifier value. Object/array/call
+    // values have no single name and are intentionally skipped.
+    if let Some(value) = stmt.child_by_field_name("value") {
+        if value.kind() == "identifier" {
+            return Some(get_node_text(&value, src).to_string());
+        }
+    }
+
+    None
+}
+
+/// Resolve the default-export name encoded by a CommonJS
+/// `assignment_expression`, given its LHS targets `module.exports` or
+/// `exports.default`.
+///
+/// Cases:
+/// - RHS identifier → that identifier
+/// - RHS `require('...')` → RE-EXPORT: follow the required module's default
+///   export transitively (guarded by `visited`)
+/// - RHS nested `assignment_expression` (chained `exports = module.exports = X`)
+///   → descend to the innermost RHS
+fn commonjs_export_name(
+    assign: &tree_sitter::Node,
+    src: &[u8],
+    current_file: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Option<String> {
+    let left = assign.child_by_field_name("left")?;
+    let right = assign.child_by_field_name("right")?;
+
+    // The LHS must be a CommonJS export target: `module.exports`, plain
+    // `exports`, or `exports.default`. Chained assignments
+    // (`exports = module.exports = X`) have a plain `exports` identifier LHS on
+    // the outer node, which we accept so the descent into the nested RHS works.
+    if !is_commonjs_export_target(&left, src) {
+        return None;
+    }
+
+    resolve_commonjs_rhs(&right, src, current_file, visited)
+}
+
+/// Resolve the value of a CommonJS export RHS to a default-export name.
+fn resolve_commonjs_rhs(
+    right: &tree_sitter::Node,
+    src: &[u8],
+    current_file: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> Option<String> {
+    match right.kind() {
+        // Plain identifier: `module.exports = createApplication`.
+        "identifier" => Some(get_node_text(right, src).to_string()),
+        // Chained: `exports = module.exports = createApplication`. The outer
+        // RHS is itself an assignment_expression; descend to its RHS.
+        "assignment_expression" => {
+            let inner_right = right.child_by_field_name("right")?;
+            resolve_commonjs_rhs(&inner_right, src, current_file, visited)
+        }
+        // RE-EXPORT: `module.exports = require('./other')`. Follow the required
+        // module's default export transitively — never name it `require`.
+        "call_expression" => {
+            let spec = require_specifier(right, src)?;
+            let target = resolve_relative_module(current_file, &spec)?;
+            find_js_ts_default_export_name_inner(&target, visited)
+        }
+        _ => None,
+    }
+}
+
+/// True when `node` is a CommonJS export *target* on the LHS of an assignment:
+/// `module.exports`, `exports`, or `exports.default`.
+fn is_commonjs_export_target(node: &tree_sitter::Node, src: &[u8]) -> bool {
+    match node.kind() {
+        // Plain `exports = ...` (the outer node of a chained export).
+        "identifier" => get_node_text(node, src) == "exports",
+        // `module.exports` or `exports.default`.
+        "member_expression" => {
+            let object = match node.child_by_field_name("object") {
+                Some(o) => get_node_text(&o, src),
+                None => return false,
+            };
+            let property = match node.child_by_field_name("property") {
+                Some(p) => get_node_text(&p, src),
+                None => return false,
+            };
+            (object == "module" && property == "exports")
+                || (object == "exports" && property == "default")
+        }
+        _ => false,
+    }
+}
+
+/// If `node` is a `require('<spec>')` call, return the string specifier.
+///
+/// Recognized via AST: `call_expression` whose `function` field is the
+/// identifier `require` and whose first string argument supplies the
+/// specifier. `require` is matched as a known CommonJS builtin name (a leaf
+/// vocabulary check), not used to make any structural decision.
+fn require_specifier(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let callee = node.child_by_field_name("function")?;
+    if callee.kind() != "identifier" || get_node_text(&callee, src) != "require" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let mut walk = args.walk();
+    for arg in args.children(&mut walk) {
+        if arg.kind() == "string" {
+            // The `string` node wraps a `string_fragment`; prefer that to avoid
+            // the surrounding quote tokens.
+            if let Some(frag) = first_child_of_kind(&arg, "string_fragment") {
+                return Some(get_node_text(&frag, src).to_string());
+            }
+            // Defensive fallback: strip quote characters from the raw text.
+            let raw = get_node_text(&arg, src);
+            return Some(raw.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+        }
+    }
+    None
+}
+
+/// Resolve a relative `require`/import specifier (e.g. `./lib/express`) against
+/// the directory of `from_file`, probing the standard JS/TS resolution
+/// candidates (exact, with extension, and `index.*`). Returns the first
+/// existing file. Bare/package specifiers (no leading `.`) return `None`
+/// because they are not in-project relative paths.
+fn resolve_relative_module(from_file: &Path, spec: &str) -> Option<PathBuf> {
+    if !(spec.starts_with("./") || spec.starts_with("../") || spec == "." || spec == "..") {
+        return None;
+    }
+    let base = from_file.parent()?;
+    let joined = base.join(spec);
+
+    const EXTS: &[&str] = &["js", "jsx", "ts", "tsx", "mjs", "cjs"];
+
+    // 1. Exact path as written (already has an extension).
+    if joined.is_file() {
+        return Some(joined);
+    }
+    // 2. Append each candidate extension: `./lib/express` -> `./lib/express.js`.
+    for ext in EXTS {
+        let cand = joined.with_extension(ext);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    // 3. Directory index: `./lib` -> `./lib/index.js`.
+    for ext in EXTS {
+        let cand = joined.join(format!("index.{ext}"));
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Return the first direct child of `node` whose kind equals `kind`.
+///
+/// Iterates by index (`child(i)`) rather than via a `TreeCursor` so the
+/// returned node is tied to the tree's lifetime, not a local cursor.
+fn first_child_of_kind<'a>(
+    node: &tree_sitter::Node<'a>,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            if child.kind() == kind {
+                return Some(child);
+            }
+        }
+    }
     None
 }
 
@@ -1135,11 +1372,12 @@ from ...core.base import Base
     }
 
     // =========================================================================
-    // find_js_ts_default_export_name regex correctness tests (v031-dblesc)
+    // find_js_ts_default_export_name whitespace-tolerance tests
     //
-    // Guards against re-introduction of double-escaped \\s / \\w in raw-string
-    // regex literals — those produce literal `\s` / `\w` that match nothing in
-    // real JS/TS source.
+    // Historically (v031-dblesc) these guarded against double-escaped regex
+    // literals. The regex implementation has since been replaced by an
+    // AST walk; the assertions remain valid because the tree-sitter parser is
+    // inherently whitespace-insensitive across every `export default` form.
     // =========================================================================
 
     fn write_js_fixture(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -1150,9 +1388,8 @@ from ...core.base import Base
     }
 
     /// Single-form regression: realistic JS source with a leading newline +
-    /// space-separated tokens. Pre-fix this returns None because `\\s` in the
-    /// raw literal compiles to a literal backslash-s, never matching a real
-    /// space character.
+    /// space-separated tokens. The AST walk must recognize a real
+    /// `export default function` regardless of surrounding whitespace.
     #[test]
     fn test_js_export_default_function_recognized_with_whitespace() {
         let source = "\nexport default function foo() {}\n";
@@ -1161,14 +1398,14 @@ from ...core.base import Base
         assert_eq!(
             result,
             Some("foo".to_string()),
-            "find_js_ts_default_export_name must recognize a real `export default function` form. \
-             If this returns None the regex literal is double-escaped (`\\\\s` instead of `\\s`)."
+            "find_js_ts_default_export_name must recognize a real `export default function` form \
+             regardless of leading/inner whitespace."
         );
     }
 
     /// Comprehensive regression covering every export-default form across a
     /// variety of realistic whitespace shapes (tabs, multiple spaces, leading
-    /// spaces). Guards copy-paste reintroduction of `\\\\s` / `\\\\w`.
+    /// spaces). The AST walk must be whitespace-insensitive for all forms.
     #[test]
     fn test_all_js_export_default_forms_match_with_realistic_whitespace() {
         // (fixture content, expected captured identifier)
@@ -1204,9 +1441,130 @@ from ...core.base import Base
                 result.as_deref(),
                 Some(*expected),
                 "case #{idx} failed: source={source:?} expected Some({expected:?}) got {result:?}. \
-                 If this regresses, check for `\\\\s` / `\\\\w` (double-escape) in the lazy_static \
-                 regex block in imports.rs."
+                 If this regresses, the AST walk in find_js_ts_default_export_name is broken."
             );
         }
+    }
+
+    // =========================================================================
+    // CommonJS export resolution (AST-driven, T3-G5-export)
+    //
+    // Replaces the deleted lazy_static regex block. Asserts the verified
+    // js-express corpus repros and chained / require-reexport behavior.
+    // =========================================================================
+
+    /// Write a named JS file into `dir`. Returns the file path.
+    fn write_named_js(dir: &Path, name: &str, contents: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    /// Repro (js-express index.js:11): `module.exports = require('./lib/express')`
+    /// must NEVER capture the literal `require`. The old regex
+    /// `module\.exports\s*=\s*([A-Za-z_$][\w$]*)` matched `require` here.
+    #[test]
+    fn test_commonjs_module_exports_require_does_not_capture_require() {
+        let (_dir, path) = write_js_fixture("'use strict';\nmodule.exports = require('./lib/express');\n");
+        let result = find_js_ts_default_export_name(&path);
+        assert_ne!(
+            result.as_deref(),
+            Some("require"),
+            "module.exports = require(...) must not surface the builtin `require` as the default \
+             export name (regression of the deleted RE_MODULE_EXPORTS regex)."
+        );
+    }
+
+    /// Repro (js-express): `module.exports = require('./lib/express')` is a
+    /// RE-EXPORT. With the required module resolvable on disk, the default
+    /// export name must be recovered transitively from that module
+    /// (`createApplication`), NOT the string `require`.
+    #[test]
+    fn test_commonjs_require_reexport_resolves_transitively() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        // index.js re-exports the default of ./lib/express
+        let index = write_named_js(root, "index.js", "'use strict';\nmodule.exports = require('./lib/express');\n");
+        // lib/express.js exposes createApplication as its default (chained form)
+        write_named_js(
+            root,
+            "lib/express.js",
+            "'use strict';\nexports = module.exports = createApplication;\nfunction createApplication() {}\n",
+        );
+
+        let result = find_js_ts_default_export_name(&index);
+        assert_eq!(
+            result.as_deref(),
+            Some("createApplication"),
+            "module.exports = require('./lib/express') must transitively resolve to the required \
+             module's default export name (createApplication), got {result:?}."
+        );
+    }
+
+    /// Repro (js-express lib/express.js:27): chained CommonJS export
+    /// `exports = module.exports = createApplication` must recover the
+    /// innermost RHS identifier `createApplication`.
+    #[test]
+    fn test_commonjs_chained_exports_recovers_innermost_identifier() {
+        let (_dir, path) = write_js_fixture(
+            "'use strict';\nexports = module.exports = createApplication;\nfunction createApplication() {}\n",
+        );
+        let result = find_js_ts_default_export_name(&path);
+        assert_eq!(
+            result.as_deref(),
+            Some("createApplication".to_string()).as_deref(),
+            "chained `exports = module.exports = X` must descend to the innermost RHS identifier."
+        );
+    }
+
+    /// `module.exports = createApplication;` (direct identifier) recovers the name.
+    #[test]
+    fn test_commonjs_module_exports_identifier() {
+        let (_dir, path) = write_js_fixture("module.exports = createApplication;\n");
+        let result = find_js_ts_default_export_name(&path);
+        assert_eq!(result.as_deref(), Some("createApplication"));
+    }
+
+    /// `exports.default = createApplication;` recovers the name.
+    #[test]
+    fn test_commonjs_exports_default_identifier() {
+        let (_dir, path) = write_js_fixture("exports.default = createApplication;\n");
+        let result = find_js_ts_default_export_name(&path);
+        assert_eq!(result.as_deref(), Some("createApplication"));
+    }
+
+    /// ESM `export default <ident>` recovers the identifier (AST value child).
+    #[test]
+    fn test_esm_export_default_identifier_via_ast() {
+        let (_dir, path) = write_js_fixture("export default createApplication;\n");
+        let result = find_js_ts_default_export_name(&path);
+        assert_eq!(result.as_deref(), Some("createApplication"));
+    }
+
+    /// A require re-export cycle (a -> b -> a) must terminate and return None
+    /// rather than recursing forever. Guards the M2.2-style visited set.
+    #[test]
+    fn test_commonjs_require_reexport_cycle_terminates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let a = write_named_js(root, "a.js", "module.exports = require('./b');\n");
+        write_named_js(root, "b.js", "module.exports = require('./a');\n");
+        // Must not hang; with no concrete default at the end, returns None.
+        let result = find_js_ts_default_export_name(&a);
+        assert_eq!(
+            result, None,
+            "a require re-export cycle must terminate via the visited set and yield None, got {result:?}."
+        );
+    }
+
+    /// `export default { ... }` (non-identifier value) yields no name.
+    #[test]
+    fn test_esm_export_default_object_yields_none() {
+        let (_dir, path) = write_js_fixture("export default { a: 1 };\n");
+        let result = find_js_ts_default_export_name(&path);
+        assert_eq!(result, None);
     }
 }
