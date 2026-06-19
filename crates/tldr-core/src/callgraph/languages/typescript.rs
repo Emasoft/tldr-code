@@ -432,14 +432,63 @@ impl TypeScriptHandler {
         }
     }
 
-    /// Collect all function, class, and arrow function definitions.
+    /// Extract the receiver ROOT of a CommonJS / prototype-style method
+    /// assignment's left-hand side. The receiver root is the base object the
+    /// method is hung off of, so it can be matched against the `obj` of an
+    /// `obj.method()` call site.
+    ///
+    /// - `app.init = ...`            → root `"app"`
+    /// - `Foo.prototype.bar = ...`   → root `"Foo"` (walk the nested
+    ///   `member_expression` → object chain down to the base identifier)
+    /// - `this.handler = ...`        → root `"this"`
+    /// - `handler = ...` (plain id)  → `None` (no receiver object)
+    ///
+    /// CLUSTER T3-G1 (1A): without a receiver-keyed index, the call-site
+    /// classifier only checks whether the bare method name exists, producing
+    /// false self/cross edges like `router.use → use`.
+    fn extract_assignment_receiver_root(node: &Node, source: &[u8]) -> Option<String> {
+        let left = node.child_by_field_name("left")?;
+        if left.kind() != "member_expression" {
+            // Plain identifier LHS (`handler = ...`) has no receiver object.
+            return None;
+        }
+        // Walk the `object` field chain inward until we reach the base of the
+        // member access. For `Foo.prototype.bar`, the outer object is
+        // `Foo.prototype` (another member_expression) whose object is `Foo`.
+        let mut current = left.child_by_field_name("object")?;
+        loop {
+            match current.kind() {
+                "member_expression" => {
+                    current = current.child_by_field_name("object")?;
+                }
+                "identifier" | "this" => {
+                    return Some(get_node_text(&current, source).to_string());
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Collect all function, class, and arrow function definitions, plus a
+    /// receiver-keyed index mapping each CommonJS / prototype method name to
+    /// the set of receiver roots it was defined on.
+    ///
+    /// CLUSTER T3-G1 (1A): the receiver map lets the call-site classifier
+    /// distinguish `app.init()` (collapses to Intra — `app` is the receiver
+    /// root of `app.init = ...`) from `router.use()` (stays Attr — `router`
+    /// is NOT a receiver root of `use`).
     fn collect_definitions(
         &self,
         tree: &Tree,
         source: &[u8],
-    ) -> (HashSet<String>, HashSet<String>) {
+    ) -> (
+        HashSet<String>,
+        HashSet<String>,
+        HashMap<String, HashSet<String>>,
+    ) {
         let mut functions = HashSet::new();
         let mut classes = HashSet::new();
+        let mut method_receivers: HashMap<String, HashSet<String>> = HashMap::new();
 
         for node in walk_tree(tree.root_node()) {
             match node.kind() {
@@ -507,6 +556,18 @@ impl TypeScriptHandler {
                         if let Some(name) =
                             Self::extract_assignment_function_name(&node, source)
                         {
+                            // CLUSTER T3-G1 (1A): record the receiver root the
+                            // method was hung off of, so `obj.method()` sites
+                            // only collapse to Intra when `obj` matches a
+                            // receiver root of `method`.
+                            if let Some(root) =
+                                Self::extract_assignment_receiver_root(&node, source)
+                            {
+                                method_receivers
+                                    .entry(name.clone())
+                                    .or_default()
+                                    .insert(root);
+                            }
                             functions.insert(name);
                         }
                     }
@@ -538,7 +599,43 @@ impl TypeScriptHandler {
             }
         }
 
-        (functions, classes)
+        (functions, classes, method_receivers)
+    }
+
+    /// Build a one-hop alias map for a function body: `const r = app` /
+    /// `let r = app` / `const self = this` produce `r → app` / `self → this`.
+    ///
+    /// CLUSTER T3-G1 (1C): same-scope simple-identifier aliases only. The
+    /// initializer must be a single `identifier` or `this` node — anything
+    /// more complex (member access, call, etc.) is ignored, so this is a
+    /// deliberately shallow alias hop, not a dataflow analysis. No shadowing
+    /// machinery: the last simple binding for a name wins.
+    fn collect_body_aliases(&self, body: &Node, source: &[u8]) -> HashMap<String, String> {
+        let mut aliases: HashMap<String, String> = HashMap::new();
+        for child in walk_tree(*body) {
+            if child.kind() != "variable_declarator" {
+                continue;
+            }
+            let Some(name_node) = child.child_by_field_name("name") else {
+                continue;
+            };
+            if name_node.kind() != "identifier" {
+                continue;
+            }
+            let Some(value_node) = child.child_by_field_name("value") else {
+                continue;
+            };
+            // Only single-identifier / `this` initializers qualify as aliases.
+            match value_node.kind() {
+                "identifier" | "this" => {
+                    let alias = get_node_text(&name_node, source).to_string();
+                    let target = get_node_text(&value_node, source).to_string();
+                    aliases.insert(alias, target);
+                }
+                _ => {}
+            }
+        }
+        aliases
     }
 
     /// Extract calls from a function body.
@@ -548,9 +645,15 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
         caller: &str,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
+
+        // CLUSTER T3-G1 (1C): resolve same-scope simple aliases (one hop)
+        // before the receiver-root check so `const r = app; r.use()` is
+        // classified using `app` as the receiver.
+        let aliases = self.collect_body_aliases(node, source);
 
         for child in walk_tree(*node) {
             match child.kind() {
@@ -588,85 +691,113 @@ impl TypeScriptHandler {
                                 ));
                             }
                             "member_expression" => {
-                                // Method call: obj.method()
-                                let mut obj_name: Option<String> = None;
-                                let mut method_name: Option<String> = None;
-                                let mut is_this = false;
+                                // Method call: obj.method() — classified via
+                                // the `object`/`property` fields so nested
+                                // receivers (`this.router.param`) are handled
+                                // structurally rather than by flattening raw
+                                // children.
+                                let method_name = func_node
+                                    .child_by_field_name("property")
+                                    .filter(|p| p.kind() == "property_identifier")
+                                    .map(|p| get_node_text(&p, source).to_string());
+                                let object_node = func_node.child_by_field_name("object");
 
-                                for i in 0..func_node.child_count() {
-                                    if let Some(fc) = func_node.child(i) {
-                                        match fc.kind() {
-                                            "this" => {
-                                                is_this = true;
-                                            }
-                                            "identifier" => {
-                                                if obj_name.is_none() {
-                                                    obj_name = Some(
-                                                        get_node_text(&fc, source).to_string(),
-                                                    );
-                                                }
-                                            }
-                                            "property_identifier" => {
-                                                method_name =
-                                                    Some(get_node_text(&fc, source).to_string());
-                                            }
-                                            _ => {}
+                                if let (Some(method), Some(obj_node)) =
+                                    (method_name, object_node)
+                                {
+                                    // A bare receiver is a single identifier or
+                                    // `this`; anything else (nested member,
+                                    // call, etc.) is a complex receiver that
+                                    // must NOT collapse to a bare self-edge.
+                                    let bare_receiver = match obj_node.kind() {
+                                        "identifier" | "this" => {
+                                            Some(get_node_text(&obj_node, source).to_string())
                                         }
-                                    }
-                                }
+                                        _ => None,
+                                    };
 
-                                if let Some(method) = method_name {
-                                    if is_this {
-                                        // this.method() - treat as intra-file if method exists locally
-                                        let call_type = if defined_funcs.contains(&method) {
-                                            CallType::Intra
-                                        } else {
-                                            CallType::Attr
-                                        };
-                                        calls.push(CallSite::new(
-                                            caller.to_string(),
-                                            method.clone(),
-                                            call_type,
-                                            Some(line),
-                                            None,
-                                            Some("this".to_string()),
-                                            None,
-                                        ));
-                                    } else if let Some(obj) = obj_name {
-                                        // language-adapters-completeness-v1
-                                        // (BUG-AGG12-7): when the method
-                                        // name resolves to a CommonJS
-                                        // method-on-object definition in
-                                        // this file (`app.init = function
-                                        // init() { ... }`), classify the
-                                        // call as Intra with bare-name
-                                        // target so the resolver indexes
-                                        // it like a `this.method()` call.
-                                        // Without this, the call routes
-                                        // to `resolve_method_or_attr_call`
-                                        // and silently drops because the
-                                        // receiver `app` is just a plain
-                                        // object literal, not a class
-                                        // instance with a known type.
-                                        if defined_funcs.contains(&method) {
+                                    match bare_receiver {
+                                        Some(obj) if obj == "this" => {
+                                            // CLUSTER T3-G1: this.method() with
+                                            // a plain local method name resolves
+                                            // Intra; otherwise Attr.
+                                            let call_type = if defined_funcs.contains(&method) {
+                                                CallType::Intra
+                                            } else {
+                                                CallType::Attr
+                                            };
+                                            let target = if call_type == CallType::Intra {
+                                                method.clone()
+                                            } else {
+                                                format!("this.{}", method)
+                                            };
                                             calls.push(CallSite::new(
                                                 caller.to_string(),
-                                                method.clone(),
-                                                CallType::Intra,
+                                                target,
+                                                call_type,
                                                 Some(line),
                                                 None,
-                                                Some(obj),
+                                                Some("this".to_string()),
                                                 None,
                                             ));
-                                        } else {
-                                            let target = format!("{}.{}", obj, method);
+                                        }
+                                        Some(obj) => {
+                                            // CLUSTER T3-G1 (1A + 1C): resolve
+                                            // `obj` through one alias hop, then
+                                            // collapse `obj.method()` to Intra
+                                            // ONLY when the resolved receiver is
+                                            // a known receiver root of `method`.
+                                            // Preserves BUG-AGG12-7 (app.init
+                                            // resolves because `app` is the
+                                            // receiver root of `app.init = ...`)
+                                            // while rejecting false self/cross
+                                            // edges (router.use → use).
+                                            let resolved =
+                                                aliases.get(&obj).cloned().unwrap_or_else(|| obj.clone());
+                                            let is_receiver_match = method_receivers
+                                                .get(&method)
+                                                .is_some_and(|roots| roots.contains(&resolved));
+
+                                            if is_receiver_match {
+                                                calls.push(CallSite::new(
+                                                    caller.to_string(),
+                                                    method.clone(),
+                                                    CallType::Intra,
+                                                    Some(line),
+                                                    None,
+                                                    Some(obj),
+                                                    None,
+                                                ));
+                                            } else {
+                                                let target = format!("{}.{}", obj, method);
+                                                calls.push(CallSite::new(
+                                                    caller.to_string(),
+                                                    target,
+                                                    CallType::Attr,
+                                                    Some(line),
+                                                    None,
+                                                    Some(obj),
+                                                    None,
+                                                ));
+                                            }
+                                        }
+                                        None => {
+                                            // Complex/nested receiver
+                                            // (`this.router.param`,
+                                            // `a.b.c.method`): emit an Attr edge
+                                            // keyed on the full receiver text.
+                                            // Never collapse to a bare self-edge.
+                                            let receiver_text =
+                                                get_node_text(&obj_node, source).to_string();
+                                            let target =
+                                                format!("{}.{}", receiver_text, method);
                                             calls.push(CallSite::new(
                                                 caller.to_string(),
                                                 target,
                                                 CallType::Attr,
                                                 Some(line),
                                                 None,
-                                                Some(obj),
+                                                Some(receiver_text),
                                                 None,
                                             ));
                                         }
@@ -801,6 +932,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
         caller: &str,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
@@ -815,6 +947,7 @@ impl TypeScriptHandler {
                         source,
                         defined_funcs,
                         defined_classes,
+                        method_receivers,
                         caller,
                     );
                     calls.extend(param_calls);
@@ -832,6 +965,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
         caller: &str,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
@@ -843,6 +977,7 @@ impl TypeScriptHandler {
                         source,
                         defined_funcs,
                         defined_classes,
+                        method_receivers,
                         caller,
                     );
                     calls.extend(decorator_calls);
@@ -860,6 +995,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
         class_name: &str,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
@@ -874,6 +1010,7 @@ impl TypeScriptHandler {
                             source,
                             defined_funcs,
                             defined_classes,
+                            method_receivers,
                             class_name,
                         );
                         calls.extend(field_calls);
@@ -885,6 +1022,7 @@ impl TypeScriptHandler {
                             source,
                             defined_funcs,
                             defined_classes,
+                            method_receivers,
                             class_name,
                         );
                         calls.extend(static_calls);
@@ -903,6 +1041,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Option<(String, Vec<CallSite>)> {
         let name_node = node.child_by_field_name("name")?;
         let func_name = get_node_text(&name_node, source).to_string();
@@ -932,6 +1071,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &caller_name,
             ));
         }
@@ -941,6 +1081,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &caller_name,
             ));
         }
@@ -958,6 +1099,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Option<(String, Vec<CallSite>)> {
         let caller_name = Self::extract_assignment_function_name(node, source)?;
         let right = node.child_by_field_name("right")?;
@@ -975,6 +1117,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &caller_name,
             ));
         }
@@ -984,6 +1127,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &caller_name,
             ));
         }
@@ -997,6 +1141,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Option<(String, Vec<CallSite>)> {
         let name_node = node.child_by_field_name("name")?;
         let method_name = get_node_text(&name_node, source).to_string();
@@ -1040,6 +1185,7 @@ impl TypeScriptHandler {
             source,
             defined_funcs,
             defined_classes,
+            method_receivers,
             &full_name,
         ));
         if let Some(params) = node.child_by_field_name("parameters") {
@@ -1048,6 +1194,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &full_name,
             ));
         }
@@ -1057,6 +1204,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &full_name,
             ));
         }
@@ -1070,6 +1218,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
         caller: &str,
     ) -> Vec<CallSite> {
         let Some(class_body_parent) = node.parent() else {
@@ -1105,6 +1254,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 caller,
             ));
         }
@@ -1117,6 +1267,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Vec<(String, Vec<CallSite>)> {
         let mut extracted = Vec::new();
 
@@ -1172,6 +1323,7 @@ impl TypeScriptHandler {
                             source,
                             defined_funcs,
                             defined_classes,
+                            method_receivers,
                             &name,
                         ));
                         break;
@@ -1184,6 +1336,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &name,
             ));
             extracted.push((name, calls));
@@ -1198,6 +1351,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Vec<(String, Vec<CallSite>)> {
         let mut extracted = Vec::new();
 
@@ -1221,6 +1375,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &func_name,
             );
             extracted.push((func_name, calls));
@@ -1235,6 +1390,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Option<(String, Vec<CallSite>)> {
         let name_node = node.child_by_field_name("name")?;
         let class_name = get_node_text(&name_node, source).to_string();
@@ -1243,6 +1399,7 @@ impl TypeScriptHandler {
             source,
             defined_funcs,
             defined_classes,
+            method_receivers,
             &class_name,
         );
 
@@ -1252,6 +1409,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 &class_name,
             ));
         }
@@ -1265,6 +1423,7 @@ impl TypeScriptHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        method_receivers: &HashMap<String, HashSet<String>>,
     ) -> Vec<CallSite> {
         let mut module_calls = Vec::new();
         for child in tree.root_node().children(&mut tree.root_node().walk()) {
@@ -1306,6 +1465,7 @@ impl TypeScriptHandler {
                 source,
                 defined_funcs,
                 defined_classes,
+                method_receivers,
                 "<module>",
             ));
         }
@@ -1556,7 +1716,8 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
         tree: &Tree,
     ) -> Result<HashMap<String, Vec<CallSite>>, ParseError> {
         let source_bytes = source.as_bytes();
-        let (defined_funcs, defined_classes) = self.collect_definitions(tree, source_bytes);
+        let (defined_funcs, defined_classes, method_receivers) =
+            self.collect_definitions(tree, source_bytes);
         let mut calls_by_func: HashMap<String, Vec<CallSite>> = HashMap::new();
 
         for node in walk_tree(tree.root_node()) {
@@ -1567,6 +1728,7 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                         source_bytes,
                         &defined_funcs,
                         &defined_classes,
+                        &method_receivers,
                     ) {
                         insert_calls_if_any(&mut calls_by_func, caller_name, calls);
                     }
@@ -1577,6 +1739,7 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                         source_bytes,
                         &defined_funcs,
                         &defined_classes,
+                        &method_receivers,
                     ) {
                         insert_calls_if_any(&mut calls_by_func, caller_name, calls);
                     }
@@ -1587,6 +1750,7 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                         source_bytes,
                         &defined_funcs,
                         &defined_classes,
+                        &method_receivers,
                     ) {
                         insert_calls_if_any(&mut calls_by_func, caller_name, calls);
                     }
@@ -1609,6 +1773,7 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                                 source_bytes,
                                 &defined_funcs,
                                 &defined_classes,
+                                &method_receivers,
                             )
                         {
                             insert_calls_if_any(&mut calls_by_func, caller_name, calls);
@@ -1621,6 +1786,7 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                         source_bytes,
                         &defined_funcs,
                         &defined_classes,
+                        &method_receivers,
                     ) {
                         insert_calls_if_any(&mut calls_by_func, caller_name, calls);
                     }
@@ -1633,6 +1799,7 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                             source_bytes,
                             &defined_funcs,
                             &defined_classes,
+                            &method_receivers,
                         )
                     {
                         extend_calls_if_any(&mut calls_by_func, class_name, class_calls);
@@ -1642,8 +1809,13 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
             }
         }
 
-        let module_calls =
-            self.collect_module_level_calls(tree, source_bytes, &defined_funcs, &defined_classes);
+        let module_calls = self.collect_module_level_calls(
+            tree,
+            source_bytes,
+            &defined_funcs,
+            &defined_classes,
+            &method_receivers,
+        );
         insert_calls_if_any(&mut calls_by_func, "<module>".to_string(), module_calls);
 
         Ok(calls_by_func)
@@ -2449,6 +2621,165 @@ function App() {
                     .any(|c| c.target == "formatDate" && c.call_type == CallType::Intra),
                 "Expected formatDate call inside JSX expression, got: {:?}",
                 app_calls
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Receiver-keyed method resolution (CLUSTER T3-G1)
+    //
+    // The TS callgraph must only collapse `obj.method()` to an Intra edge when
+    // `obj` actually matches the receiver root of `obj.method = ...` (or it is
+    // `this.method()` resolving to a plain local name). A bare HashSet of method
+    // names produces false self/cross edges (router.use -> use, render ->
+    // render). These tests pin the receiver-keyed behaviour and the one-hop
+    // alias map, while preserving the BUG-AGG12-7 win (app.init resolves).
+    // -------------------------------------------------------------------------
+
+    mod receiver_keyed_tests {
+        use super::*;
+
+        // (a) router.use() must emit an Attr edge, NOT a false use->use
+        // self-edge. There IS a `use` definition in scope, but its receiver
+        // root is `app`, not `router`, so the call cannot collapse to Intra.
+        #[test]
+        fn test_router_use_is_attr_not_self_edge() {
+            let source = r#"
+app.use = function use(fn) { return fn; };
+
+function mount() {
+    router.use(handler);
+}
+"#;
+            let calls = extract_calls(source);
+            let mount_calls = calls.get("mount").expect("mount should have calls");
+
+            let use_call = mount_calls
+                .iter()
+                .find(|c| c.target == "router.use" || (c.target == "use" && c.receiver.as_deref() == Some("router")))
+                .expect("expected a router.use call site");
+
+            assert_eq!(
+                use_call.call_type,
+                CallType::Attr,
+                "router.use() must be Attr (receiver `router` != receiver-root `app` of `use`); got {:?}",
+                use_call
+            );
+            assert_eq!(
+                use_call.target, "router.use",
+                "Attr target must keep the obj.method form, not collapse to bare `use`"
+            );
+
+            // There must be NO false self-edge `use -> use`.
+            assert!(
+                !mount_calls
+                    .iter()
+                    .any(|c| c.target == "use" && c.call_type == CallType::Intra),
+                "router.use() must not produce a false Intra self-edge to `use`; got {:?}",
+                mount_calls
+            );
+        }
+
+        // (b) app.init() still resolves Intra — BUG-AGG12-7 preserved. The
+        // receiver `app` matches the receiver root of `app.init = ...`.
+        #[test]
+        fn test_app_init_resolves_intra_agg12_7_preserved() {
+            let source = r#"
+app.init = function init() { configure(); };
+
+function boot() {
+    app.init();
+}
+"#;
+            let calls = extract_calls(source);
+            let boot_calls = calls.get("boot").expect("boot should have calls");
+
+            let init_call = boot_calls
+                .iter()
+                .find(|c| c.target == "init")
+                .expect("app.init() should resolve to bare `init` (AGG12-7)");
+            assert_eq!(
+                init_call.call_type,
+                CallType::Intra,
+                "app.init() must stay Intra because `app` is the receiver root of `app.init = ...`; got {:?}",
+                init_call
+            );
+            assert_eq!(
+                init_call.receiver,
+                Some("app".to_string()),
+                "Intra method call should retain the receiver `app`"
+            );
+        }
+
+        // (c) const r = app; r.use() resolves via the one-hop alias to app's
+        // method, producing an Intra edge to `use`.
+        #[test]
+        fn test_alias_const_r_app_resolves_intra() {
+            let source = r#"
+app.use = function use(fn) { return fn; };
+
+function mount() {
+    const r = app;
+    r.use(handler);
+}
+"#;
+            let calls = extract_calls(source);
+            let mount_calls = calls.get("mount").expect("mount should have calls");
+
+            let use_call = mount_calls
+                .iter()
+                .find(|c| c.target == "use" && c.call_type == CallType::Intra)
+                .expect("r.use() should resolve Intra via alias r -> app");
+            // Receiver should reflect the alias actually written at the call site.
+            assert_eq!(
+                use_call.receiver,
+                Some("r".to_string()),
+                "Intra alias call should retain the written receiver `r`; got {:?}",
+                use_call
+            );
+
+            // And there must be no leftover Attr `r.use` edge.
+            assert!(
+                !mount_calls.iter().any(|c| c.target == "r.use"),
+                "alias-resolved call must not also emit an Attr `r.use` edge; got {:?}",
+                mount_calls
+            );
+        }
+
+        // (d) this.router.param(...) must NOT collapse to a bare `param`
+        // self-edge. The receiver is the nested member `this.router`, not a
+        // plain `this.method()`, so it stays an Attr edge.
+        #[test]
+        fn test_nested_this_member_does_not_collapse() {
+            let source = r#"
+app.param = function param() {};
+
+function setup() {
+    this.router.param(cb);
+}
+"#;
+            let calls = extract_calls(source);
+            let setup_calls = calls.get("setup").expect("setup should have calls");
+
+            // No bare-`param` Intra self-edge.
+            assert!(
+                !setup_calls
+                    .iter()
+                    .any(|c| c.target == "param" && c.call_type == CallType::Intra),
+                "this.router.param() must not collapse to a bare `param` self-edge; got {:?}",
+                setup_calls
+            );
+
+            // It should surface as an Attr edge keyed on the nested receiver.
+            let param_call = setup_calls
+                .iter()
+                .find(|c| c.target.ends_with(".param") && c.call_type == CallType::Attr)
+                .expect("this.router.param() should be an Attr edge");
+            assert_eq!(
+                param_call.receiver.as_deref(),
+                Some("this.router"),
+                "nested receiver should be captured as `this.router`; got {:?}",
+                param_call
             );
         }
     }
