@@ -3170,9 +3170,13 @@ mod tests {
             "php",
         );
 
-        assert!(
-            resolved.is_none() || resolved.as_ref().unwrap().name != "__call",
-            "no __call defined -> must not redirect to __call. Got: {:?}",
+        // "query" is absent from Plain, and Plain declares no `__call`, so the
+        // magic redirect must not fire. The func_index is empty and no other
+        // resolver strategy can match `query`, so the only correct result is
+        // None (a fully unresolved call), NOT some fuzzy junk target.
+        assert_eq!(
+            resolved, None,
+            "no __call defined -> call to absent `query` must stay unresolved. Got: {:?}",
             resolved
         );
     }
@@ -3219,9 +3223,14 @@ mod tests {
             "python",
         );
 
-        assert!(
-            resolved.is_none() || resolved.as_ref().unwrap().name != "__call",
-            "Python must not get the PHP __call redirect. Got: {:?}",
+        // The PHP `__call` redirect is gated to PHP. Under Python, the only
+        // declared method on Proxy is `__call` itself (the func_index holds
+        // `Proxy.__call`), so a call to the absent `query` has no valid target:
+        // no resolver strategy matches `query`, and the magic redirect is
+        // skipped entirely. The correct result is None.
+        assert_eq!(
+            resolved, None,
+            "Python must not get the PHP __call redirect; absent `query` stays unresolved. Got: {:?}",
             resolved
         );
     }

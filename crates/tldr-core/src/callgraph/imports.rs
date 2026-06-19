@@ -527,14 +527,17 @@ fn require_specifier(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
     let mut walk = args.walk();
     for arg in args.children(&mut walk) {
         if arg.kind() == "string" {
-            // The `string` node wraps a `string_fragment`; prefer that to avoid
-            // the surrounding quote tokens.
-            if let Some(frag) = first_child_of_kind(&arg, "string_fragment") {
-                return Some(get_node_text(&frag, src).to_string());
-            }
-            // Defensive fallback: strip quote characters from the raw text.
-            let raw = get_node_text(&arg, src);
-            return Some(raw.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string());
+            // The `string` node wraps its literal content in a `string_fragment`
+            // child (verified via debug parse of tree-sitter-javascript). Read
+            // that child exclusively so the surrounding quote tokens are never
+            // included. A `string` with no `string_fragment` is the empty
+            // literal (`''`/`""`) — its only children are the two quote tokens —
+            // which is not a usable module specifier, so return None rather than
+            // trimming the raw source bytes (raw-byte trimming would mangle
+            // template/escaped/unusual string forms and is a source-text edit,
+            // not an AST decision).
+            return first_child_of_kind(&arg, "string_fragment")
+                .map(|frag| get_node_text(&frag, src).to_string());
         }
     }
     None
@@ -1470,11 +1473,16 @@ from ...core.base import Base
     fn test_commonjs_module_exports_require_does_not_capture_require() {
         let (_dir, path) = write_js_fixture("'use strict';\nmodule.exports = require('./lib/express');\n");
         let result = find_js_ts_default_export_name(&path);
-        assert_ne!(
-            result.as_deref(),
-            Some("require"),
-            "module.exports = require(...) must not surface the builtin `require` as the default \
-             export name (regression of the deleted RE_MODULE_EXPORTS regex)."
+        // The RHS is a require RE-EXPORT, so the only way to name a default
+        // export is to resolve `./lib/express` on disk and recurse. That module
+        // does not exist in this single-file fixture, so resolution fails and
+        // the correct result is None — never the literal `require`, and never
+        // any other fabricated name.
+        assert_eq!(
+            result, None,
+            "module.exports = require('./lib/express') with an unresolvable target must yield no \
+             default-export name (got {result:?}); the builtin `require` must never be surfaced \
+             (regression of the deleted RE_MODULE_EXPORTS regex)."
         );
     }
 

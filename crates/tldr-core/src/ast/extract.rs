@@ -10502,4 +10502,110 @@ class Second {{
             "Second::create must be kept (never deduped across classes)"
         );
     }
+
+    /// (fix-T3-G4-overload-v1) Coverage for the `method_definition` arm of the
+    /// dedup at the point where a body-less declaration is collapsed onto a
+    /// `method_definition` IMPLEMENTATION sibling.
+    ///
+    /// The existing collapse test only inspects the observable method *list*; it
+    /// does not pin the two structural predicates the `method_definition` branch
+    /// relies on:
+    ///   1. `ts_method_has_body` — the body-field discriminator that decides
+    ///      whether a member is an implementation (kept) or a declaration-only
+    ///      signature (a drop candidate).
+    ///   2. `ts_method_has_impl_sibling` — which (line: `sibling.kind() !=
+    ///      "method_definition"`) recognises ONLY a bodied `method_definition`
+    ///      as the surviving implementation. A `method_signature` is never a
+    ///      valid impl sibling, so a class with no `method_definition` keeps all
+    ///      its declarations.
+    ///
+    /// Verified against tree-sitter-typescript 0.23.2, whose `node-types.json`
+    /// marks `method_definition.body` as a *required* field: a well-formed
+    /// implementation is always a `method_definition` WITH a body, and a
+    /// body-less member is always a `method_signature`. We assert exactly that
+    /// structural split, then the end-to-end drop-and-keep outcome.
+    #[test]
+    fn test_extract_ts_overload_bodyless_method_definition_dedup() {
+        // One body-less `method_signature` overload + one bodied
+        // `method_definition` implementation, same name, same class_body.
+        let src = "class Svc {\n  build(a: string): void;\n  build(a: any): void {\n    return;\n  }\n}\n";
+        let mut file = NamedTempFile::with_suffix(".ts").unwrap();
+        write!(file, "{src}").unwrap();
+        let (tree, source, _lang) = crate::ast::parser::parse_file(file.path()).unwrap();
+        let source = source.as_str();
+
+        // Locate the class_body and its two `build` members structurally.
+        fn find_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+            if node.kind() == kind {
+                return Some(node);
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(found) = find_kind(child, kind) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let class_body = find_kind(tree.root_node(), "class_body").expect("class_body present");
+
+        let mut sig: Option<Node> = None;
+        let mut imp: Option<Node> = None;
+        let mut cursor = class_body.walk();
+        for member in class_body.children(&mut cursor) {
+            match member.kind() {
+                "method_signature" => sig = Some(member),
+                "method_definition" => imp = Some(member),
+                _ => {}
+            }
+        }
+        let sig = sig.expect("body-less overload must parse as a method_signature");
+        let imp = imp.expect("the implementation must parse as a method_definition");
+
+        // Predicate 1: the body discriminator splits impl from declaration.
+        assert!(
+            ts_method_has_body(&imp),
+            "the `method_definition` implementation must own a body"
+        );
+        assert!(
+            !ts_method_has_body(&sig),
+            "the body-less overload declaration must report no body"
+        );
+
+        // Predicate 2: the body-less declaration HAS an impl sibling (the
+        // `method_definition`), so it is a drop candidate. The impl itself does
+        // NOT (its only same-name sibling is the body-less declaration, which is
+        // not a `method_definition` and so cannot be an impl sibling).
+        assert!(
+            ts_method_has_impl_sibling(&class_body, &sig, source),
+            "body-less `build` declaration must see the `method_definition` impl as its sibling"
+        );
+        assert!(
+            !ts_method_has_impl_sibling(&class_body, &imp, source),
+            "the `method_definition` impl has no impl sibling -> it is never the dropped member"
+        );
+
+        // End-to-end outcome: exactly the implementation survives, kept once.
+        let info = extract_file(file.path(), None).unwrap();
+        let class = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Svc")
+            .expect("Svc class");
+        let build_methods: Vec<&FunctionInfo> =
+            class.methods.iter().filter(|m| m.name == "build").collect();
+        assert_eq!(
+            build_methods.len(),
+            1,
+            "the body-less `build` overload must be dropped, leaving one entry, got {:?}",
+            class.methods.iter().map(|m| m.name.as_str()).collect::<Vec<_>>()
+        );
+        let kept = build_methods[0];
+        assert!(
+            kept.line_end > kept.line_number,
+            "the surviving `build` must be the multi-line `method_definition` impl, got lines {}-{}",
+            kept.line_number,
+            kept.line_end
+        );
+    }
 }
