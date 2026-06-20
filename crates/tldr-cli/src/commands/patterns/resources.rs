@@ -1677,16 +1677,26 @@ impl ResourceDetector {
                 if let Some(pattern) = node.child_by_field_name("pattern") {
                     if let Some(value) = node.child_by_field_name("value") {
                         let var_name = node_text(pattern, source).to_string();
-                        // Rust uses RAII, so most resources are auto-cleaned.
-                        // We detect them but mark as closed (RAII)
                         if let Some(resource_type) =
                             self.get_resource_type_from_call_multilang(value, source, patterns)
                         {
+                            // G4-O2: Rust is RAII so a handle that stays local
+                            // is auto-dropped → treat as closed. But when the
+                            // handle ESCAPES the function scope (returned,
+                            // stored into a field, or `mem::forget`'d) AND no
+                            // explicit drop/close is applied to it, RAII no
+                            // longer guarantees cleanup on this path — so it is
+                            // reportable as a leak (closed=false). This replaces
+                            // the old unconditional `in_context_manager: true`
+                            // that made Rust incapable of ever reporting a leak.
+                            // (CFG-precise drop reachability is G4-O1, deferred.)
+                            let escapes = rust_handle_escapes(node, &var_name, source)
+                                && !rust_handle_explicitly_closed(node, &var_name, source, patterns);
                             self.resources.push(DetectedResource {
                                 name: var_name,
                                 resource_type,
                                 line: node.start_position().row as u32 + 1,
-                                in_context_manager: true, // RAII: auto-cleaned on drop
+                                in_context_manager: !escapes,
                             });
                         }
                     }
@@ -1941,6 +1951,45 @@ impl ResourceDetector {
                                 });
                             }
                         }
+                    }
+                }
+            }
+            Language::Elixir => {
+                // G3-O1: Elixir `=` is a `binary_operator` with `[operator] =`,
+                // `[left]` pattern, `[right]` value. The generic `_` arm below
+                // would bind the WHOLE LHS as text — for `{:ok, file} =
+                // File.open(p)` that yields the bogus name `{:ok, file}`. Here
+                // we structurally bind the inner identifier of the LHS pattern
+                // (scalar `identifier`, or the first `identifier` inside a
+                // `{:ok, file}` `tuple`) and resolve the RHS via the
+                // module-qualified acquisition matcher (G2-O1 allowlist).
+                if node.kind() != "binary_operator" {
+                    return;
+                }
+                // Confirm the operator is `=` structurally (never text-split).
+                let is_eq = node
+                    .child_by_field_name("operator")
+                    .map(|op| op.kind() == "=")
+                    .unwrap_or(false);
+                if !is_eq {
+                    return;
+                }
+                let (Some(left), Some(right)) = (
+                    node.child_by_field_name("left"),
+                    node.child_by_field_name("right"),
+                ) else {
+                    return;
+                };
+                if let Some(var_name) = elixir_bind_name(left, source) {
+                    if let Some(resource_type) =
+                        self.get_resource_type_from_call_multilang(right, source, patterns)
+                    {
+                        self.resources.push(DetectedResource {
+                            name: var_name,
+                            resource_type,
+                            line: node.start_position().row as u32 + 1,
+                            in_context_manager: in_cleanup,
+                        });
                     }
                 }
             }
@@ -3201,6 +3250,225 @@ fn collect_ruby_scope_segments(node: Node, source: &[u8], out: &mut Vec<String>)
     } else if node.kind() == "constant" {
         out.push(node_text(node, source).to_string());
     }
+}
+
+/// G3-O1: structurally bind the variable name from an Elixir `=` LHS pattern.
+///
+/// Handles the two acquisition-binding shapes seen in real code:
+///   * a bare scalar `identifier`  (`file = File.open!(p)`)
+///   * an `{:ok, file}` ok-tuple   (`{:ok, file} = File.open(p)`)
+///
+/// For the tuple we return the FIRST `identifier` child (the bound variable),
+/// skipping the `:ok`/`:error` `atom` tag — a pure node.kind() walk, never a
+/// text split of the tuple. Returns None for shapes we do not bind (e.g. a
+/// pin `^x`, a nested destructure, or a non-identifier LHS).
+fn elixir_bind_name(left: Node, source: &[u8]) -> Option<String> {
+    match left.kind() {
+        "identifier" => Some(node_text(left, source).to_string()),
+        "tuple" => {
+            let mut cursor = left.walk();
+            for child in left.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    return Some(node_text(child, source).to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// G4-O2: the enclosing function `block` of a Rust `let_declaration` (ascend
+/// `parent()` to the nearest `function_item`/closure body). Returns None when
+/// no enclosing block is found (e.g. a `let` at item position).
+fn rust_enclosing_block(decl: Node) -> Option<Node> {
+    let mut cur = decl.parent();
+    while let Some(n) = cur {
+        if n.kind() == "function_item" {
+            return n.child_by_field_name("body");
+        }
+        // closures / async blocks: stop at the first enclosing `block` whose
+        // parent is a closure_expression / async_block.
+        if n.kind() == "closure_expression" {
+            return n.child_by_field_name("body");
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+/// G4-O2: true when the Rust handle `var_name` (bound at `decl`) ESCAPES its
+/// owning function scope on at least one path. Escape sites (all structural,
+/// node.kind()/field-driven — never text matching the source):
+///   * returned: a `return_expression` whose value is `var_name`, OR the
+///     block's tail expression is the bare `identifier var_name`;
+///   * stored into a field: `assignment_expression` whose `left` is a
+///     `field_expression` and whose `right` is the bare `identifier var_name`;
+///   * `mem::forget(var_name)` / `forget(var_name)` (Drop suppressed).
+///
+/// A handle used only locally (e.g. as a method receiver `var.read()`) does
+/// NOT escape, so RAII cleanup stands.
+fn rust_handle_escapes(decl: Node, var_name: &str, source: &[u8]) -> bool {
+    let Some(block) = rust_enclosing_block(decl) else {
+        return false;
+    };
+    // tail-expression return: last named child of the block that is the bare
+    // identifier `var_name`.
+    if let Some(tail) = block.named_child(block.named_child_count().saturating_sub(1)) {
+        if tail.kind() == "identifier" && node_text(tail, source) == var_name {
+            return true;
+        }
+    }
+    rust_escape_in_subtree(block, var_name, source)
+}
+
+/// Recursive structural scan for a Rust escape site of `var_name` (see
+/// `rust_handle_escapes`).
+fn rust_escape_in_subtree(node: Node, var_name: &str, source: &[u8]) -> bool {
+    if rust_node_is_escape_site(node, var_name, source) {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if rust_escape_in_subtree(child, var_name, source) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when THIS Rust node is itself an escape site for `var_name` (not its
+/// descendants — the caller recurses). Structural per node.kind()/field.
+fn rust_node_is_escape_site(node: Node, var_name: &str, source: &[u8]) -> bool {
+    match node.kind() {
+        // `return <handle>;` — bare handle identifier as the returned value.
+        "return_expression" => node
+            .named_child(0)
+            .map(|val| val.kind() == "identifier" && node_text(val, source) == var_name)
+            .unwrap_or(false),
+        // `<field_expr> = <handle>;` moves ownership into a field.
+        "assignment_expression" => {
+            match (
+                node.child_by_field_name("left"),
+                node.child_by_field_name("right"),
+            ) {
+                (Some(left), Some(right)) => {
+                    left.kind() == "field_expression"
+                        && right.kind() == "identifier"
+                        && node_text(right, source) == var_name
+                }
+                _ => false,
+            }
+        }
+        // `mem::forget(handle)` / `std::mem::forget(handle)` / `forget(handle)`.
+        "call_expression" => {
+            rust_call_is_forget(node, source) && rust_call_has_ident_arg(node, var_name, source)
+        }
+        _ => false,
+    }
+}
+
+/// G4-O2: true when a Rust `call_expression`'s callee is `forget` —
+/// last path segment of the callee is `forget` (`mem::forget`,
+/// `std::mem::forget`, or a bare imported `forget`). Structural: reads the
+/// `function` field's scoped/identifier shape, never a source substring.
+fn rust_call_is_forget(call: Node, source: &[u8]) -> bool {
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let last = match func.kind() {
+        "identifier" => node_text(func, source).to_string(),
+        "scoped_identifier" => {
+            let mut segs = Vec::new();
+            flatten_rust_scoped(func, source, &mut segs);
+            match segs.pop() {
+                Some(s) => s,
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+    last == "forget"
+}
+
+/// G4-O2: true when a Rust `call_expression`'s argument list contains the bare
+/// `identifier var_name`. Structural walk over the `arguments` node.
+fn rust_call_has_ident_arg(call: Node, var_name: &str, source: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    for arg in args.children(&mut cursor) {
+        if arg.kind() == "identifier" && node_text(arg, source) == var_name {
+            return true;
+        }
+    }
+    false
+}
+
+/// G4-O2: true when the Rust handle `var_name` is EXPLICITLY closed/dropped in
+/// its enclosing function body — `drop(var_name)` or a closer method call
+/// `var_name.close()` / `.shutdown()` / etc. (from the per-language `closers`
+/// list). When present, the escape is cleaned up before/along the path, so we
+/// do NOT report a leak. (A full CFG path-sensitive version is G4-O1.)
+fn rust_handle_explicitly_closed(
+    decl: Node,
+    var_name: &str,
+    source: &[u8],
+    patterns: &LangResourcePatterns,
+) -> bool {
+    let Some(block) = rust_enclosing_block(decl) else {
+        return false;
+    };
+    rust_close_in_subtree(block, var_name, source, patterns)
+}
+
+/// Recursive structural scan for an explicit `drop(var)` / `var.closer()` site.
+fn rust_close_in_subtree(
+    node: Node,
+    var_name: &str,
+    source: &[u8],
+    patterns: &LangResourcePatterns,
+) -> bool {
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            // `drop(var)` — bare/scoped callee whose last segment is `drop`.
+            let drop_callee = match func.kind() {
+                "identifier" => node_text(func, source) == "drop",
+                "scoped_identifier" => {
+                    let mut segs = Vec::new();
+                    flatten_rust_scoped(func, source, &mut segs);
+                    segs.last().map(|s| s.as_str()) == Some("drop")
+                }
+                _ => false,
+            };
+            if drop_callee && rust_call_has_ident_arg(node, var_name, source) {
+                return true;
+            }
+            // `var.close()` / `var.shutdown()` — method call on the handle
+            // whose method name is a known closer.
+            if func.kind() == "field_expression" {
+                if let (Some(recv), Some(field)) = (
+                    func.child_by_field_name("value"),
+                    func.child_by_field_name("field"),
+                ) {
+                    if recv.kind() == "identifier"
+                        && node_text(recv, source) == var_name
+                        && patterns.closers.contains(&node_text(field, source))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if rust_close_in_subtree(child, var_name, source, patterns) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Match an AST-extracted `(receiver_segments, method)` against the curated
@@ -5150,6 +5418,93 @@ fn good() {
         assert!(
             got.contains(&"f".to_string()),
             "Python non-managed open must leak `f`: got {got:?}"
+        );
+    }
+
+    // =========================================================================
+    // FIX-BEHAVIOR TESTS (T2b-resource-ocaml-elixir-release)
+    //
+    //   G3-O1 (Elixir) — `{:ok, file} = File.open(p)` binds the *inner*
+    //                     `file` identifier (not the whole `{:ok, file}` tuple
+    //                     text) by structurally walking the tuple LHS.
+    //   G4-O2 (Rust)   — a Rust handle that ESCAPES its scope (returned /
+    //                     stored into a field / mem::forget'd) is reported
+    //                     leaked; a plain RAII-dropped handle is NOT.
+    // =========================================================================
+
+    #[test]
+    fn fix_elixir_tuple_bind_extracts_inner_identifier() {
+        // G3-O1: `{:ok, file} = File.open(p)` must bind `file`, never the
+        // raw tuple text `{:ok, file}`.
+        let src = "def read(p) do\n  {:ok, file} = File.open(p)\n  IO.read(file, :all)\nend\n";
+        let got = char_detect_closed(src, Language::Elixir);
+        assert!(
+            got.iter().any(|(n, t, _)| n == "file" && t == "file"),
+            "Elixir tuple-LHS must bind inner `file`: got {got:?}"
+        );
+        assert!(
+            !got.iter().any(|(n, _, _)| n.contains('{') || n.contains(':')),
+            "Elixir tuple-LHS must NOT bind the raw `{{:ok, file}}` tuple text: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_elixir_scalar_bind_still_extracts_identifier() {
+        // Regression guard: the scalar binding stays correct after the
+        // tuple-aware arm is added.
+        let src = "def simple(p) do\n  file = File.open!(p)\n  file\nend\n";
+        let got = char_detect_closed(src, Language::Elixir);
+        assert!(
+            got.iter().any(|(n, t, _)| n == "file" && t == "file"),
+            "Elixir scalar bind must still produce `file`: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_rust_returned_handle_can_leak() {
+        // G4-O2: a File handle that is RETURNED from the function escapes the
+        // scope; with no drop/close on that path it must be reportable as a
+        // leak (Rust is no longer hard-coded closed).
+        let src = "fn open_it(path: &str) -> File {\n    let f = File::open(path).unwrap();\n    f\n}\n";
+        let got = char_leak_names(src, Language::Rust);
+        assert!(
+            got.contains(&"f".to_string()),
+            "G4-O2: a returned Rust handle must be reportable as leaked: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_rust_mem_forget_handle_can_leak() {
+        // G4-O2: `mem::forget(f)` suppresses Drop — the handle leaks.
+        let src = "fn leaky(path: &str) {\n    let f = File::open(path).unwrap();\n    std::mem::forget(f);\n}\n";
+        let got = char_leak_names(src, Language::Rust);
+        assert!(
+            got.contains(&"f".to_string()),
+            "G4-O2: a mem::forget'd Rust handle must be reportable as leaked: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_rust_field_stored_handle_can_leak() {
+        // G4-O2: storing the handle into a struct field (`self.f = f;`) moves
+        // ownership out of the local scope — escape, so reportable.
+        let src = "fn store(&mut self, path: &str) {\n    let f = File::open(path).unwrap();\n    self.f = f;\n}\n";
+        let got = char_leak_names(src, Language::Rust);
+        assert!(
+            got.contains(&"f".to_string()),
+            "G4-O2: a field-stored Rust handle must be reportable as leaked: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_rust_local_dropped_handle_not_leaked() {
+        // G4-O2 must NOT regress the RAII default: a handle that stays local
+        // (never escapes) is auto-dropped → NOT a leak.
+        let src = "fn read_local(path: &str) {\n    let f = File::open(path).unwrap();\n    let _ = f.metadata();\n}\n";
+        let got = char_leak_names(src, Language::Rust);
+        assert!(
+            !got.contains(&"f".to_string()),
+            "G4-O2: a purely-local RAII handle must NOT be flagged as leaked: got {got:?}"
         );
     }
 }
