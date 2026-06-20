@@ -4467,4 +4467,439 @@ describe('calc', () => {
             "toBeNull should still produce a null property"
         );
     }
+
+    // ====================================================================
+    // CHARACTERIZATION (A1 assertion-adapter migration regression net).
+    //
+    // fix-T1a-assertion-adapter-v1: these golden tests pin the CURRENT
+    // correct `tldr specs` attribution (FUT name, actual/expected, spec
+    // type) for EVERY already-passing language/framework BEFORE the A1
+    // per-language AssertionAdapter refactor. They must stay green after
+    // the migration — the per-adapter equality/known-callee tables that
+    // replace the two drifted global lists (`is_equality`,
+    // `is_known_assertion_callee`) must reproduce these exactly. A
+    // regression here means the migration silently dropped or
+    // mis-attributed a spec.
+    //
+    // Inline fixtures (not the corpora) are used deliberately: line
+    // numbers and FUT names are stable across corpus refreshes, so the
+    // golden assertions stay deterministic.
+    // ====================================================================
+
+    /// CHAR: Python pytest equality / exception / property extraction.
+    /// Pins the Python-only `extract_from_assert` path (shares
+    /// `try_eval_literal` / `collect_call_args` with the generic path the
+    /// A1 refactor touches).
+    #[test]
+    fn char_python_pytest_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("test_calc.py");
+        let src = r#"
+def test_add():
+    assert add(2, 3) == 5
+
+def test_div_raises():
+    with pytest.raises(ValueError):
+        divide(1, 0)
+
+def test_bounds():
+    assert compute() > 0
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("pytest: add");
+        assert_eq!(add.input_output_specs.len(), 1, "add: one IO spec");
+        assert_eq!(add.input_output_specs[0].output, serde_json::json!(5));
+        assert_eq!(
+            add.input_output_specs[0].inputs,
+            vec![serde_json::json!(2), serde_json::json!(3)]
+        );
+
+        let divide = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "divide")
+            .expect("pytest: divide");
+        assert_eq!(divide.exception_specs.len(), 1);
+        assert_eq!(divide.exception_specs[0].exception_type, "ValueError");
+
+        let compute = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "compute")
+            .expect("pytest: compute");
+        assert!(compute
+            .property_specs
+            .iter()
+            .any(|p| p.property_type == "bounds"));
+    }
+
+    /// CHAR: Java Spring MockMvc fluent assertions.
+    /// `mockMvc.perform(get("/x")).andExpect(status().isOk())` => FUT is
+    /// the HTTP verb (`get`), constraint encodes the matcher chain.
+    #[test]
+    fn char_java_mockmvc_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("OwnerControllerTests.java");
+        let src = r#"
+class OwnerControllerTests {
+    @Test
+    void testNewOwnerForm() throws Exception {
+        mockMvc.perform(get("/owners/new"))
+            .andExpect(status().isOk())
+            .andExpect(view().name("owners/createOrUpdateOwnerForm"));
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        assert!(
+            report.summary.total_specs > 0,
+            "mockmvc must yield specs"
+        );
+        let get = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "get")
+            .expect("mockmvc: FUT `get` (HTTP verb in perform)");
+        assert!(
+            get.property_specs
+                .iter()
+                .any(|p| p.property_type == "mockmvc_expectation"
+                    && p.constraint.contains("status")),
+            "status().isOk() => status:isOk constraint"
+        );
+        assert!(
+            get.property_specs
+                .iter()
+                .any(|p| p.constraint.contains("view")),
+            "view().name(..) => view:name constraint"
+        );
+    }
+
+    /// CHAR: Ruby RSpec `expect(actual).to eq(expected)` / `.not_to be_nil`.
+    #[test]
+    fn char_ruby_rspec_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("calc_spec.rb");
+        let src = r#"
+RSpec.describe Calc do
+  it "adds" do
+    expect(add(2, 3)).to eq(5)
+  end
+
+  it "present" do
+    expect(lookup(0)).not_to be_nil
+  end
+end
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("rspec: add");
+        assert_eq!(add.input_output_specs.len(), 1, "rspec eq => one IO spec");
+        assert_eq!(add.input_output_specs[0].output, serde_json::json!(5));
+
+        let lookup = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "lookup")
+            .expect("rspec: lookup");
+        assert!(
+            lookup
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "not_null"),
+            "not_to be_nil => not_null property"
+        );
+    }
+
+    /// CHAR: Ruby minitest `assert_equal expected, actual` flat call.
+    /// This exercises the generic flat classifier `is_equality` path with
+    /// the `assert_equal` matcher — the very name that is currently in
+    /// `is_equality` but MISSING from `is_known_assertion_callee` (the
+    /// drift the A1 collapse must preserve behaviorally).
+    #[test]
+    fn char_ruby_minitest_assert_equal() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("calc_test.rb");
+        let src = r#"
+class CalcTest < Minitest::Test
+  def test_add
+    assert_equal 5, add(2, 3)
+  end
+end
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("minitest: add FUT from assert_equal 5, add(2,3)");
+        assert_eq!(
+            add.input_output_specs.len(),
+            1,
+            "assert_equal => one IO spec"
+        );
+        assert_eq!(add.input_output_specs[0].output, serde_json::json!(5));
+        // `assert_equal` itself must NEVER be attributed as a FUT.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "assert_equal"),
+            "assert_equal must not appear as a function-under-test"
+        );
+    }
+
+    /// CHAR: OCaml structural equality `let%test _ = equal (f x) y`.
+    ///
+    /// Pins CURRENT behavior: the FUT is `add`, inputs are the (string-typed,
+    /// since OCaml integer literals are not the Python `integer` node kind)
+    /// args, and the expected value is captured verbatim as `String("5")`.
+    /// `equal` itself is never a FUT (per the known-assertion-callee filter
+    /// that the A1 OCaml adapter table must preserve).
+    #[test]
+    fn char_ocaml_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("test_calc.ml");
+        let src = r#"
+let%test "add" = equal (add 2 3) 5
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        assert!(report.summary.total_specs > 0, "ocaml must yield specs");
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("ocaml: add FUT from equal");
+        assert_eq!(
+            add.input_output_specs.len(),
+            1,
+            "ocaml equal => exactly one IO spec for add"
+        );
+        // Non-Python integer literals are captured as their source text
+        // (current `try_eval_literal` only recognises the Python `integer`
+        // node kind). Pin that exact representation.
+        assert_eq!(
+            add.input_output_specs[0].output,
+            serde_json::json!("5"),
+            "ocaml expected value captured as source text \"5\""
+        );
+        assert_eq!(
+            add.input_output_specs[0].inputs,
+            vec![serde_json::json!("2"), serde_json::json!("3")],
+            "ocaml inputs captured as source text"
+        );
+        // `equal` must never be a FUT.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "equal"),
+            "equal must not appear as a function-under-test"
+        );
+    }
+
+    /// CHAR: Rust `assert_eq!(add(2, 3), 5)` macro (flat token_tree path).
+    #[test]
+    fn char_rust_assert_eq_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("calc_test.rs");
+        let src = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_add() {
+        assert_eq!(add(2, 3), 5);
+    }
+
+    #[test]
+    fn test_flag() {
+        assert!(is_ready());
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("rust: add FUT from assert_eq!");
+        assert!(
+            !add.input_output_specs.is_empty(),
+            "assert_eq! => IO spec for add"
+        );
+        let is_ready = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "is_ready")
+            .expect("rust: is_ready FUT from assert!");
+        assert!(
+            is_ready
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "truthy"),
+            "assert!(is_ready()) => truthy property"
+        );
+        // The macro head must never be a FUT.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "assert_eq" || f.function_name == "assert"),
+            "assert_eq/assert must not appear as functions-under-test"
+        );
+    }
+
+    /// CHAR: cross-language FLAT classifier vocabulary — JUnit
+    /// `assertEquals`/`assertThrows`, Kotlin `shouldBe`, C# `AreEqual`.
+    /// Pins the equality / throws / known-callee leaf vocabulary that the
+    /// A1 per-adapter tables must reproduce (the drift-prone core).
+    #[test]
+    fn char_flat_classifier_vocabulary() {
+        // JUnit (Java): assertEquals(expected, actual) + assertThrows.
+        let temp = TempDir::new().unwrap();
+        let jpath = temp.path().join("CalcTests.java");
+        let jsrc = r#"
+class CalcTests {
+    @Test
+    void testAdd() {
+        assertEquals(5, add(2, 3));
+    }
+
+    @Test
+    void testThrows() {
+        assertThrows(IllegalArgumentException.class, () -> parse(bad));
+    }
+}
+"#;
+        fs::write(&jpath, jsrc).unwrap();
+        let jreport = run_specs(&jpath, None).unwrap();
+        let add = jreport
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("junit: add FUT from assertEquals");
+        assert_eq!(add.input_output_specs.len(), 1);
+        // Java integer literals (`decimal_integer_literal`) are not the
+        // Python `integer` node kind, so `try_eval_literal` keeps them as
+        // source text. Pin that exact current representation.
+        assert_eq!(add.input_output_specs[0].output, serde_json::json!("5"));
+        let parse = jreport
+            .functions
+            .iter()
+            .find(|f| f.function_name == "parse")
+            .expect("junit: parse FUT from assertThrows lambda");
+        assert!(
+            !parse.exception_specs.is_empty(),
+            "assertThrows => exception spec for parse"
+        );
+        assert!(
+            !jreport
+                .functions
+                .iter()
+                .any(|f| f.function_name == "assertEquals"
+                    || f.function_name == "assertThrows"),
+            "assertEquals/assertThrows must not be FUTs"
+        );
+
+        // Kotlin: actual shouldBe expected (infix — flat callee `shouldBe`).
+        let ktpath = temp.path().join("CalcTest.kt");
+        let ktsrc = r#"
+class CalcTest {
+    @Test
+    fun testAdd() {
+        shouldBe(add(2, 3), 5)
+    }
+}
+"#;
+        fs::write(&ktpath, ktsrc).unwrap();
+        let ktreport = run_specs(&ktpath, None).unwrap();
+        assert!(
+            ktreport
+                .functions
+                .iter()
+                .find(|f| f.function_name == "add")
+                .map(|f| !f.input_output_specs.is_empty())
+                .unwrap_or(false),
+            "kotlin shouldBe => IO spec for add"
+        );
+
+        // C#: Assert.AreEqual(expected, actual).
+        let cspath = temp.path().join("CalcTests.cs");
+        let cssrc = r#"
+public class CalcTests {
+    [Test]
+    public void TestAdd() {
+        Assert.AreEqual(5, Add(2, 3));
+    }
+}
+"#;
+        fs::write(&cspath, cssrc).unwrap();
+        let csreport = run_specs(&cspath, None).unwrap();
+        let csadd = csreport
+            .functions
+            .iter()
+            .find(|f| f.function_name == "Add")
+            .expect("csharp: Add FUT from AreEqual");
+        assert_eq!(csadd.input_output_specs.len(), 1);
+        // C# integer literals are likewise kept as source text.
+        assert_eq!(csadd.input_output_specs[0].output, serde_json::json!("5"));
+    }
+
+    /// CHAR: Go `if <call> != want { t.Errorf(...) }` idiom.
+    ///
+    /// Pins the CURRENT behavior: the FUT call must appear directly in the
+    /// `condition` (not the `initializer`) for `try_extract_go_if_t_assertion`
+    /// to attribute it. `if add(2,3) != 5 { t.Errorf(..) }` => `add` gains a
+    /// `go_if_assertion` property. (The `if got := add(..); got != 5` shape
+    /// is intentionally NOT pinned here — that FUT lives in the initializer
+    /// and is a known limitation, separate from the A1 migration.)
+    #[test]
+    fn char_go_if_t_assertion() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("calc_test.go");
+        let src = r#"
+package calc
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+    if add(2, 3) != 5 {
+        t.Errorf("add(2,3) want 5")
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("go: add FUT from if-condition call");
+        assert!(
+            add.property_specs
+                .iter()
+                .any(|p| p.property_type == "go_if_assertion"),
+            "go if/t.Errorf => go_if_assertion property"
+        );
+    }
 }
