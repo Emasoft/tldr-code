@@ -5099,4 +5099,145 @@ func TestAdd(t *testing.T) {
             "go if/t.Errorf => go_if_assertion property"
         );
     }
+
+    // ====================================================================
+    // CHARACTERIZATION (T1b: Scala/Go assertion-gap + @Test-recognizer move
+    // regression net).
+    //
+    // fix-T1b-scala-go-testrecognizer-v1: these golden tests pin the CURRENT
+    // correct `tldr specs` behavior of the already-passing shapes that the
+    // T1b changes touch, BEFORE any edit:
+    //
+    //   * Scala `assertEquals(actual(), expected)` already attributes to the
+    //     FUT via the shared flat `is_equality` path — adding the
+    //     `assertCompleteAs`-family helpers (G1-a1) and the infix DSL (G1-a2)
+    //     must NOT change this.
+    //   * Go `if realCall() != want { t.Errorf(..) }` already attributes the
+    //     in-condition call as the FUT — the G4-b comparison-helper descent
+    //     must NOT regress the non-helper path.
+    //   * Swift XCTest `func test*()` is counted by the test recogniser today
+    //     — moving the swift-testing `@Test` recognition INTO
+    //     `test_recognizer.rs` must keep the XCTest convention working.
+    //
+    // A regression in any of these means a T1b change silently altered the
+    // behavior of a language that was already correct.
+    // ====================================================================
+
+    /// CHAR (T1b): Scala flat `assertEquals(actual, expected)` attribution.
+    /// The Scala adapter is the shared `FlatOnlyAdapter`; `assertEquals` is in
+    /// the shared equality vocab. Pins that a 2-arg `assertEquals` where arg0
+    /// is a call attributes the IO spec to that call (`actual`) with the
+    /// other arg as the expected output, and that `assertEquals` itself is
+    /// never a FUT. G1-a1 (assertCompleteAs family) must preserve this exactly.
+    #[test]
+    fn char_scala_assert_equals_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("CalcSuite.scala");
+        let src = r#"
+class CalcSuite extends munit.FunSuite {
+  test("adds") {
+    assertEquals(actual(), expected)
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let actual = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "actual")
+            .expect("scala: actual FUT from assertEquals(actual(), expected)");
+        assert_eq!(
+            actual.input_output_specs.len(),
+            1,
+            "assertEquals => one IO spec for actual"
+        );
+        assert_eq!(
+            actual.input_output_specs[0].output,
+            serde_json::json!("expected")
+        );
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "assertEquals"),
+            "assertEquals must never be a FUT"
+        );
+    }
+
+    /// CHAR (T1b): Go `if realCall() != want { t.Errorf(..) }` attribution.
+    /// Distinct from `char_go_if_t_assertion` (which uses `add(2,3) != 5`):
+    /// this pins that when the in-condition call is a GENUINE FUT (not a
+    /// comparison helper), the G4-b helper-descent leaves it attributed to
+    /// that call. The comparison-helper suppression must only fire for the
+    /// named helper set, never for ordinary calls.
+    #[test]
+    fn char_go_if_plain_call_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("svc_test.go");
+        let src = r#"
+package svc
+
+import "testing"
+
+func TestLookup(t *testing.T) {
+    if lookup(7) != 42 {
+        t.Fatalf("lookup(7) want 42")
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let lookup = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "lookup")
+            .expect("go: lookup FUT from if-condition call");
+        assert!(
+            lookup
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "go_if_assertion"),
+            "go if/t.Fatalf => go_if_assertion property on lookup"
+        );
+    }
+
+    /// CHAR (T1b): Swift XCTest `func test*()` recognition.
+    /// Pins the existing XCTest naming convention: a `func testFoo()` inside
+    /// an `XCTestCase` subclass is recognised as a test function (so its
+    /// `XCTAssertEqual` body is harvested). Moving the swift-testing `@Test`
+    /// recognition into `test_recognizer.rs` must keep this XCTest path green.
+    #[test]
+    fn char_swift_xctest_recognized() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("CalcTests.swift");
+        let src = r#"
+import XCTest
+
+class CalcTests: XCTestCase {
+    func testAdd() {
+        XCTAssertEqual(add(2, 3), 5)
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        assert_eq!(
+            report.summary.test_functions_scanned, 1,
+            "XCTest func testAdd must be counted as one test function"
+        );
+        let add = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .expect("swift: add FUT from XCTAssertEqual(add(2,3), 5)");
+        assert_eq!(
+            add.input_output_specs.len(),
+            1,
+            "XCTAssertEqual => one IO spec for add"
+        );
+    }
 }

@@ -935,4 +935,27 @@ mod tests {
         assert!(info.is_test_file);
         assert_eq!(info.test_function_count, 2);
     }
+
+    // ====================================================================
+    // CHARACTERIZATION (T1b @Test-recognizer move): pin the CURRENT Swift
+    // XCTest `func test*` counting before moving swift-testing `@Test`
+    // recognition into this module. The XCTest naming convention must keep
+    // working after the move.
+    // ====================================================================
+    #[test]
+    fn char_swift_xctest_func_test_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "CalcTests.swift",
+            "import XCTest\nclass CalcTests: XCTestCase {\n  func testOne() {}\n  func testTwo() {}\n  func helper() {}\n}\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Swift);
+        assert!(info.is_test_file);
+        assert_eq!(
+            info.test_function_count, 2,
+            "XCTest `func test*` methods must be counted (helper excluded)"
+        );
+    }
 }
