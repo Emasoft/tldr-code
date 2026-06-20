@@ -4398,4 +4398,124 @@ function regularFunc(x: number): number {
         };
         assert_eq!(args_auto.lang, None);
     }
+
+    // =========================================================================
+    // CHARACTERIZATION TESTS (T2a-resource-acquisition)
+    //
+    // These pin the CURRENT, CORRECT resource-acquisition behavior of the
+    // already-working languages (Python / Go / TS / JS / C++). They form the
+    // regression net for the acquisition-core rewrite (extract_call_name
+    // G1-O2, qualified-creator matcher G2-O1, chain descent G1-O1). They must
+    // stay GREEN before and after the rewrite.
+    // =========================================================================
+
+    /// Helper: detect (name, resource_type) pairs for a function via the real
+    /// multilang detection path (parse → find function → detect_with_patterns).
+    fn char_detect(src: &str, func: &str, lang: Language) -> Vec<(String, String)> {
+        let tree = tldr_core::ast::parser::parse(src, lang).unwrap();
+        let bytes = src.as_bytes();
+        let fnode = find_function_node_multilang(&tree, func, bytes, lang)
+            .unwrap_or_else(|| panic!("function `{func}` not found for {lang:?}"));
+        let mut d = ResourceDetector::with_language(lang);
+        d.detect_with_patterns(fnode, bytes)
+            .into_iter()
+            .map(|r| (r.name, r.resource_type))
+            .collect()
+    }
+
+    #[test]
+    fn char_python_open_file() {
+        let src = r#"
+def read(path):
+    f = open(path)
+    return f.read()
+"#;
+        let got = char_detect(src, "read", Language::Python);
+        assert_eq!(got, vec![("f".to_string(), "file".to_string())]);
+    }
+
+    #[test]
+    fn char_go_os_open_file() {
+        let src = r#"
+func read() {
+    f, err := os.Open("x")
+    defer f.Close()
+}
+"#;
+        let got = char_detect(src, "read", Language::Go);
+        assert_eq!(got, vec![("f".to_string(), "file".to_string())]);
+    }
+
+    #[test]
+    fn char_go_net_dial_connection() {
+        let src = r#"
+func dial() {
+    conn, err := net.Dial("tcp", "x")
+    defer conn.Close()
+}
+"#;
+        let got = char_detect(src, "dial", Language::Go);
+        assert_eq!(got, vec![("conn".to_string(), "connection".to_string())]);
+    }
+
+    #[test]
+    fn char_ts_high_precision_name_flagged() {
+        // High-precision LHS name `server` from createServer is flagged
+        // regardless of cleanup (AGG17-7 gate only narrows ambiguous names).
+        let src = r#"
+function start() {
+    const server = http.createServer();
+}
+"#;
+        let got = char_detect(src, "start", Language::TypeScript);
+        assert!(
+            got.iter().any(|(n, _)| n == "server"),
+            "server must be flagged: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn char_ts_ambiguous_name_without_cleanup_skipped() {
+        // AGG17-7: ambiguous name `data` from `.get(...)` with no cleanup
+        // call is skipped.
+        let src = r#"
+function readConfig(config) {
+    const data = config.get("api_key");
+    return data;
+}
+"#;
+        let got = char_detect(src, "readConfig", Language::TypeScript);
+        assert!(
+            !got.iter().any(|(n, _)| n == "data"),
+            "ambiguous `data` w/o cleanup must NOT be flagged: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn char_ts_ambiguous_name_with_cleanup_flagged() {
+        // AGG17-7: ambiguous `request` WITH a `request.abort()` cleanup call
+        // is still flagged.
+        let src = r#"
+function makeRequest() {
+    const request = http.request({});
+    request.abort();
+}
+"#;
+        let got = char_detect(src, "makeRequest", Language::TypeScript);
+        assert!(
+            got.iter().any(|(n, _)| n == "request"),
+            "ambiguous `request` WITH cleanup must be flagged: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn char_cpp_fopen_file() {
+        let src = r#"
+void read() {
+    FILE *fp = fopen("x", "r");
+}
+"#;
+        let got = char_detect(src, "read", Language::Cpp);
+        assert_eq!(got, vec![("fp".to_string(), "file".to_string())]);
+    }
 }
