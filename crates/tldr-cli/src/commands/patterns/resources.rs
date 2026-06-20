@@ -162,26 +162,13 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             cleanup_block_kinds: &["defer_statement"],
         },
         Language::Rust => LangResourcePatterns {
-            creators: &[
-                ("open", "file"),
-                ("create", "file"),
-                ("connect", "connection"),
-                ("bind", "listener"),
-                ("lock", "mutex_guard"),
-                ("read_lock", "rwlock_guard"),
-                ("write_lock", "rwlock_guard"),
-                ("try_lock", "mutex_guard"),
-                ("spawn", "thread_handle"),
-                ("new", "resource"),
-                ("from_raw_fd", "file_descriptor"),
-                ("into_raw_fd", "file_descriptor"),
-                ("TcpStream", "connection"),
-                ("TcpListener", "listener"),
-                ("UdpSocket", "socket"),
-                ("File", "file"),
-                ("BufReader", "reader"),
-                ("BufWriter", "writer"),
-            ],
+            // G2-O1: Rust acquisition is matched by the module-qualified
+            // `acquisition_symbols(Language::Rust)` allowlist (AST-extracted
+            // callee path + spine descent), NOT this flat list. The bare
+            // `new` creator was DROPPED entirely — `String::new` / `Vec::new`
+            // are not resources. This list is retained only for the legacy
+            // `closers`-style struct shape; it is not consulted for matching.
+            creators: &[],
             closers: &["drop", "close", "shutdown", "flush", "sync_all"],
             function_kinds: &["function_item"],
             name_field: "name",
@@ -372,14 +359,12 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             cleanup_block_kinds: &[],
         },
         Language::Ruby => LangResourcePatterns {
-            creators: &[
-                ("open", "file"),
-                ("new", "resource"),
-                ("popen", "process"),
-                ("TCPSocket", "socket"),
-                ("UNIXSocket", "socket"),
-                ("connect", "connection"),
-            ],
+            // G2-O1: Ruby acquisition is matched by the module-qualified
+            // `acquisition_symbols(Language::Ruby)` allowlist against an
+            // AST-extracted (receiver, method) tuple, NOT this flat list. The
+            // old `ends_with(".open")` match here made arbitrary `Foo.open`
+            // false-positive; the qualified tuple `(File, open)` does not.
+            creators: &[],
             closers: &["close", "shutdown", "disconnect", "release"],
             function_kinds: &["method", "singleton_method"],
             name_field: "name",
@@ -456,6 +441,10 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             cleanup_block_kinds: &[],
         },
         Language::Elixir => LangResourcePatterns {
+            // G2-O1: acquisition matched by `acquisition_symbols(Elixir)`
+            // against an AST `(receiver, method)` tuple (`File.open`,
+            // `:gen_tcp.connect`); this flat list is no longer consulted for
+            // matching. (T2b wires the Elixir assignment arm + fn-name.)
             creators: &[
                 ("open", "file"),
                 ("open!", "file"),
@@ -554,6 +543,11 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             cleanup_block_kinds: &[],     // defer detected differently
         },
         Language::Ocaml => LangResourcePatterns {
+            // G2-O1: acquisition matched by `acquisition_symbols(Ocaml)`
+            // against an AST-flattened value_path (`open_in`,
+            // `Stdlib.open_out`, `Unix.openfile`); this flat list is no longer
+            // consulted for matching (the old `application` arm checked the
+            // wrong node kind and the raw first-word substring was a footgun).
             creators: &[
                 ("open_in", "input_channel"),
                 ("open_out", "output_channel"),
@@ -2050,6 +2044,18 @@ impl ResourceDetector {
         source: &[u8],
         patterns: &LangResourcePatterns,
     ) -> Option<String> {
+        // G2-O1 + G1-O1: Rust/Ruby/OCaml/Elixir use the module-qualified
+        // acquisition matcher against an AST-extracted callee path (with chain
+        // descent), NOT the flat single-name creators loop. This is what
+        // suppresses the old `Foo.open` (Ruby `ends_with(".open")`) and
+        // `String::new` (bare-`new`) false positives, and what lets
+        // `File::open(path).unwrap()` be detected via spine descent. We return
+        // here unconditionally for these languages so the legacy substring
+        // fallbacks below never fire for them.
+        if uses_qualified_acquisition(self.lang) {
+            return qualified_creator_type(node, source, self.lang);
+        }
+
         // Extract the function/method name from the call
         let func_name = extract_call_name(node, source)?;
 
@@ -2106,31 +2112,10 @@ impl ResourceDetector {
             }
         }
 
-        // For OCaml: check for function application like `open_in path`
-        if matches!(self.lang, Language::Ocaml) {
-            // OCaml uses application nodes: (application function: (value_name) argument: ...)
-            if node.kind() == "application" {
-                if let Some(func_node) = node
-                    .child_by_field_name("function")
-                    .or_else(|| node.child(0))
-                {
-                    let func_text = node_text(func_node, source);
-                    for &(creator, rtype) in patterns.creators {
-                        if func_text == creator || func_text.ends_with(&format!(".{}", creator)) {
-                            return Some(rtype.to_string());
-                        }
-                    }
-                }
-            }
-            // Also check the raw text for patterns like `open_in`
-            let text = node_text(node, source);
-            let first_word = text.split_whitespace().next().unwrap_or("");
-            for &(creator, rtype) in patterns.creators {
-                if first_word == creator {
-                    return Some(rtype.to_string());
-                }
-            }
-        }
+        // NOTE: OCaml/Elixir acquisition is handled structurally by the
+        // module-qualified matcher above (early return) — the old
+        // `application` (wrong node kind) + raw-text first-word substring
+        // fallbacks were removed in G2-O1.
 
         // For Lua/Luau: check for method calls like io.open(path, "r")
         if matches!(self.lang, Language::Lua | Language::Luau) {
@@ -2958,24 +2943,351 @@ fn extract_call_name(node: Node, source: &[u8]) -> Option<String> {
         _ => {}
     }
 
-    // Fallback: check the whole node text for common patterns
-    let text = node_text(node, source);
-    if text.contains('(') {
-        let name_part = text.split('(').next()?;
-        let func_name = name_part
-            .split('.')
-            .next_back()
-            .unwrap_or(name_part)
-            .rsplit("::")
-            .next()
-            .unwrap_or(name_part)
-            .trim();
-        if !func_name.is_empty() {
-            return Some(func_name.to_string());
+    // G1-O2: no TEXT fallback. When the node is not a recognized call/
+    // application kind we return None — the call name must come from the
+    // AST structure, never from splitting source text on '('. (The
+    // module-qualified acquisition matcher in `qualified_creator_type`
+    // handles Rust/Ruby/OCaml/Elixir structurally.)
+    None
+}
+
+// =============================================================================
+// G2-O1 / G1-O1: Module-qualified acquisition matcher (Rust/Ruby/OCaml/Elixir)
+//
+// `pure node.kind()` cannot distinguish `File::open` (acquisition) from
+// `Regex::new` (not). The ONE irreducible non-AST element is a curated,
+// per-language SEMANTIC allowlist of acquisition symbols. Crucially it is
+// matched against an AST-EXTRACTED fully-qualified callee path
+// (`qualified_callee`, structural node.kind()/field-driven), never against a
+// source substring — so `Foo.open` (Ruby) and `String::new` (Rust) no longer
+// false-match the way the old `ends_with(".open")` / bare-`new` table did.
+// =============================================================================
+
+/// An acquisition symbol: `(receiver, method, resource_type)`.
+///
+/// `receiver` is matched against the LAST segment of the AST-extracted
+/// receiver path (e.g. `File` for `std::fs::File::open`, `Stdlib` for
+/// `Stdlib.open_out`). An empty `receiver` (`""`) means the callee is an
+/// unqualified/built-in acquisition function (e.g. OCaml `open_in`, or a
+/// known Rust acquisition *method* such as `.lock()` invoked on a receiver
+/// whose path we do not resolve).
+type AcqSymbol = (&'static str, &'static str, &'static str);
+
+/// Curated per-language acquisition-symbol allowlist (G2-O1). Note: the bare
+/// Rust `new` creator is intentionally ABSENT — `String::new` / `Vec::new` /
+/// `BufReader::new` are not resource acquisitions and must never match.
+fn acquisition_symbols(lang: Language) -> &'static [AcqSymbol] {
+    match lang {
+        Language::Rust => &[
+            // std file / fs
+            ("File", "open", "file"),
+            ("File", "create", "file"),
+            ("OpenOptions", "open", "file"),
+            // networking
+            ("TcpStream", "connect", "connection"),
+            ("TcpListener", "bind", "listener"),
+            ("UdpSocket", "bind", "socket"),
+            ("UnixStream", "connect", "connection"),
+            ("UnixListener", "bind", "listener"),
+            // Sync guards: `.lock()` / `.try_lock()` on a Mutex/RwLock return
+            // an RAII guard. These are the ONLY empty-receiver (bare-method)
+            // acquisitions — keyed with an empty receiver and matched on the
+            // method name alone, since the receiver is a runtime value whose
+            // type we cannot resolve from the AST. The spine-eligibility guard
+            // still requires a *known* acquisition method here (never a bare
+            // `new`/`clone`). We deliberately EXCLUDE common method names like
+            // `read`/`write`/`spawn` to avoid false-positives on ordinary
+            // `x.read()` / `buf.write()` calls — those acquisitions are only
+            // recognized when module-qualified (e.g. `TcpStream::connect`).
+            ("", "lock", "mutex_guard"),
+            ("", "try_lock", "mutex_guard"),
+        ],
+        Language::Ruby => &[
+            ("File", "open", "file"),
+            ("IO", "open", "file"),
+            ("TCPSocket", "open", "socket"),
+            ("TCPSocket", "new", "socket"),
+            ("UNIXSocket", "open", "socket"),
+            ("UNIXSocket", "new", "socket"),
+            ("TCPServer", "open", "listener"),
+            ("TCPServer", "new", "listener"),
+            ("HTTP", "start", "connection"),
+            ("Tempfile", "open", "file"),
+            ("Tempfile", "new", "file"),
+            ("PStore", "new", "store"),
+        ],
+        Language::Ocaml => &[
+            ("", "open_in", "input_channel"),
+            ("", "open_out", "output_channel"),
+            ("", "open_in_bin", "input_channel"),
+            ("", "open_out_bin", "output_channel"),
+            ("Stdlib", "open_in", "input_channel"),
+            ("Stdlib", "open_out", "output_channel"),
+            ("Stdlib", "open_in_bin", "input_channel"),
+            ("Stdlib", "open_out_bin", "output_channel"),
+            ("Unix", "openfile", "file_descriptor"),
+            ("Unix", "socket", "socket"),
+            ("Unix", "open_connection", "connection"),
+        ],
+        Language::Elixir => &[
+            ("File", "open", "file"),
+            ("File", "open!", "file"),
+            (":gen_tcp", "connect", "connection"),
+            (":gen_tcp", "listen", "listener"),
+            (":gen_udp", "open", "socket"),
+            (":file", "open", "file"),
+        ],
+        _ => &[],
+    }
+}
+
+/// True for languages whose resource acquisition is matched via the
+/// module-qualified allowlist rather than the flat single-name creators loop.
+fn uses_qualified_acquisition(lang: Language) -> bool {
+    matches!(
+        lang,
+        Language::Rust | Language::Ruby | Language::Ocaml | Language::Elixir
+    )
+}
+
+/// Flatten a Rust `scoped_identifier` (`std::fs::File::open`) into its segment
+/// list. Pure structural: walks the nested `path`/`name` fields.
+fn flatten_rust_scoped(node: Node, source: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "scoped_identifier" {
+        if let Some(path) = node.child_by_field_name("path") {
+            flatten_rust_scoped(path, source, out);
+        }
+        if let Some(name) = node.child_by_field_name("name") {
+            out.push(node_text(name, source).to_string());
+        }
+    } else if node.kind() == "identifier" {
+        out.push(node_text(node, source).to_string());
+    }
+}
+
+/// Flatten an OCaml `value_path` (`Stdlib.open_out`) into `(receiver_segments,
+/// value_name)`. Structural: `module_path` children + trailing `value_name`.
+fn flatten_ocaml_value_path(node: Node, source: &[u8]) -> Option<(Vec<String>, String)> {
+    if node.kind() != "value_path" {
+        // bare `open_in` parses as value_path > value_name, but a lone
+        // value_name may also appear directly.
+        if node.kind() == "value_name" {
+            return Some((Vec::new(), node_text(node, source).to_string()));
+        }
+        return None;
+    }
+    let mut segs: Vec<String> = Vec::new();
+    let mut name: Option<String> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "module_path" => {
+                // module_path may itself nest; collect module_name leaves.
+                let mut mc = child.walk();
+                for m in child.children(&mut mc) {
+                    if m.kind() == "module_name" {
+                        segs.push(node_text(m, source).to_string());
+                    } else if m.kind() == "module_path" {
+                        let mut mmc = m.walk();
+                        for mm in m.children(&mut mmc) {
+                            if mm.kind() == "module_name" {
+                                segs.push(node_text(mm, source).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            "value_name" => name = Some(node_text(child, source).to_string()),
+            _ => {}
         }
     }
+    name.map(|n| (segs, n))
+}
 
+/// Extract the fully-qualified callee of a single call/application node as
+/// `(receiver_path_segments, method_name)`. Pure structural — driven by
+/// node.kind()/field names per grammar, never by splitting source text. The
+/// receiver segments are EMPTY for an unqualified callee and for a method call
+/// whose receiver is an arbitrary value expression (e.g. `x.lock()`).
+///
+/// Returns None when `node` is not a recognized call shape for `lang`.
+fn qualified_callee(node: Node, source: &[u8], lang: Language) -> Option<(Vec<String>, String)> {
+    match lang {
+        Language::Rust => {
+            if node.kind() != "call_expression" {
+                return None;
+            }
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "scoped_identifier" => {
+                    let mut segs = Vec::new();
+                    flatten_rust_scoped(func, source, &mut segs);
+                    let name = segs.pop()?;
+                    Some((segs, name))
+                }
+                "identifier" => Some((Vec::new(), node_text(func, source).to_string())),
+                "field_expression" => {
+                    // method call `recv.method(...)`: receiver path is a value
+                    // expression we don't resolve to a module path.
+                    let field = func.child_by_field_name("field")?;
+                    Some((Vec::new(), node_text(field, source).to_string()))
+                }
+                _ => None,
+            }
+        }
+        Language::Ruby => {
+            if node.kind() != "call" {
+                return None;
+            }
+            let method = node.child_by_field_name("method")?;
+            let method_name = node_text(method, source).to_string();
+            // receiver: constant (`File`) or scope_resolution (`Net::HTTP`).
+            if let Some(recv) = node.child_by_field_name("receiver") {
+                match recv.kind() {
+                    "constant" => Some((vec![node_text(recv, source).to_string()], method_name)),
+                    "scope_resolution" => {
+                        let mut segs: Vec<String> = Vec::new();
+                        // scope_resolution: (scope)? :: name — collect constant
+                        // leaves structurally.
+                        collect_ruby_scope_segments(recv, source, &mut segs);
+                        Some((segs, method_name))
+                    }
+                    // receiver is itself a call / variable / self → not a
+                    // module-qualified acquisition.
+                    _ => Some((Vec::new(), method_name)),
+                }
+            } else {
+                Some((Vec::new(), method_name))
+            }
+        }
+        Language::Ocaml => {
+            if node.kind() != "application_expression" {
+                return None;
+            }
+            let func = node.child_by_field_name("function")?;
+            flatten_ocaml_value_path(func, source)
+        }
+        Language::Elixir => {
+            if node.kind() != "call" {
+                return None;
+            }
+            let target = node.child_by_field_name("target")?;
+            if target.kind() != "dot" {
+                return None;
+            }
+            let left = target.child_by_field_name("left")?;
+            let right = target.child_by_field_name("right")?;
+            // left = alias (`File`) or atom (`:gen_tcp`); right = identifier.
+            let recv = match left.kind() {
+                "alias" | "atom" => node_text(left, source).to_string(),
+                _ => return Some((Vec::new(), node_text(right, source).to_string())),
+            };
+            Some((vec![recv], node_text(right, source).to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// Collect the constant segments of a Ruby `scope_resolution` node
+/// (`Net::HTTP` → ["Net", "HTTP"]). Structural walk over `scope`/`name`.
+fn collect_ruby_scope_segments(node: Node, source: &[u8], out: &mut Vec<String>) {
+    if node.kind() == "scope_resolution" {
+        if let Some(scope) = node.child_by_field_name("scope") {
+            collect_ruby_scope_segments(scope, source, out);
+        }
+        if let Some(name) = node.child_by_field_name("name") {
+            out.push(node_text(name, source).to_string());
+        }
+    } else if node.kind() == "constant" {
+        out.push(node_text(node, source).to_string());
+    }
+}
+
+/// Match an AST-extracted `(receiver_segments, method)` against the curated
+/// acquisition allowlist for `lang`. Returns the resource type on a hit.
+///
+/// SPINE-ELIGIBILITY (G1-O1 guard): a callee with an empty receiver path may
+/// match ONLY a known acquisition *method* (an allowlist entry whose receiver
+/// is `""`). A module-qualified callee matches when its receiver path's LAST
+/// segment equals the entry receiver and the method matches. This is what
+/// makes a bare single-segment `new`/`clone` on a chain spine NEVER match.
+fn match_acquisition(
+    receiver_segments: &[String],
+    method: &str,
+    lang: Language,
+) -> Option<String> {
+    for &(want_recv, want_method, rtype) in acquisition_symbols(lang) {
+        if want_method != method {
+            continue;
+        }
+        if want_recv.is_empty() {
+            // unqualified / known-method entry: only match when the extracted
+            // callee is itself unqualified (no resolved module path).
+            if receiver_segments.is_empty() {
+                return Some(rtype.to_string());
+            }
+        } else if receiver_segments.last().map(|s| s.as_str()) == Some(want_recv) {
+            return Some(rtype.to_string());
+        }
+    }
     None
+}
+
+/// G2-O1 + G1-O1: resolve the resource type of a value node for a
+/// qualified-acquisition language by descending the call/postfix SPINE and
+/// matching each callee against the acquisition allowlist.
+///
+/// The spine follows `function`/`receiver`/value fields ONLY (never argument
+/// nodes): `File::open(path).unwrap()` exposes `File::open`; `File::open(p)?`
+/// unwraps the `try_expression`. Each spine callee is matched via
+/// `match_acquisition`, so a bare `new`/`unwrap`/`clone` on the spine is
+/// rejected by the spine-eligibility guard.
+fn qualified_creator_type(node: Node, source: &[u8], lang: Language) -> Option<String> {
+    // 1. direct callee at this node.
+    if let Some((segs, method)) = qualified_callee(node, source, lang) {
+        if let Some(rt) = match_acquisition(&segs, &method, lang) {
+            return Some(rt);
+        }
+    }
+    // 2. descend the spine into the receiver chain / postfix wrappers.
+    match lang {
+        Language::Rust => match node.kind() {
+            // postfix `?`: child(0) is the inner expression.
+            "try_expression" => {
+                let inner = node.child(0)?;
+                qualified_creator_type(inner, source, lang)
+            }
+            // `recv.method(...)` and `File::open(p).unwrap()`: the function
+            // field's value (for a field_expression) is the receiver chain.
+            "call_expression" => {
+                let func = node.child_by_field_name("function")?;
+                if func.kind() == "field_expression" {
+                    let recv = func.child_by_field_name("value")?;
+                    return qualified_creator_type(recv, source, lang);
+                }
+                None
+            }
+            // reference/await-style wrappers occasionally seen on a spine.
+            "reference_expression" | "await_expression" | "unary_expression" => {
+                let inner = node.child(node.child_count().saturating_sub(1))?;
+                qualified_creator_type(inner, source, lang)
+            }
+            _ => None,
+        },
+        Language::Ruby => {
+            // `Foo.new.open` etc.: descend the receiver chain. Receiver is a
+            // call when chained.
+            if node.kind() == "call" {
+                if let Some(recv) = node.child_by_field_name("receiver") {
+                    if recv.kind() == "call" {
+                        return qualified_creator_type(recv, source, lang);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Extract the variable name from a C/C++ declarator (handles pointer_declarator, etc.)
@@ -4517,5 +4829,207 @@ void read() {
 "#;
         let got = char_detect(src, "read", Language::Cpp);
         assert_eq!(got, vec![("fp".to_string(), "file".to_string())]);
+    }
+
+    // =========================================================================
+    // FIX-BEHAVIOR TESTS (T2a-resource-acquisition)
+    //
+    // Assert the CORRECTED module-qualified acquisition behavior:
+    //   G2-O1  — `String::new()` / `Vec::new()` / arbitrary `Foo.open` are no
+    //            longer flagged; only curated qualified symbols are.
+    //   G1-O1  — `File::open(path).unwrap()` / `File::open(path)?` /
+    //            `TcpStream::connect(addr).unwrap()` ARE detected via spine
+    //            descent.
+    //   G1-O2  — `extract_call_name` has no source-text `split('(')` fallback.
+    // =========================================================================
+
+    /// Find the first descendant node of a given kind (DFS).
+    fn first_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = first_of_kind(child, kind) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn fix_rust_string_new_not_a_resource() {
+        let src = r#"
+fn good() {
+    let s = String::new();
+    let v = Vec::new();
+    let b = BufReader::new(file);
+}
+"#;
+        let got = char_detect(src, "good", Language::Rust);
+        assert!(
+            got.is_empty(),
+            "G2-O1: String::new/Vec::new/BufReader::new must NOT be resources; got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_rust_file_open_unwrap_detected_via_spine() {
+        let src = r#"
+fn good() {
+    let f = File::open(path).unwrap();
+}
+"#;
+        let got = char_detect(src, "good", Language::Rust);
+        assert_eq!(
+            got,
+            vec![("f".to_string(), "file".to_string())],
+            "G1-O1: File::open(path).unwrap() must be detected via spine descent"
+        );
+    }
+
+    #[test]
+    fn fix_rust_file_open_try_detected() {
+        let src = r#"
+fn good() {
+    let g = File::open(path)?;
+}
+"#;
+        let got = char_detect(src, "good", Language::Rust);
+        assert_eq!(
+            got,
+            vec![("g".to_string(), "file".to_string())],
+            "G1-O1: File::open(path)? (try_expression) must be detected"
+        );
+    }
+
+    #[test]
+    fn fix_rust_tcpstream_connect_unwrap_detected() {
+        let src = r#"
+fn good() {
+    let c = TcpStream::connect(addr).unwrap();
+}
+"#;
+        let got = char_detect(src, "good", Language::Rust);
+        assert_eq!(
+            got,
+            vec![("c".to_string(), "connection".to_string())],
+            "G1-O1: TcpStream::connect(addr).unwrap() must be detected"
+        );
+    }
+
+    #[test]
+    fn fix_rust_qualified_file_open_detected() {
+        let src = r#"
+fn good() {
+    let f = std::fs::File::open(path).unwrap();
+}
+"#;
+        let got = char_detect(src, "good", Language::Rust);
+        assert_eq!(
+            got,
+            vec![("f".to_string(), "file".to_string())],
+            "fully-qualified std::fs::File::open must match on last segment File"
+        );
+    }
+
+    #[test]
+    fn fix_ruby_file_open_detected_foo_open_not() {
+        let src = "def good\n  f = File.open(\"x\")\n  z = Foo.open(\"y\")\n  arr = Array.new\nend\n";
+        let got = char_detect(src, "good", Language::Ruby);
+        assert!(
+            got.contains(&("f".to_string(), "file".to_string())),
+            "Ruby File.open must be detected: got {got:?}"
+        );
+        assert!(
+            !got.iter().any(|(n, _)| n == "z"),
+            "G2-O1: arbitrary Foo.open must NOT false-positive: got {got:?}"
+        );
+        assert!(
+            !got.iter().any(|(n, _)| n == "arr"),
+            "G2-O1: Array.new must NOT false-positive: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn fix_ruby_chained_new_open_not_flagged() {
+        // `SomeBuilder.new.open` — receiver of `.open` is a call, not a
+        // module-qualified constant, so it must not match (File, open).
+        let src = "def good\n  s = SomeBuilder.new.open\nend\n";
+        let got = char_detect(src, "good", Language::Ruby);
+        assert!(
+            got.is_empty(),
+            "Ruby SomeBuilder.new.open must NOT be flagged: got {got:?}"
+        );
+    }
+
+    // --- OCaml/Elixir: matcher-level (their end-to-end fn-finding is T2b). ---
+
+    #[test]
+    fn fix_ocaml_open_in_and_qualified_detected() {
+        let detector = ResourceDetector::with_language(Language::Ocaml);
+        let patterns = get_resource_patterns(Language::Ocaml);
+
+        let src = "let _ = open_in \"x\"";
+        let tree = tldr_core::ast::parser::parse(src, Language::Ocaml).unwrap();
+        let app = first_of_kind(tree.root_node(), "application_expression").unwrap();
+        assert_eq!(
+            detector.get_resource_type_from_call_multilang(app, src.as_bytes(), &patterns),
+            Some("input_channel".to_string()),
+            "OCaml bare open_in must match"
+        );
+
+        let src2 = "let _ = Stdlib.open_out \"y\"";
+        let tree2 = tldr_core::ast::parser::parse(src2, Language::Ocaml).unwrap();
+        let app2 = first_of_kind(tree2.root_node(), "application_expression").unwrap();
+        assert_eq!(
+            detector.get_resource_type_from_call_multilang(app2, src2.as_bytes(), &patterns),
+            Some("output_channel".to_string()),
+            "OCaml Stdlib.open_out must match"
+        );
+
+        // Non-acquisition application must NOT match.
+        let src3 = "let _ = List.length lst";
+        let tree3 = tldr_core::ast::parser::parse(src3, Language::Ocaml).unwrap();
+        let app3 = first_of_kind(tree3.root_node(), "application_expression").unwrap();
+        assert_eq!(
+            detector.get_resource_type_from_call_multilang(app3, src3.as_bytes(), &patterns),
+            None,
+            "OCaml List.length must NOT match"
+        );
+    }
+
+    #[test]
+    fn fix_elixir_file_open_and_gen_tcp_detected() {
+        let detector = ResourceDetector::with_language(Language::Elixir);
+        let patterns = get_resource_patterns(Language::Elixir);
+
+        let src = "File.open(\"x\")";
+        let tree = tldr_core::ast::parser::parse(src, Language::Elixir).unwrap();
+        let call = first_of_kind(tree.root_node(), "call").unwrap();
+        assert_eq!(
+            detector.get_resource_type_from_call_multilang(call, src.as_bytes(), &patterns),
+            Some("file".to_string()),
+            "Elixir File.open must match"
+        );
+
+        let src2 = ":gen_tcp.connect(host, port, [])";
+        let tree2 = tldr_core::ast::parser::parse(src2, Language::Elixir).unwrap();
+        let call2 = first_of_kind(tree2.root_node(), "call").unwrap();
+        assert_eq!(
+            detector.get_resource_type_from_call_multilang(call2, src2.as_bytes(), &patterns),
+            Some("connection".to_string()),
+            "Elixir :gen_tcp.connect must match"
+        );
+
+        // Map.new() must NOT match (bare new dropped).
+        let src3 = "Map.new()";
+        let tree3 = tldr_core::ast::parser::parse(src3, Language::Elixir).unwrap();
+        let call3 = first_of_kind(tree3.root_node(), "call").unwrap();
+        assert_eq!(
+            detector.get_resource_type_from_call_multilang(call3, src3.as_bytes(), &patterns),
+            None,
+            "Elixir Map.new() must NOT match"
+        );
     }
 }
