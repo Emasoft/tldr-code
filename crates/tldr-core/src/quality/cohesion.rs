@@ -1862,6 +1862,18 @@ fn lua_split_dotted_name(
 ///     the declared-field set lives in a different translation unit (the
 ///     documented v1 under-count boundary, same class as inherited fields);
 ///     `this->member` is still resolved.
+///
+/// Boundary — parse-recovery namespace truncation: per the QA-corrected B1'
+/// design, the `.h` declaration and `.cpp` out-of-line definitions merge IFF
+/// their qualified `(namespace_path, name)` keys are EQUAL. When a header
+/// contains a construct tree-sitter-cpp cannot parse (e.g. a private copy
+/// constructor `Foo( const Foo& );` in tinyxml2's `StrPair`), error recovery
+/// can prematurely close the enclosing `namespace_definition`, leaving the
+/// classes that follow as siblings with an EMPTY namespace_path while their
+/// `.cpp` counterparts (parsed cleanly) carry the real namespace. Those keys
+/// then differ, so the two do not merge — they remain two entries. This is an
+/// inherent AST limitation (the namespace structure is genuinely lost in the
+/// recovered tree); we do NOT paper over it with a non-structural heuristic.
 fn extract_file_method_fields_cpp(
     root: &tree_sitter::Node,
     source: &str,
@@ -2076,47 +2088,70 @@ fn cpp_declared_field_names(body: &tree_sitter::Node, source: &str) -> HashSet<S
     let mut out = HashSet::new();
     let mut cursor = body.walk();
     for member in body.children(&mut cursor) {
-        if member.kind() != "field_declaration" {
+        // Data members appear as `field_declaration` in a well-formed
+        // `field_declaration_list` body, but as plain `declaration` nodes when
+        // the class is the macro-prefixed misparse whose body is a
+        // `compound_statement` (e.g. `class TINYXML2_LIB StrPair { … }`, where
+        // `int _flags;` parses as a `declaration` with an `identifier`
+        // declarator rather than a `field_declaration` with a
+        // `field_identifier`). Handle both shapes.
+        if member.kind() != "field_declaration" && member.kind() != "declaration" {
             continue;
         }
-        // A `field_declaration` with a `function_declarator` is a member
-        // function declaration, not a data member — skip it.
-        let mut has_data_member = false;
-        let mut mc = member.walk();
-        for c in member.children(&mut mc) {
-            collect_cpp_field_identifier(&c, source, &mut out, &mut has_data_member);
+        // Skip member functions: a `field_declaration`/`declaration` whose
+        // declarator is (or wraps) a `function_declarator` is a method
+        // declaration, not a data member.
+        //
+        // Only the `declarator` field is consulted (never a positional scan):
+        // a `declaration` with no `declarator` field is a type-only construct
+        // such as `enum Mode { … };` or a nested type, whose inner identifiers
+        // (enum constants, etc.) must NOT be mistaken for data members.
+        if let Some(decl) = member.child_by_field_name("declarator") {
+            if cpp_declarator_is_function(&decl) {
+                continue;
+            }
+            collect_cpp_field_identifier(&decl, source, &mut out);
         }
     }
     out
 }
 
-/// Walk a `field_declaration` child to find the declared data-member name
-/// (a `field_identifier`), descending through pointer/array/reference
-/// declarator wrappers. Sets `found` when a data member is recorded. A
-/// `function_declarator` wrapper means this is a method declaration; do not
-/// record it as a field.
+/// Return `true` if a (possibly wrapped) declarator is/contains a
+/// `function_declarator`, i.e. the declaration is a member function rather
+/// than a data member.
+fn cpp_declarator_is_function(node: &tree_sitter::Node) -> bool {
+    match node.kind() {
+        "function_declarator" => true,
+        "pointer_declarator" | "reference_declarator" | "array_declarator"
+        | "parenthesized_declarator" | "init_declarator" => node
+            .child_by_field_name("declarator")
+            .map(|inner| cpp_declarator_is_function(&inner))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Walk a member declarator to record the declared data-member name. Handles
+/// both `field_identifier` (normal `field_declaration`) and `identifier`
+/// (macro-prefixed `declaration`), descending through pointer/array/reference/
+/// init declarator wrappers.
 fn collect_cpp_field_identifier(
     node: &tree_sitter::Node,
     source: &str,
     out: &mut HashSet<String>,
-    found: &mut bool,
 ) {
     match node.kind() {
-        "field_identifier" => {
+        "field_identifier" | "identifier" => {
             if let Some(t) = node_text_of(node, source) {
                 if !t.is_empty() {
                     out.insert(t);
-                    *found = true;
                 }
             }
         }
-        "function_declarator" => {
-            // Member function: not a data member.
-        }
         "pointer_declarator" | "array_declarator" | "reference_declarator"
-        | "init_declarator" => {
+        | "init_declarator" | "parenthesized_declarator" => {
             if let Some(inner) = node.child_by_field_name("declarator") {
-                collect_cpp_field_identifier(&inner, source, out, found);
+                collect_cpp_field_identifier(&inner, source, out);
             }
         }
         _ => {}
