@@ -1310,14 +1310,13 @@ fn walk_for_test_bodies(
     path: &Path,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) {
-    // T1-specs (v0.5.0 DESIGN-TAIL, G3-a): the shared `is_test_function_node`
-    // recogniser only matches the XCTest `func test*()` naming convention, so
-    // swift-testing `@Test func anyName()` bodies (whose names do NOT start
-    // with `test`) were never descended into — their `#expect` macros went
-    // totally unharvested. Recognise the `@Test`-attributed declaration here
-    // (structurally, via the attribute node) so the harvest reaches them.
-    let is_test = super::test_recognizer::is_test_function_node(&node, source, language)
-        || (matches!(language, Language::Swift) && swift_is_testing_attr_function(&node, source));
+    // fix-T1b-scala-go-testrecognizer-v1 (@Test-recognizer move): swift-testing
+    // `@Test func anyName()` recognition now lives in
+    // `test_recognizer::swift_is_test_method` alongside the XCTest `func test*`
+    // convention, so `is_test_function_node` already covers both. The previous
+    // local `swift_is_testing_attr_function` shim (which made the harvest and
+    // `count_test_functions` disagree) has been removed.
+    let is_test = super::test_recognizer::is_test_function_node(&node, source, language);
     if is_test {
         let test_name = test_function_display_name(&node, source);
 
@@ -1730,6 +1729,47 @@ impl AssertionAdapter for FlatOnlyAdapter {
     }
 }
 
+/// fix-T1b-scala-go-testrecognizer-v1 (G4-b): the Go assertion vocabulary.
+///
+/// Mirrors the shared [`FLAT_VOCAB`] but DROPS the bare `Equal` from the
+/// equality group (in Go, `cmp.Equal` / `bytes.Equal` are comparison
+/// PREDICATES used inside `if` conditions, not testify-style equality
+/// assertions over a FUT) and adds the named comparison-helper tails
+/// (`DeepEqual` / `Equal` / `Is`) to `matcher_heads` so the derived
+/// `is_known_callee` predicate suppresses them from FUT attribution
+/// everywhere. The remaining groups match `FLAT_VOCAB` so any genuine
+/// testify-`assert.True`/etc. flat helper still classifies as before.
+const GO_VOCAB: AssertionVocab = AssertionVocab {
+    equality: &[
+        "assertEquals",
+        "assertEqual",
+        "assertSame",
+        "AreEqual",
+        "AreSame",
+        "assert_eq",
+        "assert_equal",
+        "should_eq",
+        "shouldBe",
+        "shouldEqual",
+    ],
+    inequality: &[
+        "assertNotEquals",
+        "assertNotEqual",
+        "AreNotEqual",
+        "NotEqual",
+        "assert_ne",
+        "assertNotSame",
+    ],
+    truthy: &["assertTrue", "IsTrue", "True", "assert", "assert_true"],
+    falsy: &["assertFalse", "IsFalse", "False", "assert_false"],
+    not_null: &["assertNotNull", "IsNotNull", "NotNull", "assert_some"],
+    null: &["assertNull", "IsNull", "Null", "assert_none"],
+    throws: &["assertThrows", "assertFails", "Throws", "ThrowsAsync", "should_panic"],
+    // Comparison-helper tails suppressed as FUTs (G4-b). `reflect.DeepEqual`,
+    // `cmp.Equal`, `bytes.Equal`, `errors.Is`.
+    matcher_heads: &["DeepEqual", "Equal", "Is"],
+};
+
 /// Go: `if <call> != want { t.Errorf(...) }` idiom + flat helpers.
 struct GoAdapter;
 impl AssertionAdapter for GoAdapter {
@@ -1746,6 +1786,10 @@ impl AssertionAdapter for GoAdapter {
             try_extract_go_if_t_assertion(node, source, self.vocab(), test_func_name, specs);
         }
         classify_flat_call_node(node, source, Language::Go, self.vocab(), test_func_name, specs);
+    }
+
+    fn vocab(&self) -> &'static AssertionVocab {
+        &GO_VOCAB
     }
 }
 
@@ -1837,6 +1881,137 @@ impl AssertionAdapter for OcamlAdapter {
     }
 }
 
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a): Scala (munit / cats-effect /
+/// ScalaTest).
+///
+/// Two assertion SHAPES on top of the shared flat-callee path:
+///   * G1-a1 positional helper calls — `assertCompleteAs(io, expected)` and
+///     the cats-effect/munit equality family. These reach the shared flat
+///     classifier through [`SCALA_VOCAB`]; the only Scala-specific work is the
+///     `(actual=arg0, expected=arg1)` extraction when arg0 is a bare value
+///     (`val test`) rather than a call — handled by
+///     [`try_extract_scala_helper_assertion`].
+///   * G1-a2 infix DSL — `x should be (y)` / `a === b` / `c must_== d`, parsed
+///     as `infix_expression`. Handled by [`try_extract_scala_infix_assertion`].
+struct ScalaAdapter;
+impl AssertionAdapter for ScalaAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        // G1-a2: ScalaTest infix-DSL equality (`x should be (y)` / `a === b`).
+        if node.kind() == "infix_expression" {
+            try_extract_scala_infix_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        // G1-a1: positional equality helpers whose actual is a bare value.
+        if node.kind() == "call_expression" {
+            try_extract_scala_helper_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, Language::Scala, self.vocab(), test_func_name, specs);
+    }
+
+    fn vocab(&self) -> &'static AssertionVocab {
+        &SCALA_VOCAB
+    }
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a): the Scala assertion vocabulary.
+///
+/// Scala test suites (munit / cats-effect / ScalaTest) ship a wider equality
+/// surface than the shared [`FLAT_VOCAB`]. The dominant cats-effect shape is a
+/// positional helper `assertCompleteAs(io, expected)` (308 sites in
+/// scala-cats-effect) whose `(actual=arg0, expected=arg1)` layout mirrors
+/// `assertEquals` exactly. We extend the equality group with the
+/// cats-effect/munit helper family so the flat classifier attributes them; the
+/// derived `is_known_callee` predicate then also excludes them from FUT
+/// attribution automatically (no second list to keep in sync).
+const SCALA_VOCAB: AssertionVocab = AssertionVocab {
+    // Equality is deliberately EMPTY for Scala: the shared flat classifier
+    // picks "the call side" as the actual, but every munit / cats-effect
+    // equality helper uses a fixed `(actual=arg0, expected=arg1)` positional
+    // order regardless of which side is a call (e.g.
+    // `assertEquals(e.getMessage, "msg")` and
+    // `assertCompleteAs(test, Left(e))`). So `try_extract_scala_helper_assertion`
+    // owns the whole equality family with the correct arg0-actual rule, and the
+    // names live in `matcher_heads` below for FUT suppression only.
+    equality: &[],
+    inequality: &["assertNotEquals", "assertNotEqual", "assertNotSame"],
+    truthy: &["assert", "assertTrue", "assertIOBool"],
+    falsy: &["assertFalse"],
+    not_null: &["assertSome"],
+    null: &["assertNone"],
+    throws: &[
+        "assertFails",
+        "assertFailsWith",
+        "interceptIO",
+        "intercept",
+        "interceptMessageIO",
+    ],
+    // Equality / infix matcher heads: never attributed as a FUT. The equality
+    // family is handled positionally by `try_extract_scala_helper_assertion`;
+    // the infix words by `try_extract_scala_infix_assertion`.
+    matcher_heads: &[
+        // munit / xUnit-style positional equality helpers.
+        "assertEquals",
+        "assertEqual",
+        "assertSame",
+        // cats-effect / munit-cats-effect positional equality helpers.
+        "assertCompleteAs",
+        "assertCompleteAsSync",
+        "assertIO",
+        "assertIOBoolean",
+        "assertSyncIO",
+        "assertCompleteAsf",
+        // ScalaTest infix DSL heads.
+        "should",
+        "shouldBe",
+        "shouldEqual",
+        "must",
+        "mustEqual",
+        "mustBe",
+        "be",
+        "===",
+        "must_==",
+    ],
+};
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a1): the Scala positional equality
+/// helper family — munit `assertEquals`/`assertEqual`/`assertSame` and the
+/// cats-effect `assertCompleteAs` family. All share the fixed
+/// `(actual=arg0, expected=arg1)` argument order, which
+/// `try_extract_scala_helper_assertion` attributes directly (rather than the
+/// shared flat classifier's call-side heuristic).
+const SCALA_POSITIONAL_EQ_HELPERS: &[&str] = &[
+    "assertEquals",
+    "assertEqual",
+    "assertSame",
+    "assertCompleteAs",
+    "assertCompleteAsSync",
+    "assertIO",
+    "assertIOBoolean",
+    "assertSyncIO",
+    "assertCompleteAsf",
+];
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a): the ScalaTest infix-DSL equality
+/// operators. `x should be (y)` / `a === b` / `c must_== d` / `r shouldEqual e`
+/// parse (tree-sitter-scala) as an `infix_expression` whose `[operator]` field
+/// is one of these names. When present, the left operand carries the FUT and
+/// the right operand carries the expected value.
+const SCALA_INFIX_EQ_OPERATORS: &[&str] = &[
+    "should",     // `x should be (y)` / `x should equal (y)`
+    "shouldBe",   // `x shouldBe y`
+    "shouldEqual",
+    "mustBe",
+    "mustEqual",
+    "must_==",
+    "===",        // ScalaTest TypeCheckedTripleEquals / cats Eq syntax
+    "====",
+];
+
 /// fix-T1a-assertion-adapter-v1 (A1): pick the assertion adapter for a
 /// language. Mirrors `test_recognizer::matches_test_function`'s
 /// `match language { … }` shape. Adapters are zero-sized (or carry only the
@@ -1850,6 +2025,7 @@ fn adapter_for(language: Language) -> Box<dyn AssertionAdapter> {
         Language::Swift => Box::new(SwiftAdapter),
         Language::Ruby => Box::new(RubyAdapter),
         Language::Ocaml => Box::new(OcamlAdapter),
+        Language::Scala => Box::new(ScalaAdapter),
         // Every remaining language uses only the shared flat-callee path
         // (Python's pytest extraction runs on a separate code path entirely;
         // it never reaches the walker, but a flat adapter is harmless).
@@ -1918,21 +2094,63 @@ fn try_extract_go_if_t_assertion(
 
     // Locate the FUT-shaped call inside the condition expression. Common
     // shapes:
-    //   if !reflect.DeepEqual(got, want) { ... }   -> FUT is reflect.DeepEqual? no, FUT was the call
-    //                                                  that produced `got`. We can't recover that
-    //                                                  cheaply, so attribute the spec to the call
-    //                                                  that appears in the condition itself.
-    //   if got != want { ... }                     -> no call in condition; bail.
+    //   if !reflect.DeepEqual(got, want) { ... }   -> the comparison HELPER is
+    //                                                  not the FUT; descend into
+    //                                                  its args for the real FUT
+    //                                                  (G4-b).
+    //   if got != want { ... }                     -> no call in condition; bail
+    //                                                  (G4-a reaching-defs
+    //                                                  recovery is deferred).
     //   if foo() != 5 { ... }                       -> FUT is `foo`.
     //   if err := f(x); err != nil { ... }         -> FUT is `f`.
     let call_node = match first_callable_inside(cond_node) {
         Some(c) => c,
         None => return false,
     };
-    let (fname, _inputs) = match generic_extract_call_info(call_node, source, vocab) {
-        Some(p) => p,
-        None => return false,
+
+    // fix-T1b-scala-go-testrecognizer-v1 (G4-b): comparison-helper descent.
+    // `if !reflect.DeepEqual(ps, want) { ... }` previously attributed the spec
+    // to `DeepEqual` (the helper) — silent wrong attribution. Resolve the
+    // condition call's callee tail FIRST (without the FUT-exclusion filter that
+    // `generic_extract_call_info` applies), so we can recognise a comparison
+    // helper even though it is in the suppression vocab. When the call is one
+    // of the named comparison helpers (`reflect.DeepEqual`, `cmp.Equal`,
+    // `bytes.Equal`, `errors.Is`), the real FUT (if any) lives in its
+    // arguments: descend into the helper's args for the first genuine call. If
+    // none of the args is a call (`reflect.DeepEqual(ps, want)` over two vars),
+    // there is no recoverable FUT, so emit nothing rather than the junk helper
+    // spec. Otherwise fall back to attributing the condition call itself.
+    let cond_callee_tail = generic_callee_name(&call_node, source)
+        .map(|c| {
+            c.rsplit('.')
+                .next()
+                .unwrap_or(&c)
+                .split('<')
+                .next()
+                .unwrap_or(&c)
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    let fname = if is_go_comparison_helper(&cond_callee_tail) {
+        let inner_fut = collect_call_args(call_node)
+            .into_iter()
+            .find_map(first_callable_inside)
+            .and_then(|c| generic_extract_call_info(c, source, vocab));
+        match inner_fut {
+            Some((inner_name, _)) if !is_go_comparison_helper(&inner_name) => inner_name,
+            // No genuine FUT inside the comparison helper's args: drop the
+            // would-be helper attribution entirely.
+            _ => return false,
+        }
+    } else {
+        match generic_extract_call_info(call_node, source, vocab) {
+            Some((n, _)) => n,
+            None => return false,
+        }
     };
+
     // Don't emit specs for the test failure call itself (e.g. when the
     // condition is just a call to `t.Failed()`).
     if vocab.is_known_callee(&fname) || is_go_t_failure_method(&fname) {
@@ -2000,6 +2218,15 @@ fn is_go_t_failure_method(name: &str) -> bool {
             | "Skipf"
             | "Skipped"
     )
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G4-b): the named Go comparison-helper
+/// set. `name` is the callee TAIL (after the package/receiver `.`), matching
+/// `reflect.DeepEqual` / `cmp.Equal` / `bytes.Equal` / `errors.Is`. These are
+/// equality predicates, never the function-under-test — when they appear in an
+/// `if` condition the real FUT (if any) lives in their arguments.
+fn is_go_comparison_helper(name: &str) -> bool {
+    matches!(name, "DeepEqual" | "Equal" | "Is")
 }
 
 /// language-specific-bugs-v1 (P14.AGG14-2): handle Java Spring MockMvc
@@ -2769,6 +2996,213 @@ fn ocaml_application_info(
     Some((tail.to_string(), inputs))
 }
 
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a1): Scala positional equality
+/// helper.
+///
+/// The munit (`assertEquals`/`assertEqual`/`assertSame`) and cats-effect
+/// (`assertCompleteAs(io, expected)`, `assertIO(io, expected)`, …) equality
+/// families all use the SAME fixed argument order: `(actual=arg0,
+/// expected=arg1)`. The shared flat classifier instead picks "whichever side
+/// looks like a call", which mis-attributes `assertCompleteAs(test, Left(e))`
+/// (arg1 is a constructor call) and skips `assertCompleteAs(test, 42)` (neither
+/// side is a call). So this handler owns the whole family positionally.
+///
+/// arg0 is the actual: if it is / contains a call (`assertEquals(compute(),
+/// …)`, `assertEquals(e.getMessage, …)`), the call's tail is the FUT; if it is
+/// a bare value (`assertCompleteAs(test, 42)` over a `val`), its tail
+/// identifier is the FUT. arg1 is the expected output. Returns true when a spec
+/// was emitted.
+fn try_extract_scala_helper_assertion(
+    call: &Node,
+    source: &[u8],
+    vocab: &AssertionVocab,
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) -> bool {
+    let callee = match generic_callee_name(call, source) {
+        Some(c) => c,
+        None => return false,
+    };
+    let tail = callee
+        .rsplit('.')
+        .next()
+        .unwrap_or(&callee)
+        .split('<')
+        .next()
+        .unwrap_or(&callee)
+        .trim();
+    if !SCALA_POSITIONAL_EQ_HELPERS.contains(&tail) {
+        return false;
+    }
+    let args = collect_call_args(*call);
+    if args.len() < 2 {
+        return false;
+    }
+    // actual = arg0. Prefer a contained call (`compute()` / `e.getMessage`),
+    // else a bare value's tail identifier (`test` / `obj.value`).
+    let fname = match scala_actual_fut_name(args[0], source, vocab) {
+        Some(n) => n,
+        None => return false,
+    };
+    let output = try_eval_literal(args[1], source);
+    let line = call.start_position().row as u32 + 1;
+    let fs = ensure_entry(specs, &fname);
+    fs.input_output_specs.push(InputOutputSpec {
+        function: fname,
+        inputs: Vec::new(),
+        output,
+        test_function: test_func_name.to_string(),
+        line,
+        confidence: Confidence::Medium,
+    });
+    true
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a1): resolve a FUT name from a Scala
+/// "actual" operand (arg0 of a positional equality helper, or the left of an
+/// infix assertion).
+///
+/// * a genuine call (`compute()` / `e.getMessage`) → its callee tail via
+///   `generic_extract_call_info`.
+/// * a `field_expression` (`obj.value`) → its tail `[field]` identifier.
+/// * a bare `identifier` (`test`) → the identifier text.
+///
+/// Returns `None` for literals / unattributable operands, and skips names that
+/// are themselves known assertion helpers.
+fn scala_actual_fut_name(
+    operand: Node,
+    source: &[u8],
+    vocab: &AssertionVocab,
+) -> Option<String> {
+    if let Some(c) = first_callable_inside(operand) {
+        if let Some((fname, _)) = generic_extract_call_info(c, source, vocab) {
+            return Some(fname);
+        }
+    }
+    let name = scala_value_fut_name(operand, source)?;
+    if name.is_empty() || vocab.is_known_callee(&name) {
+        return None;
+    }
+    Some(name)
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a1): derive a function-under-test
+/// name from a Scala "actual" operand that is a bare value (not a call).
+///
+/// * `identifier` (`test`) → the identifier text.
+/// * `field_expression` (`obj.value`) → the tail `[field]` identifier.
+///
+/// Returns `None` for literals / other shapes (nothing useful to attribute).
+fn scala_value_fut_name(node: Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => {
+            let t = get_node_text(node, source).trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        "field_expression" => {
+            let field = node.child_by_field_name("field")?;
+            let t = get_node_text(field, source).trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a2): ScalaTest infix-DSL equality.
+///
+/// tree-sitter-scala parses `x should be (y)` / `a === b` / `c must_== d` /
+/// `r shouldBe e` as an `infix_expression` with named fields:
+///   `[left]`  — the subject (function-under-test carrier),
+///   `[operator]` — the matcher word (`should` / `===` / `shouldBe` / …),
+///   `[right]` — the expected value (or, for `should be (y)`, a
+///               `call_expression be(y)` whose argument is the expected value).
+///
+/// When the operator is a known equality matcher ([`SCALA_INFIX_EQ_OPERATORS`])
+/// we attribute the FUT from the LEFT operand (a call's tail, a field read's
+/// tail, or a bare identifier) and the expected value from the RIGHT operand
+/// (unwrapping the `should be (y)` wrapper call). Returns true when a spec was
+/// emitted.
+fn try_extract_scala_infix_assertion(
+    node: &Node,
+    source: &[u8],
+    vocab: &AssertionVocab,
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) -> bool {
+    let operator = match node.child_by_field_name("operator") {
+        Some(op) => get_node_text(op, source).trim().to_string(),
+        None => return false,
+    };
+    if !SCALA_INFIX_EQ_OPERATORS.contains(&operator.as_str()) {
+        return false;
+    }
+    let left = match node.child_by_field_name("left") {
+        Some(l) => l,
+        None => return false,
+    };
+    let right = match node.child_by_field_name("right") {
+        Some(r) => r,
+        None => return false,
+    };
+
+    // FUT name from the left subject: prefer a contained call, else a member /
+    // identifier read (shared with the positional-helper actual resolver).
+    let fname = match scala_actual_fut_name(left, source, vocab) {
+        Some(n) => n,
+        None => return false,
+    };
+
+    // Expected value from the right operand. `should be (y)` / `should equal
+    // (y)` wraps the value in a `be(y)` / `equal(y)` call — unwrap to the first
+    // argument. Otherwise the right operand IS the expected value.
+    let value_node = scala_infix_expected_value(right, source).unwrap_or(right);
+    let output = try_eval_literal(value_node, source);
+
+    let line = node.start_position().row as u32 + 1;
+    let fs = ensure_entry(specs, &fname);
+    fs.input_output_specs.push(InputOutputSpec {
+        function: fname,
+        inputs: Vec::new(),
+        output,
+        test_function: test_func_name.to_string(),
+        line,
+        confidence: Confidence::Medium,
+    });
+    true
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (G1-a2): unwrap the expected-value node
+/// from the RIGHT operand of a ScalaTest infix assertion.
+///
+/// `x should be (y)` parses the right side as a `call_expression` whose
+/// `[function]` is `be` / `equal` and whose first argument is the expected
+/// value `y`. Return that argument. For the bare `a === b` form there is no
+/// wrapper, so return `None` and let the caller use the right operand directly.
+fn scala_infix_expected_value<'a>(right: Node<'a>, source: &[u8]) -> Option<Node<'a>> {
+    if right.kind() != "call_expression" {
+        return None;
+    }
+    let func = right.child_by_field_name("function")?;
+    let tail = get_node_text(func, source)
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !matches!(tail.as_str(), "be" | "equal" | "===" | "be_==") {
+        return None;
+    }
+    collect_call_args(right).first().copied()
+}
+
 /// Tail identifier of the callable expression.
 fn generic_callee_name(call: &Node, source: &[u8]) -> Option<String> {
     if let Some(f) = call.child_by_field_name("function") {
@@ -3031,53 +3465,6 @@ fn swift_member_equality<'a>(
         }
     }
     None
-}
-
-/// T1-specs (v0.5.0 DESIGN-TAIL, G3-a): true when `node` is a swift-testing
-/// `@Test`-attributed function declaration.
-///
-/// swift-testing marks test cases with the `@Test` attribute on a normal
-/// `func` whose name need not start with `test` (e.g. `@Test func
-/// computesValue()`). tree-sitter-swift parses this as a
-/// `function_declaration` carrying a `modifiers` child that contains an
-/// `attribute` whose `user_type`/`type_identifier` tail is `Test`. We match
-/// that structure (no name-prefix heuristic) so the harvest can descend into
-/// swift-testing bodies and reach their `#expect` macros.
-fn swift_is_testing_attr_function(node: &Node, source: &[u8]) -> bool {
-    if !matches!(
-        node.kind(),
-        "function_declaration" | "protocol_function_declaration"
-    ) {
-        return false;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() != "modifiers" {
-            continue;
-        }
-        let mut mc = child.walk();
-        for attr in child.children(&mut mc) {
-            if attr.kind() != "attribute" {
-                continue;
-            }
-            // The attribute name is its `user_type`/`type_identifier` tail.
-            // Walk the attribute subtree for the first `type_identifier`.
-            let mut ac = attr.walk();
-            let mut stack: Vec<Node> = attr.children(&mut ac).collect();
-            while let Some(n) = stack.pop() {
-                if matches!(n.kind(), "type_identifier" | "simple_identifier")
-                    && get_node_text(n, source) == "Test"
-                {
-                    return true;
-                }
-                let mut nc = n.walk();
-                for ch in n.children(&mut nc) {
-                    stack.push(ch);
-                }
-            }
-        }
-    }
-    false
 }
 
 /// T1-specs (v0.5.0 DESIGN-TAIL, G3-a): swift-testing `#expect` / `#require`.
@@ -5238,6 +5625,326 @@ class CalcTests: XCTestCase {
             add.input_output_specs.len(),
             1,
             "XCTAssertEqual => one IO spec for add"
+        );
+    }
+
+    // ====================================================================
+    // FEATURE TESTS — fix-T1b-scala-go-testrecognizer-v1.
+    //
+    //   G1-a1: Scala positional equality helpers (munit `assertEquals` family
+    //          + cats-effect `assertCompleteAs` family), arg0=actual.
+    //   G1-a2: ScalaTest infix DSL (`x should be (y)` / `a === b` / shouldBe).
+    //   G4-b:  Go comparison-helper descent + suppression.
+    //   @Test: swift-testing `@Test func` count == harvest consistency.
+    // ====================================================================
+
+    /// G1-a1: cats-effect `assertCompleteAs(actual, expected)` attributes to
+    /// the actual operand (arg0), NOT the helper, for both a bare-value actual
+    /// (`val test`) and a call actual (`compute()`), and even when the EXPECTED
+    /// side is a call (`Left(e)`). These are the ~308 sites that previously
+    /// yielded zero specs.
+    #[test]
+    fn scala_assert_complete_as_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("IOSuite.scala");
+        let src = r#"
+class IOSuite extends munit.FunSuite {
+  test("effects") {
+    assertCompleteAs(test, 42)
+    assertCompleteAs(compute(), 7)
+    assertCompleteAs(io, Left(e))
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        // Bare-value actual: FUT = `test`, expected = 42 (source-text literal).
+        let t = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "test")
+            .expect("assertCompleteAs(test, 42) => FUT test");
+        assert_eq!(t.input_output_specs.len(), 1);
+        assert_eq!(t.input_output_specs[0].output, serde_json::json!("42"));
+
+        // Call actual: FUT = `compute`.
+        let c = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "compute")
+            .expect("assertCompleteAs(compute(), 7) => FUT compute");
+        assert_eq!(c.input_output_specs[0].output, serde_json::json!("7"));
+
+        // Call EXPECTED side must NOT steal attribution: FUT stays `io`.
+        let io = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "io")
+            .expect("assertCompleteAs(io, Left(e)) => FUT io (not Left)");
+        assert_eq!(io.input_output_specs[0].output, serde_json::json!("Left(e)"));
+
+        // The helper and the expected-side constructor are never FUTs.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "assertCompleteAs" || f.function_name == "Left"),
+            "assertCompleteAs / Left must not be attributed as FUTs"
+        );
+    }
+
+    /// G1-a1: munit `assertEquals(actual, expected)` uses the same arg0=actual
+    /// rule even when the actual is a method call (`e.getMessage`) and the
+    /// expected is a literal.
+    #[test]
+    fn scala_assert_equals_method_actual() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("MsgSuite.scala");
+        let src = r#"
+class MsgSuite extends munit.FunSuite {
+  test("message") {
+    assertEquals(e.getMessage, "boom")
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let m = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "getMessage")
+            .expect("assertEquals(e.getMessage, \"boom\") => FUT getMessage");
+        assert_eq!(m.input_output_specs.len(), 1);
+        assert_eq!(m.input_output_specs[0].output, serde_json::json!("boom"));
+    }
+
+    /// G1-a2: ScalaTest infix DSL — `result should be (5)`, `a === b`, and
+    /// `value shouldBe 99` all attribute the FUT to the LEFT operand with the
+    /// right operand (unwrapping the `be(..)` carrier) as the expected output.
+    #[test]
+    fn scala_infix_dsl_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("InfixSpec.scala");
+        let src = r#"
+class InfixSpec extends AnyFlatSpec {
+  test("infix") {
+    result should be (5)
+    a === b
+    value shouldBe 99
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let result = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "result")
+            .expect("`result should be (5)` => FUT result");
+        assert_eq!(
+            result.input_output_specs[0].output,
+            serde_json::json!("5"),
+            "`should be (y)` unwraps the be(..) carrier to the expected value"
+        );
+
+        let a = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "a")
+            .expect("`a === b` => FUT a");
+        assert_eq!(a.input_output_specs[0].output, serde_json::json!("b"));
+
+        let value = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "value")
+            .expect("`value shouldBe 99` => FUT value");
+        assert_eq!(value.input_output_specs[0].output, serde_json::json!("99"));
+
+        // Infix matcher words are never FUTs.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| matches!(f.function_name.as_str(), "should" | "shouldBe" | "be" | "===")),
+            "infix matcher words must not be FUTs"
+        );
+    }
+
+    /// G4-b: Go `if !reflect.DeepEqual(<call>, want) { t.Fatalf(..) }` descends
+    /// into the helper's arguments — the FUT is the call inside (`parse`), not
+    /// the comparison helper (`DeepEqual`).
+    #[test]
+    fn go_deep_equal_descends_to_inner_call() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("router_test.go");
+        let src = r#"
+package router
+
+import (
+    "reflect"
+    "testing"
+)
+
+func TestRoute(t *testing.T) {
+    want := Params{}
+    if !reflect.DeepEqual(parse(input), want) {
+        t.Fatalf("bad")
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let parse = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "parse")
+            .expect("reflect.DeepEqual(parse(input), want) => FUT parse");
+        assert!(
+            parse
+                .property_specs
+                .iter()
+                .any(|p| p.property_type == "go_if_assertion"),
+            "descended FUT gains a go_if_assertion property"
+        );
+        // The comparison helper must never be attributed.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "DeepEqual"),
+            "DeepEqual must be suppressed, never a FUT"
+        );
+    }
+
+    /// G4-b: Go `if !reflect.DeepEqual(ps, want) { ... }` over two VARIABLES
+    /// (no inner call) emits NOTHING — the silent-wrong `DeepEqual` attribution
+    /// is gone, and no junk spec replaces it. This is the exact go-httprouter
+    /// `router_test.go:55` shape.
+    #[test]
+    fn go_deep_equal_over_vars_emits_nothing() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("router_test.go");
+        let src = r#"
+package router
+
+import (
+    "reflect"
+    "testing"
+)
+
+func TestRoute(t *testing.T) {
+    ps := lookup()
+    want := Params{}
+    if !reflect.DeepEqual(ps, want) {
+        t.Fatalf("wrong wildcard values")
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "DeepEqual"),
+            "DeepEqual over vars must not be attributed (no silent-wrong spec)"
+        );
+        // No `go_if_assertion` property should be synthesised for this if.
+        assert!(
+            report
+                .functions
+                .iter()
+                .all(|f| f.property_specs.iter().all(|p| p.property_type != "go_if_assertion")),
+            "no go_if_assertion spec when the helper's args carry no FUT call"
+        );
+    }
+
+    /// G4-b: an ordinary (non-helper) call in an `if` condition is unaffected
+    /// by the comparison-helper descent — `if compute() != 5 { t.Errorf(..) }`
+    /// still attributes to `compute`.
+    #[test]
+    fn go_plain_call_condition_unaffected() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("svc_test.go");
+        let src = r#"
+package svc
+
+import "testing"
+
+func TestCompute(t *testing.T) {
+    if compute() != 5 {
+        t.Errorf("compute want 5")
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let compute = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "compute")
+            .expect("if compute() != 5 => FUT compute (non-helper path)");
+        assert!(compute
+            .property_specs
+            .iter()
+            .any(|p| p.property_type == "go_if_assertion"));
+    }
+
+    /// @Test move: swift-testing `@Test func anyName()` is BOTH counted by the
+    /// recogniser AND harvested for `#expect`, so `test_functions_scanned`
+    /// matches the number of `@Test` markers and the assertion harvest reaches
+    /// names that do not start with `test`.
+    #[test]
+    fn swift_testing_at_test_count_and_harvest_agree() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("MixTests.swift");
+        let src = r#"
+import Testing
+import XCTest
+
+struct NewTests {
+    @Test func computesValue() {
+        #expect(compute() == 42)
+    }
+    @Test("labelled") func anotherOne() {
+        #expect(other() == 7)
+    }
+}
+
+class OldTests: XCTestCase {
+    func testLegacy() {
+        XCTAssertEqual(add(1, 2), 3)
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        // 2 swift-testing @Test + 1 XCTest func test* = 3 test functions.
+        assert_eq!(
+            report.summary.test_functions_scanned, 3,
+            "count must include both @Test funcs and the XCTest func"
+        );
+        // Harvest reaches the non-`test`-prefixed @Test bodies.
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "compute"),
+            "harvest reaches @Test func computesValue's #expect"
+        );
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "other"),
+            "harvest reaches @Test(\"labelled\") func anotherOne's #expect"
+        );
+        // And still reaches the XCTest body.
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "add"),
+            "harvest still reaches the XCTest func testLegacy"
         );
     }
 }

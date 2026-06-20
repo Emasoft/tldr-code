@@ -595,21 +595,81 @@ fn php_is_test_method(node: &Node, source: &[u8]) -> bool {
     name.starts_with("test")
 }
 
-// -- Swift: `func test*()` ----------------------------------------------------
+// -- Swift: XCTest `func test*()` OR swift-testing `@Test func anyName()` -----
+//
+// fix-T1b-scala-go-testrecognizer-v1 (@Test-recognizer move): two distinct
+// Swift test frameworks must both be recognised here so `count_test_functions`
+// and the `tldr specs` assertion harvest (which reuses
+// `is_test_function_node`) agree:
+//
+//   * XCTest    — `func testFoo()` inside an `XCTestCase` subclass. The
+//                 convention is the `test` name prefix.
+//   * swift-testing — `@Test func computesValue()`; the test marker is the
+//                 `@Test` ATTRIBUTE, and the function name need NOT start with
+//                 `test`. tree-sitter-swift parses the attribute as a
+//                 `modifiers` child containing an `attribute` whose
+//                 `user_type`/`type_identifier` tail is `Test`.
+//
+// Previously the swift-testing recognition lived as a LOCAL shim in
+// `specs.rs::walk_for_test_bodies`, so the harvest descended into `@Test`
+// bodies but `count_test_functions` did not count them — an inconsistent
+// `test_functions_scanned`. Recognising both here keeps the count and the
+// harvest in lockstep.
 fn swift_is_test_method(node: &Node, source: &[u8]) -> bool {
-    // tree-sitter-swift uses `function_declaration` (top-level) and
-    // `protocol_function_declaration` (inside class body); we accept any
-    // declaration whose `name` child starts with "test".
     let kind = node.kind();
     if !(kind == "function_declaration" || kind == "protocol_function_declaration") {
         return false;
     }
-    // Swift grammar exposes the method name as the first `simple_identifier`
-    // child after the `func` keyword. Walk children to find it.
+    // swift-testing: a `@Test`-attributed function is a test regardless of name.
+    if swift_has_test_attribute(node, source) {
+        return true;
+    }
+    // XCTest: the method name (first `simple_identifier` after `func`) starts
+    // with "test".
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "simple_identifier" {
             return node_text(child, source).starts_with("test");
+        }
+    }
+    false
+}
+
+/// fix-T1b-scala-go-testrecognizer-v1 (@Test-recognizer move): true when a
+/// Swift `function_declaration` carries the swift-testing `@Test` attribute.
+///
+/// tree-sitter-swift parses `@Test func f()` with a `modifiers` child holding
+/// an `attribute` whose name is its `user_type`/`type_identifier` tail. We
+/// match the attribute STRUCTURE (the tail identifier `Test`), not a name
+/// prefix, so `@Test func computesValue()` is recognised even though
+/// `computesValue` does not start with `test`. The `@Test("description")`
+/// labelled form parses identically (extra argument children we ignore).
+fn swift_has_test_attribute(node: &Node, source: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "modifiers" {
+            continue;
+        }
+        let mut mc = child.walk();
+        for attr in child.children(&mut mc) {
+            if attr.kind() != "attribute" {
+                continue;
+            }
+            // Walk the attribute subtree for a `type_identifier`/
+            // `simple_identifier` whose text is `Test`.
+            let mut ac = attr.walk();
+            let mut stack: Vec<Node> = attr.children(&mut ac).collect();
+            while let Some(n) = stack.pop() {
+                if matches!(n.kind(), "type_identifier" | "simple_identifier")
+                    && node_text(n, source) == "Test"
+                {
+                    return true;
+                }
+                let mut nc = n.walk();
+                for ch in n.children(&mut nc) {
+                    stack.push(ch);
+                }
+            }
         }
     }
     false
@@ -690,7 +750,25 @@ fn scala_is_test_call(node: &Node, source: &[u8]) -> bool {
     };
     let name = node_text(callee, source);
     let tail = name.rsplit('.').next().unwrap_or(&name);
-    matches!(tail, "test" | "property")
+    // munit / ScalaTest FunSuite (`test`), ScalaCheck (`property`), plus the
+    // cats-effect test DSL (`real` / `ticked` / `realProp` / `realWithRuntime`
+    // / `tickedProp`) — fix-T1b-scala-go-testrecognizer-v1 (G1-a). The
+    // cats-effect suites register the overwhelming majority of their cases via
+    // `real(...) { ... }` / `ticked(...) { ... }` (see cats-effect
+    // `Runners.scala`), NOT the standard `test(...)`, so without these names
+    // every `assertCompleteAs` site inside them was unreachable by the harvest.
+    // The structural shape is identical to `test(...)` (verified by
+    // debug-parse), so the same nested-call descent above applies.
+    matches!(
+        tail,
+        "test"
+            | "property"
+            | "real"
+            | "ticked"
+            | "realProp"
+            | "realWithRuntime"
+            | "tickedProp"
+    )
 }
 
 // -- OCaml: `let%test` / `let%expect_test` / Alcotest `test_case` -------------
@@ -956,6 +1034,50 @@ mod tests {
         assert_eq!(
             info.test_function_count, 2,
             "XCTest `func test*` methods must be counted (helper excluded)"
+        );
+    }
+
+    // ====================================================================
+    // FEATURE TESTS — fix-T1b-scala-go-testrecognizer-v1.
+    // ====================================================================
+
+    /// @Test move: swift-testing `@Test func` (any name) AND XCTest
+    /// `func test*` are both counted; a plain non-test `func` is not.
+    #[test]
+    fn swift_testing_at_test_and_xctest_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "MixTests.swift",
+            "import Testing\nimport XCTest\nstruct NewTests {\n  @Test func computesValue() {}\n  @Test(\"named\") func anotherOne() {}\n  func helper() {}\n}\nclass OldTests: XCTestCase {\n  func testLegacy() {}\n}\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Swift);
+        assert!(info.is_test_file);
+        assert_eq!(
+            info.test_function_count, 3,
+            "2 @Test funcs + 1 XCTest func test* (helper excluded)"
+        );
+    }
+
+    /// G1-a: cats-effect test DSL — `real(...) { ... }` / `ticked(...) { ... }`
+    /// register test cases the same structural way as munit `test(...)`, so the
+    /// recogniser counts them (otherwise the assertCompleteAs sites inside them
+    /// are unreachable by the spec harvest).
+    #[test]
+    fn scala_cats_effect_real_ticked_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "IOSuite.scala",
+            "class IOSuite extends BaseSuite {\n  real(\"a\") { IO.unit }\n  ticked(\"b\") { implicit t => IO.unit }\n  test(\"c\") { assert(true) }\n}\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Scala);
+        assert!(info.is_test_file);
+        assert_eq!(
+            info.test_function_count, 3,
+            "cats-effect real/ticked + munit test all count"
         );
     }
 }
