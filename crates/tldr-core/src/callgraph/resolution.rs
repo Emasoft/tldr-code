@@ -3454,10 +3454,18 @@ mod tests {
     }
 
     /// (c) A Go `MarshalJSON` bare call on an untyped receiver, defined on >1
-    /// unrelated (non-inheritance-linked) struct, must stay SUPPRESSED. This
-    /// is the cardinality gate subsuming the old hand-maintained blocklist:
-    /// the same-name collision now survives the index, so the ambiguity guard
-    /// declines exactly as the blocklist used to.
+    /// unrelated (non-inheritance-linked) struct, must stay SUPPRESSED.
+    ///
+    /// NOTE on the two suppression mechanisms (they are COMPLEMENTARY, not
+    /// subsuming): `MarshalJSON` is *both* a member of `is_builtin_method_name`
+    /// AND, in this fixture, defined on two unrelated structs — so EITHER gate
+    /// alone would suppress it here. That is precisely why this single test does
+    /// NOT prove the cardinality gate "replaces" the blocklist: with two
+    /// definers the blocklist is redundant, but the blocklist is retained for
+    /// the *single-definer* builtin-name case the cardinality gate cannot reach
+    /// (see `test_py_single_class_builtin_name_still_suppressed`, where exactly
+    /// one project class defines a builtin name and only the blocklist suppresses
+    /// it). `MarshalJSON` remains in `is_builtin_method_name` on purpose.
     #[test]
     fn test_go_marshaljson_untyped_receiver_stays_suppressed() {
         let mut func_index = FuncIndex::new();
@@ -3631,6 +3639,20 @@ mod tests {
     /// inserted under the SAME (module, bare-name) key must all survive and be
     /// returned by `find_by_name` (this is the property the ambiguity guard
     /// depends on).
+    ///
+    /// This test guards BOTH ends of the mechanism:
+    ///   1. the index level — `find_by_name("speak")` returns all 3 entries; and
+    ///   2. the DOWNSTREAM resolver — feeding the same index through
+    ///      `resolve_call_with_receiver` with an EMPTY `class_index` (so the
+    ///      cardinality gate is provably inert: `count_unrelated_method_definers`
+    ///      reads `class_index` and returns 0, never `> 1`) makes
+    ///      `resolve_global_fuzzy_match` see `candidates.len() == 3` and DECLINE.
+    /// Point (2) is what falsifies a reverted index fix: if `find_by_name`
+    /// collapsed the bare-key collision back to a single entry, `candidates`
+    /// would be length 1, the `== 1` branch would BIND a survivor, and this
+    /// assertion would fail. The empty `class_index` rules out the cardinality
+    /// gate as the cause of the decline, so only the surviving index entries can
+    /// explain it.
     #[test]
     fn test_func_index_same_name_methods_survive_collision() {
         let mut func_index = FuncIndex::new();
@@ -3655,5 +3677,255 @@ mod tests {
             .collect();
         classes.sort();
         assert_eq!(classes, vec!["Animal", "Plant", "Robot"]);
+
+        // Downstream effect: the resolver path that consumes `find_by_name`
+        // must DECLINE on the surviving >1 candidates. Use an EMPTY class_index
+        // so the cardinality gate cannot fire and mask the index behavior — the
+        // decline must come purely from `candidates.len() != 1`.
+        let class_index = ClassIndex::new();
+        assert_eq!(
+            count_unrelated_method_definers("speak", &class_index),
+            0,
+            "precondition: empty class_index => cardinality gate is inert (0, never >1)"
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `thing.speak()` — untyped receiver; three method entries survive under
+        // the bare key, so the global fuzzy match has >1 candidate and declines.
+        let result = resolve_call_with_receiver!(
+            "speak",
+            "thing",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("."),
+            "python",
+        );
+        assert_eq!(
+            result, None,
+            "with 3 surviving same-name method entries (gate inert), the resolver \
+             must DECLINE; a non-None bind here means find_by_name collapsed the \
+             collision to 1 (index fix reverted). Got {:?}",
+            result
+        );
+    }
+
+    /// Isolates the FuncIndex Vec fix at the RESOLUTION level with the
+    /// cardinality gate deliberately NEUTRALIZED, so the gate cannot mask a
+    /// reverted index.
+    ///
+    /// Setup: `Base` and `Derived(Base)` BOTH declare `speak`. Because they are
+    /// inheritance-linked, `count_unrelated_method_definers` collapses them to
+    /// ONE definer (verified as a precondition below) — so the cardinality gate
+    /// in `resolve_global_fuzzy_match` does NOT fire (`1` is not `> 1`). `speak`
+    /// is also not a builtin name, so the blocklist gate is silent too. With
+    /// BOTH untyped-receiver gates inert, the ONLY thing that can make the call
+    /// decline is the index returning >1 method candidate for the bare key.
+    ///
+    /// The bare ("x","speak") key holds TWO method entries (Base.speak,
+    /// Derived.speak). With the Vec fix, `find_by_name("speak")` yields both →
+    /// `candidates.len() == 2` → `resolve_global_fuzzy_match` declines. If the
+    /// index still collapsed colliding keys to a single entry (the pre-79b08e2
+    /// bug), `candidates.len()` would be 1 and the `== 1` branch would BIND a
+    /// survivor — so this `assert_eq!(result, None)` would FAIL. That makes the
+    /// test a genuine guard for the Vec fix, independent of the cardinality gate.
+    #[test]
+    fn test_func_index_collision_declines_with_cardinality_gate_inert() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // Two inheritance-linked classes both define `speak`. In func_index both
+        // method definitions land under the same bare ("x","speak") key.
+        index_method_both_keys(&mut func_index, "x", "Base", "speak", "x.py", 10);
+        index_method_both_keys(&mut func_index, "x", "Derived", "speak", "x.py", 30);
+
+        // Base defines speak; Derived extends Base and overrides speak.
+        class_index.insert(
+            "Base",
+            ClassEntry::new(
+                PathBuf::from("x.py"),
+                5,
+                20,
+                vec!["speak".to_string()],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Derived",
+            ClassEntry::new(
+                PathBuf::from("x.py"),
+                25,
+                40,
+                vec!["speak".to_string()],
+                vec!["Base".to_string()],
+            ),
+        );
+
+        // Gate neutralization precondition: inheritance-linked definers collapse
+        // to ONE, so the cardinality gate (>1) is inert and cannot be the cause
+        // of any decline below.
+        assert_eq!(
+            count_unrelated_method_definers("speak", &class_index),
+            1,
+            "precondition: Base + Derived(override) must collapse to ONE definer \
+             so the cardinality gate stays inert"
+        );
+        // And the blocklist gate is silent too: `speak` is not a builtin name.
+        assert!(
+            !is_builtin_method_name("speak"),
+            "precondition: `speak` must not be a builtin-name so that gate is also inert"
+        );
+
+        // Sanity: the bare key really does hold both method entries (the property
+        // the Vec fix preserves).
+        let bare_methods = func_index
+            .find_by_name("speak")
+            .filter(|e| e.is_method)
+            .count();
+        assert_eq!(
+            bare_methods, 2,
+            "find_by_name(speak) must yield both Base.speak and Derived.speak"
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `thing.speak()` — untyped receiver. Both untyped-receiver gates are
+        // inert (cardinality == 1, not a builtin), so resolution reaches the
+        // global fuzzy match with 2 surviving method candidates and must DECLINE.
+        let result = resolve_call_with_receiver!(
+            "speak",
+            "thing",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("."),
+            "python",
+        );
+        assert_eq!(
+            result, None,
+            "both ambiguity gates are inert here, so a non-None result can ONLY \
+             come from find_by_name collapsing the bare-key collision to 1 entry \
+             (index fix reverted). Expected DECLINE, got {:?}",
+            result
+        );
+    }
+
+    /// Isolates the *cardinality gate's wiring into resolution* (the
+    /// `count_unrelated_method_definers(..) > 1` clause in the fuzzy matchers),
+    /// independent of the FuncIndex Vec fix and the builtin blocklist.
+    ///
+    /// This is the dual of `test_func_index_collision_declines_with_cardinality_gate_inert`:
+    /// there the gate is neutralized so only the Vec fix can cause the decline;
+    /// here the *index-collision* path is neutralized so only the gate can.
+    ///
+    /// Setup: TWO mutually-unrelated classes (`Animal`, `Robot`) both declare
+    /// `speak` in `class_index` (=> `count_unrelated_method_definers == 2`, gate
+    /// fires), but `func_index` holds the method entry for `speak` for `Animal`
+    /// ONLY. So `find_by_name("speak").filter(is_method)` yields exactly ONE
+    /// candidate regardless of the Vec fix — the bare-key collision that the Vec
+    /// fix protects never even occurs here. `speak` is not a builtin name, so the
+    /// blocklist is silent too.
+    ///
+    /// With the gate WIRED IN, `thing.speak()` declines (genuinely ambiguous:
+    /// two classes define it, no receiver type). If the `> 1` clause were
+    /// removed from the resolver, control would reach `candidates.len() == 1`
+    /// and BIND `Animal.speak` — an order-/index-dependent false positive — so
+    /// `assert_eq!(result, None)` would FAIL. That makes this a genuine guard
+    /// for the gate's wiring: removing the clause is detectable here even though
+    /// the surviving-candidates `len() != 1` decline (which masks gate removal in
+    /// the 3-entry duck-typing fixtures) cannot fire with a single index entry.
+    #[test]
+    fn test_cardinality_gate_declines_with_single_index_entry() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // Only Animal.speak is present in the function index (one entry under the
+        // bare ("x","speak") key). Robot declares speak in class_index but has NO
+        // func_index method entry, so the bare key never collides.
+        index_method_both_keys(&mut func_index, "x", "Animal", "speak", "x.py", 10);
+
+        for (name, line) in [("Animal", 5u32), ("Robot", 25)] {
+            class_index.insert(
+                name,
+                ClassEntry::new(
+                    PathBuf::from("x.py"),
+                    line,
+                    line + 15,
+                    vec!["speak".to_string()],
+                    vec![],
+                ),
+            );
+        }
+
+        // Precondition 1: the gate is ARMED — two unrelated classes define speak.
+        assert_eq!(
+            count_unrelated_method_definers("speak", &class_index),
+            2,
+            "precondition: Animal + Robot are two unrelated definers (gate armed)"
+        );
+        // Precondition 2: the index holds exactly ONE method candidate, so the
+        // Vec-fix collision path is NOT what causes the decline (a reverted Vec
+        // fix would also yield 1 here). Only the gate can decline.
+        let speak_methods = func_index
+            .find_by_name("speak")
+            .filter(|e| e.is_method)
+            .count();
+        assert_eq!(
+            speak_methods, 1,
+            "precondition: exactly one method entry for speak (no bare-key collision)"
+        );
+        // Precondition 3: blocklist is silent (speak is not a builtin name).
+        assert!(
+            !is_builtin_method_name("speak"),
+            "precondition: speak is not a builtin name, so only the cardinality gate applies"
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `thing.speak()` — untyped receiver. Only ONE method candidate exists,
+        // so the `len() != 1` decline cannot fire; the call must be declined
+        // SOLELY by the cardinality gate.
+        let result = resolve_call_with_receiver!(
+            "speak",
+            "thing",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.py"),
+            Path::new("."),
+            "python",
+        );
+        assert_eq!(
+            result, None,
+            "two unrelated classes define speak but only one index entry exists, \
+             so a non-None result means the cardinality gate (> 1) is no longer \
+             wired into resolution — it would bind Animal.speak (false positive). \
+             Expected DECLINE, got {:?}",
+            result
+        );
     }
 }
