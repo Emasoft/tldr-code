@@ -5032,4 +5032,124 @@ fn good() {
             "Elixir Map.new() must NOT match"
         );
     }
+
+    // =========================================================================
+    // CHARACTERIZATION TESTS (T2b-resource-ocaml-elixir-release)
+    //
+    // Pin the CURRENT, CORRECT end-to-end resource behavior that T2b must NOT
+    // regress: the OCaml `let ic = open_in` acquisition arm (already wired by
+    // T2a's qualified matcher + the `let_binding` `body` field), the working
+    // Elixir scalar-LHS `file = File.open!(p)` binding, and the existing
+    // already-green languages' detection/leak shape. These run GREEN on the
+    // pre-T2b tree and stay green afterwards (regression net for the Elixir
+    // tuple-LHS arm + the Rust RAII-escape leak flip).
+    // =========================================================================
+
+    /// Helper: end-to-end `(name, resource_type, closed)` triples through the
+    /// REAL command path (`find_all_functions_multilang` over every function,
+    /// then `detect_with_patterns`), deduped by `(name, type, closed, line)`.
+    /// This mirrors what `tldr resources <file>` actually reports and so is the
+    /// honest regression pin for the per-language acquisition arms — including
+    /// Elixir, whose `def` body lives under the outer macro `call` node that
+    /// the single-function resolver does not select.
+    fn char_detect_closed(src: &str, lang: Language) -> Vec<(String, String, bool)> {
+        let tree = tldr_core::ast::parser::parse(src, lang).unwrap();
+        let bytes = src.as_bytes();
+        let mut out = Vec::new();
+        let mut seen: HashSet<(String, String, bool, u32)> = HashSet::new();
+        for (_name, fnode) in find_all_functions_multilang(&tree, bytes, lang) {
+            let mut d = ResourceDetector::with_language(lang);
+            for r in d.detect_with_patterns(fnode, bytes) {
+                let key = (r.name.clone(), r.resource_type.clone(), r.closed, r.line);
+                if seen.insert(key) {
+                    out.push((r.name, r.resource_type, r.closed));
+                }
+            }
+        }
+        out
+    }
+
+    /// Helper: end-to-end leak resource names through the full real path
+    /// (`find_all_functions_multilang` + `analyze_function_with_lang` with
+    /// leak checking). Dedups repeated leak entries by resource name.
+    fn char_leak_names(src: &str, lang: Language) -> Vec<String> {
+        let tree = tldr_core::ast::parser::parse(src, lang).unwrap();
+        let bytes = src.as_bytes();
+        let args = ResourcesArgs {
+            file: PathBuf::from("<in-memory>"),
+            function: None,
+            lang: Some(lang),
+            check_leaks: true,
+            check_double_close: false,
+            check_use_after_close: false,
+            check_all: false,
+            suggest_context: false,
+            show_paths: false,
+            constraints: false,
+            summary: false,
+            output_format: OutputFormat::Json,
+            project_root: None,
+        };
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut out = Vec::new();
+        for (_name, fnode) in find_all_functions_multilang(&tree, bytes, lang) {
+            let (_res, leaks, _dc, _uac) = analyze_function_with_lang(fnode, bytes, &args, lang);
+            for l in leaks {
+                if seen.insert(l.resource.clone()) {
+                    out.push(l.resource);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn char_ocaml_open_in_end_to_end_detected() {
+        // T2a already wires OCaml acquisition end-to-end (qualified matcher +
+        // the `let_binding` `body` field). Pin that `ic` is detected as an
+        // input_channel through the real detection path so the T2b OCaml work
+        // (and the release flip) cannot silently regress it.
+        let src = "let read p =\n  let ic = open_in p in\n  input_line ic\n";
+        let got = char_detect_closed(src, Language::Ocaml);
+        assert!(
+            got.iter()
+                .any(|(n, t, _)| n == "ic" && t == "input_channel"),
+            "OCaml `let ic = open_in p` must be detected end-to-end: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn char_ocaml_qualified_open_out_end_to_end_detected() {
+        let src = "let write p =\n  let oc = Stdlib.open_out p in\n  output_string oc \"x\"\n";
+        let got = char_detect_closed(src, Language::Ocaml);
+        assert!(
+            got.iter()
+                .any(|(n, t, _)| n == "oc" && t == "output_channel"),
+            "OCaml `let oc = Stdlib.open_out p` must be detected end-to-end: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn char_elixir_scalar_bind_file_open_detected() {
+        // The scalar-LHS Elixir binding already works via the generic arm
+        // (LHS is a plain identifier). Pin it: name `file`, type `file`.
+        let src = "def simple(p) do\n  file = File.open!(p)\n  file\nend\n";
+        let got = char_detect_closed(src, Language::Elixir);
+        assert!(
+            got.iter().any(|(n, t, _)| n == "file" && t == "file"),
+            "Elixir `file = File.open!(p)` must be detected as `file`: got {got:?}"
+        );
+    }
+
+    #[test]
+    fn char_python_leak_reported_end_to_end() {
+        // Pin the already-green Python leak shape through the full CFG +
+        // LeakDetector path: a non-context-managed `open` leaks.
+        let src = "def read(path):\n    f = open(path)\n    return f.read()\n";
+        let got = char_leak_names(src, Language::Python);
+        assert!(
+            got.contains(&"f".to_string()),
+            "Python non-managed open must leak `f`: got {got:?}"
+        );
+    }
 }
