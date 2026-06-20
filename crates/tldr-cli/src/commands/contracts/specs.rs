@@ -1437,93 +1437,240 @@ fn harvest_assertions_in(
     _path: &Path,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) {
-    walk_for_assertion_calls(*test_func, source, language, test_func_name, specs);
+    // fix-T1a-assertion-adapter-v1 (A1): the adapter is constant for the whole
+    // body walk, so resolve it once here and thread it through the recursion
+    // (rather than re-resolving per node).
+    let adapter = adapter_for(language);
+    walk_for_assertion_calls(
+        *test_func,
+        source,
+        language,
+        adapter.as_ref(),
+        test_func_name,
+        specs,
+    );
 }
 
-fn walk_for_assertion_calls(
-    node: Node,
+// =============================================================================
+// fix-T1a-assertion-adapter-v1 (v0.5.0 DESIGN-TAIL, A1): per-language
+// assertion-extraction adapters.
+//
+// `walk_for_assertion_calls` previously dispatched through a chain of
+// `if matches!(language, …)` guards calling one-hop framework handlers, then
+// fell through to a generic flat-callee classifier that consulted TWO
+// hand-synced global keyword lists (`is_equality`, `is_known_assertion_callee`)
+// which had DRIFTED apart. This module replaces that with:
+//
+//   * `trait AssertionAdapter` — one impl per language; each owns its
+//     framework SHAPES structurally (Go if/t.Fail descent, Java mockmvc
+//     chain, JS member-spine, Swift #expect operator-read, Ruby expect,
+//     OCaml application) AND the per-language equality VOCABULARY.
+//   * `AssertionVocab` — a small NAMED const table of matcher-leaf names
+//     grouped by semantic (equality / inequality / truthy / …). The
+//     "is this name an assertion helper (never a FUT)?" predicate is now
+//     DERIVED from the union of those groups (`AssertionVocab::is_known_callee`),
+//     so the two lists can no longer drift: there is one source of truth.
+//   * `adapter_for(language)` — mirrors the `match language { … }` shape of
+//     `test_recognizer::matches_test_function`.
+//
+// Per-node dispatch is preserved exactly: the walker calls
+// `adapter_for(language).extract(node, …)` on every node and then recurses,
+// just as the old guard-chain did.
+// =============================================================================
+
+/// fix-T1a-assertion-adapter-v1 (A1): a small, named, per-language table of
+/// assertion matcher-leaf names grouped by the spec they imply.
+///
+/// Used by the shared flat-callee classifier ([`classify_assertion_call`]) to
+/// decide what KIND of spec a flat `assertEquals(...)`-shaped helper produces.
+/// The "never attribute this name as a function-under-test" filter
+/// ([`AssertionVocab::is_known_callee`]) is computed from the UNION of every
+/// group plus [`AssertionVocab::matcher_heads`], which structurally prevents
+/// the two-list drift bug: a matcher added to one group is automatically
+/// excluded from FUT attribution.
+struct AssertionVocab {
+    /// Equality helpers: `assertEquals(expected, actual)` / `AreEqual` / … —
+    /// emit an input/output spec.
+    equality: &'static [&'static str],
+    /// Inequality helpers: `assertNotEquals` / `assert_ne` / … — emit an
+    /// inequality property spec.
+    inequality: &'static [&'static str],
+    /// Boolean-true helpers: `assertTrue` / `IsTrue` / … — truthy property.
+    truthy: &'static [&'static str],
+    /// Boolean-false helpers: `assertFalse` / `IsFalse` / … — falsy property.
+    falsy: &'static [&'static str],
+    /// Not-null helpers: `assertNotNull` / `IsNotNull` / … — not_null property.
+    not_null: &'static [&'static str],
+    /// Null helpers: `assertNull` / `IsNull` / … — null property.
+    null: &'static [&'static str],
+    /// Throwing helpers: `assertThrows` / `should_panic` / … — exception spec.
+    throws: &'static [&'static str],
+    /// Extra matcher HEADS that are assertion plumbing but carry no flat-call
+    /// semantic of their own (`expect` / `toBe` / `eq` / `to` / `assert`).
+    /// These must never be attributed as functions-under-test even though the
+    /// flat classifier does not branch on them (they are handled by the
+    /// member-spine / framework paths instead).
+    matcher_heads: &'static [&'static str],
+}
+
+impl AssertionVocab {
+    fn is_equality(&self, name: &str) -> bool {
+        self.equality.contains(&name)
+    }
+    fn is_inequality(&self, name: &str) -> bool {
+        self.inequality.contains(&name)
+    }
+    fn is_truthy(&self, name: &str) -> bool {
+        self.truthy.contains(&name)
+    }
+    fn is_falsy(&self, name: &str) -> bool {
+        self.falsy.contains(&name)
+    }
+    fn is_not_null(&self, name: &str) -> bool {
+        self.not_null.contains(&name)
+    }
+    fn is_null(&self, name: &str) -> bool {
+        self.null.contains(&name)
+    }
+    fn is_throws(&self, name: &str) -> bool {
+        self.throws.contains(&name)
+    }
+
+    /// True when `name` is any assertion helper in this vocab — derived from
+    /// the union of every group. This is the single source of truth that
+    /// replaces the old hand-synced `is_known_assertion_callee` list.
+    fn is_known_callee(&self, name: &str) -> bool {
+        self.is_equality(name)
+            || self.is_inequality(name)
+            || self.is_truthy(name)
+            || self.is_falsy(name)
+            || self.is_not_null(name)
+            || self.is_null(name)
+            || self.is_throws(name)
+            || self.matcher_heads.contains(&name)
+    }
+}
+
+/// fix-T1a-assertion-adapter-v1 (A1): the shared flat-callee assertion
+/// vocabulary.
+///
+/// The generic flat classifier currently fires for EVERY language (the old
+/// guard-chain always fell through to it), so a single shared table preserves
+/// behavior exactly. Per-language framework SHAPES live in the individual
+/// adapters; this table is the equality/throws/… LEAF vocabulary they all
+/// share for plain `assertEquals`-style calls. Scala's infix `===` / `shouldBe`
+/// equality and Go's testify `Equal` FUT handling are deliberately left to the
+/// T1b clusters — this table only carries what the pre-A1 global lists carried.
+const FLAT_VOCAB: AssertionVocab = AssertionVocab {
+    equality: &[
+        "assertEquals",
+        "assertEqual",
+        "assertSame",
+        "AreEqual",
+        "AreSame",
+        "Equal",
+        "assert_eq",
+        "assert_equal",
+        "should_eq",
+        "shouldBe",
+        "shouldEqual",
+        // Swift XCTest / swift-testing equality helpers.
+        "expectEqual",
+        "XCTAssertEqual",
+        "expectEqualElements",
+    ],
+    inequality: &[
+        "assertNotEquals",
+        "assertNotEqual",
+        "AreNotEqual",
+        "NotEqual",
+        "assert_ne",
+        "assertNotSame",
+    ],
+    truthy: &[
+        "assertTrue",
+        "IsTrue",
+        "True",
+        "assert",
+        "assert_true",
+        "XCTAssertTrue",
+        "expectTrue",
+    ],
+    falsy: &[
+        "assertFalse",
+        "IsFalse",
+        "False",
+        "assert_false",
+        "XCTAssertFalse",
+        "expectFalse",
+    ],
+    not_null: &[
+        "assertNotNull",
+        "IsNotNull",
+        "NotNull",
+        "assert_some",
+        "XCTAssertNotNil",
+        "expectNotNil",
+    ],
+    null: &[
+        "assertNull",
+        "IsNull",
+        "Null",
+        "assert_none",
+        "XCTAssertNil",
+        "expectNil",
+    ],
+    throws: &[
+        "assertThrows",
+        "assertFails",
+        "Throws",
+        "ThrowsAsync",
+        "Throws_",
+        "should_panic",
+        "expectThrows",
+        "XCTAssertThrowsError",
+    ],
+    // Member-spine / framework matcher heads that must never be FUTs. These
+    // were the entries in the OLD `is_known_assertion_callee` that are not
+    // flat-classifier semantics (handled by the JS/Ruby spine paths instead).
+    matcher_heads: &["expect", "toBe", "toEqual", "toStrictEqual", "toMatch", "to", "eq"],
+};
+
+/// fix-T1a-assertion-adapter-v1 (A1): per-language assertion extractor.
+///
+/// `extract` is invoked once per AST node during the body walk (mirroring the
+/// old per-node guard chain). An adapter recognises its framework's assertion
+/// SHAPES on the node, emits the corresponding specs, and then delegates the
+/// generic flat-callee path to [`classify_assertion_call`] using its
+/// [`AssertionVocab`]. The walker handles recursion into children.
+trait AssertionAdapter {
+    /// Inspect `node` for assertion shapes and emit specs into `specs`.
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    );
+
+    /// The flat-callee vocabulary this language uses for plain
+    /// `assertEquals`-style helpers. Defaults to the shared [`FLAT_VOCAB`].
+    fn vocab(&self) -> &'static AssertionVocab {
+        &FLAT_VOCAB
+    }
+}
+
+/// fix-T1a-assertion-adapter-v1 (A1): run the shared generic flat-callee
+/// classification on `node` if it is a call shape. Factored out so every
+/// adapter can reuse it after handling its framework-specific shapes.
+fn classify_flat_call_node(
+    node: &Node,
     source: &[u8],
     language: Language,
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) {
-    // critical-regressions-v1 (P13.AGG13-1): Go tests use the
-    // `if condition { t.Errorf/Fatal/Fail(...) }` idiom rather than a
-    // dedicated `assertEquals`-shaped helper. Detect that shape and
-    // promote the FUT call inside the condition to a property spec.
-    if matches!(language, Language::Go) && node.kind() == "if_statement" {
-        if try_extract_go_if_t_assertion(&node, source, test_func_name, specs) {
-            // Still recurse: nested if/loop bodies may contain more
-            // assertions or further FUT calls we need to harvest.
-        }
-    }
-
-    // language-specific-bugs-v1 (P14.AGG14-2): Java MockMvc fluent
-    // assertions —  `mockMvc.perform(get("/owners/new"))
-    //                       .andExpect(status().isOk())
-    //                       .andExpect(view().name(...))` — the conventional
-    // `assertEquals`-shaped helpers don't appear, so the assertion
-    // extractor previously yielded `total_specs = 0` for every Spring
-    // controller test. Promote each `andExpect(...)` to a property spec
-    // whose `function` is the HTTP-builder call inside the matching
-    // `perform(...)` (the MockMvc endpoint under test) and whose
-    // `constraint` text reflects the matcher kind (status/view/model/...).
-    if matches!(language, Language::Java)
-        && (node.kind() == "method_invocation" || node.kind() == "invocation_expression")
-    {
-        try_extract_java_mockmvc_assertion(&node, source, test_func_name, specs);
-    }
-
-    // cl7-test-frameworks-v1 (CL-7): Jest/mocha (JS/TS) and RSpec (Ruby)
-    // express assertions as a fluent member call whose RECEIVER is an
-    // `expect(actual)` call and whose tail method is a matcher
-    // (`toBe`/`toEqual`/`toStrictEqual` for Jest; `to`/`not_to`+`eq(...)`
-    // for RSpec). The function-under-test is the argument of the inner
-    // `expect(...)`; the expected value is the matcher's argument. Neither
-    // shape has a flat `assertEquals`-style callee, so the generic
-    // tail-name classifier never fired. Handle them structurally here.
-    //
-    // T1-specs (v0.5.0 DESIGN-TAIL, G2-a): chai chained matchers
-    // (`expect(x).to.eql(y)`) descend through intervening `.to` / `.be` /
-    // `.deep` member segments, so the carrier is reached by a structural
-    // SPINE descent rather than a single hop. The no-arg boolean form
-    // (`expect(x).to.be.true`) is a bare `member_expression` (no call), so we
-    // also dispatch on `member_expression`.
-    if matches!(language, Language::JavaScript | Language::TypeScript)
-        && matches!(node.kind(), "call_expression" | "member_expression")
-    {
-        if try_extract_js_expect_assertion(&node, source, test_func_name, specs) {
-            // Recurse still (nested expects inside callbacks), but the
-            // matched node itself is consumed.
-        }
-    }
-
-    // T1-specs (v0.5.0 DESIGN-TAIL, G3-a): swift-testing `#expect` /
-    // `#require` macros. tree-sitter-swift models these as a
-    // `macro_invocation` whose callee `simple_identifier` is `expect` /
-    // `require`; the single value-argument is commonly a binary comparison
-    // (`#expect(a == b)`) or a bare boolean (`#expect(x.isEmpty)`). The
-    // conventional `XCTAssertEqual`-shaped flat call never appears, so these
-    // suites previously yielded `total_specs = 0`.
-    if matches!(language, Language::Swift) && node.kind() == "macro_invocation" {
-        try_extract_swift_expect_assertion(&node, source, test_func_name, specs);
-    }
-    if matches!(language, Language::Ruby) && node.kind() == "call" {
-        if try_extract_ruby_expect_assertion(&node, source, test_func_name, specs) {
-            // Recurse to catch further assertions in the block.
-        }
-    }
-
-    // cl7-test-frameworks-v1 (CL-7): OCaml ppx tests express checks as
-    // ordinary applications: `let%test _ = equal (f x) y` or alcotest
-    // `check int "desc" expected (f x)`. tree-sitter-ocaml models calls as
-    // `application_expression`, which the generic call-shape matcher below
-    // does not include. Promote OCaml structural equality / check
-    // applications to specs structurally.
-    if matches!(language, Language::Ocaml) && node.kind() == "application_expression" {
-        try_extract_ocaml_assertion(&node, source, test_func_name, specs);
-    }
-
     let kind = node.kind();
     let is_call = matches!(
         kind,
@@ -1536,33 +1683,199 @@ fn walk_for_assertion_calls(
             | "function_call_statement"
             // critical-regressions-v1 (P13.AGG13-1): PHP tree-sitter exposes
             // assertion calls under multiple call-shaped node kinds.
-            // Without these, `$this->assertSame(...)`, `self::assertEquals(...)`,
-            // and `Foo::staticAssert(...)` all fall through and PHPUnit
-            // tests yield 0 specs even though `test_functions_scanned > 0`.
             | "member_call_expression"
             | "function_call_expression"
             | "scoped_call_expression"
             | "nullsafe_member_call_expression"
     );
-    if is_call {
-        if let Some(callee_text) = generic_callee_name(&node, source) {
-            let callee_tail = callee_text.rsplit('.').next().unwrap_or(&callee_text);
-            // Strip generic params: `Throws<E>` -> `Throws`
-            let callee_tail = callee_tail.split('<').next().unwrap_or(callee_tail);
-            classify_assertion_call(
-                &node,
-                source,
-                language,
-                callee_tail,
-                test_func_name,
-                specs,
-            );
-        }
+    if !is_call {
+        return;
     }
+    if let Some(callee_text) = generic_callee_name(node, source) {
+        let callee_tail = callee_text.rsplit('.').next().unwrap_or(&callee_text);
+        // Strip generic params: `Throws<E>` -> `Throws`
+        let callee_tail = callee_tail.split('<').next().unwrap_or(callee_tail);
+        classify_assertion_call(
+            node,
+            source,
+            language,
+            callee_tail,
+            vocab,
+            test_func_name,
+            specs,
+        );
+    }
+}
+
+/// Adapter for languages with no dedicated framework SHAPE: they rely solely
+/// on the shared flat-callee classifier (`assertEquals`-style helpers). Covers
+/// Python (whose pytest path runs separately), C/C++, Kotlin, C#, Scala, PHP,
+/// Lua/Luau, Elixir, Solidity, and Rust's flat `assert_eq!` macros.
+///
+/// Carries its `language` so the shared classifier's Rust-macro-aware branches
+/// (`matches!(language, Language::Rust) && node.kind() == "macro_invocation"`)
+/// only fire for genuine Rust — never for Kotlin/C#/Scala/PHP routed here.
+struct FlatOnlyAdapter {
+    language: Language,
+}
+impl AssertionAdapter for FlatOnlyAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        classify_flat_call_node(node, source, self.language, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// Go: `if <call> != want { t.Errorf(...) }` idiom + flat helpers.
+struct GoAdapter;
+impl AssertionAdapter for GoAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        if node.kind() == "if_statement" {
+            // Still recurse afterwards (handled by the walker): nested if/loop
+            // bodies may contain more assertions.
+            try_extract_go_if_t_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, Language::Go, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// Java: Spring MockMvc fluent chain + flat JUnit helpers.
+struct JavaAdapter;
+impl AssertionAdapter for JavaAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        if matches!(node.kind(), "method_invocation" | "invocation_expression") {
+            try_extract_java_mockmvc_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, Language::Java, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// JS/TS: Jest/mocha/chai/should member-spine `expect(actual).matcher(...)` +
+/// flat helpers.
+struct JsAdapter {
+    language: Language,
+}
+impl AssertionAdapter for JsAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        if matches!(node.kind(), "call_expression" | "member_expression") {
+            try_extract_js_expect_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, self.language, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// Swift: swift-testing `#expect` / `#require` macros + flat XCTest helpers.
+struct SwiftAdapter;
+impl AssertionAdapter for SwiftAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        if node.kind() == "macro_invocation" {
+            try_extract_swift_expect_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, Language::Swift, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// Ruby: RSpec `expect(actual).to matcher` + flat minitest helpers.
+struct RubyAdapter;
+impl AssertionAdapter for RubyAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        if node.kind() == "call" {
+            try_extract_ruby_expect_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, Language::Ruby, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// OCaml: ppx structural `equal`/alcotest `check` applications + flat helpers.
+struct OcamlAdapter;
+impl AssertionAdapter for OcamlAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        if node.kind() == "application_expression" {
+            try_extract_ocaml_assertion(node, source, self.vocab(), test_func_name, specs);
+        }
+        classify_flat_call_node(node, source, Language::Ocaml, self.vocab(), test_func_name, specs);
+    }
+}
+
+/// fix-T1a-assertion-adapter-v1 (A1): pick the assertion adapter for a
+/// language. Mirrors `test_recognizer::matches_test_function`'s
+/// `match language { … }` shape. Adapters are zero-sized (or carry only the
+/// `Language` tag for JS/TS), so the boxing cost is negligible and happens
+/// once per visited AST node's language (a constant).
+fn adapter_for(language: Language) -> Box<dyn AssertionAdapter> {
+    match language {
+        Language::Go => Box::new(GoAdapter),
+        Language::Java => Box::new(JavaAdapter),
+        Language::JavaScript | Language::TypeScript => Box::new(JsAdapter { language }),
+        Language::Swift => Box::new(SwiftAdapter),
+        Language::Ruby => Box::new(RubyAdapter),
+        Language::Ocaml => Box::new(OcamlAdapter),
+        // Every remaining language uses only the shared flat-callee path
+        // (Python's pytest extraction runs on a separate code path entirely;
+        // it never reaches the walker, but a flat adapter is harmless).
+        _ => Box::new(FlatOnlyAdapter { language }),
+    }
+}
+
+fn walk_for_assertion_calls(
+    node: Node,
+    source: &[u8],
+    language: Language,
+    adapter: &dyn AssertionAdapter,
+    test_func_name: &str,
+    specs: &mut HashMap<String, FunctionSpecs>,
+) {
+    // fix-T1a-assertion-adapter-v1 (A1): dispatch the per-language adapter on
+    // this node. Each adapter recognises its framework SHAPES (Go if/t.Fail,
+    // Java mockmvc, JS member-spine, Swift #expect, Ruby expect, OCaml
+    // application) and then runs the shared flat-callee classifier with its
+    // own equality VOCABULARY — replacing the old `if matches!(language, …)`
+    // guard chain and the two drifted global keyword lists.
+    adapter.extract(&node, source, test_func_name, specs);
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_for_assertion_calls(child, source, language, test_func_name, specs);
+        walk_for_assertion_calls(child, source, language, adapter, test_func_name, specs);
     }
 }
 
@@ -1578,6 +1891,7 @@ fn walk_for_assertion_calls(
 fn try_extract_go_if_t_assertion(
     if_node: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> bool {
@@ -1615,13 +1929,13 @@ fn try_extract_go_if_t_assertion(
         Some(c) => c,
         None => return false,
     };
-    let (fname, _inputs) = match generic_extract_call_info(call_node, source) {
+    let (fname, _inputs) = match generic_extract_call_info(call_node, source, vocab) {
         Some(p) => p,
         None => return false,
     };
     // Don't emit specs for the test failure call itself (e.g. when the
     // condition is just a call to `t.Failed()`).
-    if is_known_assertion_callee(&fname) || is_go_t_failure_method(&fname) {
+    if vocab.is_known_callee(&fname) || is_go_t_failure_method(&fname) {
         return false;
     }
 
@@ -1712,6 +2026,7 @@ fn is_go_t_failure_method(name: &str) -> bool {
 fn try_extract_java_mockmvc_assertion(
     call: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> bool {
@@ -1752,7 +2067,7 @@ fn try_extract_java_mockmvc_assertion(
         .and_then(first_callable_inside);
 
     let (fut_name, fut_inputs): (String, Vec<serde_json::Value>) =
-        match endpoint_call_node.and_then(|c| generic_extract_call_info(c, source)) {
+        match endpoint_call_node.and_then(|c| generic_extract_call_info(c, source, vocab)) {
             Some(info) => info,
             None => {
                 // Fallback: synthesize a placeholder so we still emit a spec.
@@ -1933,10 +2248,11 @@ fn classify_mockmvc_matcher(node: Node, source: &[u8]) -> String {
 fn try_extract_js_expect_assertion(
     outer: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> bool {
-    js_expect_inner(outer, source, test_func_name, specs).unwrap_or(false)
+    js_expect_inner(outer, source, vocab, test_func_name, specs).unwrap_or(false)
 }
 
 /// Inner resolver for [`try_extract_js_expect_assertion`]. Returns
@@ -1945,6 +2261,7 @@ fn try_extract_js_expect_assertion(
 fn js_expect_inner(
     outer: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> Option<bool> {
@@ -2001,7 +2318,7 @@ fn js_expect_inner(
     } else {
         first_callable_inside(fut_node)?
     };
-    let (fname, inputs) = generic_extract_call_info(fut, source)?;
+    let (fname, inputs) = generic_extract_call_info(fut, source, vocab)?;
 
     let line = outer.start_position().row as u32 + 1;
     let fs = ensure_entry(specs, &fname);
@@ -2172,6 +2489,7 @@ fn js_descend_to_carrier<'a>(node: Node<'a>, source: &[u8]) -> Option<(Node<'a>,
 fn try_extract_ruby_expect_assertion(
     call: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> bool {
@@ -2206,7 +2524,7 @@ fn try_extract_ruby_expect_assertion(
         Some(c) => c,
         None => return false,
     };
-    let (fname, inputs) = match generic_extract_call_info(fut, source) {
+    let (fname, inputs) = match generic_extract_call_info(fut, source, vocab) {
         Some(v) => v,
         None => return false,
     };
@@ -2306,6 +2624,7 @@ fn ruby_matcher_property(matcher: &str, negated: bool) -> (String, String) {
 fn try_extract_ocaml_assertion(
     app: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) -> bool {
@@ -2348,7 +2667,7 @@ fn try_extract_ocaml_assertion(
                 Some(c) => c,
                 None => return false,
             };
-            let (fname, inputs) = match ocaml_application_info(fut, source) {
+            let (fname, inputs) = match ocaml_application_info(fut, source, vocab) {
                 Some(v) => v,
                 None => return false,
             };
@@ -2373,7 +2692,7 @@ fn try_extract_ocaml_assertion(
                 Some(c) => c,
                 None => return false,
             };
-            let (fname, inputs) = match ocaml_application_info(fut, source) {
+            let (fname, inputs) = match ocaml_application_info(fut, source, vocab) {
                 Some(v) => v,
                 None => return false,
             };
@@ -2430,11 +2749,12 @@ fn ocaml_first_application(node: Node) -> Option<Node> {
 fn ocaml_application_info(
     app: Node,
     source: &[u8],
+    vocab: &AssertionVocab,
 ) -> Option<(String, Vec<serde_json::Value>)> {
     let func = app.child_by_field_name("function")?;
     let callee = get_node_text(func, source);
     let tail = callee.rsplit('.').next().unwrap_or(&callee).trim();
-    if tail.is_empty() || is_known_assertion_callee(tail) {
+    if tail.is_empty() || vocab.is_known_callee(tail) {
         return None;
     }
     let mut inputs: Vec<serde_json::Value> = Vec::new();
@@ -2681,6 +3001,7 @@ fn swift_member_equality<'a>(
     b: Node<'a>,
     source: &[u8],
     language: Language,
+    vocab: &AssertionVocab,
 ) -> Option<(String, Vec<serde_json::Value>, Node<'a>)> {
     if !matches!(language, Language::Swift) {
         return None;
@@ -2697,7 +3018,7 @@ fn swift_member_equality<'a>(
                 .child_by_field_name("suffix")
                 .unwrap_or(suffix);
             let name = get_node_text(name_node, source).trim().to_string();
-            if name.is_empty() || is_known_assertion_callee(&name) {
+            if name.is_empty() || vocab.is_known_callee(&name) {
                 continue;
             }
             // Receiver text becomes the (single) input observation.
@@ -2783,6 +3104,7 @@ fn swift_is_testing_attr_function(node: &Node, source: &[u8]) -> bool {
 fn try_extract_swift_expect_assertion(
     call: &Node,
     source: &[u8],
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) {
@@ -2869,7 +3191,7 @@ fn try_extract_swift_expect_assertion(
 
         // Resolve (actual_fut, inputs, expected_node). Prefer the LEFT
         // operand as actual (Swift convention), accepting either side.
-        let resolved = swift_resolve_expect_operands(lhs, rhs, source);
+        let resolved = swift_resolve_expect_operands(lhs, rhs, source, vocab);
         let (fname, inputs, expected) = match resolved {
             Some(v) => v,
             None => return,
@@ -2920,7 +3242,7 @@ fn try_extract_swift_expect_assertion(
     // No operator: a bare boolean expression (`#expect(x.isEmpty)` /
     // `#expect(flag())`) => truthy property on the accessor / call FUT.
     // (Property specs carry no inputs, so the receiver observation is dropped.)
-    if let Some((fname, _inputs)) = swift_operand_fut(arg, source) {
+    if let Some((fname, _inputs)) = swift_operand_fut(arg, source, vocab) {
         let fs = ensure_entry(specs, &fname);
         fs.property_specs.push(PropertySpec {
             function: fname,
@@ -2945,9 +3267,10 @@ fn swift_resolve_expect_operands<'a>(
     lhs: Node<'a>,
     rhs: Node<'a>,
     source: &[u8],
+    vocab: &AssertionVocab,
 ) -> Option<(String, Vec<serde_json::Value>, Node<'a>)> {
     for (actual, expected) in [(lhs, rhs), (rhs, lhs)] {
-        if let Some((fname, inputs)) = swift_operand_fut(actual, source) {
+        if let Some((fname, inputs)) = swift_operand_fut(actual, source, vocab) {
             return Some((fname, inputs, expected));
         }
     }
@@ -2964,14 +3287,18 @@ fn swift_resolve_expect_operands<'a>(
 ///   (`compute()`), attribute via `generic_extract_call_info`.
 ///
 /// Returns `None` for pure literals / values.
-fn swift_operand_fut(operand: Node, source: &[u8]) -> Option<(String, Vec<serde_json::Value>)> {
+fn swift_operand_fut(
+    operand: Node,
+    source: &[u8],
+    vocab: &AssertionVocab,
+) -> Option<(String, Vec<serde_json::Value>)> {
     if operand.kind() == "navigation_expression" {
         // Reuse the accessor-tail convention: `swift_member_equality` reads
         // the tail accessor as the FUT name and the receiver as the input.
         // The third tuple element (the "value") is irrelevant here, so pass
         // the operand itself as the throwaway second node.
         if let Some((name, inputs, _)) =
-            swift_member_equality(operand, operand, source, Language::Swift)
+            swift_member_equality(operand, operand, source, Language::Swift, vocab)
         {
             return Some((name, inputs));
         }
@@ -2986,7 +3313,7 @@ fn swift_operand_fut(operand: Node, source: &[u8]) -> Option<(String, Vec<serde_
         // navigation_expression branch above (the subscript is the receiver
         // of a `.member` read), so by the time we reach here a bare call is a
         // real function call.
-        if let Some((fname, inputs)) = generic_extract_call_info(c, source) {
+        if let Some((fname, inputs)) = generic_extract_call_info(c, source, vocab) {
             return Some((fname, inputs));
         }
     }
@@ -3012,11 +3339,19 @@ fn ensure_entry<'a>(
 }
 
 /// Classify a single assertion call based on the tail of its callee name.
+///
+/// fix-T1a-assertion-adapter-v1 (A1): the equality / inequality / truthy / …
+/// matcher classification now comes from the caller's per-language
+/// [`AssertionVocab`] (`vocab`) rather than the former inline `matches!`
+/// keyword lists. The "is this name a known assertion helper (never a FUT)?"
+/// predicate is `vocab.is_known_callee`, which is DERIVED from the same vocab —
+/// so the two lists can no longer drift apart.
 fn classify_assertion_call(
     call: &Node,
     source: &[u8],
     language: Language,
     callee_tail: &str,
+    vocab: &AssertionVocab,
     test_func_name: &str,
     specs: &mut HashMap<String, FunctionSpecs>,
 ) {
@@ -3025,104 +3360,19 @@ fn classify_assertion_call(
     // Local alias for the shared entry helper (cl7-test-frameworks-v1).
     let ensure = ensure_entry;
 
-    // Equality assertions: assertEquals(expected, actual) / AreEqual etc.
-    //
-    // cl7-test-frameworks-v1 (CL-7): Swift XCTest/swift-testing expose the
-    // equality helpers `expectEqual` / `XCTAssertEqual` as flat calls of the
-    // form `expectEqual(actual, expected)`; both are now recognised here so
-    // XCTest suites (which use `expectEqual` far more than `XCTAssertEqual`)
-    // yield input/output specs. Scala MUnit's `assertEquals` is already in
-    // this set. OCaml's structural `equal`/`String.equal` helpers are handled
-    // via the OCaml-specific path, not here.
-    let is_equality = matches!(
-        callee_tail,
-        "assertEquals"
-            | "assertEqual"
-            | "assertSame"
-            | "AreEqual"
-            | "AreSame"
-            | "Equal"
-            | "assert_eq"
-            | "assert_equal"
-            | "should_eq"
-            | "shouldBe"
-            | "shouldEqual"
-            // Swift XCTest / swift-testing equality helpers.
-            | "expectEqual"
-            | "XCTAssertEqual"
-            | "expectEqualElements"
-    );
-
-    // Inequality assertions
-    let is_inequality = matches!(
-        callee_tail,
-        "assertNotEquals"
-            | "assertNotEqual"
-            | "AreNotEqual"
-            | "NotEqual"
-            | "assert_ne"
-            | "assertNotSame"
-    );
-
-    // Boolean truthy / falsy assertions
-    // cl7-test-frameworks-v1 (CL-7): Swift XCTest `XCTAssertTrue` /
-    // `XCTAssertFalse` and swift-testing `expectTrue` / `expectFalse`.
-    let is_true = matches!(
-        callee_tail,
-        "assertTrue"
-            | "IsTrue"
-            | "True"
-            | "assert"
-            | "assert_true"
-            | "XCTAssertTrue"
-            | "expectTrue"
-    );
-    let is_false = matches!(
-        callee_tail,
-        "assertFalse"
-            | "IsFalse"
-            | "False"
-            | "assert_false"
-            | "XCTAssertFalse"
-            | "expectFalse"
-    );
-
-    // Nullness assertions
-    // cl7-test-frameworks-v1 (CL-7): Swift `XCTAssertNotNil` /
-    // `XCTAssertNil` and swift-testing `expectNotNil` / `expectNil`.
-    let is_not_null = matches!(
-        callee_tail,
-        "assertNotNull"
-            | "IsNotNull"
-            | "NotNull"
-            | "assert_some"
-            | "XCTAssertNotNil"
-            | "expectNotNil"
-    );
-    let is_null = matches!(
-        callee_tail,
-        "assertNull"
-            | "IsNull"
-            | "Null"
-            | "assert_none"
-            | "XCTAssertNil"
-            | "expectNil"
-    );
-
-    // Exception assertions
-    // cl7-test-frameworks-v1 (CL-7): Swift XCTest `XCTAssertThrowsError` and
-    // swift-testing `#expect(throws:)` helper `expectThrows`.
-    let is_throws = matches!(
-        callee_tail,
-        "assertThrows"
-            | "assertFails"
-            | "Throws"
-            | "ThrowsAsync"
-            | "Throws_"
-            | "should_panic"
-            | "expectThrows"
-            | "XCTAssertThrowsError"
-    );
+    // Matcher classification driven by the per-language vocabulary. The
+    // semantic groups (equality / inequality / truthy / falsy / null /
+    // not_null / throws) cover Swift XCTest (`expectEqual` / `XCTAssertEqual`
+    // / …), JUnit/xUnit (`assertEquals` / `AreEqual` / …), Rust macros
+    // (`assert_eq` / `assert_ne` / …), and the Kotlin/Scala `shouldBe` family
+    // — see `FLAT_VOCAB`.
+    let is_equality = vocab.is_equality(callee_tail);
+    let is_inequality = vocab.is_inequality(callee_tail);
+    let is_true = vocab.is_truthy(callee_tail);
+    let is_false = vocab.is_falsy(callee_tail);
+    let is_not_null = vocab.is_not_null(callee_tail);
+    let is_null = vocab.is_null(callee_tail);
+    let is_throws = vocab.is_throws(callee_tail);
 
     // language-specific-bugs-v1 (P14.AGG14-9): Rust macro_invocation
     // wraps assertion arguments in a `token_tree`, which tree-sitter does
@@ -3186,7 +3436,7 @@ fn classify_assertion_call(
                     // receiver is the (single) input. This recovers
                     // input/output specs for the dominant XCTest shape.
                     if let Some((fname, inputs, value_arg)) =
-                        swift_member_equality(args[0], args[1], source, language)
+                        swift_member_equality(args[0], args[1], source, language, vocab)
                     {
                         let output = try_eval_literal(value_arg, source);
                         let fs = ensure(specs, &fname);
@@ -3204,7 +3454,7 @@ fn classify_assertion_call(
             }
         };
         if let Some((fname, inputs)) =
-            extract_call_info_for_lang(call_arg, source, language)
+            extract_call_info_for_lang(call_arg, source, language, vocab)
         {
             let output = try_eval_literal(value_arg, source);
             let fs = ensure(specs, &fname);
@@ -3243,7 +3493,7 @@ fn classify_assertion_call(
         } else {
             args[1]
         };
-        if let Some((fname, _inputs)) = extract_call_info_for_lang(call_arg, source, language) {
+        if let Some((fname, _inputs)) = extract_call_info_for_lang(call_arg, source, language, vocab) {
             let val = std::str::from_utf8(
                 &source[other.start_byte()..other.end_byte()],
             )
@@ -3310,7 +3560,7 @@ fn classify_assertion_call(
                 ))
                 .filter(|(n, _)| !n.is_empty())
             } else {
-                generic_extract_call_info(c, source)
+                generic_extract_call_info(c, source, vocab)
             };
             if let Some((fname, _)) = fname_inputs {
                 let fs = ensure(specs, &fname);
@@ -3338,7 +3588,7 @@ fn classify_assertion_call(
     if (is_null || is_not_null) && !args.is_empty() {
         let call_arg = first_callable_inside(args[0]);
         if let Some(c) = call_arg {
-            if let Some((fname, _)) = generic_extract_call_info(c, source) {
+            if let Some((fname, _)) = generic_extract_call_info(c, source, vocab) {
                 let fs = ensure(specs, &fname);
                 fs.property_specs.push(PropertySpec {
                     function: fname,
@@ -3365,7 +3615,7 @@ fn classify_assertion_call(
         // Pick the lambda/closure argument and find a call inside it.
         for arg in &args {
             if let Some(c) = first_callable_inside(*arg) {
-                if let Some((fname, inputs)) = generic_extract_call_info(c, source) {
+                if let Some((fname, inputs)) = generic_extract_call_info(c, source, vocab) {
                     let exc = guess_exception_type(call, source);
                     let fs = ensure(specs, &fname);
                     fs.exception_specs.push(ExceptionSpec {
@@ -3393,6 +3643,7 @@ fn classify_assertion_call(
 fn generic_extract_call_info(
     call: Node,
     source: &[u8],
+    vocab: &AssertionVocab,
 ) -> Option<(String, Vec<serde_json::Value>)> {
     // Skip macros that wrap the FUT (Rust): assert!(actual_call(...)) — we
     // already handled the assert wrapper at the caller layer.
@@ -3407,8 +3658,10 @@ fn generic_extract_call_info(
     }
 
     // Skip very common assertion-library helpers when they slipped through
-    // (e.g. nested `assertTrue(..)` inside another assert).
-    if is_known_assertion_callee(&func_name) {
+    // (e.g. nested `assertTrue(..)` inside another assert). The set is
+    // DERIVED from the per-language vocab (`is_known_callee`), so it cannot
+    // drift from the equality/throws/… classification groups.
+    if vocab.is_known_callee(&func_name) {
         return None;
     }
 
@@ -3421,69 +3674,12 @@ fn generic_extract_call_info(
     Some((func_name, inputs))
 }
 
-fn is_known_assertion_callee(name: &str) -> bool {
-    matches!(
-        name,
-        "assertEquals"
-            | "assertEqual"
-            | "assertSame"
-            | "assertTrue"
-            | "assertFalse"
-            | "assertNull"
-            | "assertNotNull"
-            | "assertNotEquals"
-            | "assertThrows"
-            | "assertFails"
-            | "AreEqual"
-            | "AreNotEqual"
-            | "AreSame"
-            | "IsTrue"
-            | "IsFalse"
-            | "IsNull"
-            | "IsNotNull"
-            | "Throws"
-            | "ThrowsAsync"
-            | "Equal"
-            | "NotEqual"
-            | "True"
-            | "False"
-            | "Null"
-            | "NotNull"
-            | "assert"
-            | "assert_eq"
-            | "assert_ne"
-            | "assert_true"
-            | "assert_false"
-            | "assert_some"
-            | "assert_none"
-            | "should_eq"
-            | "shouldBe"
-            | "shouldEqual"
-            // cl7-test-frameworks-v1 (CL-7): Swift XCTest / swift-testing,
-            // Jest/RSpec matcher heads, and OCaml helpers that must never be
-            // treated as functions-under-test when they appear nested.
-            | "expectEqual"
-            | "expectEqualElements"
-            | "XCTAssertEqual"
-            | "XCTAssertTrue"
-            | "XCTAssertFalse"
-            | "XCTAssertNil"
-            | "XCTAssertNotNil"
-            | "XCTAssertThrowsError"
-            | "expectTrue"
-            | "expectFalse"
-            | "expectNil"
-            | "expectNotNil"
-            | "expectThrows"
-            | "expect"
-            | "toBe"
-            | "toEqual"
-            | "toStrictEqual"
-            | "toMatch"
-            | "to"
-            | "eq"
-    )
-}
+// fix-T1a-assertion-adapter-v1 (A1): the former standalone
+// `is_known_assertion_callee` keyword list has been REMOVED. Its single
+// source of truth is now `AssertionVocab::is_known_callee`, derived from the
+// union of the per-language vocab groups + `matcher_heads`. This eliminates
+// the drift bug where a matcher added to `is_equality` (the classifier list)
+// was forgotten in the FUT-exclusion list (or vice versa).
 
 /// language-specific-bugs-v1 (P14.AGG14-9): true when `n` is a bareword
 /// inside a Rust macro_invocation that is immediately followed by an
@@ -3528,6 +3724,7 @@ fn extract_call_info_for_lang(
     node: Node,
     source: &[u8],
     language: Language,
+    vocab: &AssertionVocab,
 ) -> Option<(String, Vec<serde_json::Value>)> {
     if matches!(language, Language::Rust)
         && matches!(node.kind(), "identifier" | "scoped_identifier")
@@ -3545,7 +3742,7 @@ fn extract_call_info_for_lang(
         // `(` and the matching `)` into literals.
         return Some((fname, Vec::new()));
     }
-    generic_extract_call_info(node, source)
+    generic_extract_call_info(node, source, vocab)
 }
 
 /// Best-effort: does `n` look like a function call we can extract a name from?
