@@ -240,6 +240,15 @@ struct ClassInfo {
     /// sibling source files are counted toward the same cohesion entry.
     /// Default `false` for every other class extractor.
     is_partial: bool,
+    /// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet B1'): the enclosing namespace
+    /// chain (outermost first) for languages with namespace semantics
+    /// (C++ `namespace_definition`, C# `namespace_declaration` /
+    /// `file_scoped_namespace_declaration`). Empty for the global namespace
+    /// and for languages without namespaces. Combined with `name` it forms
+    /// the normalized qualified key used by the shared partial-class
+    /// aggregator, so two same-named classes in different namespaces are not
+    /// merged.
+    namespace_path: Vec<String>,
 }
 
 // =============================================================================
@@ -355,16 +364,30 @@ pub fn analyze_cohesion_with_options(
     // computing LCOM4. Languages with no partial-class semantics flow
     // through the legacy per-file `analyze_file_cohesion` path.
     let mut all_classes: Vec<ClassCohesion> = Vec::new();
-    let mut partial_buckets: HashMap<String, PartialClassBucket> = HashMap::new();
+    // fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet B1'): the partial-class
+    // aggregator is keyed on a normalized qualified key
+    // `(namespace_path, name)` rather than the bare `name`. This is the SHARED
+    // aggregator for C# `partial class` AND (now) C++ in-body classes, so the
+    // qualified key simultaneously fixes:
+    //   - the C++ `.h`/`.cpp` double-count (both flow through here and merge),
+    //   - the C++ `a::Widget` vs `b::Widget` mis-merge, and
+    //   - the C# `A.Widget` vs `B.Widget` namespace collision.
+    // `name` is still kept as the bare DISPLAY string so output shows the
+    // unqualified class name (no cross-language display drift).
+    let mut partial_buckets: HashMap<PartialKey, PartialClassBucket> = HashMap::new();
 
     for file_path in &file_paths {
         match extract_file_method_fields(file_path, &options) {
             Ok(extractions) => {
                 for ext in extractions {
                     if ext.is_partial {
-                        // Aggregate by class name across the dir walk.
+                        // Aggregate by qualified (namespace_path, name) key.
+                        let key = PartialKey {
+                            namespace_path: ext.namespace_path.clone(),
+                            name: ext.name.clone(),
+                        };
                         let bucket = partial_buckets
-                            .entry(ext.name.clone())
+                            .entry(key)
                             .or_insert_with(|| PartialClassBucket {
                                 name: ext.name.clone(),
                                 first_file: ext.file_path.clone(),
@@ -551,11 +574,30 @@ struct MethodFieldsExtraction {
     line: usize,
     is_partial: bool,
     methods: Vec<MethodFields>,
+    /// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet B1'): enclosing namespace chain
+    /// (outermost first). Empty for the global namespace / languages without
+    /// namespaces. Forms the qualified partial-class aggregation key together
+    /// with `name`.
+    namespace_path: Vec<String>,
+}
+
+/// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet B1'): normalized qualified key for
+/// the shared partial-class aggregator. Keying on `(namespace_path, name)`
+/// instead of the bare `name` prevents two same-named classes that live in
+/// different namespaces (C++ `a::Widget` vs `b::Widget`; C# `A.Widget` vs
+/// `B.Widget`) from being merged. The bare `name` is still carried separately
+/// for DISPLAY so no cross-language output drift is introduced.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PartialKey {
+    namespace_path: Vec<String>,
+    name: String,
 }
 
 /// Accumulator for one logical partial class across the dir walk.
 #[derive(Debug, Clone)]
 struct PartialClassBucket {
+    /// Bare class name, used for DISPLAY (the qualified identity lives in the
+    /// `PartialKey` used as the map key).
     name: String,
     first_file: PathBuf,
     first_line: usize,
@@ -609,15 +651,26 @@ fn extract_file_method_fields(
         return Ok(extract_file_method_fields_solidity(&root, &source, file_path));
     }
 
+    // fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet A1+B1'): C++ needs a dedicated
+    // path. The generic `extract_field_accesses(method_source, …)` re-parses
+    // each method body in isolation, so it only sees `this->member` access and
+    // misses the dominant C++ idiom of *bare* member access (`width`, not
+    // `this->width`). We re-walk the file, collect each class's `.h`-declared
+    // field names, and classify a bare `identifier` as a field access iff it is
+    // a declared field and is not shadowed by a parameter / local. This also
+    // threads the enclosing-namespace chain so the shared partial aggregator
+    // can use a namespace-qualified key.
+    if matches!(language, Language::Cpp) {
+        return Ok(extract_file_method_fields_cpp(
+            &root, &source, file_path, options,
+        ));
+    }
+
     let class_infos = extract_classes(root, &source, language);
 
-    let cpp_drop_methodless = matches!(language, Language::Cpp);
     let mut out: Vec<MethodFieldsExtraction> = Vec::new();
 
     for class_info in class_infos {
-        if cpp_drop_methodless && class_info.methods.is_empty() {
-            continue;
-        }
         let methods: Vec<MethodFields> = class_info
             .methods
             .iter()
@@ -637,6 +690,7 @@ fn extract_file_method_fields(
             line: class_info.line,
             is_partial: class_info.is_partial,
             methods,
+            namespace_path: class_info.namespace_path,
         });
     }
     Ok(out)
@@ -709,6 +763,7 @@ fn collect_solidity_method_fields(
                         line: info.line,
                         is_partial: info.is_partial,
                         methods,
+                        namespace_path: Vec::new(),
                     });
                 }
             }
@@ -1035,6 +1090,7 @@ fn build_solidity_cohesion_class_info(
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -1188,6 +1244,7 @@ fn extract_swift_classes_cohesion_recursive(
                         line: info.line,
                         methods: Vec::new(),
                         is_partial: false,
+                        namespace_path: Vec::new(),
                     });
                 if info.line < entry.line {
                     entry.line = info.line;
@@ -1228,6 +1285,7 @@ fn extract_swift_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -1358,6 +1416,7 @@ fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -1474,6 +1533,7 @@ fn extract_elixir_module_cohesion_info(
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -1708,6 +1768,7 @@ fn collect_lua_table_methods(
                             line: child.start_position().row + 1,
                             methods: Vec::new(),
                             is_partial: false,
+                            namespace_path: Vec::new(),
                         });
                     if child.start_position().row + 1 < entry.line {
                         entry.line = child.start_position().row + 1;
@@ -1781,6 +1842,568 @@ fn lua_split_dotted_name(
     }
 }
 
+/// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet A1+B1'): dedicated C++
+/// `MethodFieldsExtraction` builder. Mirrors the Solidity dedicated flow:
+/// it threads each class's `.h`-declared field-name set into a bare-identifier
+/// scan so that the dominant C++ idiom of *bare* member access (`width`, not
+/// `this->width`) is classified as a field access, and it threads the enclosing
+/// namespace chain so the shared partial aggregator can use a namespace-
+/// qualified key.
+///
+/// Two class shapes are handled in one pass:
+///   - in-body classes (`class_specifier` / `struct_specifier`, including the
+///     `TINYXML2_LIB`-style macro-prefixed misparse): own declared fields are
+///     known, so inline method bodies get full bare-member resolution. These
+///     are marked `is_partial` so the `.h` declaration and any out-of-line
+///     `.cpp` definitions merge into one logical class via the aggregator.
+///   - out-of-line definitions (`Ret ns::Class::method(){…}` in a `.cpp` with
+///     no class body): grouped by `(namespace_path, class)` and emitted as a
+///     partial extraction. Bare-member resolution is unavailable here because
+///     the declared-field set lives in a different translation unit (the
+///     documented v1 under-count boundary, same class as inherited fields);
+///     `this->member` is still resolved.
+fn extract_file_method_fields_cpp(
+    root: &tree_sitter::Node,
+    source: &str,
+    file_path: &Path,
+    options: &CohesionOptions,
+) -> Vec<MethodFieldsExtraction> {
+    let mut out: Vec<MethodFieldsExtraction> = Vec::new();
+
+    // In-body classes (with declared-field-aware bare-member resolution).
+    collect_cpp_inbody_class_fields(root, source, file_path, &[], options, &mut out);
+
+    // Out-of-line `ns::Class::method` definitions, keyed by (namespace, class).
+    let mut out_of_line: HashMap<(Vec<String>, String), Vec<(String, usize, usize)>> =
+        HashMap::new();
+    collect_cpp_out_of_line_extractions(root, source, &[], &mut out_of_line);
+
+    for ((namespace_path, class_name), defs) in out_of_line {
+        // Skip out-of-line methods already represented inline in an in-body
+        // class extraction from THIS file (same span) so a single-TU header
+        // does not double-count.
+        let inbody = out.iter_mut().find(|e| {
+            e.name == class_name && e.namespace_path == namespace_path
+        });
+        let methods: Vec<MethodFields> = defs
+            .iter()
+            .filter(|(name, _, _)| options.include_dunder || !is_dunder_method(name))
+            .map(|(name, start, end)| {
+                // Bare-member resolution needs the declared-field set, which is
+                // unavailable for a pure out-of-line definition. Resolve only
+                // `this->member` here (empty declared set), per the boundary.
+                let fields = cpp_method_field_accesses(
+                    &source[*start..*end],
+                    &HashSet::new(),
+                );
+                MethodFields {
+                    name: name.clone(),
+                    fields,
+                }
+            })
+            .collect();
+
+        match inbody {
+            Some(entry) => {
+                // Merge out-of-line methods into the in-body class entry,
+                // skipping any whose name is already present inline.
+                for m in methods {
+                    if !entry.methods.iter().any(|e| e.name == m.name) {
+                        entry.methods.push(m);
+                    }
+                }
+            }
+            None => {
+                let line = defs
+                    .iter()
+                    .map(|(_, s, _)| *s)
+                    .min()
+                    .map(|b| source[..b].bytes().filter(|&c| c == b'\n').count() + 1)
+                    .unwrap_or(1);
+                out.push(MethodFieldsExtraction {
+                    name: class_name,
+                    file_path: file_path.to_path_buf(),
+                    line,
+                    is_partial: true,
+                    methods,
+                    namespace_path,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// Recursively walk for in-body C++ classes, tracking the enclosing namespace
+/// chain. Emits one `MethodFieldsExtraction` per class with bare-member +
+/// `this->` field resolution against the class's own declared fields.
+fn collect_cpp_inbody_class_fields(
+    node: &tree_sitter::Node,
+    source: &str,
+    file_path: &Path,
+    namespace_path: &[String],
+    options: &CohesionOptions,
+    out: &mut Vec<MethodFieldsExtraction>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "namespace_definition" => {
+                let mut nested = namespace_path.to_vec();
+                if let Some(name) = child.child_by_field_name("name") {
+                    if let Some(seg) = node_text_of(&name, source) {
+                        if !seg.is_empty() {
+                            nested.push(seg);
+                        }
+                    }
+                }
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_cpp_inbody_class_fields(
+                        &body, source, file_path, &nested, options, out,
+                    );
+                } else {
+                    collect_cpp_inbody_class_fields(
+                        &child, source, file_path, &nested, options, out,
+                    );
+                }
+                continue;
+            }
+            "class_specifier" | "struct_specifier" => {
+                if let Some((name, body)) = cpp_class_name_and_body(&child, source) {
+                    let declared = cpp_declared_field_names(&body, source);
+                    let methods = cpp_inbody_methods_fields(
+                        &body, source, &declared, options,
+                    );
+                    // Skip method-less classes (forward decls / pure-virtual
+                    // interfaces) — they carry no LCOM4 signal, matching the
+                    // prior `cpp_drop_methodless` behaviour.
+                    if !methods.is_empty() {
+                        out.push(MethodFieldsExtraction {
+                            name,
+                            file_path: file_path.to_path_buf(),
+                            line: child.start_position().row + 1,
+                            is_partial: true,
+                            methods,
+                            namespace_path: namespace_path.to_vec(),
+                        });
+                    }
+                    // Recurse into the body for nested classes.
+                    collect_cpp_inbody_class_fields(
+                        &body, source, file_path, namespace_path, options, out,
+                    );
+                }
+                continue;
+            }
+            "function_definition" | "declaration" => {
+                // Macro-prefixed misparse: `class TINYXML2_LIB XMLElement {…}`.
+                if let Some((name, body)) =
+                    cpp_macro_prefixed_class_name_and_body(&child, source)
+                {
+                    let declared = cpp_declared_field_names(&body, source);
+                    let methods = cpp_inbody_methods_fields(
+                        &body, source, &declared, options,
+                    );
+                    if !methods.is_empty() {
+                        out.push(MethodFieldsExtraction {
+                            name,
+                            file_path: file_path.to_path_buf(),
+                            line: child.start_position().row + 1,
+                            is_partial: true,
+                            methods,
+                            namespace_path: namespace_path.to_vec(),
+                        });
+                    }
+                    collect_cpp_inbody_class_fields(
+                        &body, source, file_path, namespace_path, options, out,
+                    );
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        collect_cpp_inbody_class_fields(
+            &child, source, file_path, namespace_path, options, out,
+        );
+    }
+}
+
+/// Return `(class_name, body_node)` for a `class_specifier`/`struct_specifier`
+/// that has a body. `None` for forward declarations (`class Foo;`).
+fn cpp_class_name_and_body<'a>(
+    node: &tree_sitter::Node<'a>,
+    source: &str,
+) -> Option<(String, tree_sitter::Node<'a>)> {
+    let info = extract_cpp_class_info(node, source)?;
+    let body = node.child_by_field_name("body")?;
+    Some((info.name, body))
+}
+
+/// Return `(class_name, body_node)` for the macro-prefixed misparse
+/// (`class MACRO Name {…}` parsed as a `declaration`/`function_definition`).
+fn cpp_macro_prefixed_class_name_and_body<'a>(
+    node: &tree_sitter::Node<'a>,
+    source: &str,
+) -> Option<(String, tree_sitter::Node<'a>)> {
+    let type_node = node.child_by_field_name("type")?;
+    if type_node.kind() != "class_specifier" && type_node.kind() != "struct_specifier" {
+        return None;
+    }
+    let declarator = node.child_by_field_name("declarator")?;
+    if declarator.kind() != "identifier" {
+        return None;
+    }
+    let name = node_text_of(&declarator, source)?;
+    if name.is_empty() {
+        return None;
+    }
+    // The misparsed body lives in a sibling `field_declaration_list` /
+    // `compound_statement` direct child.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "field_declaration_list" || child.kind() == "compound_statement" {
+            return Some((name, child));
+        }
+    }
+    None
+}
+
+/// Collect the bare field names declared at the body scope of a C++ class:
+/// `field_declaration -> field_identifier` (and pointer/array/reference
+/// declarators that wrap a `field_identifier`). Member functions are NOT
+/// fields; only data members are collected.
+fn cpp_declared_field_names(body: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = body.walk();
+    for member in body.children(&mut cursor) {
+        if member.kind() != "field_declaration" {
+            continue;
+        }
+        // A `field_declaration` with a `function_declarator` is a member
+        // function declaration, not a data member — skip it.
+        let mut has_data_member = false;
+        let mut mc = member.walk();
+        for c in member.children(&mut mc) {
+            collect_cpp_field_identifier(&c, source, &mut out, &mut has_data_member);
+        }
+    }
+    out
+}
+
+/// Walk a `field_declaration` child to find the declared data-member name
+/// (a `field_identifier`), descending through pointer/array/reference
+/// declarator wrappers. Sets `found` when a data member is recorded. A
+/// `function_declarator` wrapper means this is a method declaration; do not
+/// record it as a field.
+fn collect_cpp_field_identifier(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+    found: &mut bool,
+) {
+    match node.kind() {
+        "field_identifier" => {
+            if let Some(t) = node_text_of(node, source) {
+                if !t.is_empty() {
+                    out.insert(t);
+                    *found = true;
+                }
+            }
+        }
+        "function_declarator" => {
+            // Member function: not a data member.
+        }
+        "pointer_declarator" | "array_declarator" | "reference_declarator"
+        | "init_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                collect_cpp_field_identifier(&inner, source, out, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build per-method `MethodFields` for an in-body C++ class, resolving bare
+/// member accesses against `declared` (plus `this->member`), with shadowing.
+fn cpp_inbody_methods_fields(
+    body: &tree_sitter::Node,
+    source: &str,
+    declared: &HashSet<String>,
+    options: &CohesionOptions,
+) -> Vec<MethodFields> {
+    let mut methods = Vec::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "function_definition" {
+            continue;
+        }
+        let declarator = match child.child_by_field_name("declarator") {
+            Some(d) => d,
+            None => continue,
+        };
+        let name = match extract_cpp_method_name(&declarator, source) {
+            Some(n) => n,
+            None => continue,
+        };
+        if !options.include_dunder && is_dunder_method(&name) {
+            continue;
+        }
+        let method_text = &source[child.start_byte()..child.end_byte()];
+        let fields = cpp_method_field_accesses(method_text, declared);
+        methods.push(MethodFields { name, fields });
+    }
+    methods
+}
+
+/// Resolve the set of field accesses inside a single C++ method body.
+///
+/// Counts two forms as a field access:
+///   1. `this->member` — a `field_expression` whose `argument` is `this`
+///      (always a genuine field read; threaded through the SAME set so callers
+///      need only one path).
+///   2. a *bare* `identifier` whose text is in `declared` AND is not shadowed
+///      by a parameter or a local declaration in scope.
+///
+/// The shadowing scan covers block scopes and `for` / range-`for` init
+/// declarators (C++ has richer scoping than Solidity), so a loop variable or
+/// local that happens to share a field's name is not mis-counted.
+///
+/// AST-driven: parses the method text and inspects node kinds/fields only.
+fn cpp_method_field_accesses(
+    method_source: &str,
+    declared: &HashSet<String>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let tree = match parse(method_source, Language::Cpp) {
+        Ok(t) => t,
+        Err(_) => return out,
+    };
+    let root = tree.root_node();
+
+    // Names shadowed by parameters or local declarations anywhere in the
+    // method (conservative: a name declared as a local in any scope is treated
+    // as shadowed for the whole method, so a local never masquerades as a
+    // field). This errs toward UNDER-counting, never inventing field accesses.
+    let mut shadowed: HashSet<String> = HashSet::new();
+    cpp_collect_shadowed_names(&root, method_source, &mut shadowed);
+
+    cpp_collect_field_hits(&root, method_source, declared, &shadowed, &mut out);
+    out
+}
+
+/// Collect names that are shadowed within a C++ method body: parameter names
+/// (`parameter_declaration -> declarator -> identifier`) and local variable
+/// names (`init_declarator`/`declaration -> declarator -> identifier`),
+/// including `for`-loop and range-`for` initializers.
+fn cpp_collect_shadowed_names(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "parameter_declaration" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                cpp_record_declared_identifier(&decl, source, out);
+            }
+        }
+        "init_declarator" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                cpp_record_declared_identifier(&decl, source, out);
+            }
+        }
+        // `declaration` may hold a bare `identifier` declarator (no init):
+        // `int x;`. The `init_declarator` arm covers `int x = …;`.
+        "declaration" => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                cpp_record_declared_identifier(&decl, source, out);
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        cpp_collect_shadowed_names(&child, source, out);
+    }
+}
+
+/// Record the bare identifier name of a (possibly wrapped) declarator into
+/// `out`. Descends through pointer/reference/array/init declarator wrappers.
+fn cpp_record_declared_identifier(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "identifier" => {
+            if let Some(t) = node_text_of(node, source) {
+                if !t.is_empty() {
+                    out.insert(t);
+                }
+            }
+        }
+        "pointer_declarator" | "reference_declarator" | "array_declarator"
+        | "init_declarator" | "parenthesized_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                cpp_record_declared_identifier(&inner, source, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Walk a C++ method body collecting field accesses (`this->member` and bare
+/// declared-field identifiers not shadowed by a local/param). Skips the
+/// `field`/member side of any non-`this` member access (`obj.x`, `obj->x`) so
+/// foreign-object members are never counted, and skips call targets.
+fn cpp_collect_field_hits(
+    node: &tree_sitter::Node,
+    source: &str,
+    declared: &HashSet<String>,
+    shadowed: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "field_expression" => {
+            // `this->member` / `this.member` -> genuine field read.
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if arg.kind() == "this" {
+                    if let Some(field) = node.child_by_field_name("field") {
+                        if let Some(t) = node_text_of(&field, source) {
+                            if !t.is_empty() {
+                                out.insert(t);
+                            }
+                        }
+                    }
+                }
+            }
+            // Recurse only into the `argument` side; the `field` side is a
+            // member name that must not be treated as a bare identifier.
+            if let Some(arg) = node.child_by_field_name("argument") {
+                cpp_collect_field_hits(&arg, source, declared, shadowed, out);
+            }
+            return;
+        }
+        "identifier" => {
+            if let Some(t) = node_text_of(node, source) {
+                if declared.contains(&t) && !shadowed.contains(&t) {
+                    out.insert(t);
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        cpp_collect_field_hits(&child, source, declared, shadowed, out);
+    }
+}
+
+/// Collect out-of-line C++ method definitions keyed by
+/// `(namespace_path, class_name)`, tracking the enclosing namespace chain.
+fn collect_cpp_out_of_line_extractions(
+    node: &tree_sitter::Node,
+    source: &str,
+    namespace_path: &[String],
+    out: &mut HashMap<(Vec<String>, String), Vec<(String, usize, usize)>>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "namespace_definition" {
+            let mut nested = namespace_path.to_vec();
+            if let Some(name) = child.child_by_field_name("name") {
+                if let Some(seg) = node_text_of(&name, source) {
+                    if !seg.is_empty() {
+                        nested.push(seg);
+                    }
+                }
+            }
+            if let Some(body) = child.child_by_field_name("body") {
+                collect_cpp_out_of_line_extractions(&body, source, &nested, out);
+            } else {
+                collect_cpp_out_of_line_extractions(&child, source, &nested, out);
+            }
+            continue;
+        }
+        if child.kind() == "function_definition" {
+            if let Some((scope_ns, class_name, method_name)) =
+                cpp_out_of_line_qualified_name_ns(&child, source)
+            {
+                // The qualified scope segments (e.g. `a::Widget::m` ->
+                // scope `a::Widget`) combine the enclosing namespace with any
+                // explicit namespace prefix in the qualifier. The trailing
+                // scope segment is the class; the rest are namespace.
+                let mut full_ns = namespace_path.to_vec();
+                full_ns.extend(scope_ns);
+                out.entry((full_ns, class_name)).or_default().push((
+                    method_name,
+                    child.start_byte(),
+                    child.end_byte(),
+                ));
+                continue;
+            }
+        }
+        // Do not descend into class bodies — their inline methods are handled
+        // by the in-body pass.
+        if child.kind() != "class_specifier" && child.kind() != "struct_specifier" {
+            collect_cpp_out_of_line_extractions(&child, source, namespace_path, out);
+        }
+    }
+}
+
+/// Like `cpp_out_of_line_qualified_name`, but additionally returns the
+/// namespace segments that appear BEFORE the class segment in the qualifier
+/// (e.g. `a::Widget::area` -> namespace `["a"]`, class `"Widget"`,
+/// method `"area"`).
+fn cpp_out_of_line_qualified_name_ns(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<(Vec<String>, String, String)> {
+    let declarator = cpp_unwrap_to_function_declarator(node.child_by_field_name("declarator")?)?;
+    let inner = declarator.child_by_field_name("declarator")?;
+    if inner.kind() != "qualified_identifier" {
+        return None;
+    }
+    // Flatten the full `a::Widget::area` path into ordered segments.
+    let mut segs: Vec<String> = Vec::new();
+    cpp_flatten_qualified_segments(inner, source, &mut segs);
+    if segs.len() < 2 {
+        return None;
+    }
+    let method_name = segs.pop()?;
+    let class_name = segs.pop()?;
+    if class_name.is_empty() || method_name.is_empty() {
+        return None;
+    }
+    Some((segs, class_name, method_name))
+}
+
+/// Flatten a (possibly nested) `qualified_identifier` into ordered leaf
+/// segments: `a::Widget::area` -> ["a","Widget","area"].
+fn cpp_flatten_qualified_segments(
+    node: tree_sitter::Node,
+    source: &str,
+    out: &mut Vec<String>,
+) {
+    match node.kind() {
+        "qualified_identifier" => {
+            if let Some(scope) = node.child_by_field_name("scope") {
+                cpp_flatten_qualified_segments(scope, source, out);
+            }
+            if let Some(name) = node.child_by_field_name("name") {
+                cpp_flatten_qualified_segments(name, source, out);
+            }
+        }
+        _ => {
+            if let Some(t) = node_text_of(&node, source) {
+                if !t.is_empty() {
+                    out.push(t);
+                }
+            }
+        }
+    }
+}
+
 /// Extract C++ classes for cohesion analysis (BUG-P19-08).
 /// Mirrors the (class_specifier | struct_specifier) handling in
 /// `ast::extractor::extract_cpp_classes` including the macro-prefixed
@@ -1832,6 +2455,7 @@ fn extract_cpp_classes_cohesion(
                 line,
                 methods,
                 is_partial: true,
+                namespace_path: Vec::new(),
             });
         }
     }
@@ -2001,6 +2625,7 @@ fn extract_cpp_class_info(
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2037,6 +2662,7 @@ fn extract_cpp_macro_prefixed_class(
         line,
         methods: body_methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2142,6 +2768,7 @@ fn extract_python_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2225,6 +2852,7 @@ fn extract_typescript_class_info(node: &tree_sitter::Node, source: &str) -> Opti
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2303,6 +2931,7 @@ fn extract_java_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2371,6 +3000,7 @@ fn collect_go_structs(
                                             line,
                                             methods: Vec::new(),
                                             is_partial: false,
+                                            namespace_path: Vec::new(),
                                         },
                                     );
                                 }
@@ -2479,6 +3109,7 @@ fn collect_rust_structs(
                             line,
                             methods: Vec::new(),
                             is_partial: false,
+                            namespace_path: Vec::new(),
                         },
                     );
                 }
@@ -2605,6 +3236,7 @@ fn extract_ruby_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2641,32 +3273,89 @@ fn extract_ruby_methods(body: &tree_sitter::Node, source: &str) -> Vec<MethodInf
 /// Extract C# classes, structs, and interfaces with their methods
 fn extract_csharp_classes(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
     let mut classes = Vec::new();
-    extract_csharp_classes_recursive(root, source, &mut classes);
+    extract_csharp_classes_recursive(root, source, &[], &mut classes);
     classes
 }
 
+/// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet B1'): walk C# declarations while
+/// tracking the enclosing namespace chain so each `ClassInfo` carries its
+/// `namespace_path`. Two namespace forms exist:
+///   - `namespace_declaration` nests its members in a `body`
+///     (`declaration_list`); the namespace applies to that subtree.
+///   - `file_scoped_namespace_declaration` (`namespace A;`) is a *sibling*;
+///     every declaration that follows it in the same scope belongs to it.
+/// We therefore process children left-to-right, extending the active
+/// namespace once a file-scoped declaration is seen.
 fn extract_csharp_classes_recursive(
     node: tree_sitter::Node,
     source: &str,
+    current_ns: &[String],
     classes: &mut Vec<ClassInfo>,
 ) {
+    let mut active_ns: Vec<String> = current_ns.to_vec();
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
         match child.kind() {
             "class_declaration" | "struct_declaration" | "interface_declaration" => {
-                if let Some(class_info) = extract_csharp_class_info(&child, source) {
+                if let Some(mut class_info) = extract_csharp_class_info(&child, source) {
+                    class_info.namespace_path = active_ns.clone();
                     classes.push(class_info);
                 }
-                // Recurse into class body for nested classes
+                // Recurse into class body for nested classes (they keep the
+                // same namespace path; nested-class qualification is out of
+                // scope for the merge key).
                 if let Some(body) = child.child_by_field_name("body") {
-                    extract_csharp_classes_recursive(body, source, classes);
+                    extract_csharp_classes_recursive(body, source, &active_ns, classes);
                 }
             }
+            "namespace_declaration" => {
+                let mut nested = active_ns.clone();
+                nested.extend(csharp_namespace_segments(&child, source));
+                if let Some(body) = child.child_by_field_name("body") {
+                    extract_csharp_classes_recursive(body, source, &nested, classes);
+                } else {
+                    extract_csharp_classes_recursive(child, source, &nested, classes);
+                }
+            }
+            "file_scoped_namespace_declaration" => {
+                // Applies to all subsequent siblings in this scope.
+                active_ns = current_ns.to_vec();
+                active_ns.extend(csharp_namespace_segments(&child, source));
+            }
             _ => {
-                extract_csharp_classes_recursive(child, source, classes);
+                extract_csharp_classes_recursive(child, source, &active_ns, classes);
             }
         }
+    }
+}
+
+/// Extract the namespace name segments from a C# namespace node's `name`
+/// field. `namespace A` -> `["A"]`; `namespace A.B.C` (a `qualified_name`)
+/// -> `["A","B","C"]`.
+fn csharp_namespace_segments(ns_node: &tree_sitter::Node, source: &str) -> Vec<String> {
+    match ns_node.child_by_field_name("name") {
+        Some(name) => csharp_name_segments(&name, source),
+        None => Vec::new(),
+    }
+}
+
+fn csharp_name_segments(node: &tree_sitter::Node, source: &str) -> Vec<String> {
+    match node.kind() {
+        "qualified_name" => {
+            let mut out = Vec::new();
+            if let Some(q) = node.child_by_field_name("qualifier") {
+                out.extend(csharp_name_segments(&q, source));
+            }
+            if let Some(n) = node.child_by_field_name("name") {
+                out.extend(csharp_name_segments(&n, source));
+            }
+            out
+        }
+        _ => node_text_of(node, source)
+            .filter(|s| !s.is_empty())
+            .into_iter()
+            .collect(),
     }
 }
 
@@ -2693,6 +3382,10 @@ fn extract_csharp_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         line,
         methods,
         is_partial,
+        // Populated by the caller (`extract_csharp_classes_recursive`) which
+        // tracks the enclosing `namespace_declaration` /
+        // `file_scoped_namespace_declaration` chain. fix-cl-7-v1 Facet B1'.
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2811,6 +3504,7 @@ fn extract_scala_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 
@@ -2895,6 +3589,7 @@ fn extract_php_class_info(node: &tree_sitter::Node, source: &str) -> Option<Clas
         line,
         methods,
         is_partial: false,
+        namespace_path: Vec::new(),
     })
 }
 

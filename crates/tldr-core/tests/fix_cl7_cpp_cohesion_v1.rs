@@ -204,19 +204,19 @@ fn cpp_bare_member_access_golden() {
     let r = rects[0];
     let fields = fields_of(r);
 
-    // GOLDEN-FLIP A — CURRENT (pre-fix) behaviour captured here: bare member
-    // accesses (`width`, `height` with no `this->`) are NOT recognised, so the
-    // two methods share no field and the class splits (lcom4 == 2, no fields).
-    // The implementation commit REPLACES the two assertions below with the
-    // corrected expectation (fields contain width/height; lcom4 == 1).
-    assert_eq!(
-        r.field_count, 0,
-        "pre-fix: bare members are not recognised, field_count must be 0, got {} ({:?})",
-        r.field_count, fields
+    // GOLDEN-FLIP A — FLIPPED by the implementation commit. Bare member
+    // accesses (`width`, `height` with no `this->`) now resolve to the
+    // class's declared fields, so area+scale share both fields and the class
+    // is a single cohesive component.
+    // (Pre-fix this asserted field_count == 0 / lcom4 == 2; see commit #1.)
+    assert!(
+        fields.contains("width") && fields.contains("height"),
+        "bare member width/height must be recognised as fields, got {:?}",
+        fields
     );
     assert_eq!(
-        r.lcom4, 2,
-        "pre-fix: area/scale share no recognised field -> lcom4 == 2, got {} comps {:?}",
+        r.lcom4, 1,
+        "Rect should be cohesive once bare members resolve, got {} comps {:?}",
         r.lcom4, r.components
     );
 }
@@ -305,14 +305,14 @@ fn csharp_two_namespace_partial_collision_golden() {
     let report = analyze_cohesion(dir.path(), Some(Language::CSharp), 2).unwrap();
     let widgets = count_named(&report, "Widget");
 
-    // GOLDEN-FLIP C — CURRENT (pre-fix) behaviour captured here: the partial
-    // aggregator keys on the bare name `Widget` and MIS-MERGES the two
-    // distinct-namespace classes into ONE entry. The implementation commit
-    // REPLACES the assertion below with `== 2` (namespace-qualified key).
+    // GOLDEN-FLIP C — FLIPPED by the implementation commit. The shared partial
+    // aggregator now keys on the namespace-qualified `(namespace_path, name)`,
+    // so A.Widget and B.Widget are kept SEPARATE.
+    // (Pre-fix this asserted == 1, a mis-merge; see commit #1.)
     assert_eq!(
         widgets.len(),
-        1,
-        "pre-fix: A.Widget and B.Widget mis-merge into one entry; got {} {:?}",
+        2,
+        "A.Widget and B.Widget partial classes must be separate; got {} {:?}",
         widgets.len(),
         widgets
             .iter()
