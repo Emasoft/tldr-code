@@ -2126,9 +2126,13 @@ fn extract_ts_computed_member_assignment(
     let Some(right) = assignment.child_by_field_name("right") else {
         return;
     };
+    // RHS must be a function-like node. `generator_function` is included for
+    // parity with the sibling arms (extract_assignment_function_name /
+    // collect_definitions in callgraph/languages/typescript.rs) so that
+    // `app[method] = function*(){}` also emits a placeholder.
     if !matches!(
         right.kind(),
-        "arrow_function" | "function_expression" | "function"
+        "arrow_function" | "function_expression" | "function" | "generator_function"
     ) {
         return;
     }
@@ -10415,6 +10419,11 @@ module.exports = {{
     /// function query(){...})` getter pattern — must surface as a definition
     /// keyed by the function's OWN name (`query`). Anonymous callbacks have no
     /// `name` field and are excluded by construction.
+    ///
+    /// The named AND anonymous cases are mixed into ONE source so the
+    /// discrimination is proven in a single place: the named arg IS collected
+    /// while its anonymous sibling is NOT. This fails on pre-3A code (where
+    /// named-in-args was never collected, so `query`/`protocol` are absent).
     #[test]
     fn test_extract_js_named_function_expression_argument() {
         let mut file = NamedTempFile::with_suffix(".js").unwrap();
@@ -10423,6 +10432,8 @@ module.exports = {{
             r#"
 defineGetter(req, 'query', function query() {{ return 1; }});
 defineGetter(req, 'protocol', function protocol() {{ return 2; }});
+defineGetter(req, 'fresh', function() {{ return 3; }});
+arr.forEach((x) => x);
 "#
         )
         .unwrap();
@@ -10437,6 +10448,14 @@ defineGetter(req, 'protocol', function protocol() {{ return 2; }});
         assert!(
             names.contains(&"protocol"),
             "named function-expression arg `function protocol()` must be collected, got {:?}",
+            names
+        );
+        // Discrimination, proven in the SAME source: the anonymous callback arg
+        // (`function() {}`) carries no `name` field and must NOT be collected,
+        // and the dynamic string label `'fresh'` must NOT become a def name.
+        assert!(
+            !names.contains(&"fresh"),
+            "anonymous callback arg must NOT be collected under the string label, got {:?}",
             names
         );
     }
@@ -10482,11 +10501,16 @@ list.map((y) => y + 1);
     #[test]
     fn test_extract_js_computed_member_assignment_placeholder() {
         let mut file = NamedTempFile::with_suffix(".js").unwrap();
+        // Two DISTINCT objects each take one computed-member assignment (one
+        // `function` RHS, one arrow RHS) -> two distinct placeholders. A third
+        // assignment uses a STATIC string key (`index:(string)`), which is out
+        // of scope and must NOT produce any placeholder.
         write!(
             file,
             r#"
 app[method] = function() {{ return 1; }};
-app[other] = (x) => x;
+router[other] = (x) => x;
+obj["key"] = function() {{ return 2; }};
 "#
         )
         .unwrap();
@@ -10509,16 +10533,131 @@ app[other] = (x) => x;
             "the dynamic index `other` must NOT be resolved as a def name, got {:?}",
             names
         );
-        // The placeholder name can never collide with a bare method name (the
-        // `.[computed]` suffix guarantees it cannot create a false bare edge).
-        for f in &info.functions {
-            if f.name == "app.[computed]" {
-                assert!(
-                    f.name.contains(".[computed]"),
-                    "placeholder must carry the .[computed] marker"
-                );
-            }
-        }
+        // The static string key is out of scope: no `obj.[computed]` placeholder.
+        assert!(
+            !names.contains(&"obj.[computed]"),
+            "static string key `obj[\"key\"]` must NOT emit a computed placeholder, got {:?}",
+            names
+        );
+
+        // EXACTLY ONE `app.[computed]` placeholder must exist. This count fails
+        // if 2B stops emitting the placeholder (drops to 0) or double-emits.
+        let app_placeholders: Vec<&FunctionInfo> = info
+            .functions
+            .iter()
+            .filter(|f| f.name == "app.[computed]")
+            .collect();
+        assert_eq!(
+            app_placeholders.len(),
+            1,
+            "expected exactly one `app.[computed]` placeholder, got {:?}",
+            names
+        );
+        let placeholder = app_placeholders[0];
+        // The placeholder is a member-style binding, NOT a method body. This is
+        // a semantic field that DIFFERS from the name (so it is not a tautology
+        // over `name`): it fails if 2B regresses is_method to true.
+        assert!(
+            !placeholder.is_method,
+            "computed placeholder must have is_method == false"
+        );
+        // Member-style assignment is an externally-visible binding shape.
+        assert_eq!(
+            placeholder.visibility.as_deref(),
+            Some("public"),
+            "computed placeholder must be public-visibility"
+        );
+        // Line bounds must be sane: 1-based, start <= end, within file.
+        assert!(
+            placeholder.line_number >= 1 && placeholder.line_number <= placeholder.line_end,
+            "placeholder line bounds must satisfy 1 <= start ({}) <= end ({})",
+            placeholder.line_number,
+            placeholder.line_end
+        );
+        // Total computed placeholders across both distinct objects: exactly two
+        // (`app.[computed]` + `router.[computed]`), proving both the `function`
+        // and arrow RHS shapes are covered and the static key is excluded.
+        let total_placeholders = info
+            .functions
+            .iter()
+            .filter(|f| f.name.ends_with(".[computed]"))
+            .count();
+        assert_eq!(
+            total_placeholders, 2,
+            "expected exactly two computed placeholders (app + router), got {:?}",
+            names
+        );
+    }
+
+    /// (POLISH T3-G3G2) Generator RHS parity: `app[method] = function*(){}` is a
+    /// `generator_function` on the RHS, which the sibling arms in
+    /// callgraph/languages/typescript.rs already accept. The computed-member
+    /// placeholder extractor must accept it too, so a generator-valued
+    /// computed-member assignment also emits exactly one `app.[computed]`.
+    /// This fails on code that omits `generator_function` from the RHS match.
+    #[test]
+    fn test_extract_js_computed_member_generator_rhs_placeholder() {
+        let mut file = NamedTempFile::with_suffix(".js").unwrap();
+        write!(
+            file,
+            r#"
+app[method] = function*() {{ yield 1; }};
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        let count = info
+            .functions
+            .iter()
+            .filter(|f| f.name == "app.[computed]")
+            .count();
+        assert_eq!(
+            count, 1,
+            "generator RHS `function*(){{}}` must emit exactly one `app.[computed]` placeholder, got {:?}",
+            names
+        );
+        // The dynamic index name must NOT leak as a bare def.
+        assert!(
+            !names.contains(&"method"),
+            "the dynamic index `method` must NOT be resolved as a def name, got {:?}",
+            names
+        );
+    }
+
+    /// (POLISH T3-G3G2) .tsx parity: the named-function-expression-in-args path
+    /// (Option 3A) must behave identically under LANGUAGE_TSX, not just
+    /// LANGUAGE_TYPESCRIPT. Same source, `.tsx` suffix — `function query()`
+    /// passed as a call argument must still surface keyed by its OWN name, and
+    /// the paired ANONYMOUS callback must still be excluded.
+    #[test]
+    fn test_extract_tsx_named_function_expression_argument() {
+        let mut file = NamedTempFile::with_suffix(".tsx").unwrap();
+        write!(
+            file,
+            r#"
+defineGetter(req, 'query', function query() {{ return 1; }});
+defineGetter(req, 'fresh', function() {{ return 2; }});
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        // Named-in-args is collected under TSX identically.
+        assert!(
+            names.contains(&"query"),
+            "TSX: named function-expression arg `function query()` must be collected, got {:?}",
+            names
+        );
+        // The anonymous sibling in the SAME source is NOT collected, proving the
+        // named/anonymous discrimination holds under the TSX grammar too.
+        assert!(
+            !names.contains(&"fresh"),
+            "TSX: anonymous callback must NOT be collected under the string arg, got {:?}",
+            names
+        );
     }
 
     #[test]
