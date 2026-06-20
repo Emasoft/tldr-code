@@ -464,3 +464,342 @@ fn typescript_class_fields_visible_regression_guard() {
         calc.field_count
     );
 }
+
+// ===========================================================================
+// fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): C++ cross-file / namespace
+// behaviour of the SHARED partial-class aggregator, asserted end-to-end
+// through the production `analyze_cohesion` entry point (the same function the
+// `tldr cohesion` CLI command calls). Each test FAILS if the repair3 wiring
+// (declared-field bare-member scan reaching members nested under macro-misparse
+// `labeled_statement` wrappers; namespace-qualified partial key; empty-ns
+// parse-recovery compatibility merge) is reverted.
+// ===========================================================================
+
+/// Macro-prefixed class declaration in a `.h` (the dominant library idiom,
+/// e.g. tinyxml2's `class TINYXML2_LIB XMLElement`). tree-sitter-cpp misparses
+/// the `class MACRO Name` form into a `function_definition`/`declaration`
+/// whose body is a `compound_statement` in which access specifiers nest the
+/// members under `labeled_statement` wrappers.
+const CPP_HDR_MACRO: &str = r#"
+namespace lib {
+class LIBAPI Widget
+{
+public:
+    int Area() const { return _w * _h; }
+    void Resize(int w, int h);
+    void Move(int dx, int dy);
+private:
+    int _w;
+    int _h;
+};
+}
+"#;
+
+/// The out-of-line `.cpp` definitions for the same class, inside the SAME
+/// namespace. These carry the real field accesses for the declared-only `.h`
+/// signatures.
+const CPP_SRC_MACRO: &str = r#"
+namespace lib {
+void Widget::Resize(int w, int h) { _w = w; _h = h; }
+void Widget::Move(int dx, int dy) { _w = _w + dx; _h = _h + dy; }
+}
+"#;
+
+#[test]
+fn cpp_macro_prefixed_header_and_source_merge_into_one_entry() {
+    // ROOT-CAUSE GUARD (tinyxml2 double-count): the `.h` macro-prefixed
+    // declaration and the `.cpp` out-of-line definitions must collapse to a
+    // SINGLE `Widget` entry. Pre-repair3 the `.h` macro class extracted zero
+    // members (its `compound_statement` body nests members under a
+    // `labeled_statement`), so it was dropped and only the `.cpp` entry showed
+    // (field_count 0); when forced to emit it double-counted. This pins the
+    // merged, deduplicated result.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "widget.h", CPP_HDR_MACRO);
+    write_file(dir.path(), "widget.cpp", CPP_SRC_MACRO);
+
+    let report = analyze_cohesion(dir.path(), Some(Language::Cpp), 2)
+        .expect("analyze_cohesion cpp macro .h/.cpp");
+
+    let widgets: Vec<_> = report
+        .classes
+        .iter()
+        .filter(|c| c.name == "Widget")
+        .collect();
+    assert_eq!(
+        widgets.len(),
+        1,
+        "macro-prefixed .h declaration + .cpp out-of-line defs must merge into \
+         ONE Widget entry (no double-count); got {} entries: {:?}",
+        widgets.len(),
+        widgets
+            .iter()
+            .map(|c| (c.file.display().to_string(), c.line, c.method_count, c.field_count))
+            .collect::<Vec<_>>()
+    );
+    let w = widgets[0];
+
+    // Area, Resize, Move = 3 distinct methods, deduplicated across the
+    // declared-only `.h` signatures and their `.cpp` definitions.
+    assert_eq!(
+        w.method_count, 3,
+        "merged Widget must expose exactly Area+Resize+Move (deduped), got {} \
+         components {:?}",
+        w.method_count, w.components
+    );
+
+    // `_w` and `_h` are touched bare (no `this->`) by Area (in the `.h` inline
+    // body, resolved via the declared-field scan that now reaches members under
+    // the `labeled_statement`) and by Resize/Move (in the `.cpp`). With the
+    // shared field set every method connects -> a single cohesive component.
+    let fields: std::collections::HashSet<String> = w
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+    assert!(
+        fields.contains("_w") && fields.contains("_h"),
+        "bare member accesses _w/_h must resolve across the merged class, got {:?}",
+        fields
+    );
+    assert_eq!(
+        w.lcom4, 1,
+        "merged Widget should be one cohesive component once _w/_h are shared, \
+         got lcom4={} components={:?}",
+        w.lcom4, w.components
+    );
+}
+
+/// Two same-named C++ classes in DIFFERENT namespaces. Each is a clean in-body
+/// `class_specifier` (no macro), so each carries its real namespace.
+const CPP_TWO_NS_ISOLATION: &str = r#"
+namespace alpha {
+class Gadget {
+    int x;
+public:
+    int getX() { return x; }
+    void setX(int v) { x = v; }
+};
+}
+namespace beta {
+class Gadget {
+    double y;
+public:
+    double getY() { return y; }
+    void setY(double v) { y = v; }
+};
+}
+"#;
+
+#[test]
+fn cpp_same_name_different_namespace_stay_separate() {
+    // NAMESPACE-ISOLATION GUARD: alpha::Gadget and beta::Gadget share a bare
+    // name but live in distinct namespaces. The shared partial aggregator's
+    // namespace-qualified key MUST keep them as TWO entries (a bare-name key
+    // would mis-merge them). Both carry non-empty distinct namespaces, so the
+    // empty-ns compatibility merge does NOT apply.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "gadgets.cpp", CPP_TWO_NS_ISOLATION);
+
+    let report = analyze_cohesion(dir.path(), Some(Language::Cpp), 2)
+        .expect("analyze_cohesion cpp two-namespace");
+
+    let gadgets: Vec<_> = report
+        .classes
+        .iter()
+        .filter(|c| c.name == "Gadget")
+        .collect();
+    assert_eq!(
+        gadgets.len(),
+        2,
+        "alpha::Gadget and beta::Gadget must remain TWO distinct entries; got {} \
+         entries: {:?}",
+        gadgets.len(),
+        gadgets
+            .iter()
+            .map(|c| (c.line, c.method_count, c.field_count))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A derived class whose method touches a BASE-class field bare. The own-class
+/// declared-field scan cannot see the base's fields (they live in a different
+/// declaration / translation unit), so the bare base-field reference is the
+/// documented v1 under-count boundary.
+const CPP_DERIVED_BARE_BASE: &str = r#"
+class Base {
+protected:
+    int shared;
+};
+class Derived : public Base {
+    int own;
+public:
+    // touches the OWN field bare -> credited
+    void useOwn() { own = own + 1; }
+    // touches an INHERITED (base) field bare -> documented under-count boundary
+    void useBase() { shared = shared + 1; }
+};
+"#;
+
+#[test]
+fn cpp_inherited_bare_field_under_count_boundary() {
+    // BOUNDARY GUARD (pinned, not hidden): `own` is an own-class field and is
+    // credited; `shared` is inherited and is NOT credited by the own-class
+    // declared-field scan. This documents the v1 inherited-field under-count
+    // boundary so it stays VISIBLE and stable rather than silently masked.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "derived.cpp", CPP_DERIVED_BARE_BASE);
+
+    let report = analyze_cohesion(dir.path(), Some(Language::Cpp), 2)
+        .expect("analyze_cohesion cpp derived bare-base");
+
+    let derived = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Derived")
+        .expect("Derived entry");
+    let fields: std::collections::HashSet<String> = derived
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+
+    // Own-class bare field IS credited (the A1 declared-field scan).
+    assert!(
+        fields.contains("own"),
+        "own-class bare field `own` must be credited, got {:?}",
+        fields
+    );
+    // Inherited bare field is the documented under-count boundary: NOT credited.
+    assert!(
+        !fields.contains("shared"),
+        "inherited base-class field `shared` is the documented v1 under-count \
+         boundary and must NOT be credited, got {:?}",
+        fields
+    );
+    // useOwn touches `own`; useBase touches only the (uncounted) base field, so
+    // it has no own-class field signal -> the two methods do NOT connect. This
+    // pins the boundary's downstream effect (an LCOM4 split) explicitly.
+    assert_eq!(
+        derived.lcom4, 2,
+        "with the inherited field uncounted, useOwn/useBase form 2 components, \
+         got lcom4={} components={:?}",
+        derived.lcom4, derived.components
+    );
+}
+
+// ===========================================================================
+// C#: cross-namespace partial collision. The existing
+// `csharp_partial_class_unions_fields_across_files` uses `namespace MyApp` in
+// BOTH files, so it never exercises the collision. These two tests pin BOTH
+// directions of the namespace-qualified key through the production path:
+//   - DIFFERENT namespaces -> stay SEPARATE,
+//   - SAME namespace        -> still UNION.
+// ===========================================================================
+
+const CS_DIFF_NS_A: &str = r#"
+namespace Alpha {
+    public partial class Account {
+        private int balance;
+        public int GetBalance() { return this.balance; }
+    }
+}
+"#;
+
+const CS_DIFF_NS_B: &str = r#"
+namespace Beta {
+    public partial class Account {
+        private string owner;
+        public string GetOwner() { return this.owner; }
+    }
+}
+"#;
+
+#[test]
+fn csharp_partial_class_different_namespaces_stay_separate() {
+    // Alpha.Account and Beta.Account are unrelated classes that happen to share
+    // a bare name. The namespace-qualified partial key MUST keep them as TWO
+    // entries. Both namespaces are non-empty and distinct, so the empty-ns
+    // compatibility merge does not apply.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "Alpha.cs", CS_DIFF_NS_A);
+    write_file(dir.path(), "Beta.cs", CS_DIFF_NS_B);
+
+    let report = analyze_cohesion(dir.path(), Some(Language::CSharp), 2)
+        .expect("analyze_cohesion csharp cross-namespace partial");
+
+    let accounts: Vec<_> = report
+        .classes
+        .iter()
+        .filter(|c| c.name == "Account")
+        .collect();
+    assert_eq!(
+        accounts.len(),
+        2,
+        "Alpha.Account and Beta.Account must stay SEPARATE (cross-namespace \
+         collision); got {} entries: {:?}",
+        accounts.len(),
+        accounts
+            .iter()
+            .map(|c| (c.file.display().to_string(), c.method_count, c.field_count))
+            .collect::<Vec<_>>()
+    );
+}
+
+const CS_SAME_NS_A: &str = r#"
+namespace Gamma {
+    public partial class Ledger {
+        private int debit;
+        public int GetDebit() { return this.debit; }
+    }
+}
+"#;
+
+const CS_SAME_NS_B: &str = r#"
+namespace Gamma {
+    public partial class Ledger {
+        private int credit;
+        public int GetCredit() { return this.credit; }
+    }
+}
+"#;
+
+#[test]
+fn csharp_partial_class_same_namespace_unions() {
+    // Two `Gamma.Ledger` partial fragments must still MERGE into one entry with
+    // the union of their methods/fields (same namespace-qualified key).
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_file(dir.path(), "Ledger1.cs", CS_SAME_NS_A);
+    write_file(dir.path(), "Ledger2.cs", CS_SAME_NS_B);
+
+    let report = analyze_cohesion(dir.path(), Some(Language::CSharp), 2)
+        .expect("analyze_cohesion csharp same-namespace partial");
+
+    let ledgers: Vec<_> = report
+        .classes
+        .iter()
+        .filter(|c| c.name == "Ledger")
+        .collect();
+    assert_eq!(
+        ledgers.len(),
+        1,
+        "two Gamma.Ledger partial fragments must MERGE into one entry; got {} \
+         entries: {:?}",
+        ledgers.len(),
+        ledgers
+            .iter()
+            .map(|c| (c.file.display().to_string(), c.method_count, c.field_count))
+            .collect::<Vec<_>>()
+    );
+    let ledger = ledgers[0];
+    assert!(
+        ledger.method_count >= 2,
+        "merged Gamma.Ledger must expose GetDebit+GetCredit, got {}",
+        ledger.method_count
+    );
+    assert!(
+        ledger.field_count >= 2,
+        "merged Gamma.Ledger must union debit+credit fields, got {}",
+        ledger.field_count
+    );
+}

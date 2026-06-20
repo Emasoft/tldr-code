@@ -376,32 +376,30 @@ pub fn analyze_cohesion_with_options(
     // unqualified class name (no cross-language display drift).
     let mut partial_buckets: HashMap<PartialKey, PartialClassBucket> = HashMap::new();
 
+    // fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): partial extractions are
+    // buffered first, then bucketed in a SECOND pass so the namespace-
+    // compatibility merge (below) can see the full set of qualified keys before
+    // deciding where an empty-namespace extraction belongs.
+    let mut partial_exts: Vec<MethodFieldsExtraction> = Vec::new();
+
+    // fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): C++ resolves a
+    // class's *bare* member accesses against its declared-field set, but for the
+    // dominant `.h`/`.cpp` split the data members are declared in the HEADER
+    // while the out-of-line method bodies that touch them live in the SOURCE
+    // file. Resolving each file in isolation therefore leaves every `.cpp`
+    // method's field set empty, so a header-declared class (e.g. tinyxml2's
+    // `XMLElement`) looks fully disconnected (`lcom4 == method_count`). Build a
+    // PROJECT-WIDE declared-field map keyed on `(namespace_path, class)` up
+    // front so the per-file extraction can resolve cross-translation-unit bare
+    // members. Empty for non-C++ analyses (the helper only walks C++ files).
+    let global_declared = cpp_project_declared_fields(&file_paths);
+
     for file_path in &file_paths {
-        match extract_file_method_fields(file_path, &options) {
+        match extract_file_method_fields(file_path, &options, &global_declared) {
             Ok(extractions) => {
                 for ext in extractions {
                     if ext.is_partial {
-                        // Aggregate by qualified (namespace_path, name) key.
-                        let key = PartialKey {
-                            namespace_path: ext.namespace_path.clone(),
-                            name: ext.name.clone(),
-                        };
-                        let bucket = partial_buckets
-                            .entry(key)
-                            .or_insert_with(|| PartialClassBucket {
-                                name: ext.name.clone(),
-                                first_file: ext.file_path.clone(),
-                                first_line: ext.line,
-                                methods: Vec::new(),
-                            });
-                        if ext.line < bucket.first_line
-                            || (ext.line == bucket.first_line
-                                && ext.file_path < bucket.first_file)
-                        {
-                            bucket.first_file = ext.file_path.clone();
-                            bucket.first_line = ext.line;
-                        }
-                        bucket.methods.extend(ext.methods);
+                        partial_exts.push(ext);
                     } else {
                         // Non-partial: compute cohesion immediately as
                         // before (within-file granularity).
@@ -422,13 +420,88 @@ pub fn analyze_cohesion_with_options(
         }
     }
 
+    // fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): namespace-compatibility merge.
+    //
+    // B1' keys partial classes on the qualified `(namespace_path, name)` so
+    // `a::Widget` and `b::Widget` (and C# `A.Widget` / `B.Widget`) stay
+    // distinct. But C++ tree-sitter error recovery can PREMATURELY CLOSE an
+    // enclosing `namespace_definition` when a header contains a construct it
+    // cannot parse (e.g. tinyxml2's macro-prefixed `class TINYXML2_LIB
+    // XMLElement : public XMLNode` recovers as a sibling of the `preproc_ifdef`
+    // rather than of the namespace body). The `.h` declaration then carries an
+    // EMPTY namespace_path while its cleanly-parsed `.cpp` out-of-line
+    // definitions carry the real `["tinyxml2"]`. A pure equality key would NOT
+    // merge them → double-count.
+    //
+    // Resolution (purely structural, no source-text heuristic): an extraction
+    // whose namespace_path is EMPTY merges into the qualified bucket of the
+    // same bare name IFF EXACTLY ONE such qualified bucket exists. When zero
+    // exist it forms its own `([], name)` bucket (a genuine global-scope
+    // class); when MORE than one exists the namespace is truly ambiguous, so it
+    // is kept separate (never guess which qualified class it belongs to). This
+    // collapses the parse-recovery double-count without ever mis-merging two
+    // genuinely distinct namespaced classes.
+    let mut qualified_names: HashMap<String, HashSet<Vec<String>>> = HashMap::new();
+    for ext in &partial_exts {
+        if !ext.namespace_path.is_empty() {
+            qualified_names
+                .entry(ext.name.clone())
+                .or_default()
+                .insert(ext.namespace_path.clone());
+        }
+    }
+
+    for ext in partial_exts {
+        let resolved_ns: Vec<String> = if ext.namespace_path.is_empty() {
+            match qualified_names.get(&ext.name) {
+                // Exactly one qualified namespace for this name: adopt it so the
+                // parse-recovery-truncated `.h` entry merges with the `.cpp`.
+                Some(ns_set) if ns_set.len() == 1 => {
+                    ns_set.iter().next().cloned().unwrap_or_default()
+                }
+                // Zero or ambiguous (>1): keep the empty namespace.
+                _ => Vec::new(),
+            }
+        } else {
+            ext.namespace_path.clone()
+        };
+
+        let key = PartialKey {
+            namespace_path: resolved_ns,
+            name: ext.name.clone(),
+        };
+        let bucket = partial_buckets
+            .entry(key)
+            .or_insert_with(|| PartialClassBucket {
+                name: ext.name.clone(),
+                first_file: ext.file_path.clone(),
+                first_line: ext.line,
+                methods: Vec::new(),
+            });
+        if ext.line < bucket.first_line
+            || (ext.line == bucket.first_line && ext.file_path < bucket.first_file)
+        {
+            bucket.first_file = ext.file_path.clone();
+            bucket.first_line = ext.line;
+        }
+        bucket.methods.extend(ext.methods);
+    }
+
     // Now compute LCOM4 for merged partial-class buckets.
     for (_, bucket) in partial_buckets {
+        // fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): a single logical class can
+        // contribute the SAME method twice across the merged sources — e.g. the
+        // `.h` carries `Accept` as a declared-only signature (empty field set)
+        // while the `.cpp` carries the out-of-line `XMLElement::Accept`
+        // definition (the real field accesses). Counting both would inflate
+        // `method_count`/LCOM4. Collapse by method name, UNIONING the field sets
+        // so the richest signal (from whichever source defined the body) wins.
+        let methods = dedup_methods_by_name(bucket.methods);
         all_classes.push(cohesion_from_method_fields(
             &bucket.name,
             &bucket.first_file,
             bucket.first_line,
-            bucket.methods,
+            methods,
             &options,
         ));
     }
@@ -605,12 +678,36 @@ struct PartialClassBucket {
 }
 
 /// Read+parse a file and extract per-method `(name, fields)` pairs for
+/// `.h`/`.hpp` headers map to `Language::C` by extension, but a C++ header is
+/// the dominant declaration site for C++ classes. Promote such a header to
+/// `Language::Cpp` when it carries a `class`/`namespace` keyword (the
+/// `analyze_file_cohesion` P19-08 promotion). Factored into one place so every
+/// cohesion entry point (per-file extraction AND the project-wide declared-field
+/// prepass) shares a single promotion rule.
+fn cpp_promote_header_to_cpp(language: Language, file_path: &Path, source: &str) -> Language {
+    if matches!(language, Language::C)
+        && file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("h") || e.eq_ignore_ascii_case("hpp"))
+            .unwrap_or(false)
+        && (source.contains("\nclass ")
+            || source.contains(" class ")
+            || source.contains("namespace "))
+    {
+        Language::Cpp
+    } else {
+        language
+    }
+}
+
 /// every class detected. This is the "data" form used by the M-030
 /// cross-file aggregator — it factors out the per-method field-access
 /// extraction so the union step at the bucket level is trivial.
 fn extract_file_method_fields(
     file_path: &Path,
     options: &CohesionOptions,
+    global_declared: &HashMap<(Vec<String>, String), HashSet<String>>,
 ) -> TldrResult<Vec<MethodFieldsExtraction>> {
     let source = std::fs::read_to_string(file_path)?;
     let mut language = Language::from_path(file_path).ok_or_else(|| {
@@ -623,18 +720,7 @@ fn extract_file_method_fields(
         )
     })?;
     // Mirror the `analyze_file_cohesion` `.h → Cpp` promotion (P19-08).
-    if matches!(language, Language::C)
-        && file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("h") || e.eq_ignore_ascii_case("hpp"))
-            .unwrap_or(false)
-        && (source.contains("\nclass ")
-            || source.contains(" class ")
-            || source.contains("namespace "))
-    {
-        language = Language::Cpp;
-    }
+    language = cpp_promote_header_to_cpp(language, file_path, &source);
 
     let tree = parse(&source, language)?;
     let root = tree.root_node();
@@ -662,7 +748,7 @@ fn extract_file_method_fields(
     // can use a namespace-qualified key.
     if matches!(language, Language::Cpp) {
         return Ok(extract_file_method_fields_cpp(
-            &root, &source, file_path, options,
+            &root, &source, file_path, options, global_declared,
         ));
     }
 
@@ -770,6 +856,31 @@ fn collect_solidity_method_fields(
             _ => collect_solidity_method_fields(&child, source, file_path, out),
         }
     }
+}
+
+/// fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): collapse a method list so each
+/// method name appears once, UNIONING the field-access sets of all entries that
+/// share a name. Used when a merged partial-class bucket received the same
+/// method from more than one source (e.g. a `.h` declared-only signature plus
+/// its `.cpp` out-of-line definition). Insertion order of first appearance is
+/// preserved so output stays deterministic.
+fn dedup_methods_by_name(methods: Vec<MethodFields>) -> Vec<MethodFields> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_name: HashMap<String, HashSet<String>> = HashMap::new();
+    for m in methods {
+        let entry = by_name.entry(m.name.clone()).or_insert_with(|| {
+            order.push(m.name.clone());
+            HashSet::new()
+        });
+        entry.extend(m.fields);
+    }
+    order
+        .into_iter()
+        .map(|name| {
+            let fields = by_name.remove(&name).unwrap_or_default();
+            MethodFields { name, fields }
+        })
+        .collect()
 }
 
 /// Compute the LCOM4 result for a class given its precomputed method
@@ -1842,6 +1953,66 @@ fn lua_split_dotted_name(
     }
 }
 
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): build a PROJECT-WIDE
+/// declared-field map keyed on `(namespace_path, class)` by walking every C++
+/// file's in-body class declarations (including the macro-prefixed misparse and
+/// its spilled members). This is consumed by `extract_file_method_fields_cpp`
+/// so a `.cpp` out-of-line method body can resolve the bare data members that
+/// were declared in a SEPARATE `.h` — the dominant C++ split that a per-file
+/// walk cannot see. Non-C++ files are skipped (returns only C++ class keys).
+/// Field sets for the same key are UNIONED across files so a class declared
+/// across multiple headers still resolves the full member set.
+fn cpp_project_declared_fields(
+    file_paths: &[PathBuf],
+) -> HashMap<(Vec<String>, String), HashSet<String>> {
+    let mut global: HashMap<(Vec<String>, String), HashSet<String>> = HashMap::new();
+    // Default options suffice: declared-field collection does not depend on the
+    // dunder/threshold knobs (those only filter emitted methods, not fields).
+    let options = CohesionOptions {
+        include_dunder: false,
+        low_cohesion_threshold: 0,
+    };
+    for file_path in file_paths {
+        // Apply the same `.h → Cpp` promotion the per-file walk uses so headers
+        // (which map to `Language::C` by extension) are still scanned for C++
+        // class declarations.
+        let language = match Language::from_path(file_path) {
+            Some(l) => l,
+            None => continue,
+        };
+        let source = match std::fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let language = cpp_promote_header_to_cpp(language, file_path, &source);
+        if !matches!(language, Language::Cpp) {
+            continue;
+        }
+        let tree = match parse(&source, language) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        // Reuse the in-body walk purely for its declared-field side effect; the
+        // emitted extractions are discarded here.
+        let mut throwaway: Vec<MethodFieldsExtraction> = Vec::new();
+        let mut per_file: HashMap<(Vec<String>, String), HashSet<String>> =
+            HashMap::new();
+        collect_cpp_inbody_class_fields(
+            &tree.root_node(),
+            &source,
+            file_path,
+            &[],
+            &options,
+            &mut throwaway,
+            &mut per_file,
+        );
+        for (key, fields) in per_file {
+            global.entry(key).or_default().extend(fields);
+        }
+    }
+    global
+}
+
 /// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet A1+B1'): dedicated C++
 /// `MethodFieldsExtraction` builder. Mirrors the Solidity dedicated flow:
 /// it threads each class's `.h`-declared field-name set into a bare-identifier
@@ -1858,10 +2029,13 @@ fn lua_split_dotted_name(
 ///     `.cpp` definitions merge into one logical class via the aggregator.
 ///   - out-of-line definitions (`Ret ns::Class::method(){…}` in a `.cpp` with
 ///     no class body): grouped by `(namespace_path, class)` and emitted as a
-///     partial extraction. Bare-member resolution is unavailable here because
-///     the declared-field set lives in a different translation unit (the
-///     documented v1 under-count boundary, same class as inherited fields);
-///     `this->member` is still resolved.
+///     partial extraction. Bare-member resolution uses `global_declared` — the
+///     PROJECT-WIDE declared-field map keyed on `(namespace_path, class)`
+///     harvested from every C++ file's in-body declarations — so a `.cpp`
+///     out-of-line body resolves the bare members declared in its `.h`
+///     (fix-T5-cohesion-wiring-repair3-v1). `this->member` is always resolved.
+///     The residual under-count boundary is now only INHERITED (base-class)
+///     fields, whose declarations belong to a different class key.
 ///
 /// Boundary — parse-recovery namespace truncation: per the QA-corrected B1'
 /// design, the `.h` declaration and `.cpp` out-of-line definitions merge IFF
@@ -1879,11 +2053,23 @@ fn extract_file_method_fields_cpp(
     source: &str,
     file_path: &Path,
     options: &CohesionOptions,
+    global_declared: &HashMap<(Vec<String>, String), HashSet<String>>,
 ) -> Vec<MethodFieldsExtraction> {
     let mut out: Vec<MethodFieldsExtraction> = Vec::new();
 
+    // fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): declared-field set
+    // per `(namespace_path, class)` harvested from the in-body (`.h`) pass, so
+    // the out-of-line (`.cpp`) merge below can resolve the SAME bare members
+    // (`_rootAttribute`, …) instead of resolving against an empty set. Without
+    // this the out-of-line definitions of a header-declared class look fully
+    // disconnected (XMLElement: `lcom4 == method_count`).
+    let mut declared_by_class: HashMap<(Vec<String>, String), HashSet<String>> =
+        HashMap::new();
+
     // In-body classes (with declared-field-aware bare-member resolution).
-    collect_cpp_inbody_class_fields(root, source, file_path, &[], options, &mut out);
+    collect_cpp_inbody_class_fields(
+        root, source, file_path, &[], options, &mut out, &mut declared_by_class,
+    );
 
     // Out-of-line `ns::Class::method` definitions, keyed by (namespace, class).
     let mut out_of_line: HashMap<(Vec<String>, String), Vec<(String, usize, usize)>> =
@@ -1897,16 +2083,41 @@ fn extract_file_method_fields_cpp(
         let inbody = out.iter_mut().find(|e| {
             e.name == class_name && e.namespace_path == namespace_path
         });
+        // fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): resolve the
+        // out-of-line method bodies against the class's declared-field set,
+        // unioning the set harvested from THIS file (single-TU `.h`+`.cpp`)
+        // with the PROJECT-WIDE set (the dominant case: members declared in a
+        // separate header, defined out-of-line in this `.cpp`). The union lets
+        // a `.cpp` method like `XMLElement::FindAttribute` resolve the bare
+        // `_rootAttribute` declared in `tinyxml2.h`.
+        //
+        // Empty-namespace compatibility: tree-sitter-cpp error recovery can
+        // PREMATURELY CLOSE the enclosing `namespace tinyxml2` in the HEADER
+        // (the class declarations float up with an EMPTY namespace_path) while
+        // the cleanly-parsed `.cpp` out-of-line definitions carry the real
+        // `["tinyxml2"]`. So an exact `(namespace, name)` lookup would MISS the
+        // header-declared fields. Mirror the B1' partial-merge tolerance by
+        // also folding in the `([], name)` variant when this class has a
+        // non-empty namespace — exactly the parse-recovery case — so the bare
+        // members still resolve. (This only adds fields; the cohesion ENTRIES
+        // stay separate via the namespace-qualified partial key.)
+        let key = (namespace_path.clone(), class_name.clone());
+        let mut declared = declared_by_class.get(&key).cloned().unwrap_or_default();
+        if let Some(g) = global_declared.get(&key) {
+            declared.extend(g.iter().cloned());
+        }
+        if !namespace_path.is_empty() {
+            if let Some(g) = global_declared.get(&(Vec::new(), class_name.clone())) {
+                declared.extend(g.iter().cloned());
+            }
+        }
         let methods: Vec<MethodFields> = defs
             .iter()
             .filter(|(name, _, _)| options.include_dunder || !is_dunder_method(name))
             .map(|(name, start, end)| {
-                // Bare-member resolution needs the declared-field set, which is
-                // unavailable for a pure out-of-line definition. Resolve only
-                // `this->member` here (empty declared set), per the boundary.
                 let fields = cpp_method_field_accesses(
                     &source[*start..*end],
-                    &HashSet::new(),
+                    &declared,
                 );
                 MethodFields {
                     name: name.clone(),
@@ -1950,6 +2161,17 @@ fn extract_file_method_fields_cpp(
 /// Recursively walk for in-body C++ classes, tracking the enclosing namespace
 /// chain. Emits one `MethodFieldsExtraction` per class with bare-member +
 /// `this->` field resolution against the class's own declared fields.
+///
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): `declared_by_class`
+/// records the resolved declared-field set per `(namespace_path, name)` so the
+/// caller's out-of-line (`Class::method`) merge can resolve the SAME bare
+/// members in the `.cpp` definitions (otherwise those `.cpp` methods resolve
+/// against an empty set and the class looks fully disconnected — the XMLElement
+/// `lcom4 == method_count` symptom). The walk is index-based (not a bare
+/// cursor `for`) so the macro-prefixed misparse — whose members for a LARGE
+/// class SPILL OUT as siblings of the misparsed `function_definition` rather
+/// than nesting inside its truncated `compound_statement` body — can absorb
+/// those spilled siblings into the same class before they are revisited.
 fn collect_cpp_inbody_class_fields(
     node: &tree_sitter::Node,
     source: &str,
@@ -1957,9 +2179,13 @@ fn collect_cpp_inbody_class_fields(
     namespace_path: &[String],
     options: &CohesionOptions,
     out: &mut Vec<MethodFieldsExtraction>,
+    declared_by_class: &mut HashMap<(Vec<String>, String), HashSet<String>>,
 ) {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
+    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+    let mut i = 0usize;
+    while i < children.len() {
+        let child = children[i];
         match child.kind() {
             "namespace_definition" => {
                 let mut nested = namespace_path.to_vec();
@@ -1973,12 +2199,15 @@ fn collect_cpp_inbody_class_fields(
                 if let Some(body) = child.child_by_field_name("body") {
                     collect_cpp_inbody_class_fields(
                         &body, source, file_path, &nested, options, out,
+                        declared_by_class,
                     );
                 } else {
                     collect_cpp_inbody_class_fields(
                         &child, source, file_path, &nested, options, out,
+                        declared_by_class,
                     );
                 }
+                i += 1;
                 continue;
             }
             "class_specifier" | "struct_specifier" => {
@@ -1986,6 +2215,9 @@ fn collect_cpp_inbody_class_fields(
                     let declared = cpp_declared_field_names(&body, source);
                     let methods = cpp_inbody_methods_fields(
                         &body, source, &declared, options,
+                    );
+                    record_declared_fields(
+                        declared_by_class, namespace_path, &name, &declared,
                     );
                     // Skip method-less classes (forward decls / pure-virtual
                     // interfaces) — they carry no LCOM4 signal, matching the
@@ -2003,8 +2235,10 @@ fn collect_cpp_inbody_class_fields(
                     // Recurse into the body for nested classes.
                     collect_cpp_inbody_class_fields(
                         &body, source, file_path, namespace_path, options, out,
+                        declared_by_class,
                     );
                 }
+                i += 1;
                 continue;
             }
             "function_definition" | "declaration" => {
@@ -2012,9 +2246,48 @@ fn collect_cpp_inbody_class_fields(
                 if let Some((name, body)) =
                     cpp_macro_prefixed_class_name_and_body(&child, source)
                 {
-                    let declared = cpp_declared_field_names(&body, source);
-                    let methods = cpp_inbody_methods_fields(
-                        &body, source, &declared, options,
+                    // fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL):
+                    // for a LARGE macro-prefixed class tree-sitter error
+                    // recovery truncates the captured `compound_statement` body
+                    // and SPILLS the remaining members (`_rootAttribute`, the
+                    // inline accessors, the out-of-line method declarations, …)
+                    // out as siblings of THIS `function_definition`, terminated
+                    // by a floated brace-only `ERROR }` node. Gather those
+                    // spilled siblings so the declared-field scan and inline
+                    // method scan see the WHOLE class, not just the truncated
+                    // head. `spill_end` is exclusive; it equals `i + 1` when
+                    // there is no spill (small class, e.g. StrPair).
+                    let spill_end =
+                        cpp_macro_spilled_region_end(&children, i);
+                    // The captured `compound_statement` body is a CONTAINER —
+                    // its members are CHILDREN, so it is scanned with the
+                    // child-iterating collectors. Each spilled SIBLING is itself
+                    // a member node, so it is scanned with the single-node
+                    // visitors (calling the child-iterating form on it would
+                    // only descend into a method body / declarator and miss the
+                    // member, which is exactly why XMLElement's inline
+                    // accessors and `_rootAttribute`/`_closingType` were lost).
+                    let spilled = &children[i + 1..spill_end];
+
+                    let mut declared = HashSet::new();
+                    cpp_collect_declared_fields(&body, source, &mut declared);
+                    for n in spilled {
+                        cpp_visit_declared_node(n, source, &mut declared);
+                    }
+                    let mut methods = Vec::new();
+                    let mut seen: HashSet<String> = HashSet::new();
+                    cpp_collect_inbody_methods(
+                        &body, source, &declared, options, &mut methods,
+                        &mut seen,
+                    );
+                    for n in spilled {
+                        cpp_visit_inbody_method_node(
+                            n, source, &declared, options, &mut methods,
+                            &mut seen,
+                        );
+                    }
+                    record_declared_fields(
+                        declared_by_class, namespace_path, &name, &declared,
                     );
                     if !methods.is_empty() {
                         out.push(MethodFieldsExtraction {
@@ -2026,9 +2299,22 @@ fn collect_cpp_inbody_class_fields(
                             namespace_path: namespace_path.to_vec(),
                         });
                     }
+                    // Recurse into the captured body and each spilled sibling
+                    // for genuinely nested classes (the inline/declared scans
+                    // above already pruned nested-class members).
                     collect_cpp_inbody_class_fields(
                         &body, source, file_path, namespace_path, options, out,
+                        declared_by_class,
                     );
+                    for n in spilled {
+                        collect_cpp_inbody_class_fields(
+                            n, source, file_path, namespace_path, options, out,
+                            declared_by_class,
+                        );
+                    }
+                    // Consume the whole spilled region so the absorbed sibling
+                    // members are not revisited as standalone constructs.
+                    i = spill_end;
                     continue;
                 }
             }
@@ -2036,8 +2322,144 @@ fn collect_cpp_inbody_class_fields(
         }
         collect_cpp_inbody_class_fields(
             &child, source, file_path, namespace_path, options, out,
+            declared_by_class,
         );
+        i += 1;
     }
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): record a class's
+/// resolved declared-field set, UNIONING with any prior set for the same
+/// `(namespace_path, name)` (a class may be seen more than once across the file
+/// walk — e.g. a forward-declared shell and the full definition). Empty sets
+/// never erase a previously recorded non-empty set.
+fn record_declared_fields(
+    declared_by_class: &mut HashMap<(Vec<String>, String), HashSet<String>>,
+    namespace_path: &[String],
+    name: &str,
+    declared: &HashSet<String>,
+) {
+    if declared.is_empty() {
+        declared_by_class
+            .entry((namespace_path.to_vec(), name.to_string()))
+            .or_default();
+        return;
+    }
+    declared_by_class
+        .entry((namespace_path.to_vec(), name.to_string()))
+        .or_default()
+        .extend(declared.iter().cloned());
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): find the exclusive
+/// end index of the SPILLED-member region that follows a macro-prefixed class
+/// misparse at `children[start]`.
+///
+/// Background (verified by debug-parse on tinyxml2 `XMLElement` and synthetic
+/// reductions): for a SMALL macro-prefixed class the misparsed
+/// `function_definition` keeps the whole `compound_statement` body and the
+/// trailing `};` produces a stray-semicolon `expression_statement` as its
+/// immediate next sibling — there is NO spill. For a LARGE class tree-sitter
+/// truncates the captured body and the remaining members appear as siblings;
+/// the immediate next sibling is then member-shaped (a `declaration` /
+/// `function_definition` / `comment`), NOT a stray semicolon.
+///
+/// Detection therefore keys on the IMMEDIATE sibling:
+///   - stray-semicolon `expression_statement`, a scope-closing `}` token, a new
+///     `namespace_definition` / `class_specifier` / `struct_specifier`, or
+///     end-of-children  ->  NO spill, return `start + 1`.
+///   - anything else  ->  the class spilled; greedily absorb siblings until the
+///     spill terminates.
+///
+/// Spill termination (once spilling is confirmed):
+///   - a brace-only `ERROR` (the class's floated closing `}`, seen at
+///     translation-unit scope) — CONSUMED (return its index + 1);
+///   - a `}` token (the enclosing scope's own brace, seen when the class
+///     spilled inside a `namespace` body) — NOT consumed (return its index);
+///   - a new `namespace_definition` / `class_specifier` / `struct_specifier` —
+///     NOT consumed.
+/// Every other sibling (`declaration`, `function_definition`, `comment`,
+/// `labeled_statement`, mid-body `expression_statement`, `enum_specifier`,
+/// non-brace recovery `ERROR`, stray `;` token, …) is part of the spilled class
+/// body and is absorbed; the recursive field/method collectors prune nested
+/// classes and method bodies, so absorbing them is safe.
+fn cpp_macro_spilled_region_end(
+    children: &[tree_sitter::Node],
+    start: usize,
+) -> usize {
+    let first = match children.get(start + 1) {
+        Some(n) => *n,
+        None => return start + 1,
+    };
+    // Immediate-sibling disambiguation: a complete (non-spilling) macro class is
+    // followed by the stray `;` of its `};`, or by a scope boundary.
+    if cpp_is_stray_semicolon(&first) {
+        return start + 1;
+    }
+    match first.kind() {
+        "}" | "namespace_definition" | "class_specifier" | "struct_specifier" => {
+            return start + 1;
+        }
+        _ => {}
+    }
+
+    // Confirmed spill: absorb the spilled body up to its terminator.
+    let mut j = start + 1;
+    while j < children.len() {
+        let n = children[j];
+        if cpp_is_brace_only_error(&n) {
+            return j + 1;
+        }
+        match n.kind() {
+            "}" | "namespace_definition" | "class_specifier"
+            | "struct_specifier" => return j,
+            _ => j += 1,
+        }
+    }
+    j
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): `true` for an
+/// `expression_statement` that is just a lone `;` — the residue of a complete
+/// class's `};`. Used to recognize that a macro-prefixed class did NOT spill.
+fn cpp_is_stray_semicolon(node: &tree_sitter::Node) -> bool {
+    if node.kind() != "expression_statement" {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let mut saw_semi = false;
+    for c in node.children(&mut cursor) {
+        if c.kind() == ";" {
+            saw_semi = true;
+        } else {
+            return false;
+        }
+    }
+    saw_semi
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): `true` for the
+/// floated class-closing brace produced by macro-misparse recovery — an
+/// `ERROR` node with zero NAMED children whose only child is the `}` token.
+/// Verified by debug-parse: the in-class recovery `ERROR` (e.g.
+/// `virtual ~XMLElement(); …`) carries named children, and the post-class
+/// `enum` recovery `ERROR` carries an `enum`/`type_identifier`; only the
+/// class-closing brace is a pure `}` token, so this never mistakes a recovery
+/// node that still holds members for the terminator.
+fn cpp_is_brace_only_error(node: &tree_sitter::Node) -> bool {
+    if node.kind() != "ERROR" || node.named_child_count() != 0 {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let mut saw_close_brace = false;
+    for c in node.children(&mut cursor) {
+        if c.kind() == "}" {
+            saw_close_brace = true;
+        } else {
+            return false;
+        }
+    }
+    saw_close_brace
 }
 
 /// Return `(class_name, body_node)` for a `class_specifier`/`struct_specifier`
@@ -2084,10 +2506,59 @@ fn cpp_macro_prefixed_class_name_and_body<'a>(
 /// `field_declaration -> field_identifier` (and pointer/array/reference
 /// declarators that wrap a `field_identifier`). Member functions are NOT
 /// fields; only data members are collected.
+///
+/// fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): the body is walked *recursively*
+/// rather than via a flat direct-child scan. A well-formed
+/// `field_declaration_list` body lists members as direct children, but the
+/// macro-prefixed misparse (`class TINYXML2_LIB XMLElement : public XMLNode`)
+/// yields a `compound_statement` body in which error recovery nests ALL
+/// members under a single `labeled_statement` (the first `public:` access
+/// specifier). A flat scan therefore saw zero data members, so bare-member
+/// resolution silently degraded to `field_count = 0` for every macro-prefixed
+/// class (XMLElement, XMLPrinter, …). Recursing through `labeled_statement`
+/// (and any other recovery wrapper) restores the declared-field set, while we
+/// still STOP at nested `class_specifier`/`struct_specifier` bodies (their
+/// members belong to the nested class) and at `function_definition` bodies (a
+/// method body's locals are not data members).
 fn cpp_declared_field_names(body: &tree_sitter::Node, source: &str) -> HashSet<String> {
     let mut out = HashSet::new();
-    let mut cursor = body.walk();
-    for member in body.children(&mut cursor) {
+    cpp_collect_declared_fields(body, source, &mut out);
+    out
+}
+
+/// Recursive worker for `cpp_declared_field_names`. See that function for the
+/// rationale behind recursing past `labeled_statement` wrappers while pruning
+/// nested class and method-body subtrees. Iterates `node`'s CHILDREN and
+/// classifies each via [`cpp_visit_declared_node`].
+fn cpp_collect_declared_fields(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let mut cursor = node.walk();
+    for member in node.children(&mut cursor) {
+        cpp_visit_declared_node(&member, source, out);
+    }
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): classify a SINGLE
+/// node as (or recurse to find) a declared data member. Factored out of the
+/// child loop so the macro-spill path can apply the SAME classification to a
+/// spilled SIBLING node directly (a spilled `_rootAttribute;` arrives as a
+/// `declaration` node that is itself the member, not a child of the node it is
+/// passed as).
+fn cpp_visit_declared_node(
+    member: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    match member.kind() {
+        // Nested class/struct: its data members belong to the nested class,
+        // not this one. Do not descend.
+        "class_specifier" | "struct_specifier" => {}
+        // A method's body lives here; its locals/params are not data members
+        // of the class. Do not descend.
+        "function_definition" => {}
         // Data members appear as `field_declaration` in a well-formed
         // `field_declaration_list` body, but as plain `declaration` nodes when
         // the class is the macro-prefixed misparse whose body is a
@@ -2095,25 +2566,28 @@ fn cpp_declared_field_names(body: &tree_sitter::Node, source: &str) -> HashSet<S
         // `int _flags;` parses as a `declaration` with an `identifier`
         // declarator rather than a `field_declaration` with a
         // `field_identifier`). Handle both shapes.
-        if member.kind() != "field_declaration" && member.kind() != "declaration" {
-            continue;
-        }
-        // Skip member functions: a `field_declaration`/`declaration` whose
-        // declarator is (or wraps) a `function_declarator` is a method
-        // declaration, not a data member.
-        //
-        // Only the `declarator` field is consulted (never a positional scan):
-        // a `declaration` with no `declarator` field is a type-only construct
-        // such as `enum Mode { … };` or a nested type, whose inner identifiers
-        // (enum constants, etc.) must NOT be mistaken for data members.
-        if let Some(decl) = member.child_by_field_name("declarator") {
-            if cpp_declarator_is_function(&decl) {
-                continue;
+        "field_declaration" | "declaration" => {
+            // Skip member functions: a `field_declaration`/`declaration` whose
+            // declarator is (or wraps) a `function_declarator` is a method
+            // declaration, not a data member.
+            //
+            // Only the `declarator` field is consulted (never a positional
+            // scan): a `declaration` with no `declarator` field is a type-only
+            // construct such as `enum Mode { … };` or a nested type, whose
+            // inner identifiers (enum constants, etc.) must NOT be mistaken for
+            // data members.
+            if let Some(decl) = member.child_by_field_name("declarator") {
+                if cpp_declarator_is_function(&decl) {
+                    return;
+                }
+                collect_cpp_field_identifier(&decl, source, out);
             }
-            collect_cpp_field_identifier(&decl, source, &mut out);
         }
+        // Everything else (access-specifier `labeled_statement` wrappers,
+        // `comment`, ERROR recovery nodes, …): recurse to reach the members
+        // nested beneath it.
+        _ => cpp_collect_declared_fields(member, source, out),
     }
-    out
 }
 
 /// Return `true` if a (possibly wrapped) declarator is/contains a
@@ -2160,6 +2634,24 @@ fn collect_cpp_field_identifier(
 
 /// Build per-method `MethodFields` for an in-body C++ class, resolving bare
 /// member accesses against `declared` (plus `this->member`), with shadowing.
+///
+/// fix-cl-7-repair3-v1 (v0.5.0 DESIGN-TAIL): walks the body *recursively* so
+/// that the macro-prefixed misparse — whose `compound_statement` body nests
+/// every member under a single `labeled_statement` access-specifier wrapper —
+/// still surfaces its methods (a flat direct-child scan saw zero, which is why
+/// `cohesion` previously dropped the `.h` `XMLElement`/`XMLPrinter` entries and
+/// double-counted against the `.cpp` out-of-line definitions). Two member
+/// shapes are recognized:
+///   - `function_definition` — an inline method (has a body); bare-member field
+///     resolution runs against `declared`.
+///   - `field_declaration`/`declaration` whose declarator is a function
+///     declarator — a declared-only method (signature in the `.h`, defined
+///     out-of-line). It carries no inline field signal but is still a method,
+///     so emitting it lets the in-body `(namespace, class)` entry MERGE with
+///     the matching out-of-line `.cpp` definitions instead of forming a second
+///     entry (the double-count root cause).
+/// Nested `class_specifier`/`struct_specifier` bodies and method bodies are
+/// pruned so a nested class's methods are not attributed to the parent.
 fn cpp_inbody_methods_fields(
     body: &tree_sitter::Node,
     source: &str,
@@ -2167,27 +2659,156 @@ fn cpp_inbody_methods_fields(
     options: &CohesionOptions,
 ) -> Vec<MethodFields> {
     let mut methods = Vec::new();
-    let mut cursor = body.walk();
-    for child in body.children(&mut cursor) {
-        if child.kind() != "function_definition" {
-            continue;
-        }
-        let declarator = match child.child_by_field_name("declarator") {
-            Some(d) => d,
-            None => continue,
-        };
-        let name = match extract_cpp_method_name(&declarator, source) {
-            Some(n) => n,
-            None => continue,
-        };
-        if !options.include_dunder && is_dunder_method(&name) {
-            continue;
-        }
-        let method_text = &source[child.start_byte()..child.end_byte()];
-        let fields = cpp_method_field_accesses(method_text, declared);
-        methods.push(MethodFields { name, fields });
-    }
+    let mut seen: HashSet<String> = HashSet::new();
+    cpp_collect_inbody_methods(body, source, declared, options, &mut methods, &mut seen);
     methods
+}
+
+/// Recursive worker for `cpp_inbody_methods_fields`. `seen` de-duplicates
+/// methods by name so a declared-only signature does not produce a phantom
+/// second entry when the inline definition is also present in the same body.
+fn cpp_collect_inbody_methods(
+    node: &tree_sitter::Node,
+    source: &str,
+    declared: &HashSet<String>,
+    options: &CohesionOptions,
+    methods: &mut Vec<MethodFields>,
+    seen: &mut HashSet<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        cpp_visit_inbody_method_node(&child, source, declared, options, methods, seen);
+    }
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): classify a SINGLE
+/// node as an inline / declared-only method (or recurse to find members).
+/// Factored out of the child loop so the macro-spill path can apply the SAME
+/// classification to a spilled SIBLING node directly — a spilled inline method
+/// arrives as a `function_definition` node that is itself the method, not a
+/// child of the node it is passed as, so calling the child-loop form on it
+/// would only inspect the method body (yielding nothing, the XMLElement
+/// `FirstAttribute`/`ClosingType`-missing symptom).
+fn cpp_visit_inbody_method_node(
+    child: &tree_sitter::Node,
+    source: &str,
+    declared: &HashSet<String>,
+    options: &CohesionOptions,
+    methods: &mut Vec<MethodFields>,
+    seen: &mut HashSet<String>,
+) {
+    match child.kind() {
+        // Nested class/struct methods belong to the nested class.
+        "class_specifier" | "struct_specifier" => {}
+        // Inline method: extract name, resolve bare-member field accesses
+        // against the class's declared-field set. Do NOT recurse into it (its
+        // body is the method body, not more class members).
+        "function_definition" => {
+            let declarator = match child.child_by_field_name("declarator") {
+                Some(d) => d,
+                None => return,
+            };
+            let name = match extract_cpp_method_name(&declarator, source) {
+                Some(n) => n,
+                None => return,
+            };
+            if !options.include_dunder && is_dunder_method(&name) {
+                return;
+            }
+            let method_text = &source[child.start_byte()..child.end_byte()];
+            let fields = cpp_method_field_accesses(method_text, declared);
+            if seen.insert(name.clone()) {
+                methods.push(MethodFields { name, fields });
+            } else if let Some(existing) = methods.iter_mut().find(|m| m.name == name) {
+                // An inline definition supersedes a prior declared-only
+                // signature: union its (richer) field set in.
+                existing.fields.extend(fields);
+            }
+        }
+        // `field_declaration` / `declaration` whose declarator is a function
+        // declarator. Two sub-cases:
+        //   - declared-only signature (`void Resize(int,int);`): emit with an
+        //     EMPTY field set so the in-body class merges with its out-of-line
+        //     definitions.
+        //   - fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL):
+        //     MISPARSED INLINE method. In the macro-prefixed misparse an inline
+        //     method `int Area() const { return _w * _h; }` is NOT a
+        //     `function_definition`; it parses as a `declaration` whose
+        //     declarator is an `init_declarator` (function_declarator + an
+        //     `initializer_list` "value" holding the body). Detect the body via
+        //     `cpp_declaration_has_inline_body` and resolve its bare-member
+        //     field accesses from the declaration text (otherwise the inline
+        //     `Area`/`FirstAttribute`/`ClosingType` accessors are mis-emitted as
+        //     field-less, leaving them disconnected from `_w`/`_h`).
+        "field_declaration" | "declaration" => {
+            if let Some(decl) = child.child_by_field_name("declarator") {
+                if cpp_declarator_is_function(&decl) {
+                    if let Some(name) = extract_cpp_method_name(&decl, source) {
+                        if !options.include_dunder && is_dunder_method(&name) {
+                            return;
+                        }
+                        let fields = if cpp_declaration_has_inline_body(child) {
+                            let method_text =
+                                &source[child.start_byte()..child.end_byte()];
+                            cpp_method_field_accesses(method_text, declared)
+                        } else {
+                            HashSet::new()
+                        };
+                        if seen.insert(name.clone()) {
+                            methods.push(MethodFields { name, fields });
+                        } else if !fields.is_empty() {
+                            if let Some(existing) =
+                                methods.iter_mut().find(|m| m.name == name)
+                            {
+                                // A misparsed-inline body supersedes a prior
+                                // declared-only signature: union the richer set.
+                                existing.fields.extend(fields);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Access-specifier `labeled_statement` wrappers, `comment`, ERROR
+        // recovery nodes, …: recurse to reach the nested members.
+        _ => cpp_collect_inbody_methods(child, source, declared, options, methods, seen),
+    }
+}
+
+/// fix-T5-cohesion-wiring-repair3-v1 (v0.5.0 DESIGN-TAIL): `true` when a
+/// `declaration` / `field_declaration` node actually carries an INLINE method
+/// body that tree-sitter recovery folded into an `init_declarator` value (the
+/// macro-prefixed misparse turns `T m() { … }` into a `declaration` whose
+/// `init_declarator` has a `function_declarator` declarator and an
+/// `initializer_list`/`compound_statement` value). Distinguishes a real inline
+/// body from a pure signature (`void m();` — no value) and from a defaulted /
+/// deleted / pure-virtual declarator (`= 0` / `= default`, whose value is a
+/// `number_literal` / `default_method_clause` and yields no field hits anyway).
+/// Checked structurally on node kinds only.
+fn cpp_declaration_has_inline_body(node: &tree_sitter::Node) -> bool {
+    let decl = match node.child_by_field_name("declarator") {
+        Some(d) => d,
+        None => return false,
+    };
+    if decl.kind() != "init_declarator" {
+        return false;
+    }
+    // The inner declarator must be (or wrap) a function declarator …
+    let inner = match decl.child_by_field_name("declarator") {
+        Some(d) => d,
+        None => return false,
+    };
+    if !cpp_declarator_is_function(&inner) {
+        return false;
+    }
+    // … and there must be a brace-delimited body in the value slot.
+    match decl.child_by_field_name("value") {
+        Some(v) => matches!(
+            v.kind(),
+            "initializer_list" | "compound_statement" | "field_initializer_list"
+        ),
+        None => false,
+    }
 }
 
 /// Resolve the set of field accesses inside a single C++ method body.
@@ -2731,7 +3352,7 @@ fn extract_cpp_method_name(node: &tree_sitter::Node, source: &str) -> Option<Str
             Some(node.utf8_text(source.as_bytes()).ok()?.to_string())
         }
         "function_declarator" | "pointer_declarator" | "reference_declarator"
-        | "parenthesized_declarator" => {
+        | "parenthesized_declarator" | "init_declarator" | "array_declarator" => {
             let inner = node.child_by_field_name("declarator")?;
             extract_cpp_method_name(&inner, source)
         }
