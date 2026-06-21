@@ -456,7 +456,17 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             function_kinds: &["call"], // Elixir uses `def` as a macro call
             name_field: "target",
             body_kinds: &["do_block"],
-            assignment_kinds: &["binary_operator"], // = operator
+            // T2b: Elixir `=` is emitted as `binary_operator` by the current
+            // tree-sitter-elixir grammar (verified by debug-parse on scalar,
+            // `{:ok, x}` tuple, `with`, `case`, pipeline and chained `a = b =`
+            // forms — every one is a `binary_operator` with an `[operator] =`).
+            // We ALSO list `match_operator` because the rest of the codebase
+            // treats it as Elixir's `=` kind (security/ast_utils.rs Elixir
+            // assignment_kinds, dfg/extractor.rs's Elixir match arm), and older
+            // grammar revisions name the node that way; keeping both makes the
+            // assignment dispatch (`assignment_kinds.contains(&kind)`) robust to
+            // a grammar bump without changing behavior on 0.3.x.
+            assignment_kinds: &["binary_operator", "match_operator"], // = operator
             return_kinds: &[],
             if_kinds: &["call"],   // if is a macro
             loop_kinds: &["call"], // for/Enum.each are calls
@@ -1956,14 +1966,22 @@ impl ResourceDetector {
             }
             Language::Elixir => {
                 // G3-O1: Elixir `=` is a `binary_operator` with `[operator] =`,
-                // `[left]` pattern, `[right]` value. The generic `_` arm below
-                // would bind the WHOLE LHS as text — for `{:ok, file} =
-                // File.open(p)` that yields the bogus name `{:ok, file}`. Here
-                // we structurally bind the inner identifier of the LHS pattern
-                // (scalar `identifier`, or the first `identifier` inside a
-                // `{:ok, file}` `tuple`) and resolve the RHS via the
-                // module-qualified acquisition matcher (G2-O1 allowlist).
-                if node.kind() != "binary_operator" {
+                // `[left]` pattern, `[right]` value (verified by debug-parse on
+                // tree-sitter-elixir 0.3.x). The generic `_` arm below would
+                // bind the WHOLE LHS as text — for `{:ok, file} = File.open(p)`
+                // that yields the bogus name `{:ok, file}`. Here we structurally
+                // bind the inner identifier of the LHS pattern (scalar
+                // `identifier`, or the first `identifier` inside a `{:ok, file}`
+                // `tuple`) and resolve the RHS via the module-qualified
+                // acquisition matcher (G2-O1 allowlist).
+                //
+                // T2b: accept BOTH `binary_operator` and `match_operator`. The
+                // rest of the codebase (security/ast_utils.rs, dfg/extractor.rs)
+                // treats `match_operator` as Elixir's `=` kind, and older
+                // grammar revisions name the `=` node that way. Both shapes use
+                // the SAME `[operator]`/`[left]`/`[right]` fields, so the
+                // structural extraction below is identical for either kind.
+                if !matches!(node.kind(), "binary_operator" | "match_operator") {
                     return;
                 }
                 // Confirm the operator is `=` structurally (never text-split).
@@ -5431,6 +5449,92 @@ fn good() {
     //                     stored into a field / mem::forget'd) is reported
     //                     leaked; a plain RAII-dropped handle is NOT.
     // =========================================================================
+
+    #[test]
+    fn fix_elixir_assignment_kinds_include_match_operator() {
+        // T2b: the Elixir assignment DISPATCH gate is
+        // `patterns.assignment_kinds.contains(&node.kind())` (see
+        // `visit_node_multilang` -> `check_assignment_multilang`). The rest of
+        // the codebase treats `match_operator` as Elixir's `=` kind
+        // (security/ast_utils.rs Elixir assignment_kinds; dfg/extractor.rs's
+        // Elixir match arm) and older grammar revisions name the `=` node that
+        // way. If `match_operator` is dropped from this table, a
+        // `match_operator` `=` node would be SILENTLY skipped (never reach the
+        // Elixir acquisition arm) — zero detection without an error. Guard the
+        // production table directly so that regression cannot slip through.
+        let patterns = get_resource_patterns(Language::Elixir);
+        assert!(
+            patterns.assignment_kinds.contains(&"match_operator"),
+            "Elixir assignment_kinds must include `match_operator` so a \
+             match_operator `=` node reaches the acquisition arm: got {:?}",
+            patterns.assignment_kinds
+        );
+        // The current grammar (tree-sitter-elixir 0.3.x) emits `=` as
+        // `binary_operator`; keep that wired too so 0.3.x detection is unchanged.
+        assert!(
+            patterns.assignment_kinds.contains(&"binary_operator"),
+            "Elixir assignment_kinds must still include `binary_operator`: got {:?}",
+            patterns.assignment_kinds
+        );
+    }
+
+    #[test]
+    fn fix_elixir_match_operator_assignment_acquisition_detected() {
+        // T2b: end-to-end guard that an Elixir `=` acquisition is detected
+        // through the REAL command path. Whatever node kind the grammar emits
+        // for `=` (`binary_operator` on 0.3.x, `match_operator` on revisions
+        // that name it so), the production assignment dispatch + Elixir arm must
+        // bind the handle and resolve the qualified acquisition. We assert the
+        // node kind we actually observe is one the production table accepts, so
+        // this test stays an honest guard of the dispatch wiring even if a
+        // grammar bump flips the kind from `binary_operator` to `match_operator`.
+        let src = "def open_conn(host, port) do\n  conn = :gen_tcp.connect(host, port, [])\n  conn\nend\n";
+        let tree = tldr_core::ast::parser::parse(src, Language::Elixir).unwrap();
+        let patterns = get_resource_patterns(Language::Elixir);
+
+        // Locate the `=` assignment node and confirm its kind is wired in the
+        // production dispatch table (the gate that routes it to the Elixir arm).
+        let assign = first_assignment_with_eq(tree.root_node(), src.as_bytes())
+            .expect("expected an Elixir `=` assignment node");
+        assert!(
+            patterns.assignment_kinds.contains(&assign.kind()),
+            "the `=` node kind `{}` must be in the production assignment_kinds \
+             so it reaches the Elixir acquisition arm: got {:?}",
+            assign.kind(),
+            patterns.assignment_kinds
+        );
+
+        // Drive the production detection and confirm the connection handle is
+        // bound (proving the Elixir arm extracts LHS/RHS for this `=` kind).
+        let got = char_detect_closed(src, Language::Elixir);
+        assert!(
+            got.iter()
+                .any(|(n, t, _)| n == "conn" && t == "connection"),
+            "Elixir `conn = :gen_tcp.connect(...)` must be detected as a \
+             connection handle through the production path: got {got:?}"
+        );
+    }
+
+    /// Test helper: depth-first find the first Elixir `=` assignment node
+    /// (`binary_operator`/`match_operator` whose `[operator]` child is `=`).
+    /// Pure node.kind()/field walk — no text matching of source structure.
+    fn first_assignment_with_eq<'t>(node: Node<'t>, _source: &[u8]) -> Option<Node<'t>> {
+        if matches!(node.kind(), "binary_operator" | "match_operator")
+            && node
+                .child_by_field_name("operator")
+                .map(|op| op.kind() == "=")
+                .unwrap_or(false)
+        {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = first_assignment_with_eq(child, _source) {
+                return Some(found);
+            }
+        }
+        None
+    }
 
     #[test]
     fn fix_elixir_tuple_bind_extracts_inner_identifier() {
