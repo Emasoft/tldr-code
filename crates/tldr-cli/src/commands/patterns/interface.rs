@@ -3506,7 +3506,44 @@ pub fn run(args: InterfaceArgs, format: OutputFormat) -> anyhow::Result<()> {
         entries.sort();
 
         for file_path in entries {
-            let source = read_file_safe(&file_path)?;
+            // W1-interface-utf8 (v0.5.0 AUDIT-FIX): the directory walk must
+            // never abort the whole run on a single non-UTF-8 / binary file.
+            // Previously this used the patterns-local `read_file_safe`, which
+            // does a HARD `String::from_utf8` and propagated `?` out of
+            // `run()` — so one stray `life.lua` / `literals.luau` byte
+            // (0xA5) aborted with exit 1 and zero output even though
+            // hundreds of valid files remained. Use the SAME tolerant reader
+            // the resilient commands (`structure`/`loc`) use via
+            // `get_code_structure` -> `parse_file` (`encoding::read_source_file`
+            // -> `from_utf8_lossy`): lossy files are still analyzed (with a
+            // warning), binary files are skipped, and per-file IO errors are
+            // non-fatal. Warnings go to stderr — the SAME non-silent channel
+            // the core recoverable-skip arm uses
+            // (`extractor.rs`: `eprintln!("Warning: Skipping ...")`) — so the
+            // JSON/text report on stdout stays a clean `Vec<InterfaceInfo>`
+            // and warnings are never swallowed.
+            let source = match tldr_core::encoding::read_source_file(&file_path) {
+                Ok(tldr_core::encoding::FileReadResult::Ok(content)) => content,
+                Ok(tldr_core::encoding::FileReadResult::Lossy { content, warning }) => {
+                    eprintln!("Warning: {}", warning);
+                    content
+                }
+                Ok(tldr_core::encoding::FileReadResult::Binary) => {
+                    eprintln!(
+                        "Warning: Skipping {} - appears to be a binary file",
+                        file_path.display()
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Skipping {} - {}",
+                        file_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
             match extract_interface(&file_path, &source) {
                 Ok(info) => results.push(info),
                 Err(_) => {
