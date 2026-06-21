@@ -1708,12 +1708,16 @@ fn classify_flat_call_node(
 
 /// Adapter for languages with no dedicated framework SHAPE: they rely solely
 /// on the shared flat-callee classifier (`assertEquals`-style helpers). Covers
-/// Python (whose pytest path runs separately), C/C++, Kotlin, C#, Scala, PHP,
+/// Python (whose pytest path runs separately), C/C++, Kotlin, C#, PHP,
 /// Lua/Luau, Elixir, Solidity, and Rust's flat `assert_eq!` macros.
+///
+/// NOT Scala: `adapter_for` dispatches `Language::Scala` to the dedicated
+/// `ScalaAdapter` (which adds the positional-helper and infix-DSL shapes on top
+/// of the shared flat path), so Scala never reaches this adapter.
 ///
 /// Carries its `language` so the shared classifier's Rust-macro-aware branches
 /// (`matches!(language, Language::Rust) && node.kind() == "macro_invocation"`)
-/// only fire for genuine Rust — never for Kotlin/C#/Scala/PHP routed here.
+/// only fire for genuine Rust — never for Kotlin/C#/PHP routed here.
 struct FlatOnlyAdapter {
     language: Language,
 }
@@ -1997,12 +2001,18 @@ const SCALA_POSITIONAL_EQ_HELPERS: &[&str] = &[
 ];
 
 /// fix-T1b-scala-go-testrecognizer-v1 (G1-a): the ScalaTest infix-DSL equality
-/// operators. `x should be (y)` / `a === b` / `c must_== d` / `r shouldEqual e`
-/// parse (tree-sitter-scala) as an `infix_expression` whose `[operator]` field
-/// is one of these names. When present, the left operand carries the FUT and
-/// the right operand carries the expected value.
+/// operators. `x should be (y)` / `x must be (y)` / `a === b` / `c must_== d` /
+/// `r shouldEqual e` parse (tree-sitter-scala) as an `infix_expression` whose
+/// `[operator]` field is one of these names. When present, the left operand
+/// carries the FUT and the right operand carries the expected value.
+///
+/// Both `should` (Matchers) and bare `must` (MustMatchers) are the DSL subject
+/// words: `result should be(5)` and `result must be(5)` have identical
+/// `infix_expression` shapes (operator word + `be(..)`/`equal(..)` carrier on
+/// the right — verified by debug-parse), so both must be recognised here.
 const SCALA_INFIX_EQ_OPERATORS: &[&str] = &[
     "should",     // `x should be (y)` / `x should equal (y)`
+    "must",       // `x must be (y)` / `x must equal (y)` (ScalaTest MustMatchers)
     "shouldBe",   // `x shouldBe y`
     "shouldEqual",
     "mustBe",
@@ -2225,6 +2235,15 @@ fn is_go_t_failure_method(name: &str) -> bool {
 /// `reflect.DeepEqual` / `cmp.Equal` / `bytes.Equal` / `errors.Is`. These are
 /// equality predicates, never the function-under-test — when they appear in an
 /// `if` condition the real FUT (if any) lives in their arguments.
+///
+/// ACCEPTED TRADE-OFF: matching the bare tail `Equal` also suppresses a domain
+/// method literally named `Equal` (e.g. `ps.Equal(other)` on a user value
+/// type). Because we only have the callee tail at this point — not the
+/// receiver's type — there is no cheap, purely-structural way to distinguish a
+/// stdlib/cmp `Equal` predicate from a domain `Equal` method without type
+/// resolution. The dominant real-world use of an in-`if`-condition `Equal` tail
+/// is the comparison-predicate form, so we suppress it from FUT attribution and
+/// accept the rare false positive on a domain `Equal`.
 fn is_go_comparison_helper(name: &str) -> bool {
     matches!(name, "DeepEqual" | "Equal" | "Is")
 }
@@ -3182,10 +3201,20 @@ fn try_extract_scala_infix_assertion(
 /// fix-T1b-scala-go-testrecognizer-v1 (G1-a2): unwrap the expected-value node
 /// from the RIGHT operand of a ScalaTest infix assertion.
 ///
-/// `x should be (y)` parses the right side as a `call_expression` whose
-/// `[function]` is `be` / `equal` and whose first argument is the expected
-/// value `y`. Return that argument. For the bare `a === b` form there is no
-/// wrapper, so return `None` and let the caller use the right operand directly.
+/// `x should be (y)` / `x must be (y)` parses the right side as a
+/// `call_expression` whose `[function]` is `be` / `equal` and whose first
+/// argument is the expected value `y`. Return that argument. For the bare
+/// `a === b` form there is no wrapper, so return `None` and let the caller use
+/// the right operand directly.
+///
+/// The carrier-method tails recognised here are the real ScalaTest matcher
+/// methods that wrap a value as `method(value)`: `be(y)`, `equal(y)`, and the
+/// `===(y)` method form. The operator words (`should` / `must` / `must_==`)
+/// live on the `[operator]` field of the parent `infix_expression`, never as a
+/// right-side carrier — `must_==`, in particular, parses with a BARE identifier
+/// on the right (verified by debug-parse), so it never reaches this guard. (The
+/// previously-listed `be_==` was a confusion with the `must_==` operator: it is
+/// not a real matcher method name, so it has been removed.)
 fn scala_infix_expected_value<'a>(right: Node<'a>, source: &[u8]) -> Option<Node<'a>> {
     if right.kind() != "call_expression" {
         return None;
@@ -3197,7 +3226,7 @@ fn scala_infix_expected_value<'a>(right: Node<'a>, source: &[u8]) -> Option<Node
         .unwrap_or("")
         .trim()
         .to_string();
-    if !matches!(tail.as_str(), "be" | "equal" | "===" | "be_==") {
+    if !matches!(tail.as_str(), "be" | "equal" | "===") {
         return None;
     }
     collect_call_args(right).first().copied()
@@ -5510,12 +5539,15 @@ func TestAdd(t *testing.T) {
     // behavior of a language that was already correct.
     // ====================================================================
 
-    /// CHAR (T1b): Scala flat `assertEquals(actual, expected)` attribution.
-    /// The Scala adapter is the shared `FlatOnlyAdapter`; `assertEquals` is in
-    /// the shared equality vocab. Pins that a 2-arg `assertEquals` where arg0
-    /// is a call attributes the IO spec to that call (`actual`) with the
-    /// other arg as the expected output, and that `assertEquals` itself is
-    /// never a FUT. G1-a1 (assertCompleteAs family) must preserve this exactly.
+    /// CHAR (T1b): Scala `assertEquals(actual, expected)` attribution.
+    /// Scala uses the dedicated `ScalaAdapter` (NOT the shared
+    /// `FlatOnlyAdapter`): `SCALA_VOCAB.equality` is empty, and `assertEquals`
+    /// is a `SCALA_POSITIONAL_EQ_HELPERS` member handled by
+    /// `try_extract_scala_helper_assertion` with the fixed `(actual=arg0,
+    /// expected=arg1)` rule. Pins that a 2-arg `assertEquals` where arg0 is a
+    /// call attributes the IO spec to that call (`actual`) with the other arg
+    /// as the expected output, and that `assertEquals` itself is never a FUT.
+    /// G1-a1 (assertCompleteAs family) must preserve this exactly.
     #[test]
     fn char_scala_assert_equals_attribution() {
         let temp = TempDir::new().unwrap();
@@ -5771,6 +5803,78 @@ class InfixSpec extends AnyFlatSpec {
                 .iter()
                 .any(|f| matches!(f.function_name.as_str(), "should" | "shouldBe" | "be" | "===")),
             "infix matcher words must not be FUTs"
+        );
+    }
+
+    /// G1-a2: ScalaTest `MustMatchers` infix DSL — `result must equal(5)` and
+    /// `result must be(5)` parse (verified by debug-parse) as an
+    /// `infix_expression` whose `[operator]` is the bare word `must`, with the
+    /// right operand a `be(..)`/`equal(..)` carrier call — structurally
+    /// identical to the `should be (y)` path. Pins that bare `must` is
+    /// recognised as an infix equality operator and attributes the FUT to the
+    /// LEFT operand with the carrier's argument as the expected output.
+    ///
+    /// This is a GENUINE guard for the `SCALA_INFIX_EQ_OPERATORS` "must" entry:
+    /// without it, `try_extract_scala_infix_assertion` returns false for the
+    /// MustMatchers DSL (a silent spec-drop) and the two FUTs below never
+    /// appear in the report.
+    #[test]
+    fn scala_must_matchers_infix_attribution() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("MustSpec.scala");
+        let src = r#"
+class MustSpec extends AnyFlatSpec {
+  test("must") {
+    result must equal(5)
+    other must be(7)
+  }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        // `result must equal(5)` => FUT result, expected 5 (equal(..) carrier
+        // unwrapped to its first argument).
+        let result = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "result")
+            .expect("`result must equal(5)` => FUT result");
+        assert_eq!(
+            result.input_output_specs.len(),
+            1,
+            "`must equal(5)` => one IO spec for result"
+        );
+        assert_eq!(
+            result.input_output_specs[0].output,
+            serde_json::json!("5"),
+            "`must equal(y)` unwraps the equal(..) carrier to the expected value"
+        );
+
+        // `other must be(7)` => FUT other, expected 7 (be(..) carrier unwrapped).
+        let other = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "other")
+            .expect("`other must be(7)` => FUT other");
+        assert_eq!(
+            other.input_output_specs.len(),
+            1,
+            "`must be(7)` => one IO spec for other"
+        );
+        assert_eq!(
+            other.input_output_specs[0].output,
+            serde_json::json!("7"),
+            "`must be(y)` unwraps the be(..) carrier to the expected value"
+        );
+
+        // The infix matcher words and the carrier methods are never FUTs.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| matches!(f.function_name.as_str(), "must" | "be" | "equal")),
+            "`must` / carrier methods must not be FUTs"
         );
     }
 
