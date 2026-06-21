@@ -245,12 +245,25 @@ impl Default for CohesionSummary {
 }
 
 /// Full report from cohesion analysis.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CohesionReport {
     /// Cohesion results per class
     pub classes: Vec<ClassCohesion>,
     /// Summary statistics
     pub summary: CohesionSummary,
+    /// Whether the directory scan was truncated because it reached the
+    /// file-count limit. `None` when the whole directory was scanned;
+    /// `Some(true)` when the per-file walk hit the cap and only a bounded
+    /// subset of files was analyzed (partial results, exit 0). Mirrors the
+    /// `truncated` degradation flag on [`CouplingReport`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
+    /// Number of source files actually analyzed (only set when `truncated`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_scanned: Option<u32>,
+    /// The file-count limit that triggered truncation (only set when `truncated`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_limit: Option<u32>,
 }
 
 // =============================================================================

@@ -149,7 +149,7 @@ impl CohesionArgs {
 
         // Analyze based on path type
         let mut report = if canonical_path.is_dir() {
-            analyze_directory(&canonical_path, self, start, timeout)?
+            analyze_directory(&canonical_path, self, start, timeout, MAX_DIRECTORY_FILES)?
         } else {
             analyze_single_file(&canonical_path, self)?
         };
@@ -166,6 +166,20 @@ impl CohesionArgs {
             for class in &mut report.classes {
                 class.file_path = user_path_str.clone();
             }
+        }
+
+        // Emit an explicit truncation warning to stderr when the Python
+        // per-file walk was bounded by the file cap (graceful degradation —
+        // results on stdout stay valid, exit code stays 0). Mirrors the
+        // `dead`-command scan-cap warning.
+        if report.truncated == Some(true) {
+            eprintln!(
+                "Warning: cohesion scan truncated at {} Python files (limit {}) in {} — \
+                 results are partial; non-Python files are unaffected",
+                report.files_scanned.unwrap_or(0),
+                report.files_limit.unwrap_or(0),
+                self.path.display(),
+            );
         }
 
         // Resolve format: global -f flag takes priority over hidden --output-format
@@ -359,7 +373,11 @@ fn analyze_single_file(path: &Path, args: &CohesionArgs) -> PatternsResult<Cohes
 
     let summary = compute_summary(&classes);
 
-    Ok(CohesionReport { classes, summary })
+    Ok(CohesionReport {
+        classes,
+        summary,
+        ..Default::default()
+    })
 }
 
 /// Analyze a single non-Python file using the core library.
@@ -401,7 +419,11 @@ fn analyze_single_file_core(path: &Path, args: &CohesionArgs) -> PatternsResult<
         .collect();
 
     let summary = compute_summary(&classes);
-    Ok(CohesionReport { classes, summary })
+    Ok(CohesionReport {
+        classes,
+        summary,
+        ..Default::default()
+    })
 }
 
 /// Analyze a directory of source files for class cohesion.
@@ -413,11 +435,20 @@ fn analyze_directory(
     args: &CohesionArgs,
     start: Instant,
     timeout: Duration,
+    max_files: u32,
 ) -> PatternsResult<CohesionReport> {
     validate_directory_path(dir)?;
 
     let mut all_classes = Vec::new();
     let mut file_count = 0u32;
+    // cohesion-degrade-on-cap-v1 (W1): track whether the python per-file
+    // walk reached `max_files` so we can report partial results with an
+    // explicit truncation flag instead of erroring out. Mirrors the
+    // `truncated` degradation contract on `CouplingReport` (see
+    // `tldr_core::quality::coupling`) and the `dead`-command scan-cap
+    // warning, rather than the legacy hard-fail that refused to run on
+    // medium-to-large repos (the same defect VAL-006 fixed for `vuln`).
+    let mut truncated = false;
     // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): non-python
     // files are routed through the core analyzer at the *directory*
     // granularity (rather than per-file) so the core's partial-class
@@ -435,20 +466,10 @@ fn analyze_directory(
             });
         }
 
-        // Check file limit
-        if file_count >= MAX_DIRECTORY_FILES {
-            return Err(PatternsError::TooManyFiles {
-                count: file_count,
-                max_files: MAX_DIRECTORY_FILES,
-            });
-        }
-
         let path = entry.path();
 
         // Analyze files with recognized language extensions
         if path.is_file() && Language::from_path(path).is_some() {
-            file_count += 1;
-
             // Skip test files unless explicitly included
             let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if filename.starts_with("test_") || filename.ends_with("_test.py") {
@@ -457,6 +478,22 @@ fn analyze_directory(
 
             let lang = Language::from_path(path);
             if lang == Some(Language::Python) {
+                // Per-file cap applies ONLY to the Python per-file walk — the
+                // only work bounded by this loop. Non-Python files are handled
+                // by the core analyzer below, which does its own (uncapped)
+                // directory walk, so counting them here would error before the
+                // core even ran and would mis-flag complete results as
+                // truncated. Degrade gracefully instead of erroring: stop the
+                // Python walk at the cap and report partial results flagged via
+                // `truncated` (the same hard-fail VAL-006 removed for `vuln`,
+                // and that `coupling`/`dead` already avoid by truncating with a
+                // warning rather than aborting).
+                if file_count >= max_files {
+                    truncated = true;
+                    break;
+                }
+                file_count += 1;
+
                 // Analyze file, collecting errors but continuing
                 match analyze_single_file(path, args) {
                     Ok(report) => {
@@ -537,6 +574,9 @@ fn analyze_directory(
     Ok(CohesionReport {
         classes: all_classes,
         summary,
+        truncated: if truncated { Some(true) } else { None },
+        files_scanned: if truncated { Some(file_count) } else { None },
+        files_limit: if truncated { Some(max_files) } else { None },
     })
 }
 
@@ -1031,6 +1071,18 @@ pub fn format_cohesion_text(report: &CohesionReport) -> String {
         s.total_classes, s.split_candidates
     ));
 
+    // Truncation note (graceful-degradation contract, mirrors coupling's
+    // `(showing top N of M pairs)` line). Appended before every return path.
+    let truncation_note = if report.truncated == Some(true) {
+        format!(
+            "  (partial: scanned {} of the Python files, truncated at limit {})\n",
+            report.files_scanned.unwrap_or(0),
+            report.files_limit.unwrap_or(0),
+        )
+    } else {
+        String::new()
+    };
+
     // Filter to split candidates only (LCOM4 > 1) and sort worst-first
     let mut candidates: Vec<&ClassCohesion> = report
         .classes
@@ -1042,6 +1094,7 @@ pub fn format_cohesion_text(report: &CohesionReport) -> String {
     if candidates.is_empty() {
         output.push_str("  No split candidates found.\n\n");
         output.push_str(&format_cohesion_summary(s));
+        output.push_str(&truncation_note);
         return output;
     }
 
@@ -1117,6 +1170,7 @@ pub fn format_cohesion_text(report: &CohesionReport) -> String {
 
     output.push('\n');
     output.push_str(&format_cohesion_summary(s));
+    output.push_str(&truncation_note);
 
     output
 }
@@ -1163,7 +1217,7 @@ pub fn run(args: CohesionArgs) -> Result<CohesionReport> {
 
     // Analyze based on path type
     let report = if canonical_path.is_dir() {
-        analyze_directory(&canonical_path, &args, start, timeout)?
+        analyze_directory(&canonical_path, &args, start, timeout, MAX_DIRECTORY_FILES)?
     } else {
         analyze_single_file(&canonical_path, &args)?
     };
@@ -1339,6 +1393,7 @@ mod tests {
                 split_candidates: 3,
                 avg_lcom4: 3.33,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         // "High" (LCOM4=5) should appear before "Mid" (3) before "Low" (2)
@@ -1368,6 +1423,7 @@ mod tests {
                 split_candidates: 1,
                 avg_lcom4: 2.0,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         // Cohesive class (LCOM4=1) should NOT appear in the table rows
@@ -1406,6 +1462,7 @@ mod tests {
                 split_candidates: 35,
                 avg_lcom4: 2.0,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         assert!(
@@ -1427,6 +1484,7 @@ mod tests {
                 split_candidates: 2,
                 avg_lcom4: 2.5,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         // The common prefix "src/models/" should be stripped, showing just filenames
@@ -1455,6 +1513,7 @@ mod tests {
                 split_candidates: 1,
                 avg_lcom4: 2.0,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         assert!(
@@ -1481,6 +1540,7 @@ mod tests {
                 split_candidates: 12,
                 avg_lcom4: 1.82,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         assert!(
@@ -1522,6 +1582,7 @@ mod tests {
                 split_candidates: 1,
                 avg_lcom4: 2.0,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         // Should show component info
@@ -1556,6 +1617,7 @@ mod tests {
                 split_candidates: 0,
                 avg_lcom4: 0.0,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         assert!(
@@ -1577,6 +1639,7 @@ mod tests {
                 split_candidates: 0,
                 avg_lcom4: 1.0,
             },
+            ..Default::default()
         };
         let text = format_cohesion_text(&report);
         // All classes are cohesive, so no table rows should appear
@@ -1611,5 +1674,189 @@ mod tests {
             lang: None,
         };
         assert_eq!(args_auto.lang, None);
+    }
+
+    // =========================================================================
+    // Directory scan-cap degradation tests (cohesion-degrade-on-cap-v1, W1)
+    //
+    // Regression guard: `tldr cohesion <large-dir>` previously HARD-FAILED with
+    // `TooManyFiles` once the per-file walk reached MAX_DIRECTORY_FILES, refusing
+    // to run on medium-to-large repos (kotlin-coroutines 1062, ruby-rubocop 1708,
+    // typescript-nest 1683) while structure/loc/patterns processed them fine.
+    // The fix degrades gracefully (partial results + `truncated` flag, exit 0),
+    // mirroring the `truncated` contract on `CouplingReport`. The cap is injected
+    // via the `max_files` parameter so the production scan path is exercised with
+    // a small cap rather than writing 1001 real files.
+    // =========================================================================
+
+    /// Write a Python file containing a single cohesive class (LCOM4 == 1):
+    /// two methods that both touch the same field, so the class is connected.
+    fn write_cohesive_py(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            "class Widget:\n    def __init__(self):\n        self.value = 0\n\n    def get(self):\n        return self.value\n\n    def set(self, v):\n        self.value = v\n",
+        )
+        .expect("write python file");
+        path
+    }
+
+    fn dir_args() -> CohesionArgs {
+        CohesionArgs {
+            path: PathBuf::from("."),
+            min_methods: 1,
+            include_dunder: false,
+            output_format: OutputFormat::Json,
+            timeout: 30,
+            project_root: None,
+            lang: None,
+        }
+    }
+
+    /// RED→GREEN guard: with more files than the cap, the scan must DEGRADE
+    /// (return Ok with partial results + truncation markers), NOT error.
+    #[test]
+    fn test_directory_scan_degrades_gracefully_past_cap() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // Create 5 analyzable Python files; cap the scan at 2.
+        for i in 0..5 {
+            write_cohesive_py(tmp.path(), &format!("mod_{i}.py"));
+        }
+
+        let args = dir_args();
+        let result = analyze_directory(
+            tmp.path(),
+            &args,
+            Instant::now(),
+            Duration::from_secs(30),
+            /* max_files = */ 2,
+        );
+
+        // Must NOT hard-fail with TooManyFiles — this is the core regression.
+        let report = result.expect(
+            "cohesion directory scan must degrade gracefully past the file cap, not return Err",
+        );
+
+        // Partial results: the bounded subset that WAS scanned still yields classes.
+        assert!(
+            !report.classes.is_empty(),
+            "truncated scan should still return cohesion results for the files it did process"
+        );
+
+        // Explicit truncation contract (mirrors CouplingReport.truncated).
+        assert_eq!(
+            report.truncated,
+            Some(true),
+            "report must flag that the scan was truncated at the file cap"
+        );
+        assert_eq!(
+            report.files_limit,
+            Some(2),
+            "report must record the limit that triggered truncation"
+        );
+        let scanned = report
+            .files_scanned
+            .expect("truncated report must record how many files were scanned");
+        assert!(
+            scanned <= 5,
+            "files_scanned ({scanned}) cannot exceed the number of files present"
+        );
+        assert!(
+            scanned >= 2,
+            "files_scanned ({scanned}) should reach the cap before truncating"
+        );
+    }
+
+    /// Characterization guard: when the directory fits under the cap, results are
+    /// complete and NO truncation markers are set (no false-positive truncation).
+    #[test]
+    fn test_directory_scan_under_cap_is_not_truncated() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        for i in 0..3 {
+            write_cohesive_py(tmp.path(), &format!("mod_{i}.py"));
+        }
+
+        let args = dir_args();
+        let report = analyze_directory(
+            tmp.path(),
+            &args,
+            Instant::now(),
+            Duration::from_secs(30),
+            /* max_files = */ 1000,
+        )
+        .expect("under-cap directory scan should succeed");
+
+        assert_eq!(
+            report.classes.len(),
+            3,
+            "all 3 files should be analyzed when under the cap"
+        );
+        assert_eq!(
+            report.truncated, None,
+            "an un-truncated scan must not set the truncated flag"
+        );
+        assert_eq!(report.files_scanned, None);
+        assert_eq!(report.files_limit, None);
+    }
+
+    /// Characterization guard: the JSON schema is unchanged for the common
+    /// (un-truncated) case — the truncation fields are omitted entirely, so
+    /// existing consumers see no new keys. They appear only when truncated.
+    #[test]
+    fn test_truncation_fields_omitted_in_json_when_not_truncated() {
+        let untruncated = CohesionReport {
+            classes: vec![],
+            summary: CohesionSummary::default(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&untruncated).unwrap();
+        assert!(
+            !json.contains("truncated"),
+            "truncated key must be omitted when None: {json}"
+        );
+        assert!(!json.contains("files_scanned"), "files_scanned must be omitted when None");
+        assert!(!json.contains("files_limit"), "files_limit must be omitted when None");
+
+        let truncated = CohesionReport {
+            classes: vec![],
+            summary: CohesionSummary::default(),
+            truncated: Some(true),
+            files_scanned: Some(1000),
+            files_limit: Some(1000),
+        };
+        let json = serde_json::to_string(&truncated).unwrap();
+        assert!(json.contains("\"truncated\":true"), "truncated must appear when set: {json}");
+        assert!(json.contains("\"files_scanned\":1000"));
+        assert!(json.contains("\"files_limit\":1000"));
+    }
+
+    /// Guard the text-formatter wiring of the truncation note (mirrors
+    /// coupling's `(showing top N of M)` line) so a revert is caught.
+    #[test]
+    fn test_format_cohesion_text_shows_truncation_note() {
+        let report = CohesionReport {
+            classes: vec![],
+            summary: CohesionSummary::default(),
+            truncated: Some(true),
+            files_scanned: Some(1000),
+            files_limit: Some(1000),
+        };
+        let text = format_cohesion_text(&report);
+        assert!(
+            text.contains("partial") && text.contains("truncated"),
+            "truncated text report must carry a partial/truncated note: {text}"
+        );
+
+        // And NOT present when complete.
+        let complete = CohesionReport {
+            classes: vec![],
+            summary: CohesionSummary::default(),
+            ..Default::default()
+        };
+        let text = format_cohesion_text(&complete);
+        assert!(
+            !text.contains("partial"),
+            "complete report must not claim partial results: {text}"
+        );
     }
 }
