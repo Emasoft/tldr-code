@@ -1347,11 +1347,31 @@ impl<'a> DfgBuilder<'a> {
             // =================================================================
             // For loops (loop variable is a definition)
             // =================================================================
-            // Python: for x in items:
-            // Go: for ... { }
-            "for_statement" => {
-                self.process_for_loop(node, depth)?;
-            }
+            // The bare `for_statement` node kind is REUSED across grammars
+            // with different shapes:
+            //   * Python `for x in items:` — `left` (target) / `right`
+            //     (iterable) / `body` fields. Handled by `process_for_loop`.
+            //   * Go `for r < n { }` / `for { }` / `for i:=0; i<n; i++ { }` —
+            //     no left/right; the condition is a positional child or lives
+            //     in a `for_clause`. Handled by `process_go_for_statement`.
+            //   * C/C++ `for (init; cond; post) { }` — `initializer` /
+            //     `condition` / `update` / `body` fields. Handled by
+            //     `process_c_for_statement`.
+            //
+            // fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 2): the
+            // pre-fix code dispatched ALL `for_statement` nodes to the
+            // Python-shaped `process_for_loop`, which finds no `left`/`right`/
+            // `body` fields on Go/C loops and so dropped the condition uses
+            // AND the entire loop body (slice go-httprouter CleanPath 61
+            // returned only `[61]`). Route by language to a shape-aware
+            // handler.
+            "for_statement" => match self.language {
+                Language::Go => self.process_go_for_statement(node, depth)?,
+                Language::C | Language::Cpp => {
+                    self.process_c_for_statement(node, depth)?
+                }
+                _ => self.process_for_loop(node, depth)?,
+            },
 
             // Python/JS: for x in items / for (x in obj)
             "for_in_statement" => {
@@ -1591,28 +1611,46 @@ impl<'a> DfgBuilder<'a> {
                 }
             }
             // Python: x[i] = ...
+            //
+            // fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 1): an
+            // element write `a[idx] = ...` updates the container `a` AND
+            // *reads* every variable inside the index `idx`. The pre-fix arm
+            // recorded only the container and dropped the index uses, so a
+            // backward slice/chop through `s[curlen+len] = '\0';` lost the
+            // `curlen`/`len` data-flow edge. Handle the container (field
+            // `value` for Python `subscript`) then descend into the index
+            // subtree for uses — mirroring the Solidity `array_access` arm
+            // below, which already does this.
             "subscript" => {
-                if let Some(obj) = target.child_by_field_name("value") {
-                    if obj.kind() == "identifier" {
-                        self.add_ref_from_node(obj, RefType::Update);
-                    }
-                }
+                self.record_subscript_container_and_index(
+                    target, "value", "subscript",
+                )?;
             }
-            // TS/JS/Java: x[i] = ...
+            // TS/JS/C/C++: x[i] = ...
+            //
+            // fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 1): the
+            // field names differ by grammar:
+            //   * TS/JS — container field `object`, index field `index`.
+            //   * C     — container field `argument`, index field `index`.
+            //   * C++   — container field `argument`, index field `indices`
+            //             (an extra `subscript_argument_list` wrapper, which
+            //             the index-walk descends through automatically).
+            // Try each known field name in order. (The pre-fix arm hard-coded
+            // container `object` / index `index`, so for C/C++ — the chop
+            // c-redis target — neither the container Update nor the index uses
+            // were recorded.)
             "subscript_expression" => {
-                if let Some(obj) = target.child_by_field_name("object") {
-                    if obj.kind() == "identifier" {
-                        self.add_ref_from_node(obj, RefType::Update);
-                    }
-                }
+                self.record_subscript_container_and_index_multi(
+                    target,
+                    &["object", "argument"],
+                    &["index", "indices"],
+                )?;
             }
             // Go: x[i] = ...
             "index_expression" => {
-                if let Some(operand) = target.child_by_field_name("operand") {
-                    if operand.kind() == "identifier" {
-                        self.add_ref_from_node(operand, RefType::Update);
-                    }
-                }
+                self.record_subscript_container_and_index(
+                    target, "operand", "index",
+                )?;
             }
             // PHP variable name
             "variable_name" => {
@@ -1623,13 +1661,21 @@ impl<'a> DfgBuilder<'a> {
             // mapping/array writes like `balances[user] = y;`. The
             // base identifier is the storage location being updated
             // (RefType::Update — read-then-write), and the index is a
-            // Use (extracted by walking into [index] via the main
-            // dispatch in process_c_style_assignment's RHS path; we
-            // don't need to manually emit it here, but we DO walk it
-            // so nested identifiers in complex indexes register).
+            // Use (descended into below so nested identifiers register).
+            //
+            // fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 1):
+            // Java/C# ALSO emit `array_access` for `a[i] = ...`, but spell
+            // the container field `array` (not Solidity's `base`). The
+            // pre-fix arm only consulted `base`, so a Java/C# element-write
+            // container was never recorded as an Update (the index uses were
+            // still captured, because the index-walk below is unconditional).
+            // Try `base` (Solidity) then `array` (Java/C#).
             "array_access" => {
-                if let Some(base) = target.child_by_field_name("base") {
-                    // Unwrap the `expression` wrapper.
+                let base = target
+                    .child_by_field_name("base")
+                    .or_else(|| target.child_by_field_name("array"));
+                if let Some(base) = base {
+                    // Unwrap the `expression` wrapper (Solidity).
                     let base_inner = if base.kind() == "expression" {
                         solidity_unwrap_expression(base).unwrap_or(base)
                     } else {
@@ -1651,6 +1697,74 @@ impl<'a> DfgBuilder<'a> {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    /// fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 1): record an
+    /// element-write LHS `container[index] = ...`.
+    ///
+    /// The element write is a read-then-write of the *container* (so the
+    /// container identifier is a [`RefType::Update`]) and a *read* of every
+    /// variable inside the index expression (so the index subtree is walked
+    /// for [`RefType::Use`]s via the normal dispatch). When the container is
+    /// itself a nested subscript / member access (`a[i][j] = ...`,
+    /// `obj.buf[i] = ...`) we recurse so the outermost identifier carries the
+    /// Update. Mirrors the Solidity `array_access` arm.
+    ///
+    /// `container_field` / `index_field` are the tree-sitter field names for
+    /// this grammar's subscript node (e.g. Python `subscript` -> `value` /
+    /// `subscript`, Go `index_expression` -> `operand` / `index`).
+    fn record_subscript_container_and_index(
+        &mut self,
+        target: Node,
+        container_field: &str,
+        index_field: &str,
+    ) -> TldrResult<()> {
+        if let Some(container) = target.child_by_field_name(container_field) {
+            if container.kind() == "identifier" {
+                self.add_ref_from_node(container, RefType::Update);
+            } else {
+                // Nested subscript / member access — recurse so the outermost
+                // identifier registers (and any inner index vars are walked).
+                self.extract_assignment_targets(container)?;
+            }
+        }
+        // The index is a Use; descend into it so every index variable
+        // (including those inside an arithmetic index like `i + len`) is
+        // recorded.
+        if let Some(index) = target.child_by_field_name(index_field) {
+            self.extract_refs_from_node(index, 1)?;
+        }
+        Ok(())
+    }
+
+    /// fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 1): like
+    /// [`record_subscript_container_and_index`] but tries several container /
+    /// index field names in order. tree-sitter spells the fields of a
+    /// `subscript_expression` differently per language — TS/JS use `object` /
+    /// `index`, C uses `argument` / `index`, C++ uses `argument` / `indices`.
+    fn record_subscript_container_and_index_multi(
+        &mut self,
+        target: Node,
+        container_fields: &[&str],
+        index_fields: &[&str],
+    ) -> TldrResult<()> {
+        let container = container_fields
+            .iter()
+            .find_map(|f| target.child_by_field_name(f));
+        if let Some(container) = container {
+            if container.kind() == "identifier" {
+                self.add_ref_from_node(container, RefType::Update);
+            } else {
+                self.extract_assignment_targets(container)?;
+            }
+        }
+        if let Some(index) = index_fields
+            .iter()
+            .find_map(|f| target.child_by_field_name(f))
+        {
+            self.extract_refs_from_node(index, 1)?;
+        }
         Ok(())
     }
 
@@ -1696,6 +1810,62 @@ impl<'a> DfgBuilder<'a> {
             self.extract_refs_from_node(body, depth + 1)?;
         }
 
+        Ok(())
+    }
+
+    /// fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 2): Go
+    /// `for_statement`.
+    ///
+    /// Go reuses the `for_statement` node kind for three loop shapes:
+    ///   * `for { ... }`             — only a `body` field.
+    ///   * `for r < n { ... }`       — a positional condition expression
+    ///                                 (a non-field named child) + `body`.
+    ///   * `for i := 0; i < n; i++ { ... }`
+    ///                               — a `for_clause` child (carrying the
+    ///                                 `initializer` / `condition` / `update`
+    ///                                 sub-nodes) + `body`.
+    ///   * `for i, v := range xs { ... }`
+    ///                               — a `range_clause` child + `body`.
+    ///
+    /// In every shape the condition references variables as *reads* and the
+    /// body must be analyzed. Rather than special-casing each, we recurse
+    /// into every named child via the normal dispatch: the `block` body has
+    /// its statements processed, a bare `binary_expression` condition yields
+    /// its identifiers as uses, a `for_clause`/`range_clause` has its own
+    /// init/cond/update/range handled by their respective arms. This is
+    /// uniform and forward-compatible with grammar tweaks. (The pre-fix
+    /// Python-shaped handler found no `left`/`right`/`body` fields here — Go's
+    /// body field is also named `body`, but the condition has no field — and
+    /// silently dropped both the condition and, for the bare-condition and
+    /// range forms, ALL body statements.)
+    fn process_go_for_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.is_named() {
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 2): C/C++
+    /// `for_statement` — `for (init; cond; post) body`.
+    ///
+    /// tree-sitter-c exposes the clauses as named fields: `initializer`
+    /// (an assignment / declaration that may DEFINE the loop variable),
+    /// `condition` (a read of the loop variables), `update` (a read+write,
+    /// here recorded as a read via recursion), and `body`. Each is processed
+    /// through the normal dispatch so the construct-specific arms apply
+    /// (`assignment_expression` -> Definition for `i = 0`, `declaration` ->
+    /// Definition for `int i = 0`, identifiers -> Use in the condition, etc.).
+    /// Any clause may be empty (`for (;;)`), in which case the field is
+    /// absent and skipped.
+    fn process_c_for_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        for field in ["initializer", "condition", "update", "body"] {
+            if let Some(child) = node.child_by_field_name(field) {
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
         Ok(())
     }
 
@@ -2151,22 +2321,38 @@ impl<'a> DfgBuilder<'a> {
     }
 
     /// Extract Go left-hand-side identifiers with specified ref type
+    ///
+    /// fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 1): an element /
+    /// field write LHS (`a[i+j] = ...`, `s.field = ...`) is NOT a bare
+    /// identifier, so the pre-fix code — which only matched `identifier`
+    /// children of the `expression_list` — silently dropped BOTH the container
+    /// (which should be an Update) and every variable used inside the index
+    /// (`i`, `j`). Such targets are routed to [`extract_assignment_targets`],
+    /// whose `index_expression` / `selector_expression` arms record the
+    /// container as an Update and walk the index subtree for uses. Bare
+    /// identifiers keep the explicit `ref_type` (Definition / Use / Update)
+    /// because a plain `x = ...` / `x += ...` carries the statement's own
+    /// read/write semantics, which an element write does not.
     fn extract_go_lhs_identifiers_as(&mut self, node: Node, ref_type: RefType) -> TldrResult<()> {
-        if node.kind() == "identifier" {
-            let name = node.utf8_text(self.source.as_bytes()).unwrap_or("");
-            if name != "_" {
-                self.add_ref_from_node(node, ref_type);
-            }
-        } else if node.kind() == "expression_list" {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "identifier" {
-                    let name = child.utf8_text(self.source.as_bytes()).unwrap_or("");
-                    if name != "_" {
-                        self.add_ref_from_node(child, ref_type);
-                    }
+        match node.kind() {
+            "identifier" => {
+                let name = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                if name != "_" {
+                    self.add_ref_from_node(node, ref_type);
                 }
             }
+            "expression_list" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.extract_go_lhs_identifiers_as(child, ref_type)?;
+                }
+            }
+            // Element / field / map write target — container is an Update,
+            // index vars are Uses. Delegate to the shared target extractor.
+            "index_expression" | "selector_expression" => {
+                self.extract_assignment_targets(node)?;
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -5971,6 +6157,252 @@ end"#;
             defs.contains(&"y"),
             "Swift param y should be a definition, got defs: {:?}",
             defs
+        );
+    }
+
+    // =====================================================================
+    // B4 (fix-B4-dfg-coverage-v1, v0.5.0 AUDIT-FIX): DFG extractor language
+    // coverage for slice/chop data-flow.
+    //
+    // Two root causes in the Python-shaped extractor:
+    //   (1) process_c_style_assignment routes a subscript/array/member LHS to
+    //       extract_assignment_targets, which recorded only the container as
+    //       Update and DROPPED the variables used inside the index subscript.
+    //       So `arr[i+j] = x;` lost `i`, `j` as uses -> chop c-redis sdscatlen
+    //       535->541 saw no data-flow path through `s[curlen+len] = '\0';`.
+    //   (2) process_for_loop only understood the Python `for x in iter` shape
+    //       (left/right/body fields) but is dispatched for the generic
+    //       `for_statement`, which in Go (`for r < n {`) and C
+    //       (`for(init;cond;post)`) has a different shape. The condition/post
+    //       reference vars as USES, and the body was dropped entirely ->
+    //       slice go-httprouter CleanPath 61 returned only [61].
+    // =====================================================================
+
+    /// Collect the names of refs of a given type for a function.
+    fn names_of(dfg: &DfgInfo, rt: RefType) -> Vec<String> {
+        dfg.refs
+            .iter()
+            .filter(|r| r.ref_type == rt)
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn c_subscript_lhs_index_vars_are_uses() {
+        // ROOT CAUSE (1): C `a[i+len] = b[k];` — the index vars `i`, `len`
+        // inside the LHS subscript, plus the container `b` and index `k` on
+        // the RHS, must all be recorded as uses. The container `a` is the
+        // Update target.
+        let source = "void f() {\n    a[i+len] = b[k];\n}";
+        let dfg = get_dfg_context(source, "f", Language::C).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for v in ["i", "len", "k", "b"] {
+            assert!(
+                uses.contains(&v.to_string()),
+                "C subscript LHS/RHS: `{}` should be a use, got uses: {:?}",
+                v,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn cpp_subscript_lhs_index_vars_are_uses() {
+        // C++ shares the C `subscript_expression` shape (field `argument`).
+        let source = "void f() {\n    a[i + j] = b[k];\n}";
+        let dfg = get_dfg_context(source, "f", Language::Cpp).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for v in ["i", "j", "k", "b"] {
+            assert!(
+                uses.contains(&v.to_string()),
+                "C++ subscript index var `{}` should be a use, got {:?}",
+                v,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn ts_subscript_lhs_index_vars_are_uses() {
+        // TS `subscript_expression` uses field `object` (not `argument`).
+        let source = "function f() {\n    a[i + j] = b[k];\n}";
+        let dfg = get_dfg_context(source, "f", Language::TypeScript).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for v in ["i", "j", "k", "b"] {
+            assert!(
+                uses.contains(&v.to_string()),
+                "TS subscript index var `{}` should be a use, got {:?}",
+                v,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn java_array_access_lhs_index_vars_are_uses() {
+        // Java `array_access` uses field `array` for the base, `index` for the
+        // subscript.
+        let source = "class C {\n    void f() {\n        a[i + j] = b[k];\n    }\n}";
+        let dfg = get_dfg_context(source, "f", Language::Java).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for v in ["i", "j", "k", "b"] {
+            assert!(
+                uses.contains(&v.to_string()),
+                "Java array_access index var `{}` should be a use, got {:?}",
+                v,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn go_index_expression_lhs_index_vars_are_uses() {
+        // Go `index_expression` uses field `operand` for the base.
+        let source = "func f() {\n    a[i + j] = b[k]\n}";
+        let dfg = get_dfg_context(source, "f", Language::Go).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for v in ["i", "j", "k", "b"] {
+            assert!(
+                uses.contains(&v.to_string()),
+                "Go index_expression index var `{}` should be a use, got {:?}",
+                v,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn python_subscript_lhs_index_vars_are_uses() {
+        // Python `subscript` uses field `value` (base) and `subscript` (index).
+        let source = "def f():\n    a[i + j] = b[k]";
+        let dfg = get_dfg_context(source, "f", Language::Python).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for v in ["i", "j", "k", "b"] {
+            assert!(
+                uses.contains(&v.to_string()),
+                "Python subscript index var `{}` should be a use, got {:?}",
+                v,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn c_subscript_lhs_container_is_update_not_def() {
+        // Guard: `a[i+len] = ...` writes an element of `a`, so `a` is an
+        // Update (read-then-write of the container), NOT a fresh Definition.
+        // (Mirrors Solidity array_access / Python subscript semantics.)
+        let source = "void f() {\n    a[i+len] = b[k];\n}";
+        let dfg = get_dfg_context(source, "f", Language::C).unwrap();
+        let a_updates: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "a" && r.ref_type == RefType::Update)
+            .collect();
+        assert!(
+            !a_updates.is_empty(),
+            "C subscript container `a` should be an Update, got refs: {:?}",
+            dfg.refs
+                .iter()
+                .map(|r| (r.name.clone(), r.ref_type))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn go_condition_only_for_loop_condition_vars_are_uses() {
+        // ROOT CAUSE (2): Go `for r < n { ... }` is a `for_statement` whose
+        // condition is a non-field positional child. The condition vars `r`,
+        // `n` must be recorded as uses, and the BODY must still be walked.
+        let source = "func f() {\n    for r < n {\n        x = r\n    }\n}";
+        let dfg = get_dfg_context(source, "f", Language::Go).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        assert!(
+            uses.contains(&"r".to_string()),
+            "Go for-condition var `r` should be a use, got uses: {:?}",
+            uses
+        );
+        assert!(
+            uses.contains(&"n".to_string()),
+            "Go for-condition var `n` should be a use, got uses: {:?}",
+            uses
+        );
+        // The body must still be visited (regression guard against dropping it).
+        assert!(
+            dfg.variables.contains(&"x".to_string()),
+            "Go for body var `x` should be recorded, got vars: {:?}",
+            dfg.variables
+        );
+    }
+
+    #[test]
+    fn c_three_clause_for_loop_clause_vars_recorded() {
+        // C `for (i = 0; i < n; i++) { x = i; }` — fields initializer,
+        // condition, update, body. The condition/update reference vars as
+        // USES, and the body must be walked.
+        let source = "void f() {\n    for (i = 0; i < n; i++) {\n        x = i;\n    }\n}";
+        let dfg = get_dfg_context(source, "f", Language::C).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        // `n` is referenced only in the condition; if the condition is dropped
+        // it never appears.
+        assert!(
+            uses.contains(&"n".to_string()),
+            "C for-condition var `n` should be a use, got uses: {:?}",
+            uses
+        );
+        // `i` defined in init, used in cond/update/body.
+        assert!(
+            dfg.variables.contains(&"i".to_string()),
+            "C for-init var `i` should be recorded, got vars: {:?}",
+            dfg.variables
+        );
+        // body visited
+        assert!(
+            dfg.variables.contains(&"x".to_string()),
+            "C for body var `x` should be recorded, got vars: {:?}",
+            dfg.variables
+        );
+    }
+
+    #[test]
+    fn go_infinite_for_loop_body_walked() {
+        // Go `for { ... }` (infinite) — only a `body` field. Ensure the body
+        // is still visited and we don't panic.
+        let source = "func f() {\n    for {\n        y = z\n    }\n}";
+        let dfg = get_dfg_context(source, "f", Language::Go).unwrap();
+        assert!(
+            dfg.variables.contains(&"y".to_string()),
+            "Go infinite-for body var `y` should be recorded, got vars: {:?}",
+            dfg.variables
+        );
+        let uses = names_of(&dfg, RefType::Use);
+        assert!(
+            uses.contains(&"z".to_string()),
+            "Go infinite-for body use `z` should be recorded, got uses: {:?}",
+            uses
+        );
+    }
+
+    #[test]
+    fn python_for_in_loop_still_works() {
+        // Regression guard: the Python `for x in items:` shape (left/right/
+        // body fields) must be UNCHANGED by the Go/C for-loop handling.
+        let source = "def foo(items):\n    for item in items:\n        print(item)";
+        let dfg = get_dfg_context(source, "foo", Language::Python).unwrap();
+        let item_defs: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "item" && r.ref_type == RefType::Definition)
+            .collect();
+        assert!(
+            !item_defs.is_empty(),
+            "Python for-loop var `item` should remain a Definition"
+        );
+        let uses = names_of(&dfg, RefType::Use);
+        assert!(
+            uses.contains(&"items".to_string()),
+            "Python for iterable `items` should be a use, got {:?}",
+            uses
         );
     }
 }
