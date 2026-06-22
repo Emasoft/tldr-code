@@ -1462,7 +1462,7 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
                     is_require = true;
                 }
             }
-            // Arguments with parentheses: require("socket")
+            // Arguments with parentheses: require("socket"), require(script.Parent.X), ...
             "arguments" => {
                 if is_require {
                     module_name = extract_string_from_arguments(&child, source);
@@ -1491,13 +1491,183 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
     }
 }
 
-/// Extract a string value from an arguments node.
-/// Handles both `(arguments (string "value"))` and nested patterns.
+/// Extract the require() module name from a Lua/Luau `arguments` node.
+///
+/// v0.5.0 AUDIT-FIX (W2-lua-require): historically this only accepted a
+/// `string` child, so every non-string-literal `require(...)` argument was
+/// silently dropped — which meant the dominant Roblox / Luau DataModel idioms
+/// (`require(script.Parent.Foo)`, `require(game.X.Y)`,
+/// `require(script:WaitForChild("Config"))`, `require(script["Bar"])`)
+/// produced ZERO imports (and therefore zero internal `deps` edges).
+///
+/// We now reconstruct a module path from the first argument expression,
+/// AST-driven (mirroring `extract_lua_lhs_name` / `lua_bracket_index_name` in
+/// `extract.rs`) rather than slicing source text, so nested chains and
+/// whitespace are handled correctly. `string` literals keep their fast path.
 fn extract_string_from_arguments(node: &Node, source: &str) -> String {
     let mut arg_cursor = node.walk();
     for child in node.children(&mut arg_cursor) {
-        if child.kind() == "string" {
-            return get_string_content(&child, source);
+        // Only consider real argument expressions, skip the `(` / `,` / `)`
+        // anonymous tokens.
+        if !child.is_named() {
+            continue;
+        }
+        let path = lua_require_module_path(&child, source);
+        if !path.is_empty() {
+            return path;
+        }
+        // First named argument decided the outcome (require takes one module
+        // argument); stop so a trailing arg can't override it.
+        return String::new();
+    }
+    String::new()
+}
+
+/// Reconstruct a module path string from a single Lua/Luau `require()`
+/// argument expression, AST-driven.
+///
+/// Accepted shapes (node kinds verified against tree-sitter-lua 0.2.0 and
+/// tree-sitter-luau 1.2.0 `node-types.json`):
+/// - `string`                       -> the literal contents (`"mod.a"` -> `mod.a`)
+/// - `dot_index_expression`         -> `script.Parent.Foo` (recurse on `table`,
+///                                     join with `.field`)
+/// - `bracket_index_expression`     -> `script.Bar` (string subscript) or
+///                                     `table[<expr>]` when the subscript is not
+///                                     a plain string literal
+/// - `function_call` whose callee is a `method_index_expression` with method
+///   `WaitForChild` / `FindFirstChild` -> the string-literal argument
+///   (`require(script:WaitForChild("Config"))` -> `Config`)
+/// - `identifier`                   -> the variable name (`require(modVar)`),
+///   the best resolvable token we have for a dynamic require
+///
+/// Returns an empty string for shapes we cannot resolve (e.g. `require()` with
+/// no argument), so the caller drops the import rather than emitting a bogus
+/// empty module — matching the established "only emit resolvable shapes"
+/// policy (cf. `parse_cjs_require`).
+fn lua_require_module_path(node: &Node, source: &str) -> String {
+    match node.kind() {
+        "string" => get_string_content(node, source),
+        "identifier" => get_node_text(node, source),
+        "dot_index_expression" => lua_dot_index_path(node, source),
+        "bracket_index_expression" => lua_bracket_index_path(node, source),
+        // `script:WaitForChild("Config")` / `:FindFirstChild("X")` — the module
+        // name is the string argument to the lookup method.
+        "function_call" => lua_require_method_call_path(node, source),
+        // `(expr)` — unwrap and recurse on the inner expression.
+        "parenthesized_expression" => node
+            .named_child(0)
+            .map(|inner| lua_require_module_path(&inner, source))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// Build a dotted path from a `dot_index_expression` (`a.b.c`).
+///
+/// The node exposes `table` (the receiver, possibly another
+/// `dot_index_expression`) and `field` (an `identifier`). We recurse on the
+/// receiver so arbitrarily deep chains like `script.Parent.Parent.Util` are
+/// reconstructed segment-by-segment from the AST.
+fn lua_dot_index_path(node: &Node, source: &str) -> String {
+    let field = match node.child_by_field_name("field") {
+        Some(f) => get_node_text(&f, source),
+        None => return String::new(),
+    };
+    match node.child_by_field_name("table") {
+        Some(table) => {
+            let base = lua_require_path_segment(&table, source);
+            if base.is_empty() {
+                field
+            } else {
+                format!("{base}.{field}")
+            }
+        }
+        None => field,
+    }
+}
+
+/// Build a path from a `bracket_index_expression` (`t["k"]` / `t[expr]`).
+///
+/// When the subscript is a string literal we treat it like a dotted segment
+/// (`script["Bar"]` -> `script.Bar`) so it joins naturally with surrounding
+/// dot chains; otherwise we preserve the bracket form (`t[expr]`) built from
+/// the AST `table`/`field` fields.
+fn lua_bracket_index_path(node: &Node, source: &str) -> String {
+    let table = node.child_by_field_name("table");
+    let field = node.child_by_field_name("field");
+    let (table, field) = match (table, field) {
+        (Some(t), Some(f)) => (t, f),
+        _ => return String::new(),
+    };
+    let base = lua_require_path_segment(&table, source);
+
+    if field.kind() == "string" {
+        let key = get_string_content(&field, source);
+        if base.is_empty() {
+            return key;
+        }
+        return format!("{base}.{key}");
+    }
+
+    // Non-string subscript: keep an explicit bracket form so the edge is still
+    // uniquely identifiable.
+    let field_text = get_node_text(&field, source);
+    if base.is_empty() {
+        field_text
+    } else {
+        format!("{base}[{field_text}]")
+    }
+}
+
+/// Reconstruct a path segment for the `table`/receiver side of an index
+/// expression. Receivers are themselves index expressions or identifiers
+/// (the `variable` supertype flattens to these concrete kinds in real trees).
+fn lua_require_path_segment(node: &Node, source: &str) -> String {
+    match node.kind() {
+        "identifier" => get_node_text(node, source),
+        "dot_index_expression" => lua_dot_index_path(node, source),
+        "bracket_index_expression" => lua_bracket_index_path(node, source),
+        "parenthesized_expression" => node
+            .named_child(0)
+            .map(|inner| lua_require_path_segment(&inner, source))
+            .unwrap_or_default(),
+        // `script:GetService(...)` style receivers are unusual inside a require
+        // path; fall back to the raw text so we still produce a stable segment.
+        _ => get_node_text(node, source),
+    }
+}
+
+/// Handle `require(script:WaitForChild("Config"))` and
+/// `require(script:FindFirstChild("X"))`.
+///
+/// The argument is a `function_call` whose `name` is a
+/// `method_index_expression` (`table` = receiver, `method` = the lookup
+/// method). The module name is the string-literal argument to that lookup, so
+/// we pull it from the call's `arguments`. Only the recognised DataModel
+/// lookup methods are treated this way; any other call shape returns empty so
+/// we don't fabricate a module name from an arbitrary function call.
+fn lua_require_method_call_path(node: &Node, source: &str) -> String {
+    let name = match node.child_by_field_name("name") {
+        Some(n) => n,
+        None => return String::new(),
+    };
+    if name.kind() != "method_index_expression" {
+        return String::new();
+    }
+    let method = match name.child_by_field_name("method") {
+        Some(m) => get_node_text(&m, source),
+        None => return String::new(),
+    };
+    if method != "WaitForChild" && method != "FindFirstChild" {
+        return String::new();
+    }
+    // The looked-up child name is the string-literal argument.
+    if let Some(args) = node.child_by_field_name("arguments") {
+        let mut cursor = args.walk();
+        for arg in args.children(&mut cursor) {
+            if arg.kind() == "string" {
+                return get_string_content(&arg, source);
+            }
         }
     }
     String::new()
@@ -2724,5 +2894,134 @@ local mime = require("mime")
         );
         assert!(modules.contains(&"ltn12"), "Missing 'ltn12' import");
         assert!(modules.contains(&"mime"), "Missing 'mime' import");
+    }
+
+    // -------------------------------------------------------------------------
+    // v0.5.0 AUDIT-FIX (W2-lua-require): non-string-literal require() arguments
+    // (Roblox / Luau DataModel paths) were silently dropped because the
+    // argument reader only accepted a `string` child. These tests pin the new
+    // AST-driven module-path reconstruction for dot/bracket index and
+    // `:WaitForChild("x")` forms across BOTH Lua and Luau (shared code path).
+    // -------------------------------------------------------------------------
+
+    /// Test: Lua `require(script.Parent.Foo)` -> module `script.Parent.Foo`
+    /// (dot_index_expression argument, no string literal).
+    #[test]
+    fn test_lua_require_datamodel_dot_path() {
+        let source = r#"local Foo = require(script.Parent.Foo)"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Lua).unwrap();
+
+        assert_eq!(imports.len(), 1, "Expected 1 import, got {}", imports.len());
+        assert_eq!(imports[0].module, "script.Parent.Foo");
+    }
+
+    /// Test: deeply nested DataModel path
+    /// `require(script.Parent.Parent.Util)` and a `game.X.Y.Z` root.
+    #[test]
+    fn test_lua_require_datamodel_nested_paths() {
+        let source = r#"
+local Util = require(script.Parent.Parent.Util)
+local Net = require(game.ReplicatedStorage.Shared.Net)
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Lua).unwrap();
+
+        let modules: Vec<&str> = imports.iter().map(|i| i.module.as_str()).collect();
+        assert!(
+            modules.contains(&"script.Parent.Parent.Util"),
+            "Missing nested 'script.Parent.Parent.Util', got {modules:?}"
+        );
+        assert!(
+            modules.contains(&"game.ReplicatedStorage.Shared.Net"),
+            "Missing 'game.ReplicatedStorage.Shared.Net', got {modules:?}"
+        );
+    }
+
+    /// Test: `require(script:WaitForChild("Config"))` -> module `Config`
+    /// (method_index_expression call; the string literal is the module name).
+    #[test]
+    fn test_lua_require_wait_for_child() {
+        let source = r#"local Config = require(script:WaitForChild("Config"))"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Lua).unwrap();
+
+        assert_eq!(imports.len(), 1, "Expected 1 import, got {}", imports.len());
+        assert_eq!(imports[0].module, "Config");
+    }
+
+    /// Test: `require(script["Bracketed"])` -> module `script.Bracketed`
+    /// (bracket_index_expression with a string subscript).
+    #[test]
+    fn test_lua_require_bracket_index() {
+        let source = r#"local B = require(script["Bracketed"])"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Lua).unwrap();
+
+        assert_eq!(imports.len(), 1, "Expected 1 import, got {}", imports.len());
+        assert_eq!(imports[0].module, "script.Bracketed");
+    }
+
+    /// Test: the SAME non-string forms must resolve under the Luau grammar
+    /// (Luau shares the Lua import path; node kinds are identical). This is the
+    /// primary regression target since DataModel requires are a Luau idiom.
+    #[test]
+    fn test_luau_require_datamodel_forms() {
+        let source = r#"
+local Net = require(script.Parent.Net)
+local Cfg = require(script:WaitForChild("Config"))
+local Shared = require(game.ReplicatedStorage.Shared)
+"#;
+        let tree = parse(source, Language::Luau).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Luau).unwrap();
+
+        let modules: Vec<&str> = imports.iter().map(|i| i.module.as_str()).collect();
+        assert!(
+            modules.contains(&"script.Parent.Net"),
+            "Luau: missing 'script.Parent.Net', got {modules:?}"
+        );
+        assert!(
+            modules.contains(&"Config"),
+            "Luau: missing WaitForChild 'Config', got {modules:?}"
+        );
+        assert!(
+            modules.contains(&"game.ReplicatedStorage.Shared"),
+            "Luau: missing 'game.ReplicatedStorage.Shared', got {modules:?}"
+        );
+    }
+
+    /// Test: mixed file (string + local + DataModel) yields ALL three — the
+    /// exact CHAR-TEST shape from the task brief.
+    #[test]
+    fn test_lua_require_mixed_string_and_datamodel() {
+        let source = r#"
+require("m")
+local x = require("y")
+local Foo = require(script.Parent.Foo)
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Lua).unwrap();
+
+        let modules: Vec<&str> = imports.iter().map(|i| i.module.as_str()).collect();
+        assert!(modules.contains(&"m"), "Missing string require 'm', got {modules:?}");
+        assert!(modules.contains(&"y"), "Missing local require 'y', got {modules:?}");
+        assert!(
+            modules.contains(&"script.Parent.Foo"),
+            "Missing DataModel require 'script.Parent.Foo', got {modules:?}"
+        );
+    }
+
+    /// Negative guard: a require with a truly unresolvable bare-identifier
+    /// argument (e.g. `require(modVar)`) is still acceptable to surface by its
+    /// identifier text, but a require with NO argument must not crash / emit.
+    #[test]
+    fn test_lua_require_no_argument_is_dropped() {
+        let source = r#"require()"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Lua).unwrap();
+        assert!(
+            imports.is_empty(),
+            "require() with no argument must not emit an import, got {imports:?}"
+        );
     }
 }
