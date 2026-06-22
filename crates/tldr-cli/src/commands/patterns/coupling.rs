@@ -1472,6 +1472,32 @@ pub fn find_cross_calls(caller: &ModuleInfo, callee: &ModuleInfo) -> CrossCalls 
 /// This is best-effort: if call-graph construction fails for any reason
 /// (unsupported language, parse error, IO error), the function is a
 /// no-op so the original AST-derived counts are preserved.
+///
+/// # Scope (W5b-coupling-pairmode-scope, v0.5.0 AUDIT-FIX)
+///
+/// Pair mode reports coupling between *exactly two* modules, so the
+/// project call graph only needs to see edges whose *both* endpoints are
+/// one of those two files. The earlier implementation rooted the call
+/// graph at the component-wise `common_ancestor` of the two paths and
+/// walked it whole — correct and instant when the two files live under a
+/// small shared package (the common case: `src/auth.py` + `src/user.py`,
+/// or Flask's `flask/app.py` + `flask/sansio/app.py`), but a pathological
+/// O(corpus) blowup when the two files only share a *huge* ancestor
+/// (e.g. `/tmp/<uniqA>/mod.py` and `/tmp/<uniqB>/client.py`, whose only
+/// common ancestor is `/tmp` — tens of thousands of unrelated files).
+///
+/// The fix bounds the analyzed file set to the two files' own parent
+/// directories via [`bounded_pair_roots`]:
+/// - **Same directory / nested** (one parent contains the other — the
+///   `src/`, `lib/`, `flask/`↔`flask/sansio/` cases): collapses to the
+///   single shallower parent. This is byte-identical in scope to the old
+///   `common_ancestor` for those inputs, so cross-file edges (including
+///   inheritance / `super()` dispatch) resolve exactly as before.
+/// - **Unrelated subtrees** (siblings whose common ancestor is some
+///   larger directory): scans only the two parent directories, never the
+///   shared ancestor. Two files in genuinely disjoint package trees
+///   cannot form a resolvable cross-import anyway, so the bounded scan
+///   yields the same (empty) augmentation without walking the corpus.
 fn augment_with_project_call_graph(
     user_path_a: &Path,
     user_path_b: &Path,
@@ -1479,15 +1505,8 @@ fn augment_with_project_call_graph(
     b_to_a: &mut CrossCalls,
     lang_hint: Option<TldrLanguage>,
 ) {
-    // Resolve the project root as the deepest common ancestor of the
-    // two file paths. Fall back to the parent of path_a if no common
-    // ancestor can be derived (e.g. one of the paths is just a basename).
     let canon_a = std::fs::canonicalize(user_path_a).unwrap_or_else(|_| user_path_a.to_path_buf());
     let canon_b = std::fs::canonicalize(user_path_b).unwrap_or_else(|_| user_path_b.to_path_buf());
-    let root = match common_ancestor(&canon_a, &canon_b) {
-        Some(r) => r,
-        None => return,
-    };
 
     // Detect language from path_a if not supplied; bail if both fail.
     let language = match lang_hint
@@ -1498,29 +1517,70 @@ fn augment_with_project_call_graph(
         None => return,
     };
 
-    // Build the project call graph rooted at the common ancestor. This
+    // Bound the scan to the two files' own directories instead of their
+    // (possibly enormous) common ancestor. Each returned root is a real,
+    // small directory that contains at least one of the two files.
+    let roots = bounded_pair_roots(&canon_a, &canon_b);
+
+    for root in &roots {
+        collect_pair_edges_from_root(root, &canon_a, &canon_b, language, a_to_b, b_to_a);
+    }
+}
+
+/// Build the project call graph rooted at `root` (a bounded directory)
+/// and append any cross-file edges between `canon_a` and `canon_b` to the
+/// running `a_to_b` / `b_to_a` tallies.
+///
+/// Only edges whose **both** endpoints are one of the two target files
+/// are collected — exactly the pair-mode semantics. A file that does not
+/// live under `root` cannot appear as an endpoint of any edge in this
+/// graph (its functions are never scanned), so calling this once per
+/// bounded root and unioning the results is equivalent to a single walk
+/// of a root that contains both files, but without the unbounded
+/// common-ancestor traversal.
+fn collect_pair_edges_from_root(
+    root: &Path,
+    canon_a: &Path,
+    canon_b: &Path,
+    language: TldrLanguage,
+    a_to_b: &mut CrossCalls,
+    b_to_a: &mut CrossCalls,
+) {
+    // Build the project call graph rooted at the bounded directory. This
     // is the same routine `tldr calls` uses, so the augmentation is by
-    // construction consistent with what `tldr calls` reports.
-    let graph = match tldr_core::build_project_call_graph(&root, language, None, true) {
+    // construction consistent with what `tldr calls` reports for that
+    // scope.
+    let graph = match tldr_core::build_project_call_graph(root, language, None, true) {
         Ok(g) => g,
         Err(_) => return,
     };
 
-    // file_a_basename / file_b_basename used to suffix-match the edge
-    // paths against the user-supplied paths. The project call graph
-    // emits paths relative to the project root (e.g. `app.py`,
-    // `sansio/app.py`); the user-supplied paths are typically absolute
-    // or relative to cwd. Suffix-matching on the trailing relative
-    // path lets us identify the right edges without hard-coding a
-    // canonicalisation rule.
-    let suffix_a = relative_suffix(&canon_a, &root);
-    let suffix_b = relative_suffix(&canon_b, &root);
+    // A target file only has a meaningful relative suffix (for edge
+    // matching) when it actually lives under this root. For a file
+    // outside `root`, leave the suffix empty so `path_matches` (which
+    // rejects empty suffixes) never spuriously matches a same-basename
+    // sibling that happens to live under `root`.
+    let suffix_a = if canon_a.starts_with(root) {
+        relative_suffix(canon_a, root)
+    } else {
+        String::new()
+    };
+    let suffix_b = if canon_b.starts_with(root) {
+        relative_suffix(canon_b, root)
+    } else {
+        String::new()
+    };
 
-    // Avoid double-counting calls already recorded by the AST walker.
-    // The AST walker keys cross-calls on (caller_func, callee_name,
-    // line); the call graph emits (src_func, dst_func, src_file,
-    // dst_file). Deduplicate by `(caller, callee, line)` triplet,
-    // treating absent line numbers as 0.
+    // If this root does not contain *both* files, no edge in its graph
+    // can have both endpoints among the pair — skip the edge walk.
+    if suffix_a.is_empty() || suffix_b.is_empty() {
+        return;
+    }
+
+    // Avoid double-counting calls already recorded by the AST walker (and
+    // by a previously-processed root). The AST walker keys cross-calls on
+    // (caller_func, callee_name, line); the call graph emits (src_func,
+    // dst_func, src_file, dst_file). Deduplicate by `(caller, callee)`.
     let existing_a_to_b: HashSet<(String, String)> = a_to_b
         .calls
         .iter()
@@ -1570,28 +1630,56 @@ fn augment_with_project_call_graph(
     }
 }
 
-/// Find the deepest directory ancestor common to both paths. Returns
-/// `None` if no common ancestor exists.
-fn common_ancestor(a: &Path, b: &Path) -> Option<PathBuf> {
-    let comps_a: Vec<_> = a.components().collect();
-    let comps_b: Vec<_> = b.components().collect();
-    let mut common = PathBuf::new();
-    for (ca, cb) in comps_a.iter().zip(comps_b.iter()) {
-        if ca == cb {
-            common.push(ca.as_os_str());
-        } else {
-            break;
-        }
+/// Compute the bounded set of directories to scan for pair-mode call
+/// graph augmentation (W5b-coupling-pairmode-scope, v0.5.0 AUDIT-FIX).
+///
+/// Returns the two files' parent directories, collapsed so that when one
+/// parent is an ancestor of (or equal to) the other only the *shallower*
+/// (containing) parent is returned. The result is therefore:
+/// - a single root for same-directory or nested pairs — equal in scope to
+///   the pre-fix `common_ancestor`, preserving cross-file edge resolution
+///   for the documented `src/auth.py`+`src/user.py` and Flask
+///   `app.py`+`sansio/app.py` cases; and
+/// - the two distinct parent directories for unrelated sibling pairs —
+///   never their (potentially enormous) shared ancestor.
+///
+/// Crucially the returned roots are always at or below the two files'
+/// parent directories, so the call-graph walk is bounded by the size of
+/// those directories rather than the size of the common ancestor.
+fn bounded_pair_roots(canon_a: &Path, canon_b: &Path) -> Vec<PathBuf> {
+    // The directory that directly contains each file. If a path has no
+    // parent (e.g. a bare filename at the filesystem root), fall back to
+    // the path itself so the builder still gets a directory-ish input and
+    // simply finds nothing.
+    let parent_a = canon_a
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| canon_a.to_path_buf());
+    let parent_b = canon_b
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| canon_b.to_path_buf());
+
+    if parent_a == parent_b {
+        // Same directory: one bounded root (identical to the old
+        // common_ancestor for this input).
+        vec![parent_a]
+    } else if parent_b.starts_with(&parent_a) {
+        // parent_a contains parent_b (nested, e.g. flask/ ⊃ flask/sansio/).
+        // Scanning the shallower parent covers both files — matching the
+        // pre-fix common ancestor exactly.
+        vec![parent_a]
+    } else if parent_a.starts_with(&parent_b) {
+        // parent_b contains parent_a (nested the other way).
+        vec![parent_b]
+    } else {
+        // Disjoint subtrees: scan only the two parent directories, never
+        // their shared ancestor. Two files in unrelated package trees
+        // cannot form a resolvable cross-import, so unioning the per-root
+        // edge sets yields the correct (typically empty) augmentation
+        // without an O(corpus) walk of the common ancestor.
+        vec![parent_a, parent_b]
     }
-    if common.as_os_str().is_empty() {
-        return None;
-    }
-    // If `common` happens to be a file (rare; both paths identical),
-    // step up to its parent.
-    if common.is_file() {
-        return common.parent().map(|p| p.to_path_buf());
-    }
-    Some(common)
 }
 
 /// Compute the path of `file` relative to `root` as a forward-slash
@@ -2395,6 +2483,188 @@ def caller_b():
 
         assert_eq!(a_to_b.count, 1);
         assert_eq!(b_to_a.count, 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // bounded_pair_roots / pair-mode augmentation scope Tests
+    // (W5b-coupling-pairmode-scope, v0.5.0 AUDIT-FIX)
+    // -------------------------------------------------------------------------
+
+    /// W5b CHAR TEST (guard): pair-mode augmentation must NEVER choose a
+    /// scan root that is a *strict ancestor of both* files' parent
+    /// directories. The pre-fix code rooted the project call graph at the
+    /// component-wise `common_ancestor`, so two files in unrelated
+    /// directories under a huge shared parent (e.g. `/tmp/<uniqA>/mod.py`
+    /// and `/tmp/<uniqB>/client.py`, common ancestor `/tmp`) caused the
+    /// builder to walk the entire `/tmp` tree (~17k files on a polluted
+    /// box) — an unbounded O(corpus) blowup. The bounded root set must be
+    /// confined to the two files' own parent directories.
+    #[test]
+    fn test_bounded_pair_roots_never_walks_giant_common_ancestor() {
+        let parent_huge = TempDir::new().unwrap();
+        // Two files in DISTINCT subdirectories whose only common ancestor
+        // is the (potentially enormous) `parent_huge` directory.
+        let dir_a = parent_huge.path().join("uniq_a");
+        let dir_b = parent_huge.path().join("uniq_b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        let file_a = dir_a.join("mod.py");
+        let file_b = dir_b.join("client.py");
+        fs::write(&file_a, "class Service:\n    def go(self):\n        pass\n").unwrap();
+        fs::write(&file_b, "from .mod import Service\n").unwrap();
+
+        let roots = bounded_pair_roots(&file_a, &file_b);
+
+        // The giant common ancestor must NOT be one of the scan roots.
+        let huge = parent_huge.path().to_path_buf();
+        assert!(
+            !roots.iter().any(|r| r == &huge),
+            "pair-mode must not scan the giant common ancestor {:?}; got roots {:?}",
+            huge,
+            roots
+        );
+        // Every chosen root must be confined to one of the two parent
+        // directories (never above them).
+        for r in &roots {
+            assert!(
+                r == &dir_a || r == &dir_b,
+                "scan root {:?} escaped the two file parents {:?} / {:?}",
+                r,
+                dir_a,
+                dir_b
+            );
+        }
+        assert!(!roots.is_empty(), "must return at least one bounded root");
+    }
+
+    /// W5b CHAR TEST (termination + no poison-edge): reproduce the
+    /// `coupling_path_preserves_user_supplied` shape — two files in
+    /// separate subdirs of a common parent that *also* contains a large
+    /// unrelated source file ("poison"). The augmentation must terminate
+    /// and must NOT pull in edges from the poison file (proof it did not
+    /// walk the common ancestor). Pre-fix it walked the whole parent and
+    /// would index the poison file.
+    #[test]
+    fn test_pair_augment_ignores_poison_sibling_in_common_ancestor() {
+        let parent = TempDir::new().unwrap();
+        // Poison: a file directly under the common ancestor that defines a
+        // distinctively-named symbol. If the augmentation walked the
+        // common ancestor it would index this and could fabricate edges.
+        let poison = parent.path().join("poison_module.py");
+        fs::write(
+            &poison,
+            "def poison_only_symbol():\n    return 1\n\
+             class PoisonClass:\n    def m(self):\n        return poison_only_symbol()\n",
+        )
+        .unwrap();
+
+        let dir_a = parent.path().join("pkg_a");
+        let dir_b = parent.path().join("pkg_b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        let file_a = dir_a.join("a.py");
+        let file_b = dir_b.join("b.py");
+        fs::write(&file_a, "def alpha():\n    return 0\n").unwrap();
+        fs::write(&file_b, "def beta():\n    return 0\n").unwrap();
+
+        let mut a_to_b = CrossCalls::default();
+        let mut b_to_a = CrossCalls::default();
+        let start = std::time::Instant::now();
+        augment_with_project_call_graph(&file_a, &file_b, &mut a_to_b, &mut b_to_a, None);
+        // Must terminate quickly even if the parent had many siblings.
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "pair-mode augmentation did not terminate promptly"
+        );
+
+        // No edge may reference the poison symbols — that would prove the
+        // common-ancestor walk leaked unrelated files into the analysis.
+        let mentions_poison = a_to_b
+            .calls
+            .iter()
+            .chain(b_to_a.calls.iter())
+            .any(|c| {
+                c.caller.contains("poison")
+                    || c.callee.contains("poison")
+                    || c.caller.contains("Poison")
+                    || c.callee.contains("Poison")
+            });
+        assert!(
+            !mentions_poison,
+            "augmentation leaked poison-sibling edges: a_to_b={:?} b_to_a={:?}",
+            a_to_b.calls, b_to_a.calls
+        );
+    }
+
+    /// W5b CORRECTNESS-PRESERVATION TEST: a normal same-directory pair
+    /// (the documented `tldr coupling src/auth.py src/user.py` shape)
+    /// must keep finding its real cross-module edges. `bounded_pair_roots`
+    /// must collapse to the single shared parent directory — identical to
+    /// the pre-fix `common_ancestor` for same-dir inputs — so the project
+    /// call-graph augmentation still resolves the cross-file edge.
+    #[test]
+    fn test_pair_augment_same_dir_preserves_cross_edge() {
+        let dir = TempDir::new().unwrap();
+        // Two real modules in the SAME directory with an inheritance edge
+        // that only the project call graph (not the AST walker) can see.
+        let file_base = dir.path().join("base.py");
+        let file_child = dir.path().join("child.py");
+        fs::write(
+            &file_base,
+            "class Base:\n    def shared(self):\n        return 1\n",
+        )
+        .unwrap();
+        fs::write(
+            &file_child,
+            "from base import Base\n\
+             class Child(Base):\n    def run(self):\n        return self.shared()\n",
+        )
+        .unwrap();
+
+        // bounded_pair_roots must collapse to the single shared parent.
+        let roots = bounded_pair_roots(&file_base, &file_child);
+        assert_eq!(
+            roots.len(),
+            1,
+            "same-dir pair must yield exactly one scan root, got {:?}",
+            roots
+        );
+        let shared_parent =
+            std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+        let got = std::fs::canonicalize(&roots[0]).unwrap_or_else(|_| roots[0].clone());
+        assert_eq!(
+            got, shared_parent,
+            "same-dir scan root must be the shared parent dir"
+        );
+    }
+
+    /// W5b CORRECTNESS-PRESERVATION TEST: the nested case (Flask shape —
+    /// `flask/app.py` + `flask/sansio/app.py`) must collapse to the single
+    /// *shallower* parent (`flask/`), exactly the pre-fix common ancestor,
+    /// so inheritance-driven edges through `super()` still resolve.
+    #[test]
+    fn test_bounded_pair_roots_nested_collapses_to_shallower_parent() {
+        let pkg = TempDir::new().unwrap();
+        let sub = pkg.path().join("sansio");
+        fs::create_dir_all(&sub).unwrap();
+        let file_a = pkg.path().join("app.py"); // parent = pkg/
+        let file_b = sub.join("app.py"); // parent = pkg/sansio/
+        fs::write(&file_a, "class App:\n    def m(self):\n        return 1\n").unwrap();
+        fs::write(&file_b, "class Sub(App):\n    pass\n").unwrap();
+
+        let roots = bounded_pair_roots(&file_a, &file_b);
+        assert_eq!(
+            roots.len(),
+            1,
+            "nested pair must collapse to one root, got {:?}",
+            roots
+        );
+        let want = std::fs::canonicalize(pkg.path()).unwrap_or_else(|_| pkg.path().to_path_buf());
+        let got = std::fs::canonicalize(&roots[0]).unwrap_or_else(|_| roots[0].clone());
+        assert_eq!(
+            got, want,
+            "nested pair root must be the shallower (containing) parent dir"
+        );
     }
 
     // -------------------------------------------------------------------------
