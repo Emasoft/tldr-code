@@ -36,7 +36,7 @@
 //! - Chidamber & Kemerer, "A Metrics Suite for Object Oriented Design"
 //! - Health spec section 4.2
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::walker::walk_project;
@@ -518,8 +518,21 @@ pub fn analyze_cohesion_with_options(
         ));
     }
 
-    // Sort by LCOM4 descending (worst cohesion first)
-    all_classes.sort_by(|a, b| b.lcom4.cmp(&a.lcom4));
+    // Sort by LCOM4 descending (worst cohesion first).
+    // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): add a STABLE total-order tiebreak
+    // (name, file, line) so classes that share an LCOM4 value have a
+    // deterministic relative order across runs. Previously a bare
+    // `b.lcom4.cmp(&a.lcom4)` left equal-LCOM4 classes in their push order,
+    // which — for partial-class buckets — derived from a `HashMap` iteration and
+    // so varied run-to-run. (`sort_by` is stable, but the *input* order was not
+    // deterministic; an explicit tiebreak removes the dependency entirely.)
+    all_classes.sort_by(|a, b| {
+        b.lcom4
+            .cmp(&a.lcom4)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+    });
 
     // Calculate summary statistics
     let total_classes = all_classes.len();
@@ -891,6 +904,23 @@ fn bare_field_config(language: Language) -> Option<BareFieldConfig> {
             // `block_parameters > identifier`.
             shadow_decl_kinds: &["method_parameters", "block_parameters"],
         }),
+        Language::Ocaml => Some(BareFieldConfig {
+            // A foreign record-field access `obj.f` is `field_get_expression
+            // { [record] …, [field] field_path }`; recurse into the record side
+            // and skip the field name (a `field_path > field_name`, which is not
+            // a `value_name` and so would not match anyway, but skipping it
+            // mirrors the C++ precedent and keeps the field-vs-record
+            // distinction). A bare `val` READ is a `value_path > value_name`; a
+            // `val` WRITE is `set_expression > instance_variable_name`. Both the
+            // `value_name` and `instance_variable_name` leaves are credited iff
+            // declared & not shadowed (see `bare_is_identifier_kind`).
+            member_access_kinds: &["field_get_expression"],
+            object_field: "record",
+            member_field: "field",
+            // method-local `let_binding > [pattern] value_name`; method
+            // `parameter > [pattern] value_pattern`.
+            shadow_decl_kinds: &["let_binding", "parameter"],
+        }),
         _ => None,
     }
 }
@@ -1008,7 +1038,36 @@ fn bare_record_shadow_name(
         (Language::Ruby, _) => {
             bare_collect_ruby_param_identifiers(node, source, out);
         }
+        // OCaml: `let_binding > [pattern] value_name`; `parameter > [pattern]
+        // value_pattern`. Collect every identifier leaf under the binding
+        // pattern (covers tuple / record destructuring defensively).
+        (Language::Ocaml, _) => {
+            if let Some(pat) = node.child_by_field_name("pattern") {
+                bare_collect_ocaml_pattern_names(&pat, source, out);
+            }
+        }
         _ => {}
+    }
+}
+
+/// Collect every binding-name leaf under an OCaml pattern. A simple `let x = …`
+/// pattern is a `value_name`; a parameter pattern is a `value_pattern` (whose
+/// text is the bound name); compound patterns (tuples / records) nest these.
+fn bare_collect_ocaml_pattern_names(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "value_name" | "value_pattern" => {
+            bare_insert_identifier_leaf(node, source, out);
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        bare_collect_ocaml_pattern_names(&child, source, out);
     }
 }
 
@@ -1177,6 +1236,12 @@ fn bare_is_identifier_kind(language: Language, kind: &str) -> bool {
     match language {
         Language::Kotlin => kind == "simple_identifier" || kind == "identifier",
         Language::TypeScript | Language::JavaScript => kind == "identifier",
+        // OCaml: a bare `val` READ leaf is `value_name` (under a `value_path`);
+        // a `val` WRITE leaf is `instance_variable_name` (the direct child of a
+        // `set_expression`, e.g. `balance <- …`). An `instance_variable_name`
+        // is never shadowable by a local, but it is still gated on `declared`,
+        // so spurious matches are impossible.
+        Language::Ocaml => kind == "value_name" || kind == "instance_variable_name",
         // C#, Scala, Ruby all use `identifier` for a bare value reference.
         _ => kind == "identifier",
     }
@@ -1315,7 +1380,14 @@ fn cohesion_from_method_fields(
 
     if method_count == 1 {
         let m = &methods[0];
-        let field_vec: Vec<String> = m.fields.iter().cloned().collect();
+        // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): sort the lone component's
+        // field list — it is collected from a `HashSet` and would otherwise be
+        // emitted in a non-deterministic order across runs.
+        let field_vec: Vec<String> = {
+            let mut v: Vec<String> = m.fields.iter().cloned().collect();
+            v.sort();
+            v
+        };
         return ClassCohesion {
             name: name.to_string(),
             file: file_path.to_path_buf(),
@@ -1383,7 +1455,14 @@ fn cohesion_from_method_fields(
     }
     let lcom4 = uf.count_components();
     let component_ids = uf.get_components();
-    let mut component_map: HashMap<usize, (Vec<String>, HashSet<String>)> = HashMap::new();
+    // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): use a `BTreeMap` keyed on the
+    // stable Union-Find component id so the component LIST ORDER is
+    // deterministic across runs (a `HashMap` iterates in a randomized order —
+    // CONFIRMED LIVE: 8 runs of an 8-island fixture produced 8 different
+    // component orderings). Counts (`lcom4`, `field_count`) are unaffected;
+    // this is a pure output-ordering fix and so also stabilizes the C++ /
+    // Solidity output without touching their field/method LOGIC.
+    let mut component_map: BTreeMap<usize, (Vec<String>, HashSet<String>)> = BTreeMap::new();
     for (i, &comp_id) in component_ids.iter().enumerate() {
         let entry = component_map
             .entry(comp_id)
@@ -1395,7 +1474,13 @@ fn cohesion_from_method_fields(
         .into_values()
         .map(|(methods, fields)| ComponentInfo {
             methods,
-            fields: fields.into_iter().collect(),
+            // Sort the inner field list so a component's `fields` are emitted in
+            // a deterministic order (a `HashSet` has no stable iteration order).
+            fields: {
+                let mut v: Vec<String> = fields.into_iter().collect();
+                v.sort();
+                v
+            },
         })
         .collect();
 
@@ -1486,8 +1571,130 @@ fn extract_classes(root: tree_sitter::Node, source: &str, language: Language) ->
         // referenced in each method body (matched by
         // `extract_elixir_module_attribute`).
         Language::Elixir => extract_elixir_classes_cohesion(root, source),
+        // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): the cohesion `extract_classes`
+        // dispatch had no OCaml arm, so every `class ... object ... end` reported
+        // `classes:0`. Treat an OCaml class as a `class_definition` whose methods
+        // are its `method_definition` clauses and whose LCOM4 "fields" are the
+        // `val` instance variables (`instance_variable_definition`) referenced —
+        // BARE — in each method body. The declared-`val` set is harvested onto
+        // `ClassInfo.declared_fields`, so the shared bare-member resolver
+        // (`generic_bare_field_accesses`, OCaml arm) credits a bare `value_name`
+        // read or an `instance_variable_name` (`<-`) write iff it is a declared
+        // `val` and is not shadowed by a `let`/parameter.
+        Language::Ocaml => extract_ocaml_classes_cohesion(root, source),
         _ => vec![], // Unsupported language
     }
+}
+
+/// fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): extract OCaml `class` definitions as
+/// `ClassInfo` entries for the cohesion pipeline.
+///
+/// Grammar (tree-sitter-ocaml, VERIFIED via `dump_ml_t`):
+///   `class_definition > class_binding { class_name, [body] object_expression }`
+///   `object_expression > instance_variable_definition > instance_variable_name`
+///                       (the `val` / `val mutable` fields)
+///   `object_expression > method_definition > method_name` (the methods)
+///
+/// Methods carry real byte spans (`method_definition` start/end) so the
+/// per-method field-access scan can slice the body. The `val` names are stored
+/// on `declared_fields` for the bare-member resolver. Recurses into nested
+/// modules (`structure` / `module_definition`) so classes inside a `module … =
+/// struct … end` are still discovered.
+fn extract_ocaml_classes_cohesion(
+    root: tree_sitter::Node,
+    source: &str,
+) -> Vec<ClassInfo> {
+    let mut classes = Vec::new();
+    collect_ocaml_classes(&root, source, &mut classes);
+    classes
+}
+
+fn collect_ocaml_classes(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut Vec<ClassInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "class_definition" {
+            // A `class_definition` may bind more than one `class_binding`
+            // (`class a = … and b = …`); emit one `ClassInfo` per binding.
+            let mut bc = child.walk();
+            for binding in child.children(&mut bc) {
+                if binding.kind() == "class_binding" {
+                    if let Some(info) = build_ocaml_class_info(&binding, source) {
+                        out.push(info);
+                    }
+                }
+            }
+        }
+        // Recurse for classes nested inside modules / structures.
+        collect_ocaml_classes(&child, source, out);
+    }
+}
+
+/// Build a `ClassInfo` from a single `class_binding`. Returns `None` if the
+/// binding has no `object_expression` body (e.g. a `class type` alias) so only
+/// real object classes are emitted.
+fn build_ocaml_class_info(
+    binding: &tree_sitter::Node,
+    source: &str,
+) -> Option<ClassInfo> {
+    let name_node = binding
+        .children(&mut binding.walk())
+        .find(|c| c.kind() == "class_name")?;
+    let name = node_text_of(&name_node, source)?;
+
+    let body = binding.child_by_field_name("body")?;
+    if body.kind() != "object_expression" {
+        return None;
+    }
+
+    let mut methods: Vec<MethodInfo> = Vec::new();
+    let mut declared_fields: HashSet<String> = HashSet::new();
+    let mut oc = body.walk();
+    for member in body.children(&mut oc) {
+        match member.kind() {
+            "instance_variable_definition" => {
+                if let Some(iv) = member
+                    .children(&mut member.walk())
+                    .find(|c| c.kind() == "instance_variable_name")
+                {
+                    if let Some(t) = node_text_of(&iv, source) {
+                        if !t.is_empty() {
+                            declared_fields.insert(t);
+                        }
+                    }
+                }
+            }
+            "method_definition" => {
+                if let Some(mn) = member
+                    .children(&mut member.walk())
+                    .find(|c| c.kind() == "method_name")
+                {
+                    if let Some(t) = node_text_of(&mn, source) {
+                        if !t.is_empty() {
+                            methods.push(MethodInfo {
+                                name: t,
+                                start_byte: member.start_byte(),
+                                end_byte: member.end_byte(),
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(ClassInfo {
+        name,
+        line: binding.start_position().row + 1,
+        methods,
+        is_partial: false,
+        namespace_path: Vec::new(),
+        declared_fields,
+    })
 }
 
 // =============================================================================
@@ -2220,228 +2427,144 @@ fn elixir_method_name(node: &tree_sitter::Node, source: &str) -> Option<String> 
 // Lua Class Extraction (v0.4.2 M-030)
 // =============================================================================
 
-/// Detect setmetatable-style prototype classes in lua/luau source.
+/// Detect prototype / table-convention classes in lua/luau source.
 ///
-/// The dominant lua OO idiom is:
-/// ```lua
-/// local Point = {}
-/// function Point.new(x, y) ... end
-/// function Point:distance(other) ... end
-/// function Point:translate(dx, dy) ... end
-/// ```
-/// The `Point` identifier is bound by a `local Point = {}` (an
-/// empty-table assignment) and then receives methods via dotted
-/// (`Point.new`) or colon-prefixed (`Point:distance`) `function`
-/// statements.
+/// fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): switched from the old
+/// empty-table-anchor heuristic to the Wave-2 METHOD-DRIVEN model
+/// (`extract_lua_classes_detailed` in `ast/extract.rs`). The previous
+/// extractor required a `local X = {}` binding whose RHS is an *empty*
+/// `table_constructor`, so it MISSED every `:extend()` subclass — the dominant
+/// inheritance idiom — whose RHS is a call (`local Point = Object:extend()`,
+/// `fs.WriteStream = Writable:extend()`). CONFIRMED LIVE: `cls.lua` emitted only
+/// `Object` (not `Point`); `deps/buffer.lua` (luvit) emitted 0 classes although
+/// `local Buffer = Object:extend()` owns methods.
 ///
-/// Heuristic:
-///   1. Collect all `local X = {}` bindings (variable_declaration
-///      whose RHS is an empty `table_constructor`).
-///   2. Walk `function_declaration` statements and look for nodes
-///      whose name is `Foo.bar` or `Foo:bar` (a dot_index_expression
-///      / method_index_expression). The bare identifier `Foo` is the
-///      class name; the trailing identifier is the method name.
-///   3. Emit a `ClassInfo` per `X` that owns >=1 method.
+/// New model (mirrors the proven Wave-2 grouping, but builds cohesion
+/// `MethodInfo` with real byte spans — `types::FunctionInfo` carries only line
+/// numbers, which the per-method field-access scan cannot slice on):
+///   1. Pass 1 — walk every `function_declaration` and group it under the
+///      receiver read from its name node's `table` field
+///      (`function T:m` => `method_index_expression{table:T, method:m}`;
+///      `function T.m` => `dot_index_expression{table:T, field:m}`). The
+///      *receiver* is the authoritative class signal — independent of how `T`
+///      was bound — so `:extend()` subclasses are captured. `self`/`_`
+///      receivers (setmetatable constructors) are filtered.
+///   2. Declared fields = `self.X = …` assignment targets inside method bodies
+///      (the `collect_lua_self_fields` shape) plus top-level
+///      `T.field = <non-function>` statics.
+///   3. Emit a `ClassInfo` per receiver that owns >=1 method (a function-less
+///      module table such as `local config = {w=1}` is therefore NOT a class).
 ///
-/// Body for cohesion field-extraction is the function's full byte
-/// span (`self.X` accesses are recognised by `extract_lua_self_field_access`).
+/// `self.X` field reads stay recognised by `extract_lua_self_field_access` (the
+/// per-method snippet path), so `declared_fields` is left EMPTY for Lua — its
+/// field detection does NOT need the bare-member resolver (Lua idiom is
+/// `self.x`-qualified), matching the Fix-A invariant that only the bare-field
+/// languages populate `declared_fields`. Classes are keyed by a `BTreeMap` for
+/// deterministic output order.
 fn extract_lua_classes_cohesion(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
-    // 1. Find candidate class names from `local X = {}` bindings.
-    let mut candidates: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
-    collect_lua_empty_table_locals(root, source, &mut candidates);
+    let mut builders: BTreeMap<String, LuaCohesionClassBuilder> = BTreeMap::new();
 
-    if candidates.is_empty() {
-        return Vec::new();
-    }
+    // Group table-qualified function declarations by receiver. A receiver with
+    // >=1 method is a class; this is what makes `:extend()` subclasses (whose
+    // RHS is a call, not a `{}` literal) classes while dropping function-less
+    // module tables.
+    collect_lua_cohesion_methods(&root, source, &mut builders);
 
-    // 2. Walk function statements and bucket by class name.
-    let mut by_name: std::collections::BTreeMap<String, ClassInfo> =
-        std::collections::BTreeMap::new();
-    collect_lua_table_methods(root, source, &candidates, &mut by_name);
-
-    // 3. Only emit entries that actually own methods.
-    by_name
+    builders
         .into_values()
-        .filter(|c| !c.methods.is_empty())
+        .filter(|b| !b.methods.is_empty())
+        .map(|b| ClassInfo {
+            name: b.name,
+            line: b.line,
+            methods: b.methods,
+            is_partial: false,
+            namespace_path: Vec::new(),
+            // Lua uses `self.`-qualified access; the snippet path
+            // (`extract_lua_self_field_access`) detects fields, so the
+            // bare-member resolver is intentionally disabled (empty set).
+            declared_fields: HashSet::new(),
+        })
         .collect()
 }
 
-fn collect_lua_empty_table_locals(
-    node: tree_sitter::Node,
+/// Accumulator for one lua table-convention class while pass 1 runs.
+struct LuaCohesionClassBuilder {
+    name: String,
+    line: usize,
+    methods: Vec<MethodInfo>,
+}
+
+/// Walk `function_declaration` nodes and bucket each under the receiver read
+/// from its name node's `table` field. Mirrors `collect_lua_class_methods`
+/// (Wave-2) but stores cohesion `MethodInfo` with real byte spans.
+fn collect_lua_cohesion_methods(
+    node: &tree_sitter::Node,
     source: &str,
-    names: &mut std::collections::BTreeSet<String>,
+    builders: &mut BTreeMap<String, LuaCohesionClassBuilder>,
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        // tree-sitter-lua: `variable_declaration` wraps both `local
-        // X = ...` and bare `X = ...` statements; the LHS appears as
-        // `assignment_statement` -> `variable_list` and RHS as
-        // `expression_list`.
-        let kind = child.kind();
-        if kind == "variable_declaration"
-            || kind == "assignment_statement"
-            || kind == "local_declaration"
-        {
-            // Scan for an `expression_list` whose only entry is a
-            // `table_constructor`. Pair it with the identifier name
-            // on the LHS.
-            let mut name: Option<String> = None;
-            let mut has_empty_table = false;
-            let mut inner = child.walk();
-            for sub in child.children(&mut inner) {
-                match sub.kind() {
-                    "variable_list" | "identifier" | "name" => {
-                        if let Some(n) = lua_first_identifier(&sub, source) {
-                            name = Some(n);
+        if child.kind() == "function_declaration" {
+            if let Some(name) = child.child_by_field_name("name") {
+                if let Some((receiver, member)) =
+                    lua_cohesion_split_qualified_name(&name, source)
+                {
+                    // `setmetatable(self, M)` constructors bind to `self`/`_`;
+                    // never treat those as a class receiver.
+                    if !receiver.is_empty()
+                        && receiver != "self"
+                        && receiver != "_"
+                        && !member.is_empty()
+                    {
+                        let line = child.start_position().row + 1;
+                        let entry = builders
+                            .entry(receiver.clone())
+                            .or_insert_with(|| LuaCohesionClassBuilder {
+                                name: receiver.clone(),
+                                line,
+                                methods: Vec::new(),
+                            });
+                        if line < entry.line {
+                            entry.line = line;
                         }
-                    }
-                    "expression_list" | "table_constructor" => {
-                        if lua_is_table_constructor(&sub) {
-                            has_empty_table = true;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if let (Some(n), true) = (name, has_empty_table) {
-                names.insert(n);
-            }
-        }
-        collect_lua_empty_table_locals(child, source, names);
-    }
-}
-
-fn lua_first_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
-    if node.kind() == "identifier" || node.kind() == "name" {
-        if let Ok(t) = node.utf8_text(source.as_bytes()) {
-            if !t.is_empty() {
-                return Some(t.to_string());
-            }
-        }
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(n) = lua_first_identifier(&child, source) {
-            return Some(n);
-        }
-    }
-    None
-}
-
-fn lua_is_table_constructor(node: &tree_sitter::Node) -> bool {
-    if node.kind() == "table_constructor" {
-        return true;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "table_constructor" {
-            return true;
-        }
-    }
-    false
-}
-
-fn collect_lua_table_methods(
-    node: tree_sitter::Node,
-    source: &str,
-    candidates: &std::collections::BTreeSet<String>,
-    classes: &mut std::collections::BTreeMap<String, ClassInfo>,
-) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
-        // tree-sitter-lua: `function_declaration` for `function X.m()
-        // ... end` AND `function X:m() ... end`. The function name
-        // is exposed via a child node which may be a
-        // `dot_index_expression`, `method_index_expression`, or plain
-        // `identifier`.
-        if kind == "function_declaration" || kind == "function_definition_statement" {
-            if let Some((class_name, method_name)) =
-                lua_extract_dotted_function_name(&child, source)
-            {
-                if candidates.contains(&class_name) {
-                    let entry = classes
-                        .entry(class_name.clone())
-                        .or_insert_with(|| ClassInfo {
-                            name: class_name.clone(),
-                            line: child.start_position().row + 1,
-                            methods: Vec::new(),
-                            is_partial: false,
-                            namespace_path: Vec::new(),
-                            // fix-FixA-bare-field-v1: Lua uses `self.`-qualified
-                            // access (`extract_lua_self_field_access`).
-                            declared_fields: HashSet::new(),
+                        entry.methods.push(MethodInfo {
+                            name: member,
+                            start_byte: child.start_byte(),
+                            end_byte: child.end_byte(),
                         });
-                    if child.start_position().row + 1 < entry.line {
-                        entry.line = child.start_position().row + 1;
-                    }
-                    entry.methods.push(MethodInfo {
-                        name: method_name,
-                        start_byte: child.start_byte(),
-                        end_byte: child.end_byte(),
-                    });
-                }
-            }
-        }
-        collect_lua_table_methods(child, source, candidates, classes);
-    }
-}
-
-fn lua_extract_dotted_function_name(
-    node: &tree_sitter::Node,
-    source: &str,
-) -> Option<(String, String)> {
-    // Search direct children for a name node carrying the
-    // dotted/colon form. Tree-sitter-lua exposes either
-    // `dot_index_expression` (`X.m`), `method_index_expression`
-    // (`X:m`), or a `variable` containing one of these.
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "dot_index_expression" | "method_index_expression" => {
-                return lua_split_dotted_name(&child, source);
-            }
-            "variable" | "name" | "function_name" | "field_expression" => {
-                if let Some(pair) = lua_split_dotted_name(&child, source) {
-                    return Some(pair);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn lua_split_dotted_name(
-    node: &tree_sitter::Node,
-    source: &str,
-) -> Option<(String, String)> {
-    // Two identifier children separated by `.` or `:`. Pull them in
-    // order: the first is the class, the second is the method.
-    let mut identifiers: Vec<String> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "identifier" | "name" => {
-                if let Ok(t) = child.utf8_text(source.as_bytes()) {
-                    if !t.is_empty() {
-                        identifiers.push(t.to_string());
                     }
                 }
             }
-            "dot_index_expression" | "method_index_expression" => {
-                if let Some(pair) = lua_split_dotted_name(&child, source) {
-                    return Some(pair);
-                }
-            }
-            _ => {}
         }
+        collect_lua_cohesion_methods(&child, source, builders);
     }
-    if identifiers.len() >= 2 {
-        Some((identifiers[0].clone(), identifiers[1].clone()))
-    } else {
-        None
+}
+
+/// Split a `function_declaration` name node into `(receiver, member)`, reading
+/// the `table` field directly (AST-driven). Returns `None` for a bare
+/// `identifier` name (a plain free function, not a method).
+fn lua_cohesion_split_qualified_name(
+    name: &tree_sitter::Node,
+    source: &str,
+) -> Option<(String, String)> {
+    match name.kind() {
+        "method_index_expression" => {
+            let table = name.child_by_field_name("table")?;
+            let method = name.child_by_field_name("method")?;
+            Some((
+                node_text_of(&table, source)?,
+                node_text_of(&method, source)?,
+            ))
+        }
+        "dot_index_expression" => {
+            let table = name.child_by_field_name("table")?;
+            let field = name.child_by_field_name("field")?;
+            Some((
+                node_text_of(&table, source)?,
+                node_text_of(&field, source)?,
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -5164,7 +5287,13 @@ fn compute_class_cohesion(
         let method = methods[0];
         let method_source = &source[method.start_byte..method.end_byte];
         let fields = extract_field_accesses(method_source, file_path);
-        let field_vec: Vec<String> = fields.into_iter().collect();
+        // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): sort for deterministic field
+        // order (parity with the runtime `cohesion_from_method_fields`).
+        let field_vec: Vec<String> = {
+            let mut v: Vec<String> = fields.into_iter().collect();
+            v.sort();
+            v
+        };
 
         return ClassCohesion {
             name: class_info.name.clone(),
@@ -5251,7 +5380,10 @@ fn compute_class_cohesion(
 
     // Build component info
     let component_ids = uf.get_components();
-    let mut component_map: HashMap<usize, (Vec<String>, HashSet<String>)> = HashMap::new();
+    // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): deterministic component order via
+    // a `BTreeMap` keyed on the stable Union-Find id + sorted inner field list
+    // (parity with the runtime `cohesion_from_method_fields`).
+    let mut component_map: BTreeMap<usize, (Vec<String>, HashSet<String>)> = BTreeMap::new();
 
     for (i, &comp_id) in component_ids.iter().enumerate() {
         let entry = component_map
@@ -5265,7 +5397,11 @@ fn compute_class_cohesion(
         .into_values()
         .map(|(methods, fields)| ComponentInfo {
             methods,
-            fields: fields.into_iter().collect(),
+            fields: {
+                let mut v: Vec<String> = fields.into_iter().collect();
+                v.sort();
+                v
+            },
         })
         .collect();
 
@@ -6170,6 +6306,154 @@ getValue() {
             "OCaml should return empty set for LCOM4: {:?}",
             fields
         );
+    }
+
+    // FIX-B (v0.5.0 AUDIT-FIX): OCaml class extraction + declared `val` fields.
+
+    #[test]
+    fn test_extract_ocaml_class_with_val_fields() {
+        let source = r#"
+class account initial = object (self)
+  val mutable balance = initial
+  val owner = "x"
+  method deposit amount =
+    balance <- balance + amount
+  method get_balance = balance
+  method show = owner
+end
+"#;
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let classes = extract_classes(tree.root_node(), source, Language::Ocaml);
+        // ROOT-CAUSE: pre-fix the OCaml dispatch fell into `_ => vec![]`.
+        assert_eq!(
+            classes.len(),
+            1,
+            "Expected 1 OCaml class, got {:?}",
+            classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert_eq!(classes[0].name, "account");
+        let mnames: Vec<&str> =
+            classes[0].methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(mnames.contains(&"deposit"), "methods={:?}", mnames);
+        assert!(mnames.contains(&"get_balance"), "methods={:?}", mnames);
+        assert!(mnames.contains(&"show"), "methods={:?}", mnames);
+        // Declared `val` fields must be harvested so the bare-access resolver can
+        // credit `balance`/`owner`.
+        assert!(
+            classes[0].declared_fields.contains("balance"),
+            "declared_fields must contain `balance`, got {:?}",
+            classes[0].declared_fields
+        );
+        assert!(
+            classes[0].declared_fields.contains("owner"),
+            "declared_fields must contain `owner`, got {:?}",
+            classes[0].declared_fields
+        );
+    }
+
+    #[test]
+    fn test_ocaml_bare_val_field_access_resolved() {
+        // The whole-method body of `deposit`: a bare read + `<-` write of
+        // `balance`. The declared-field-aware resolver must credit `balance`.
+        let source = "balance <- balance + amount";
+        let mut declared = HashSet::new();
+        declared.insert("balance".to_string());
+        declared.insert("owner".to_string());
+        let fields = generic_bare_field_accesses(source, Language::Ocaml, &declared);
+        assert!(
+            fields.contains("balance"),
+            "OCaml bare `val balance` (read + `<-` write) must resolve, got {:?}",
+            fields
+        );
+        // A bare reference to a NON-declared name (the parameter `amount`) must
+        // never be credited.
+        assert!(
+            !fields.contains("amount"),
+            "non-declared `amount` must not be credited, got {:?}",
+            fields
+        );
+    }
+
+    #[test]
+    fn test_ocaml_shadowed_local_suppresses_field() {
+        // A `let balance = ...` local shadows the field for the whole method.
+        let source = "let balance = 7 in balance + 1";
+        let mut declared = HashSet::new();
+        declared.insert("balance".to_string());
+        let fields = generic_bare_field_accesses(source, Language::Ocaml, &declared);
+        assert!(
+            !fields.contains("balance"),
+            "a `let balance` local must shadow the field (under-count), got {:?}",
+            fields
+        );
+    }
+
+    // FIX-B (v0.5.0 AUDIT-FIX): Lua method-driven class model.
+
+    #[test]
+    fn test_extract_lua_extend_subclass_detected() {
+        // `Point = Object:extend()` has no `local Point = {}` anchor; the old
+        // extractor missed it. Method-driven grouping makes `Point` a class.
+        let source = r#"
+local Object = {}
+function Object:getX() return self.x end
+
+local Point = Object:extend()
+function Point:move(dx) self.x = self.x + dx end
+
+local config = { width = 100 }
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let classes = extract_classes(tree.root_node(), source, Language::Lua);
+        let names: Vec<&str> = classes.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"Point"),
+            "Object:extend() subclass `Point` must be detected, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"Object"),
+            "base `Object` must be detected, got {:?}",
+            names
+        );
+        // Function-less module table excluded.
+        assert!(
+            !names.contains(&"config"),
+            "function-less module table `config` must NOT be a class, got {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_extract_lua_method_byte_spans_nonempty() {
+        // Cohesion needs real byte spans to slice each method body for field
+        // extraction; the Wave-2 structure model only carries line numbers.
+        let source = r#"
+local Account = {}
+function Account:deposit(n) self.balance = self.balance + n end
+function Account:get() return self.balance end
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let classes = extract_classes(tree.root_node(), source, Language::Lua);
+        let acct = classes
+            .iter()
+            .find(|c| c.name == "Account")
+            .expect("Account class");
+        assert_eq!(acct.methods.len(), 2, "expected 2 methods");
+        for m in &acct.methods {
+            assert!(
+                m.end_byte > m.start_byte,
+                "method `{}` must have a non-empty byte span ({}..{})",
+                m.name, m.start_byte, m.end_byte
+            );
+            // The slice must actually contain the method's source.
+            let slice = &source[m.start_byte..m.end_byte];
+            assert!(
+                slice.contains("self.balance"),
+                "method `{}` body slice must contain its source, got {:?}",
+                m.name, slice
+            );
+        }
     }
 
     #[test]

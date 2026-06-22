@@ -1165,3 +1165,224 @@ fn ruby_attr_accessor_bare_reference_credited() {
         show_comp
     );
 }
+
+// ===========================================================================
+// FIX-B (v0.5.0 AUDIT-FIX): OCaml class arm + Lua Wave-2 method-driven model +
+// component-ordering determinism.
+//
+// Pre-fix LIVE defects (target/release/tldr cohesion), all VERIFIED:
+//   OCaml  t.ml          -> total_classes=0 (no OCaml arm in extract_classes;
+//                           `class ... object val x ... method m ... end` invisible)
+//   Lua    cls.lua       -> `Point = Object:extend()` MISSED (old extractor
+//                           requires a `local X = {}` empty-table anchor)
+//   Lua    deps/buffer.lua (luvit corpus) -> 0 classes although
+//                           `local Buffer = Object:extend()` has methods
+//   Lua    d2.lua        -> 8 runs produced 8 different component orderings
+//                           (HashMap.into_values() + HashSet field order)
+//
+// All assertions go through the production `analyze_cohesion` entry point — the
+// same function `tldr cohesion` calls.
+// ===========================================================================
+
+/// OCaml class with two `val` instance variables (`balance`, `owner`) and three
+/// methods. `deposit`+`get_balance` both touch `balance`; `show` touches
+/// `owner`. Field reads are BARE (`balance`, `owner` -> `value_path`); the write
+/// in `deposit` is `balance <- ...` (`set_expression`).
+const OCAML_ACCOUNT: &str = r#"
+class account initial = object (self)
+  val mutable balance = initial
+  val owner = "x"
+  method deposit amount =
+    balance <- balance + amount
+  method get_balance = balance
+  method show = owner
+end
+"#;
+
+#[test]
+fn ocaml_class_with_val_fields_emits_with_field_count() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "account.ml", OCAML_ACCOUNT);
+
+    let report = analyze_cohesion(&path, Some(Language::Ocaml), 2)
+        .expect("analyze_cohesion ocaml class");
+
+    // ROOT-CAUSE GUARD: pre-fix `extract_classes` had no OCaml arm
+    // (`_ => vec![]`), so OCaml `class ... object ... end` reported 0 classes.
+    let acct = report
+        .classes
+        .iter()
+        .find(|c| c.name == "account")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected OCaml `account` class, got {:?}",
+                report
+                    .classes
+                    .iter()
+                    .map(|c| (&c.name, c.method_count, c.field_count))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // Three methods: deposit, get_balance, show.
+    assert_eq!(
+        acct.method_count, 3,
+        "expected 3 OCaml methods (deposit,get_balance,show), got {} comps={:?}",
+        acct.method_count, acct.components
+    );
+
+    let fields: std::collections::HashSet<String> = acct
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+
+    // ROOT-CAUSE GUARD: bare `val` reads/writes credited as field accesses.
+    assert!(
+        fields.contains("balance"),
+        "OCaml `val balance` (read+`<-` write) must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        fields.contains("owner"),
+        "OCaml `val owner` (bare read) must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        acct.field_count >= 2,
+        "expected field_count>=2 (balance,owner), got {}",
+        acct.field_count
+    );
+    // deposit+get_balance share `balance`; show owns `owner` -> LCOM4=2.
+    assert_eq!(
+        acct.lcom4, 2,
+        "expected LCOM4=2 ({{deposit,get_balance}},{{show}}), got {} comps={:?}",
+        acct.lcom4, acct.components
+    );
+}
+
+/// Lua module with a base prototype (`Object`), an `:extend()` SUBCLASS
+/// (`Point`, whose RHS is `Object:extend()`, NOT a `{}` table literal), and a
+/// pure module table (`config`) with NO attached functions.
+const LUA_EXTEND_AND_MODULE: &str = r#"
+local Object = {}
+Object.__index = Object
+function Object.new()
+  local self = setmetatable({}, Object)
+  self.x = 0
+  return self
+end
+function Object:getX()
+  return self.x
+end
+
+local Point = Object:extend()
+function Point:move(dx)
+  self.x = self.x + dx
+end
+
+local config = { width = 100, height = 200 }
+"#;
+
+#[test]
+fn lua_extend_subclass_detected_and_module_table_excluded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "cls.lua", LUA_EXTEND_AND_MODULE);
+
+    let report = analyze_cohesion(&path, Some(Language::Lua), 2)
+        .expect("analyze_cohesion lua extend");
+
+    let names: Vec<&str> = report.classes.iter().map(|c| c.name.as_str()).collect();
+
+    // ROOT-CAUSE GUARD: `Point = Object:extend()` is a class even though it has
+    // no `local Point = {}` empty-table anchor. The old extractor required the
+    // empty-table anchor and therefore MISSED every `:extend()` subclass.
+    assert!(
+        names.contains(&"Point"),
+        "expected `Point` (Object:extend() subclass) to be detected, got {:?}",
+        names
+    );
+    // The base prototype is still detected.
+    assert!(
+        names.contains(&"Object"),
+        "expected base `Object` class, got {:?}",
+        names
+    );
+    // FALSE-CLASS GUARD: a pure module table with NO attached functions is NOT a
+    // class (the method-driven model only emits receivers that own >=1 method).
+    assert!(
+        !names.contains(&"config"),
+        "`config` is a function-less module table and must NOT be a class, got {:?}",
+        names
+    );
+
+    // `Point:move` reads/writes `self.x`, so Point has a field.
+    let point = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Point")
+        .expect("Point entry");
+    assert!(
+        point.method_count >= 1,
+        "expected Point to own >=1 method (move), got {}",
+        point.method_count
+    );
+}
+
+/// Eight mutually-disconnected methods, each touching its own field. This is the
+/// worst case for component-ordering determinism: 8 singleton components whose
+/// emission order came from a `HashMap` iteration (non-deterministic) pre-fix.
+const LUA_EIGHT_ISLANDS: &str = r#"
+local W = {}
+function W:incA() self.alpha = self.alpha + 1 end
+function W:readA() return self.alpha end
+function W:incB() self.beta = self.beta + 1 end
+function W:readB() return self.beta end
+function W:incC() self.gamma = self.gamma + 1 end
+function W:readC() return self.gamma end
+function W:incD() self.delta = self.delta + 1 end
+function W:readD() return self.delta end
+"#;
+
+#[test]
+fn cohesion_component_ordering_is_deterministic_across_runs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "d2.lua", LUA_EIGHT_ISLANDS);
+
+    // Serialize the component layout (component order + each component's method
+    // list + sorted field list) into a single canonical string.
+    let snapshot = || -> String {
+        let report = analyze_cohesion(&path, Some(Language::Lua), 2)
+            .expect("analyze_cohesion lua islands");
+        let w = report
+            .classes
+            .iter()
+            .find(|c| c.name == "W")
+            .expect("W entry");
+        w.components
+            .iter()
+            .map(|comp| {
+                format!(
+                    "[{}|{}]",
+                    comp.methods.join(","),
+                    comp.fields.join(",")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    };
+
+    // W has 4 read/inc pairs that share a field, so LCOM4=4 (incA+readA share
+    // alpha, etc.). The KEY property: the component LIST ORDER is identical
+    // across repeated runs.
+    let first = snapshot();
+    for run in 1..=12 {
+        let again = snapshot();
+        assert_eq!(
+            first, again,
+            "cohesion component ordering must be byte-stable across runs; \
+             run {} differed:\n  first: {}\n  again: {}",
+            run, first, again
+        );
+    }
+}
