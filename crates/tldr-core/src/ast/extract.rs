@@ -474,7 +474,17 @@ pub(crate) fn extract_classes_detailed(tree: &Tree, source: &str, language: Lang
         Language::Elixir => extract_elixir_classes_detailed(&root, source, &mut classes),
         Language::Go => extract_go_structs_detailed(&root, source, &mut classes),
         Language::Swift => extract_swift_classes_detailed(&root, source, &mut classes),
-        Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
+        // W2-lua-structure (v0.5.0 AUDIT-FIX): Lua/Luau have no `class`
+        // keyword, but the canonical idiom is a table bound to a
+        // local/global with attached `function T.m()` (dot/static) and
+        // `function T:m()` (colon/method) declarations. Group those
+        // table-receiver functions into `ClassInfo` entries (mirrors the
+        // Ruby module-as-class precedent + the Python self-field
+        // precedent). Luau reuses the same walker (identical AST kinds)
+        // and additionally carries method return types.
+        Language::Lua => extract_lua_classes_detailed(&root, source, &mut classes, Language::Lua),
+        Language::Luau => extract_lua_classes_detailed(&root, source, &mut classes, Language::Luau),
+        Language::C | Language::Ocaml => {} // No classes
         // solidity-ast-extract-v1 (v0.5.0 SOL-003): walk
         // `contract_declaration` / `interface_declaration` /
         // `library_declaration` and emit `ClassInfo` with
@@ -4225,9 +4235,18 @@ fn extract_lua_functions_detailed(node: &Node, source: &str, functions: &mut Vec
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_declaration" => {
-                // Named function: `function foo() end` or `local function foo() end`
-                let info = extract_lua_function_info(&child, source);
-                functions.push(info);
+                // Named function: `function foo() end` or `local function foo() end`.
+                //
+                // W2-lua-structure: SKIP table-qualified declarations
+                // (`function M.new()` / `function M:greet()`). Those are
+                // grouped into a `ClassInfo` by
+                // `extract_lua_classes_detailed` and counting them here too
+                // would double-count them (mirrors the Ruby
+                // `extract_ruby_functions_detailed` skip of class methods).
+                if !lua_function_decl_is_table_qualified(&child) {
+                    let info = extract_lua_function_info(&child, source);
+                    functions.push(info);
+                }
             }
             "assignment_statement" => {
                 // Check for: M.func = function() end
@@ -4401,6 +4420,428 @@ fn extract_lua_function_info(node: &Node, source: &str) -> FunctionInfo {
     }
 }
 
+// =============================================================================
+// W2-lua-structure (v0.5.0 AUDIT-FIX): Lua / Luau table-class extraction
+// =============================================================================
+//
+// Lua has no `class` keyword — a "class" is a CONVENTION over tables +
+// functions. The canonical idiom (verified against luvit/Roblox code and the
+// tree-sitter-lua 0.2.0 / tree-sitter-luau 1.2.0 grammars, whose class-relevant
+// node kinds are IDENTICAL):
+//
+//   local M = {}              -- receiver-defining anchor
+//   M.__index = M            -- metatable self-index (class marker)
+//   function M.new(...)       -- dot method  => name is `dot_index_expression`
+//   function M:greet()        -- colon method => name is `method_index_expression`
+//   M.VERSION = "1.0"        -- table field (non-function)
+//
+// We model each distinct table receiver that has at least one attached function
+// declaration as ONE `ClassInfo{ kind: Some("table") }`, gathering its
+// `function T.x` / `function T:x` declarations as `is_method=true` methods
+// (dot => decorator "static", colon => decorator "method", mirroring how the
+// Ruby precedent tags `singleton_method` with "self"). Receiver text comes from
+// the `table` field of the name node — AST-driven, never source slicing.
+//
+// Anchoring: a receiver introduced by `local M = {}` / `M = {}` (optionally with
+// `M.__index = M`) gets a stable `line_number` from that anchor site, so a
+// colon-only class still reports the `local M = {}` line. Without an anchor we
+// fall back to the first method's line.
+//
+// Fields: top-level `M.field = <non-function>` assignments plus constructor
+// `self.x = ...` assignments inside the grouped methods (the Python
+// `extract_python_self_assignments` precedent).
+//
+// A plain module/config table with NO attached functions is NOT emitted as a
+// class — only receivers with >=1 method qualify. This keeps cohesion (Wave 3)
+// honest: module tables are never misreported as classes.
+
+/// True if a Lua/Luau `function_declaration` node's `name` field is a
+/// `dot_index_expression` (`function T.m`) or `method_index_expression`
+/// (`function T:m`) — i.e. the function is qualified by a table receiver and
+/// therefore belongs to that table's `ClassInfo`, not the module-level
+/// `functions` list.
+fn lua_function_decl_is_table_qualified(node: &Node) -> bool {
+    node.child_by_field_name("name")
+        .map(|name| {
+            matches!(
+                name.kind(),
+                "dot_index_expression" | "method_index_expression"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// One in-progress Lua table-class being assembled during the AST walk.
+struct LuaClassBuilder {
+    name: String,
+    /// Anchor line from `local M = {}` / `M = {}`; `None` until seen.
+    anchor_line: Option<u32>,
+    /// Last line covered by the class (max of anchor / method ends).
+    line_end: u32,
+    methods: Vec<FunctionInfo>,
+    fields: Vec<FieldInfo>,
+    /// Insertion order index so output is deterministic (first-seen order).
+    order: usize,
+}
+
+/// Extract Lua/Luau table-classes from a parsed tree.
+///
+/// `language` selects the per-method param / return-type helpers (Luau carries
+/// typed params + return types; Lua does not).
+fn extract_lua_classes_detailed(
+    root: &Node,
+    source: &str,
+    classes: &mut Vec<ClassInfo>,
+    language: Language,
+) {
+    use std::collections::HashMap;
+
+    let mut builders: HashMap<String, LuaClassBuilder> = HashMap::new();
+    let mut next_order: usize = 0;
+
+    // Pass 1: collect every table-qualified function declaration, grouped by
+    // receiver. This is the authoritative signal that a table is a class.
+    collect_lua_class_methods(root, source, language, &mut builders, &mut next_order);
+
+    // Pass 2: anchors (`local M = {}` / `M = {}`) + `M.__index = M` markers +
+    // top-level `M.field = <non-function>` fields. Only enrich receivers that
+    // already qualified as classes in pass 1 (so plain module tables that
+    // happen to share a name are never resurrected).
+    collect_lua_class_anchors_and_fields(root, source, &mut builders);
+
+    // Emit in first-seen order for deterministic output.
+    let mut ordered: Vec<LuaClassBuilder> = builders.into_values().collect();
+    ordered.sort_by_key(|b| b.order);
+
+    for b in ordered {
+        // A receiver only qualifies as a class if it has at least one attached
+        // method. A bare `M.__index = ...` metatable marker (e.g.
+        // `headerMeta.__index = function...`) alone is NOT a class — it is just
+        // a metatable, so function-less tables are correctly excluded.
+        if b.methods.is_empty() {
+            continue;
+        }
+
+        let line_number = b
+            .anchor_line
+            .unwrap_or_else(|| b.methods.iter().map(|m| m.line_number).min().unwrap_or(0));
+        let line_end = b
+            .line_end
+            .max(b.methods.iter().map(|m| m.line_end).max().unwrap_or(line_number));
+
+        classes.push(ClassInfo {
+            name: b.name,
+            bases: Vec::new(),
+            docstring: None,
+            methods: b.methods,
+            fields: b.fields,
+            // Tag like Solidity's `kind: Some("contract")`: marks this as a
+            // table-convention class rather than a native language class.
+            decorators: Vec::new(),
+            line_number,
+            line_end,
+            kind: Some("table".to_string()),
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
+        });
+    }
+}
+
+/// Pass 1 walker: find `function T.m()` / `function T:m()` declarations and
+/// group them under receiver `T`.
+fn collect_lua_class_methods(
+    node: &Node,
+    source: &str,
+    language: Language,
+    builders: &mut std::collections::HashMap<String, LuaClassBuilder>,
+    next_order: &mut usize,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_declaration" {
+            if let Some(name) = child.child_by_field_name("name") {
+                if let Some((receiver, member, is_colon)) =
+                    lua_split_qualified_name(&name, source)
+                {
+                    // `setmetatable(self, M)` constructors bind to `self`/`_`;
+                    // never treat those as a class receiver.
+                    if !receiver.is_empty()
+                        && receiver != "self"
+                        && receiver != "_"
+                        && !member.is_empty()
+                    {
+                        let method = lua_build_method_info(&child, source, language, &member, is_colon);
+                        let order = *next_order;
+                        let entry = builders.entry(receiver.clone()).or_insert_with(|| {
+                            *next_order += 1;
+                            LuaClassBuilder {
+                                name: receiver.clone(),
+                                anchor_line: None,
+                                line_end: 0,
+                                methods: Vec::new(),
+                                fields: Vec::new(),
+                                order,
+                            }
+                        });
+                        entry.line_end = entry.line_end.max(method.line_end);
+                        // Constructor `self.x = ...` fields belong to the class.
+                        collect_lua_self_fields(&child, source, &mut entry.fields);
+                        entry.methods.push(method);
+                    }
+                }
+            }
+        }
+        // Recurse so nested scopes (e.g. functions defined inside `do ... end`
+        // blocks) are still discovered. function_declaration recursion is
+        // harmless — its body has no further table-qualified declarations of
+        // the same receivers in idiomatic code, and any that exist are real.
+        collect_lua_class_methods(&child, source, language, builders, next_order);
+    }
+}
+
+/// Split a `function_declaration` name node into (receiver, member, is_colon).
+///
+/// - `method_index_expression{ table, method }` => `function T:m` (colon).
+/// - `dot_index_expression{ table, field }`      => `function T.m` (dot/static).
+///
+/// The receiver text is read from the `table` field directly (AST-driven). For a
+/// simple `M` receiver the `table` is an `identifier`; for a nested
+/// `a.b.c.m` we take the full dotted `table` text so distinct receivers stay
+/// distinct. Returns `None` for a bare `identifier` name (plain function).
+fn lua_split_qualified_name(name: &Node, source: &str) -> Option<(String, String, bool)> {
+    match name.kind() {
+        "method_index_expression" => {
+            let table = name.child_by_field_name("table")?;
+            let method = name.child_by_field_name("method")?;
+            Some((
+                get_node_text(&table, source),
+                get_node_text(&method, source),
+                true,
+            ))
+        }
+        "dot_index_expression" => {
+            let table = name.child_by_field_name("table")?;
+            let field = name.child_by_field_name("field")?;
+            Some((
+                get_node_text(&table, source),
+                get_node_text(&field, source),
+                false,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Build a `FunctionInfo` for a grouped class method, reusing the Luau-aware
+/// param / return-type extractors when `language == Luau`.
+fn lua_build_method_info(
+    node: &Node,
+    source: &str,
+    language: Language,
+    member: &str,
+    is_colon: bool,
+) -> FunctionInfo {
+    let (params, return_type) = if matches!(language, Language::Luau) {
+        (
+            extract_luau_params(node, source),
+            extract_luau_return_type(node, source),
+        )
+    } else {
+        (extract_lua_params(node, source), None)
+    };
+    let docstring = extract_lua_docstring_before(node, source);
+    let line_number = node.start_position().row as u32 + 1;
+    let line_end = node.end_position().row as u32 + 1;
+
+    // Colon form has an implicit `self`; tag "method". Dot form is a
+    // static/constructor; tag "static" (mirrors Ruby's "self" tag on
+    // singleton methods).
+    let decorators = vec![if is_colon { "method" } else { "static" }.to_string()];
+
+    FunctionInfo {
+        name: member.to_string(),
+        params,
+        return_type,
+        docstring,
+        is_method: true,
+        is_async: false,
+        decorators,
+        visibility: None,
+        line_number,
+        line_end,
+        state_mutability: None,
+    }
+}
+
+/// Recursively collect `self.x = ...` assignments inside a method body into
+/// `fields` (the Python `extract_python_self_assignments` precedent, adapted to
+/// the Lua grammar: `assignment_statement` with a `dot_index_expression` LHS
+/// whose `table` is `self`).
+fn collect_lua_self_fields(node: &Node, source: &str, fields: &mut Vec<FieldInfo>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "assignment_statement" {
+            let mut ac = child.walk();
+            let var_list = child
+                .children(&mut ac)
+                .find(|c| c.kind() == "variable_list");
+            if let Some(var_list) = var_list {
+                let mut vl = var_list.walk();
+                for lhs in var_list.children(&mut vl) {
+                    if lhs.kind() == "dot_index_expression" {
+                        if let (Some(table), Some(field)) = (
+                            lhs.child_by_field_name("table"),
+                            lhs.child_by_field_name("field"),
+                        ) {
+                            if get_node_text(&table, source) == "self" {
+                                let fname = get_node_text(&field, source);
+                                if !fname.is_empty() && !fields.iter().any(|f| f.name == fname) {
+                                    let line_number = child.start_position().row as u32 + 1;
+                                    let line_end = child.end_position().row as u32 + 1;
+                                    fields.push(FieldInfo {
+                                        name: fname,
+                                        field_type: None,
+                                        default_value: None,
+                                        is_static: false,
+                                        is_constant: false,
+                                        visibility: None,
+                                        line_number,
+                                        line_end,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        collect_lua_self_fields(&child, source, fields);
+    }
+}
+
+/// Pass 2 walker: record receiver anchors (`local M = {}` / `M = {}`),
+/// `M.__index = ...` markers, and top-level `M.field = <non-function>` fields,
+/// but ONLY for receivers that already qualified as classes in pass 1.
+fn collect_lua_class_anchors_and_fields(
+    node: &Node,
+    source: &str,
+    builders: &mut std::collections::HashMap<String, LuaClassBuilder>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // `local M = {}` wraps an assignment_statement.
+            "variable_declaration" => {
+                let mut inner = child.walk();
+                for ic in child.children(&mut inner) {
+                    if ic.kind() == "assignment_statement" {
+                        lua_record_anchor_or_field(&ic, source, builders);
+                    }
+                }
+            }
+            // `M = {}` / `M.__index = M` / `M.field = value`.
+            "assignment_statement" => {
+                lua_record_anchor_or_field(&child, source, builders);
+            }
+            _ => {}
+        }
+        collect_lua_class_anchors_and_fields(&child, source, builders);
+    }
+}
+
+/// Inspect one `assignment_statement` for: a receiver anchor (`M = {}`), a
+/// metatable marker (`M.__index = ...`), or a class field
+/// (`M.field = <non-function>`). Mutates the matching builder if (and only if)
+/// the receiver already qualified as a class in pass 1.
+fn lua_record_anchor_or_field(
+    assign: &Node,
+    source: &str,
+    builders: &mut std::collections::HashMap<String, LuaClassBuilder>,
+) {
+    let mut var_list = None;
+    let mut expr_list = None;
+    let mut c = assign.walk();
+    for ch in assign.children(&mut c) {
+        match ch.kind() {
+            "variable_list" => var_list = Some(ch),
+            "expression_list" => expr_list = Some(ch),
+            _ => {}
+        }
+    }
+    let (var_list, expr_list) = match (var_list, expr_list) {
+        (Some(v), Some(e)) => (v, e),
+        _ => return,
+    };
+
+    // Single LHS / RHS is the common idiom; multi-assign is rare for class
+    // setup and intentionally ignored for anchors/fields.
+    let lhs = var_list.named_child(0);
+    let rhs = expr_list.named_child(0);
+    let (lhs, rhs) = match (lhs, rhs) {
+        (Some(l), Some(r)) => (l, r),
+        _ => return,
+    };
+
+    match lhs.kind() {
+        // `M = {}`  => anchor for receiver M (only if M is already a class).
+        "identifier" => {
+            if rhs.kind() == "table_constructor" {
+                let name = get_node_text(&lhs, source);
+                if let Some(b) = builders.get_mut(&name) {
+                    let line = assign.start_position().row as u32 + 1;
+                    b.anchor_line = Some(b.anchor_line.map_or(line, |a| a.min(line)));
+                    b.line_end = b.line_end.max(assign.end_position().row as u32 + 1);
+                }
+            }
+        }
+        // `M.__index = ...`  (marker) or `M.field = <non-function>` (field).
+        "dot_index_expression" => {
+            if let (Some(table), Some(field)) = (
+                lhs.child_by_field_name("table"),
+                lhs.child_by_field_name("field"),
+            ) {
+                let receiver = get_node_text(&table, source);
+                let field_name = get_node_text(&field, source);
+                let b = match builders.get_mut(&receiver) {
+                    Some(b) => b,
+                    None => return,
+                };
+                b.line_end = b.line_end.max(assign.end_position().row as u32 + 1);
+
+                if field_name == "__index" {
+                    // Metatable self-index marker — not a data field. Recorded
+                    // implicitly via the line_end bump above; nothing to store.
+                    return;
+                }
+                // Skip function-valued RHS (`M.helper = function() end`) — that
+                // is a method, already surfaced via the assignment-function
+                // path; do not also record it as a field.
+                if rhs.kind() == "function_definition" {
+                    return;
+                }
+                if !field_name.is_empty() && !b.fields.iter().any(|f| f.name == field_name) {
+                    let is_constant = is_upper_case_name(&field_name);
+                    let default_value = Some(get_node_text(&rhs, source));
+                    let line_number = assign.start_position().row as u32 + 1;
+                    let line_end = assign.end_position().row as u32 + 1;
+                    b.fields.push(FieldInfo {
+                        name: field_name,
+                        field_type: None,
+                        default_value,
+                        is_static: true,
+                        is_constant,
+                        visibility: None,
+                        line_number,
+                        line_end,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn extract_lua_params(node: &Node, source: &str) -> Vec<String> {
     let mut params = Vec::new();
 
@@ -4472,8 +4913,14 @@ fn extract_luau_functions_detailed(node: &Node, source: &str, functions: &mut Ve
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_declaration" => {
-                let info = extract_luau_function_info(&child, source);
-                functions.push(info);
+                // W2-lua-structure: SKIP table-qualified declarations
+                // (`function T.m()` / `function T:m()`) — grouped into a
+                // class by `extract_lua_classes_detailed`, so excluded here
+                // to avoid double counting.
+                if !lua_function_decl_is_table_qualified(&child) {
+                    let info = extract_luau_function_info(&child, source);
+                    functions.push(info);
+                }
             }
             "assignment_statement" | "variable_assignment" => {
                 extract_luau_assignment_functions(&child, source, functions);
@@ -9820,11 +10267,206 @@ let mul x y = x * y
 
     #[test]
     fn test_extract_lua_no_classes() {
+        // A bare top-level `function foo()` with NO table receiver is a plain
+        // module function, not a class member — so it must NOT synthesize a
+        // class. (The table-class idiom is covered by the dedicated tests
+        // below.)
         let mut file = NamedTempFile::with_suffix(".lua").unwrap();
         writeln!(file, r#"function foo() end"#).unwrap();
 
         let info = extract_file(file.path(), None).unwrap();
-        assert!(info.classes.is_empty(), "Lua should have no classes");
+        assert!(
+            info.classes.is_empty(),
+            "A bare top-level function is not a class, got: {:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert_eq!(info.functions.len(), 1, "foo should be a module function");
+    }
+
+    #[test]
+    fn test_extract_lua_table_class_with_methods() {
+        // W2-lua-structure (v0.5.0 AUDIT-FIX): the canonical Lua "class" is a
+        // table bound to a local/global with attached functions. `function
+        // M.new()` (dot/static) and `function M:greet()` (colon/method) must
+        // group under ONE class `M`, and the table-qualified functions must be
+        // EXCLUDED from the module-level `functions` list (no double counting).
+        use crate::ast::parser::parse;
+        let source = r#"local M = {}
+M.__index = M
+M.VERSION = "1.0"
+
+function M.new(name)
+  local self = setmetatable({}, M)
+  self.name = name
+  return self
+end
+
+function M:greet()
+  return "hi " .. self.name
+end
+
+local function helper()
+  return 1
+end
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+
+        // RED before fix: classes is empty.
+        let classes = extract_classes_detailed(&tree, source, Language::Lua);
+        assert_eq!(
+            classes.len(),
+            1,
+            "expected exactly one class M, got: {:?}",
+            classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        let m = &classes[0];
+        assert_eq!(m.name, "M");
+        assert_eq!(m.kind.as_deref(), Some("table"));
+        // Anchored on `local M = {}` (line 1), not the first method.
+        assert_eq!(m.line_number, 1, "class M should anchor on `local M = {{}}`");
+
+        let method_names: Vec<&str> = m.methods.iter().map(|x| x.name.as_str()).collect();
+        assert!(
+            method_names.contains(&"new"),
+            "M should have method `new`, got {:?}",
+            method_names
+        );
+        assert!(
+            method_names.contains(&"greet"),
+            "M should have method `greet`, got {:?}",
+            method_names
+        );
+        // Both members are flagged as methods.
+        assert!(
+            m.methods.iter().all(|x| x.is_method),
+            "all grouped members must have is_method=true"
+        );
+        // Colon form => "method" decorator, dot form => "static".
+        let greet = m.methods.iter().find(|x| x.name == "greet").unwrap();
+        assert!(
+            greet.decorators.iter().any(|d| d == "method"),
+            "colon method `greet` should be tagged `method`, got {:?}",
+            greet.decorators
+        );
+        let new = m.methods.iter().find(|x| x.name == "new").unwrap();
+        assert!(
+            new.decorators.iter().any(|d| d == "static"),
+            "dot method `new` should be tagged `static`, got {:?}",
+            new.decorators
+        );
+
+        // The table field `M.VERSION` (non-function) is captured as a field.
+        assert!(
+            m.fields.iter().any(|f| f.name == "VERSION"),
+            "M should capture field VERSION, got {:?}",
+            m.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        // The constructor `self.name = ...` is captured as a field.
+        assert!(
+            m.fields.iter().any(|f| f.name == "name"),
+            "M should capture constructor field `name`, got {:?}",
+            m.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+
+        // Double-counting guard: table-qualified functions are EXCLUDED from
+        // module-level functions; only the un-qualified `helper` remains.
+        let functions = extract_functions_detailed(&tree, source, Language::Lua);
+        let fn_names: Vec<&str> = functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            fn_names.contains(&"helper"),
+            "module functions should contain helper, got {:?}",
+            fn_names
+        );
+        assert!(
+            !fn_names.iter().any(|n| n.contains("M.new") || n.contains("M:greet") || *n == "new"),
+            "table-qualified M.new / M:greet must NOT appear as module functions, got {:?}",
+            fn_names
+        );
+    }
+
+    #[test]
+    fn test_extract_lua_two_classes_grouped_separately() {
+        // Two distinct receivers => two classes; colon-only class still
+        // anchors on its `local X = {}` site.
+        use crate::ast::parser::parse;
+        let source = r#"local History = {}
+History.__index = History
+function History.new() return setmetatable({}, History) end
+function History:add(line) self.line = line end
+
+local Editor = {}
+function Editor:refresh() end
+function Editor:insert(c) end
+Editor.__index = Editor
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Lua);
+        let names: Vec<&str> = classes.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"History"), "expected History, got {:?}", names);
+        assert!(names.contains(&"Editor"), "expected Editor, got {:?}", names);
+        assert_eq!(classes.len(), 2, "exactly two classes, got {:?}", names);
+
+        let editor = classes.iter().find(|c| c.name == "Editor").unwrap();
+        let em: Vec<&str> = editor.methods.iter().map(|x| x.name.as_str()).collect();
+        assert!(em.contains(&"refresh") && em.contains(&"insert"), "Editor methods {:?}", em);
+    }
+
+    #[test]
+    fn test_extract_luau_table_class_with_methods() {
+        // Luau shares the exact same class/method AST kinds as Lua; methods
+        // additionally carry typed return types.
+        use crate::ast::parser::parse;
+        let source = r#"local Account = {}
+Account.__index = Account
+
+function Account.new(name: string): Account
+  local self = setmetatable({}, Account)
+  self.name = name
+  return self
+end
+
+function Account:greet(): string
+  return "hi"
+end
+"#;
+        let tree = parse(source, Language::Luau).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Luau);
+        assert_eq!(
+            classes.len(),
+            1,
+            "expected one Luau class, got {:?}",
+            classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        let acc = &classes[0];
+        assert_eq!(acc.name, "Account");
+        let mnames: Vec<&str> = acc.methods.iter().map(|x| x.name.as_str()).collect();
+        assert!(mnames.contains(&"new") && mnames.contains(&"greet"), "methods {:?}", mnames);
+        // Luau method return types must be carried through.
+        let greet = acc.methods.iter().find(|x| x.name == "greet").unwrap();
+        assert!(
+            greet.return_type.as_deref().map(|t| t.contains("string")).unwrap_or(false),
+            "greet should carry return type string, got {:?}",
+            greet.return_type
+        );
+    }
+
+    #[test]
+    fn test_extract_lua_module_table_not_a_class() {
+        // A plain config/module table with NO attached functions must NOT be
+        // reported as a class (keeps cohesion honest in Wave 3).
+        use crate::ast::parser::parse;
+        let source = r#"local config = {}
+config.timeout = 30
+config.retries = 3
+return config
+"#;
+        let tree = parse(source, Language::Lua).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Lua);
+        assert!(
+            classes.is_empty(),
+            "a function-less table is not a class, got {:?}",
+            classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]

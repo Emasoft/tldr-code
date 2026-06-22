@@ -119,7 +119,26 @@ fn extract_from_lua_file(
     let returned_keys = returned_table_keys(&source);
     let mut apis = Vec::new();
 
-    for func in module_info.functions {
+    // W2-lua-structure (v0.5.0 AUDIT-FIX): table-qualified declarations
+    // (`function M.hello()` / `function M:greet()`) are now grouped into
+    // `module_info.classes[].methods` by the AST extractor and intentionally
+    // EXCLUDED from `module_info.functions` (no double counting). The surface
+    // walk recovers the exported name from the source line via
+    // `parse_table_export`, which still works for a method because its
+    // `line_number` points at the `function M.<name>(...)` line. So feed the
+    // grouped class methods through the same export logic as plain functions.
+    let candidate_functions: Vec<crate::types::FunctionInfo> = module_info
+        .functions
+        .into_iter()
+        .chain(
+            module_info
+                .classes
+                .into_iter()
+                .flat_map(|class| class.methods),
+        )
+        .collect();
+
+    for func in candidate_functions {
         let line = source
             .lines()
             .nth(func.line_number.saturating_sub(1) as usize)

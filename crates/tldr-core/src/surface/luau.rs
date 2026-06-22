@@ -158,7 +158,26 @@ fn extract_from_luau_file(
     let returned_keys = returned_table_keys(&source);
     let mut apis = Vec::new();
 
-    for func in module_info.functions {
+    // W2-lua-structure (v0.5.0 AUDIT-FIX): table-qualified declarations
+    // (`function M.b_util()` / `function M:method()`) are now grouped into
+    // `module_info.classes[].methods` and EXCLUDED from
+    // `module_info.functions` (no double counting). The per-function export /
+    // visibility logic below recovers the export name from the source line at
+    // `func.line_number` (which still points at the `function M.<name>(...)`
+    // declaration), so the grouped class methods must run through the same
+    // path as plain module functions to keep being surfaced.
+    let candidate_functions: Vec<crate::types::FunctionInfo> = module_info
+        .functions
+        .into_iter()
+        .chain(
+            module_info
+                .classes
+                .into_iter()
+                .flat_map(|class| class.methods),
+        )
+        .collect();
+
+    for func in candidate_functions {
         let line_text = source
             .lines()
             .nth(func.line_number.saturating_sub(1) as usize)

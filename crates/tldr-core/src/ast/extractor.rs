@@ -417,7 +417,19 @@ fn extract_file_structure(
         .flat_map(|c| c.methods.iter().map(|m| m.name.clone()))
         .collect();
 
-    let classes = extract_classes(&tree, &source, language);
+    let classes = match language {
+        // W2-lua-structure (v0.5.0 AUDIT-FIX): Lua/Luau have no native `class`
+        // node, so the legacy `extract_classes` codemap walk returns nothing.
+        // The canonical table-class names now come from
+        // `extract::extract_classes_detailed` (already computed above as
+        // `module_info.classes`) — surface them here so `structure`'s
+        // `classes[]` axis agrees with `extract` for the table-class idiom
+        // (`local M = {}` + `function M.x()` / `function M:y()`).
+        Language::Lua | Language::Luau => {
+            module_info.classes.iter().map(|c| c.name.clone()).collect()
+        }
+        _ => extract_classes(&tree, &source, language),
+    };
     let imports = extract_imports_from_tree(&tree, &source, language)?;
     let definitions = extract_definitions(&tree, &source, language);
 
@@ -2652,6 +2664,19 @@ fn collect_definitions(
                             // receiver is present (regular functions
                             // emit `function_declaration`).
                             "method"
+                        } else if is_lua_table_qualified_function(&node, language) {
+                            // W2-lua-structure (v0.5.0 AUDIT-FIX): a Lua/Luau
+                            // `function T.m()` / `function T:m()` is a member of
+                            // table-class `T` — same structural signal Go uses
+                            // (a receiver-qualified declaration). Classify it as
+                            // `kind:"method"` so `structure`'s `method_infos[]`
+                            // (filtered by kind=="method") surfaces it and the
+                            // `functions[]` projection (kind=="function") drops
+                            // it — agreeing with the canonical
+                            // `extract_classes_detailed` grouping that moved
+                            // these out of module `functions` and into the
+                            // table-class's `methods`.
+                            "method"
                         } else {
                             "function"
                         }
@@ -3669,6 +3694,28 @@ fn extract_name_from_declarator(node: Node, source: &str) -> Option<String> {
 /// Closes cross-language-extraction-v2 P2.BUG-1 (Go side).
 fn is_go_method_with_receiver(node: &Node, language: Language) -> bool {
     matches!(language, Language::Go) && node.kind() == "method_declaration"
+}
+
+/// W2-lua-structure (v0.5.0 AUDIT-FIX): true for a Lua/Luau
+/// `function_declaration` whose `name` field is table-qualified
+/// (`dot_index_expression` => `function T.m`, `method_index_expression` =>
+/// `function T:m`). Such a declaration is a member of table-class `T`, so it is
+/// classified `kind:"method"` — the structure-path analogue of the receiver
+/// grouping performed by `extract::extract_classes_detailed`. A bare
+/// `function foo()` (name kind `identifier`) is NOT table-qualified and stays a
+/// `function`.
+fn is_lua_table_qualified_function(node: &Node, language: Language) -> bool {
+    matches!(language, Language::Lua | Language::Luau)
+        && node.kind() == "function_declaration"
+        && node
+            .child_by_field_name("name")
+            .map(|name| {
+                matches!(
+                    name.kind(),
+                    "dot_index_expression" | "method_index_expression"
+                )
+            })
+            .unwrap_or(false)
 }
 
 /// Check if a node is inside a class/struct body or impl block.
