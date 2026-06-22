@@ -34,9 +34,30 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
+
+/// PERF (W4-taint-core sub-fix 4, v0.5.0 AUDIT-FIX) — per-file taint-analysis
+/// wall-clock budget. Honors the documented TIGER "Timeout per file analysis"
+/// mitigation (module doc) which was previously unenforced.
+///
+/// The primary fix for the c-redis `src/module.c` (16K LOC) blowup is
+/// ALGORITHMIC: the whole-file AST source/sink/sanitizer index is now built
+/// ONCE per file (see `FileTaintIndex`) instead of once per function, so
+/// module.c dropped from ~44s/~14s to ~2s. This budget is the
+/// defense-in-depth complement: it guarantees that no single pathological
+/// file (machine-generated code, an enormous translation unit, or a
+/// degenerate CFG) can hang `vuln`/`secure` unboundedly.
+///
+/// The budget is deliberately GENEROUS (well above the slowest legitimate file
+/// in the corpus) so it never drops true-positive findings on normal code — it
+/// only degrades on genuinely pathological inputs, and when it does it emits a
+/// `partial-analysis` WARNING to stderr (NOT a silent skip) and returns the
+/// findings gathered so far.
+const PER_FILE_TAINT_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
 use crate::ast::extract::{extract_classes_detailed, extract_functions_detailed};
 use crate::ast::parser::parse;
@@ -44,8 +65,8 @@ use crate::cfg::extractor::extract_cfg_from_tree;
 use crate::dfg::extractor::extract_dfg_from_tree_with_cfg;
 use crate::error::TldrError;
 use crate::security::taint::{
-    compute_taint_with_tree, TaintSink as CanonicalTaintSink, TaintSinkType,
-    TaintSource as CanonicalTaintSource, TaintSourceType,
+    compute_taint_with_tree_indexed, FileTaintIndex, TaintSink as CanonicalTaintSink,
+    TaintSinkType, TaintSource as CanonicalTaintSource, TaintSourceType,
 };
 use crate::types::Language;
 use crate::TldrResult;
@@ -761,6 +782,28 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
     let source_bytes = content.as_bytes();
     let mut findings: Vec<VulnFinding> = Vec::new();
 
+    // PERF (W4-taint-core sub-fix 4, v0.5.0 AUDIT-FIX): build the whole-file
+    // AST source/sink/sanitizer index ONCE for the file. The per-function loop
+    // below feeds this prebuilt index to `compute_taint_with_tree_indexed`,
+    // so the three whole-file tree walks happen once per file instead of once
+    // per function. This is the algorithmic fix for the c-redis `src/module.c`
+    // (16K LOC) super-linear blowup — `O(functions * nodes)` → `O(nodes)`.
+    //
+    // Whole-file fastpath: a TaintFlow requires BOTH a source AND a sink, and
+    // the cheap substring needle-set (`function_body_has_taint_pattern`) is a
+    // SUPERSET of the AST detectors. If the WHOLE file contains no taint
+    // needle, no flow is possible anywhere in it, so we skip the three
+    // whole-file AST walks entirely (the per-function prefilter inside the loop
+    // would skip every function regardless). This preserves the pre-fix
+    // behavior of never walking the tree for needle-free files.
+    let file_has_taint_needle =
+        crate::security::taint::function_body_has_taint_pattern(&content, language);
+    let file_taint_index = if file_has_taint_needle {
+        Some(FileTaintIndex::build(&tree, source_bytes, language))
+    } else {
+        None
+    };
+
     // FALLBACK: empty function list (e.g., top-level Go statements with no
     // user-defined functions, or extractor missed all). Run a single
     // whole-file taint pass using a synthetic CFG-empty path. We do this by
@@ -828,6 +871,12 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
         &content[start_byte..end_byte]
     };
 
+    // PERF (W4-taint-core sub-fix 4): per-file wall-clock deadline. Checked at
+    // the top of each per-function task; once exceeded, remaining functions are
+    // skipped and a single `partial-analysis` warning is emitted after the loop.
+    let deadline = Instant::now() + PER_FILE_TAINT_BUDGET;
+    let budget_exceeded = AtomicBool::new(false);
+
     // TAINT-FINDING-DEDUPE-V1: tag each candidate finding with its canonical
     // `TaintSinkType` so the merge phase can rank colliding entries by sink
     // specificity (most-specific wins; see `sink_type_precedence`).
@@ -835,6 +884,15 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
         .par_iter()
         .enumerate()
         .map(|(idx, fn_info)| {
+            // PERF: per-file deadline guard (bounded-degrade, not silent skip).
+            // If the file's analysis has already blown its time budget, stop
+            // doing expensive CFG/DFG/taint work for the remaining functions.
+            // `Relaxed` is sufficient: this is a best-effort early-out, not a
+            // synchronization point, and the post-loop warning reports it.
+            if budget_exceeded.load(Ordering::Relaxed) || Instant::now() > deadline {
+                budget_exceeded.store(true, Ordering::Relaxed);
+                return Vec::new();
+            }
             // VULN-FASTPATH-SUBSTRING-PREFILTER-V1: cheap substring check
             // before any CFG/DFG/taint construction. A `TaintFlow` requires
             // BOTH a source AND a sink in the same function; if neither
@@ -888,12 +946,11 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
                 })
                 .map(|(i, line)| ((i + 1) as u32, line.to_string()))
                 .collect();
-            let info = match compute_taint_with_tree(
+            let info = match compute_taint_with_tree_indexed(
                 &cfg,
                 &dfg.refs,
                 &statements,
-                Some(&tree),
-                Some(source_bytes),
+                file_taint_index.as_ref(),
                 language,
                 ssa,
             ) {
@@ -996,6 +1053,21 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
             local
         })
         .collect();
+
+    // PERF (W4-taint-core sub-fix 4): if the per-file budget was exceeded,
+    // emit a `partial-analysis` WARNING (not a silent skip) so the operator
+    // knows some functions in this file were not fully analyzed. Analysis
+    // CONTINUES — the findings gathered before the deadline are still returned,
+    // and the overall `vuln`/`secure` run completes within bound.
+    if budget_exceeded.load(Ordering::Relaxed) {
+        eprintln!(
+            "warning: partial-analysis: taint scan of {} exceeded the per-file \
+             budget ({}s); some functions were skipped. Findings for this file \
+             may be incomplete.",
+            path.display(),
+            PER_FILE_TAINT_BUDGET.as_secs()
+        );
+    }
 
     // TAINT-FINDING-DEDUPE-V1: collapse findings that share
     // `(file, sink.line, source.line, source.variable, vuln_type)`. The
