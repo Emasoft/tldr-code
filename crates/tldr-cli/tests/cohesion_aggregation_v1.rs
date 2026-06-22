@@ -803,3 +803,365 @@ fn csharp_partial_class_same_namespace_unions() {
         ledger.field_count
     );
 }
+
+// ===========================================================================
+// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): BARE member references must be
+// credited as field accesses for the languages whose idiom omits an explicit
+// `this`/`self` receiver (C#, Scala, Kotlin, Ruby `attr_*`) and the
+// pre-existing TypeScript bug where `public_field_definition` was miscounted
+// as a method must be fixed. The mechanism mirrors the C++ A1 precedent:
+// collect each class's DECLARED field/property set from the AST, then credit a
+// bare identifier inside a method iff it matches a declared field AND is not
+// shadowed by a local/parameter. The existing `this`/`self`-qualified
+// detection must keep working. All assertions go through the production
+// `analyze_cohesion` entry point (the same function `tldr cohesion` calls).
+//
+// Pre-fix LIVE defects (target/release/tldr cohesion):
+//   C#    t.cs  -> field_count=0 lcom4=3 (bare `balance`/`Owner` missed)
+//   Scala t.scala -> field_count=0 lcom4=3
+//   Kotlin t.kt -> field_count=0 lcom4=3
+//   TS    t.ts -> method_count=6 (3 field defs miscounted) lcom4=5
+//   Ruby  t.rb -> `show` (attr_accessor `owner` bare ref) is a 0-field island
+// ===========================================================================
+
+/// C# class with BARE field reads (`balance`), a property assigned bare
+/// (`Owner = o`), a field used as a call receiver (`history.Add(amount)` — the
+/// receiver `history` is a field and must be credited; the `.Add` member must
+/// NOT), and a shadowing local in `Shadowed`.
+const CS_BARE_FIELDS: &str = r#"
+public class Account {
+    private int balance;
+    public string Owner { get; set; }
+    private List<int> history;
+    public void Deposit(int amount) {
+        balance = balance + amount;
+        history.Add(amount);
+    }
+    public int GetBalance() {
+        return balance;
+    }
+    public void Rename(string o) {
+        Owner = o;
+    }
+    public int Shadowed() {
+        int balance = 7;
+        return balance;
+    }
+}
+"#;
+
+#[test]
+fn csharp_bare_field_and_property_access_credited() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "Account.cs", CS_BARE_FIELDS);
+
+    let report = analyze_cohesion(&path, Some(Language::CSharp), 2)
+        .expect("analyze_cohesion csharp bare fields");
+
+    let acct = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Account")
+        .expect("Account entry");
+
+    let fields: std::collections::HashSet<String> = acct
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+
+    // ROOT-CAUSE GUARD: bare `balance`, bare property `Owner`, and the field
+    // used as a call receiver `history` are all credited.
+    assert!(
+        fields.contains("balance"),
+        "bare field `balance` must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        fields.contains("Owner"),
+        "bare property `Owner` must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        fields.contains("history"),
+        "field used as call receiver `history` must be credited, got {:?}",
+        fields
+    );
+    // SHADOW GUARD: in `Shadowed` the local `int balance = 7;` shadows the field;
+    // that method must NOT connect via `balance`. `Shadowed` therefore forms its
+    // own component (it shares no field with anyone).
+    assert!(
+        acct.field_count >= 3,
+        "expected >=3 distinct fields (balance,Owner,history), got {}",
+        acct.field_count
+    );
+    // Components: {Deposit,GetBalance} share `balance`; {Rename} owns `Owner`;
+    // {Shadowed} is isolated (local shadow). -> LCOM4 = 3.
+    assert_eq!(
+        acct.lcom4, 3,
+        "expected LCOM4=3 ({{Deposit,GetBalance}},{{Rename}},{{Shadowed}}), got {} \
+         components={:?}",
+        acct.lcom4, acct.components
+    );
+}
+
+/// Scala class: bare `var`/`val` field reads plus a constructor-parameter field.
+const SCALA_BARE_FIELDS: &str = r#"
+class Account(initial: Int) {
+  private var balance: Int = initial
+  val owner: String = "x"
+  def deposit(amount: Int): Unit = {
+    balance = balance + amount
+  }
+  def getBalance(): Int = balance
+  def show(): String = owner
+}
+"#;
+
+#[test]
+fn scala_bare_field_access_credited() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "Account.scala", SCALA_BARE_FIELDS);
+
+    let report = analyze_cohesion(&path, Some(Language::Scala), 2)
+        .expect("analyze_cohesion scala bare fields");
+
+    let acct = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Account")
+        .expect("Account entry");
+
+    let fields: std::collections::HashSet<String> = acct
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+
+    assert!(
+        fields.contains("balance"),
+        "bare Scala field `balance` must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        fields.contains("owner"),
+        "bare Scala field `owner` must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        acct.field_count >= 2,
+        "expected >=2 fields (balance,owner), got {}",
+        acct.field_count
+    );
+    // deposit+getBalance share `balance`; show owns `owner` -> LCOM4=2.
+    assert_eq!(
+        acct.lcom4, 2,
+        "expected LCOM4=2 ({{deposit,getBalance}},{{show}}), got {} comps={:?}",
+        acct.lcom4, acct.components
+    );
+}
+
+/// Kotlin class: bare `var`/`val` property reads plus a constructor parameter.
+const KOTLIN_BARE_FIELDS: &str = r#"
+class Account(initial: Int) {
+    private var balance: Int = initial
+    val owner: String = "x"
+    fun deposit(amount: Int) {
+        balance = balance + amount
+    }
+    fun getBalance(): Int {
+        return balance
+    }
+    fun show(): String = owner
+}
+"#;
+
+#[test]
+fn kotlin_bare_field_access_credited() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "Account.kt", KOTLIN_BARE_FIELDS);
+
+    let report = analyze_cohesion(&path, Some(Language::Kotlin), 2)
+        .expect("analyze_cohesion kotlin bare fields");
+
+    let acct = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Account")
+        .expect("Account entry");
+
+    let fields: std::collections::HashSet<String> = acct
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+
+    assert!(
+        fields.contains("balance"),
+        "bare Kotlin property `balance` must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        fields.contains("owner"),
+        "bare Kotlin property `owner` must be credited, got {:?}",
+        fields
+    );
+    assert!(
+        acct.field_count >= 2,
+        "expected >=2 fields (balance,owner), got {}",
+        acct.field_count
+    );
+    assert_eq!(
+        acct.lcom4, 2,
+        "expected LCOM4=2 ({{deposit,getBalance}},{{show}}), got {} comps={:?}",
+        acct.lcom4, acct.components
+    );
+}
+
+/// TypeScript class: `this.`-qualified fields work today, but the three
+/// `public_field_definition` declarations (balance/owner/history) were
+/// MISCOUNTED as methods. This pins the corrected method_count and the absence
+/// of bogus single-field components.
+const TS_BARE_FIELDS: &str = r#"
+class Account {
+  private balance: number = 0;
+  public owner: string = "x";
+  history: number[] = [];
+  deposit(amount: number): void {
+    this.balance = this.balance + amount;
+    this.history.push(amount);
+  }
+  getBalance(): number {
+    return this.balance;
+  }
+  show(): string {
+    return this.owner;
+  }
+}
+"#;
+
+#[test]
+fn typescript_field_definitions_not_counted_as_methods() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "Account.ts", TS_BARE_FIELDS);
+
+    let report = analyze_cohesion(&path, Some(Language::TypeScript), 2)
+        .expect("analyze_cohesion ts field defs");
+
+    let acct = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Account")
+        .expect("Account entry");
+
+    // ROOT-CAUSE GUARD: exactly 3 real methods (deposit, getBalance, show).
+    // Pre-fix this was 6 (the three field defs were pushed into the method list).
+    assert_eq!(
+        acct.method_count, 3,
+        "public_field_definition must NOT be counted as a method; expected 3 \
+         methods (deposit,getBalance,show), got {} comps={:?}",
+        acct.method_count, acct.components
+    );
+    // No bogus single-field component whose sole "method" is a field name.
+    for comp in &acct.components {
+        for m in &comp.methods {
+            assert!(
+                m == "deposit" || m == "getBalance" || m == "show",
+                "component method `{}` is not a real method (likely a leaked \
+                 public_field_definition), comps={:?}",
+                m, acct.components
+            );
+        }
+    }
+    // deposit+getBalance share balance (and deposit also uses history); show owns
+    // owner -> two real responsibilities -> LCOM4=2.
+    assert_eq!(
+        acct.lcom4, 2,
+        "expected LCOM4=2 ({{deposit,getBalance}},{{show}}), got {} comps={:?}",
+        acct.lcom4, acct.components
+    );
+}
+
+/// Ruby class mixing `@ivar` access (works today) with `attr_accessor`/
+/// `attr_reader` pseudo-fields referenced BARE (`owner`).
+const RUBY_BARE_ATTR: &str = r#"
+class Account
+  attr_accessor :owner
+  attr_reader :balance
+  def initialize(b)
+    @balance = b
+    @history = []
+  end
+  def deposit(amount)
+    @balance = @balance + amount
+    @history << amount
+  end
+  def get_balance
+    @balance
+  end
+  def set_owner(o)
+    self.owner = o
+  end
+  def show
+    owner
+  end
+end
+"#;
+
+#[test]
+fn ruby_attr_accessor_bare_reference_credited() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = write_file(dir.path(), "Account.rb", RUBY_BARE_ATTR);
+
+    let report = analyze_cohesion(&path, Some(Language::Ruby), 2)
+        .expect("analyze_cohesion ruby attr bare ref");
+
+    let acct = report
+        .classes
+        .iter()
+        .find(|c| c.name == "Account")
+        .expect("Account entry");
+
+    let fields: std::collections::HashSet<String> = acct
+        .components
+        .iter()
+        .flat_map(|c| c.fields.iter().cloned())
+        .collect();
+
+    // @ivar fields still credited.
+    assert!(
+        fields.contains("balance"),
+        "@balance must still be credited, got {:?}",
+        fields
+    );
+    assert!(
+        fields.contains("history"),
+        "@history must still be credited, got {:?}",
+        fields
+    );
+    // ROOT-CAUSE GUARD: the attr_accessor pseudo-field `owner`, referenced bare
+    // in `show` and via `self.owner =` in `set_owner`, must be credited so
+    // `show` is no longer a 0-field island.
+    assert!(
+        fields.contains("owner"),
+        "attr_accessor `owner` referenced bare must be credited, got {:?}",
+        fields
+    );
+    // `show` shares `owner` with `set_owner`, so it is no longer isolated. The
+    // class collapses to a single cohesive component:
+    //   {initialize,deposit,get_balance} (share @balance/@history) +
+    //   {set_owner,show} (share owner) — these two groups are connected only if a
+    //   field is shared; they are NOT, so LCOM4=2. The KEY guard is that `show`
+    //   is no longer its OWN island: it joins `set_owner`.
+    let show_comp = acct
+        .components
+        .iter()
+        .find(|c| c.methods.iter().any(|m| m == "show"))
+        .expect("component containing show");
+    assert!(
+        show_comp.methods.iter().any(|m| m == "set_owner"),
+        "`show` must join `set_owner` via the bare `owner` field (no longer a \
+         0-field island), got component {:?}",
+        show_comp
+    );
+}

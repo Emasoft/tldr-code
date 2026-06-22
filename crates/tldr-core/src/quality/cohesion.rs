@@ -249,6 +249,18 @@ struct ClassInfo {
     /// aggregator, so two same-named classes in different namespaces are not
     /// merged.
     namespace_path: Vec<String>,
+    /// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): the class's DECLARED
+    /// field/property names harvested from the AST. Populated ONLY for the
+    /// languages whose idiom references members BARE (no `this`/`self`
+    /// receiver): C#, Scala, Kotlin, TypeScript, Ruby (`attr_*` pseudo-fields).
+    /// Empty for every other language so their field-access behaviour stays
+    /// byte-identical (the bare-member resolver is skipped when this is empty).
+    ///
+    /// Mirrors the C++ A1 precedent (`cpp_declared_field_names`): a bare
+    /// identifier inside a method is credited as a field access iff it is in
+    /// this set AND is not shadowed by a local/parameter. See
+    /// [`generic_bare_field_accesses`].
+    declared_fields: HashSet<String>,
 }
 
 // =============================================================================
@@ -757,13 +769,29 @@ fn extract_file_method_fields(
     let mut out: Vec<MethodFieldsExtraction> = Vec::new();
 
     for class_info in class_infos {
+        // fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): for the languages whose
+        // idiom references members BARE (C#, Scala, Kotlin, Ruby `attr_*`, and
+        // TypeScript fields), `extract_field_accesses` — which re-parses the
+        // method snippet in isolation with no class context — can only see
+        // `this`/`self`-qualified accesses and `@ivar`s. We UNION its result
+        // with a declared-field-aware bare-member resolver (mirroring the C++
+        // A1 `cpp_method_field_accesses` precedent): a bare identifier is a
+        // field access iff it is a declared field/property AND is not shadowed
+        // by a local/parameter. `declared_fields` is empty for every other
+        // language, so the resolver is skipped and behaviour is byte-identical.
+        let declared = &class_info.declared_fields;
         let methods: Vec<MethodFields> = class_info
             .methods
             .iter()
             .filter(|m| options.include_dunder || !is_dunder_method(&m.name))
             .map(|m| {
                 let method_source = &source[m.start_byte..m.end_byte];
-                let fields = extract_field_accesses(method_source, file_path);
+                let mut fields = extract_field_accesses(method_source, file_path);
+                if !declared.is_empty() {
+                    let bare =
+                        generic_bare_field_accesses(method_source, language, declared);
+                    fields.extend(bare);
+                }
                 MethodFields {
                     name: m.name.clone(),
                     fields,
@@ -780,6 +808,378 @@ fn extract_file_method_fields(
         });
     }
     Ok(out)
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): per-language node-kind
+/// configuration for the generalized bare-member field-access resolver. This is
+/// the generalization of the C++ A1 precedent (`cpp_method_field_accesses` +
+/// `cpp_collect_shadowed_names` + `cpp_collect_field_hits`) for the languages
+/// whose idiom references members BARE (no `this`/`self` receiver).
+struct BareFieldConfig {
+    /// Member-access node kinds (`obj.x` / `obj->x` / `obj.method()` receiver
+    /// chains). When such a node is met, the resolver recurses ONLY into the
+    /// object/receiver side (`object_field`) and SKIPS the member-name side
+    /// (`member_field`), so a foreign object's member is never mistaken for a
+    /// bare field and the field-vs-method distinction is preserved. The object
+    /// side is itself walked, so a *field used as a receiver* (`history.Add()`
+    /// in C#, where `history` is a declared field) is still credited.
+    member_access_kinds: &'static [&'static str],
+    /// Field name of the object/receiver inside a `member_access_kinds` node.
+    object_field: &'static str,
+    /// Field name of the accessed member inside a `member_access_kinds` node.
+    member_field: &'static str,
+    /// Node kinds that DECLARE a shadowing name (parameter / local). Each is
+    /// resolved to its bound identifier via [`bare_record_shadow_name`].
+    shadow_decl_kinds: &'static [&'static str],
+}
+
+/// Return the [`BareFieldConfig`] for a language, or `None` for languages that
+/// do NOT use bare-member access (their `declared_fields` is always empty, so
+/// this resolver is never reached for them — the `None` arm is defensive).
+fn bare_field_config(language: Language) -> Option<BareFieldConfig> {
+    match language {
+        Language::CSharp => Some(BareFieldConfig {
+            member_access_kinds: &["member_access_expression"],
+            object_field: "expression",
+            member_field: "name",
+            // `parameter > [name] identifier`; locals via
+            // `variable_declarator > [name] identifier` (covers
+            // local_declaration_statement, foreach/using, etc.).
+            shadow_decl_kinds: &["parameter", "variable_declarator"],
+        }),
+        Language::Scala => Some(BareFieldConfig {
+            // `this.x` is `field_expression`/`select_expression`; recurse into
+            // the value/operand and skip the selected member.
+            member_access_kinds: &["field_expression", "select_expression"],
+            object_field: "value",
+            member_field: "field",
+            // method `parameter > [name] identifier`; method-local
+            // `val_definition`/`var_definition > [pattern] identifier`.
+            shadow_decl_kinds: &["parameter", "val_definition", "var_definition"],
+        }),
+        Language::Kotlin => Some(BareFieldConfig {
+            // `this.x` / `obj.member` is `navigation_expression`; the receiver
+            // is the first child (no field name), the member is in the
+            // `navigation_suffix`. Handled specially in the walk.
+            member_access_kinds: &["navigation_expression"],
+            object_field: "",
+            member_field: "",
+            // `parameter > identifier`; local `property_declaration >
+            // variable_declaration > identifier`.
+            shadow_decl_kinds: &["parameter", "variable_declaration"],
+        }),
+        Language::TypeScript | Language::JavaScript => Some(BareFieldConfig {
+            member_access_kinds: &["member_expression"],
+            object_field: "object",
+            member_field: "property",
+            // `required_parameter`/`optional_parameter > [pattern] identifier`;
+            // local `variable_declarator > [name] identifier`.
+            shadow_decl_kinds: &[
+                "required_parameter",
+                "optional_parameter",
+                "variable_declarator",
+            ],
+        }),
+        Language::Ruby => Some(BareFieldConfig {
+            // A method *call* `foo.bar` is `call [receiver] … [method] …`; we
+            // recurse into the receiver and skip the method name. A bare
+            // `attr`-accessor read is a plain `identifier`.
+            member_access_kinds: &["call"],
+            object_field: "receiver",
+            member_field: "method",
+            // method `method_parameters > identifier`; block
+            // `block_parameters > identifier`.
+            shadow_decl_kinds: &["method_parameters", "block_parameters"],
+        }),
+        _ => None,
+    }
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): resolve BARE member references in
+/// a method body against the class's `declared` field set, with shadowing —
+/// the generalization of the C++ A1 `cpp_method_field_accesses`.
+///
+/// Returns the subset of `declared` that the method references bare and that is
+/// not shadowed by a parameter / local. Conservative: a local that shadows a
+/// field name suppresses that field for the whole method (errs toward
+/// UNDER-counting, never inventing a field access).
+fn generic_bare_field_accesses(
+    method_source: &str,
+    language: Language,
+    declared: &HashSet<String>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let config = match bare_field_config(language) {
+        Some(c) => c,
+        None => return out,
+    };
+    let tree = match parse(method_source, language) {
+        Ok(t) => t,
+        Err(_) => return out,
+    };
+    let root = tree.root_node();
+
+    let mut shadowed: HashSet<String> = HashSet::new();
+    bare_collect_shadowed_names(&root, method_source, language, &config, &mut shadowed);
+
+    bare_collect_field_hits(
+        &root,
+        method_source,
+        language,
+        &config,
+        declared,
+        &shadowed,
+        &mut out,
+    );
+    out
+}
+
+/// Walk a method body collecting names shadowed by parameters / locals, per the
+/// language's `shadow_decl_kinds`. Mirrors `cpp_collect_shadowed_names`.
+fn bare_collect_shadowed_names(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: Language,
+    config: &BareFieldConfig,
+    out: &mut HashSet<String>,
+) {
+    if config.shadow_decl_kinds.contains(&node.kind()) {
+        bare_record_shadow_name(node, source, language, out);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        bare_collect_shadowed_names(&child, source, language, config, out);
+    }
+}
+
+/// Record the bound identifier(s) of a shadow-declaration node. The exact shape
+/// differs per language (and per declaration kind), so this resolves each to
+/// its leaf identifier name(s).
+fn bare_record_shadow_name(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: Language,
+    out: &mut HashSet<String>,
+) {
+    match (language, node.kind()) {
+        // C#: `parameter > [name] identifier`; `variable_declarator > [name]
+        // identifier`.
+        (Language::CSharp, _) => {
+            if let Some(nm) = node.child_by_field_name("name") {
+                bare_insert_identifier_leaf(&nm, source, out);
+            }
+        }
+        // Scala: `parameter > [name] identifier`; `val/var_definition >
+        // [pattern] identifier`.
+        (Language::Scala, "parameter") => {
+            if let Some(nm) = node.child_by_field_name("name") {
+                bare_insert_identifier_leaf(&nm, source, out);
+            }
+        }
+        (Language::Scala, "val_definition" | "var_definition") => {
+            if let Some(pat) = node.child_by_field_name("pattern") {
+                bare_collect_pattern_identifiers(&pat, source, out);
+            }
+        }
+        // Kotlin: `parameter > identifier`; `variable_declaration > identifier`.
+        (Language::Kotlin, "parameter" | "variable_declaration") => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    bare_insert_identifier_leaf(&child, source, out);
+                    break;
+                }
+            }
+        }
+        // TypeScript/JavaScript: `*_parameter > [pattern] identifier`;
+        // `variable_declarator > [name] identifier`.
+        (Language::TypeScript | Language::JavaScript, "variable_declarator") => {
+            if let Some(nm) = node.child_by_field_name("name") {
+                bare_collect_pattern_identifiers(&nm, source, out);
+            }
+        }
+        (Language::TypeScript | Language::JavaScript, _) => {
+            if let Some(pat) = node.child_by_field_name("pattern") {
+                bare_collect_pattern_identifiers(&pat, source, out);
+            }
+        }
+        // Ruby: `method_parameters`/`block_parameters` hold bare `identifier`
+        // children (and optional/keyword/splat params that wrap them).
+        (Language::Ruby, _) => {
+            bare_collect_ruby_param_identifiers(node, source, out);
+        }
+        _ => {}
+    }
+}
+
+/// Insert the text of an `identifier`/`property_identifier`/`simple_identifier`
+/// leaf node into `out`.
+fn bare_insert_identifier_leaf(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    if let Some(t) = node_text_of(node, source) {
+        if !t.is_empty() {
+            out.insert(t);
+        }
+    }
+}
+
+/// Recurse a (possibly compound) binding pattern collecting every identifier
+/// leaf. Used for Scala val/var patterns and TS/JS parameter/declarator
+/// patterns (object/array destructuring etc.).
+fn bare_collect_pattern_identifiers(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "identifier" | "property_identifier" | "shorthand_property_identifier_pattern" => {
+            bare_insert_identifier_leaf(node, source, out);
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        bare_collect_pattern_identifiers(&child, source, out);
+    }
+}
+
+/// Collect bare `identifier` leaves directly under a Ruby
+/// `method_parameters`/`block_parameters` node (descending through
+/// `optional_parameter`/`keyword_parameter`/`splat_parameter` wrappers).
+fn bare_collect_ruby_param_identifiers(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => bare_insert_identifier_leaf(&child, source, out),
+            "optional_parameter"
+            | "keyword_parameter"
+            | "splat_parameter"
+            | "hash_splat_parameter"
+            | "block_parameter" => {
+                // The bound name is the leading `identifier`/`name` child.
+                if let Some(nm) = child.child_by_field_name("name") {
+                    bare_insert_identifier_leaf(&nm, source, out);
+                } else {
+                    let mut gc = child.walk();
+                    for g in child.children(&mut gc) {
+                        if g.kind() == "identifier" {
+                            bare_insert_identifier_leaf(&g, source, out);
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Walk a method body collecting bare field hits: a bare identifier in
+/// `declared` and not in `shadowed`. Skips the member side of a foreign
+/// member-access (recursing only into the object/receiver side) so a foreign
+/// `obj.x` member is never credited, while a *declared field used as a
+/// receiver* (`history.Add()`) still is. Mirrors `cpp_collect_field_hits`.
+fn bare_collect_field_hits(
+    node: &tree_sitter::Node,
+    source: &str,
+    language: Language,
+    config: &BareFieldConfig,
+    declared: &HashSet<String>,
+    shadowed: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    let kind = node.kind();
+
+    // Member-access node: recurse only into the object/receiver side.
+    if config.member_access_kinds.contains(&kind) {
+        // Kotlin `navigation_expression` has no field names: receiver is the
+        // FIRST child, the member lives in a trailing `navigation_suffix`.
+        if language == Language::Kotlin {
+            if let Some(receiver) = node.child(0) {
+                // `this.x` -> receiver is `this_expression`; the member is the
+                // genuine field. Credit it (matches the existing this-qualified
+                // behaviour) iff declared.
+                if receiver.kind() == "this_expression" {
+                    if let Some(suffix) = node
+                        .children(&mut node.walk())
+                        .find(|c| c.kind() == "navigation_suffix")
+                    {
+                        if let Some(member) = suffix
+                            .children(&mut suffix.walk())
+                            .find(|c| c.kind() == "simple_identifier")
+                        {
+                            if let Some(t) = node_text_of(&member, source) {
+                                if declared.contains(&t) {
+                                    out.insert(t);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Recurse into the receiver only (skip the navigation_suffix
+                // member name).
+                bare_collect_field_hits(
+                    &receiver, source, language, config, declared, shadowed, out,
+                );
+            }
+            return;
+        }
+
+        // Other languages: object/member identified by field name.
+        // `this`/`self`-qualified member -> credit the member iff declared.
+        if let Some(obj) = node.child_by_field_name(config.object_field) {
+            let obj_text = node_text_of(&obj, source).unwrap_or_default();
+            if obj_text == "this" || obj_text == "self" {
+                if let Some(member) = node.child_by_field_name(config.member_field) {
+                    if let Some(t) = node_text_of(&member, source) {
+                        if declared.contains(&t) {
+                            out.insert(t);
+                        }
+                    }
+                }
+            }
+            // Recurse into the object/receiver side only.
+            bare_collect_field_hits(
+                &obj, source, language, config, declared, shadowed, out,
+            );
+        }
+        return;
+    }
+
+    // Bare identifier: credit iff declared and not shadowed.
+    if bare_is_identifier_kind(language, kind) {
+        if let Some(t) = node_text_of(node, source) {
+            if declared.contains(&t) && !shadowed.contains(&t) {
+                out.insert(t);
+            }
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        bare_collect_field_hits(
+            &child, source, language, config, declared, shadowed, out,
+        );
+    }
+}
+
+/// Whether `kind` is the language's BARE field-reference identifier node kind.
+fn bare_is_identifier_kind(language: Language, kind: &str) -> bool {
+    match language {
+        Language::Kotlin => kind == "simple_identifier" || kind == "identifier",
+        Language::TypeScript | Language::JavaScript => kind == "identifier",
+        // C#, Scala, Ruby all use `identifier` for a bare value reference.
+        _ => kind == "identifier",
+    }
 }
 
 /// Solidity-specific `MethodFieldsExtraction` walker. Mirrors the generic
@@ -1202,6 +1602,10 @@ fn build_solidity_cohesion_class_info(
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: Solidity has its own dedicated bare-state-var
+        // field-access path (`extract_file_method_fields_solidity`); this
+        // generic-extractor entry is unused for cohesion, so the set is empty.
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -1356,6 +1760,9 @@ fn extract_swift_classes_cohesion_recursive(
                         methods: Vec::new(),
                         is_partial: false,
                         namespace_path: Vec::new(),
+                        // fix-FixA-bare-field-v1: Swift uses `self.`-qualified
+                        // access; no bare-member resolution needed.
+                        declared_fields: HashSet::new(),
                     });
                 if info.line < entry.line {
                     entry.line = info.line;
@@ -1397,6 +1804,8 @@ fn extract_swift_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: Swift uses `self.`-qualified access.
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -1516,10 +1925,18 @@ fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
 
     let line = node.start_position().row + 1;
     let mut methods = Vec::new();
+    let mut declared_fields = HashSet::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "class_body" {
             collect_kotlin_methods(&child, source, &mut methods);
+            collect_kotlin_declared_fields(&child, source, &mut declared_fields);
+        }
+        // fix-FixA-bare-field-v1: constructor `val`/`var` parameters are fields
+        // too (`class Account(initial: Int)`); harvest them from the
+        // `primary_constructor`.
+        if child.kind() == "primary_constructor" {
+            collect_kotlin_ctor_param_fields(&child, source, &mut declared_fields);
         }
     }
     Some(ClassInfo {
@@ -1528,7 +1945,76 @@ fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        declared_fields,
     })
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): collect Kotlin declared property
+/// names from a `class_body`. Grammar (tree-sitter-kotlin-ng):
+///   `class_body` -> `property_declaration` -> `variable_declaration` ->
+///   `identifier` (the property name). Nested classes/functions are NOT
+///   descended (their members are not this class's fields).
+fn collect_kotlin_declared_fields(
+    body: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "property_declaration" {
+            if let Some(var_decl) = child
+                .children(&mut child.walk())
+                .find(|c| c.kind() == "variable_declaration")
+            {
+                let mut vc = var_decl.walk();
+                for vchild in var_decl.children(&mut vc) {
+                    if vchild.kind() == "identifier" {
+                        if let Some(t) = node_text_of(&vchild, source) {
+                            if !t.is_empty() {
+                                out.insert(t);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// fix-FixA-bare-field-v1: collect Kotlin primary-constructor parameter names
+/// as candidate fields. Grammar: `primary_constructor` -> `class_parameters` ->
+/// `class_parameter` -> `identifier`. Only `val`/`var`-tagged parameters are
+/// true properties, but collecting all constructor params as CANDIDATE fields is
+/// safe: a bare reference inside a method is only credited when it is also not
+/// shadowed, and a non-property param cannot be referenced outside the
+/// constructor anyway, so it never produces a false field hit in a method.
+fn collect_kotlin_ctor_param_fields(
+    primary_constructor: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let mut cursor = primary_constructor.walk();
+    for child in primary_constructor.children(&mut cursor) {
+        if child.kind() == "class_parameters" {
+            let mut pc = child.walk();
+            for param in child.children(&mut pc) {
+                if param.kind() == "class_parameter" {
+                    let mut ppc = param.walk();
+                    for pchild in param.children(&mut ppc) {
+                        if pchild.kind() == "identifier" {
+                            if let Some(t) = node_text_of(&pchild, source) {
+                                if !t.is_empty() {
+                                    out.insert(t);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn collect_kotlin_methods(
@@ -1645,6 +2131,9 @@ fn extract_elixir_module_cohesion_info(
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: Elixir "fields" are `@attr` module attributes
+        // (matched by `extract_elixir_module_attribute`); no bare resolution.
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -1880,6 +2369,9 @@ fn collect_lua_table_methods(
                             methods: Vec::new(),
                             is_partial: false,
                             namespace_path: Vec::new(),
+                            // fix-FixA-bare-field-v1: Lua uses `self.`-qualified
+                            // access (`extract_lua_self_field_access`).
+                            declared_fields: HashSet::new(),
                         });
                     if child.start_position().row + 1 < entry.line {
                         entry.line = child.start_position().row + 1;
@@ -3112,6 +3604,10 @@ fn extract_cpp_classes_cohesion(
                 methods,
                 is_partial: true,
                 namespace_path: Vec::new(),
+                // fix-FixA-bare-field-v1: C++ has its own dedicated declared-field
+                // bare-member path (`extract_file_method_fields_cpp`); this
+                // generic-extractor entry is unused for cohesion field-access.
+                declared_fields: HashSet::new(),
             });
         }
     }
@@ -3282,6 +3778,9 @@ fn extract_cpp_class_info(
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: C++ resolves bare members through its own
+        // dedicated path (`extract_file_method_fields_cpp`).
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -3319,6 +3818,8 @@ fn extract_cpp_macro_prefixed_class(
         methods: body_methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: C++ dedicated path handles bare members.
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -3425,6 +3926,8 @@ fn extract_python_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: Python uses `self.`-qualified access.
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -3502,6 +4005,7 @@ fn extract_typescript_class_info(node: &tree_sitter::Node, source: &str) -> Opti
 
     let body = node.child_by_field_name("body")?;
     let methods = extract_typescript_methods(&body, source);
+    let declared_fields = collect_typescript_declared_fields(&body, source);
 
     Some(ClassInfo {
         name,
@@ -3509,6 +4013,7 @@ fn extract_typescript_class_info(node: &tree_sitter::Node, source: &str) -> Opti
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        declared_fields,
     })
 }
 
@@ -3517,8 +4022,13 @@ fn extract_typescript_methods(body: &tree_sitter::Node, source: &str) -> Vec<Met
     let mut cursor = body.walk();
 
     for child in body.children(&mut cursor) {
-        // TypeScript method_definition
-        if child.kind() == "method_definition" || child.kind() == "public_field_definition" {
+        // fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): only `method_definition`
+        // nodes are methods. `public_field_definition` is a DATA MEMBER, not a
+        // method — counting it here inflated `method_count` (t.ts: 6 instead of
+        // 3) and produced bogus single-field components named after the field
+        // (e.g. `["balance"]`). Field definitions are now harvested into
+        // `declared_fields` by `collect_typescript_declared_fields` instead.
+        if child.kind() == "method_definition" {
             if let Some(name_node) = child.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
                     // Skip constructor for cohesion analysis (similar to __init__)
@@ -3535,6 +4045,31 @@ fn extract_typescript_methods(body: &tree_sitter::Node, source: &str) -> Vec<Met
     }
 
     methods
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): collect TypeScript declared field
+/// names from a `class_body`. Grammar (tree-sitter-typescript):
+///   `class_body` -> `public_field_definition` -> `[name] property_identifier`.
+/// These feed the declared-field set (mirroring the C++ A1 precedent) and also
+/// fix the pre-existing method-miscount bug (see `extract_typescript_methods`).
+fn collect_typescript_declared_fields(
+    body: &tree_sitter::Node,
+    source: &str,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "public_field_definition" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if let Some(t) = node_text_of(&name_node, source) {
+                    if !t.is_empty() {
+                        out.insert(t);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 // =============================================================================
@@ -3588,6 +4123,8 @@ fn extract_java_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: Java uses `this.`-qualified access.
+        declared_fields: HashSet::new(),
     })
 }
 
@@ -3657,6 +4194,9 @@ fn collect_go_structs(
                                             methods: Vec::new(),
                                             is_partial: false,
                                             namespace_path: Vec::new(),
+                                            // fix-FixA-bare-field-v1: Go uses
+                                            // receiver-qualified access.
+                                            declared_fields: HashSet::new(),
                                         },
                                     );
                                 }
@@ -3766,6 +4306,9 @@ fn collect_rust_structs(
                             methods: Vec::new(),
                             is_partial: false,
                             namespace_path: Vec::new(),
+                            // fix-FixA-bare-field-v1: Rust uses `self.`-qualified
+                            // access.
+                            declared_fields: HashSet::new(),
                         },
                     );
                 }
@@ -3886,6 +4429,7 @@ fn extract_ruby_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
 
     let body = node.child_by_field_name("body")?;
     let methods = extract_ruby_methods(&body, source);
+    let declared_fields = collect_ruby_attr_fields(&body, source);
 
     Some(ClassInfo {
         name,
@@ -3893,7 +4437,56 @@ fn extract_ruby_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        declared_fields,
     })
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): collect Ruby `attr_accessor` /
+/// `attr_reader` / `attr_writer` / `attr` pseudo-field names from a class body.
+/// These define accessor methods that are referenced BARE (`owner`, not
+/// `@owner` or `self.owner`) inside instance methods, so they must join the
+/// declared-field set. `@ivar` references are handled separately (and already
+/// work) via `extract_ruby_instance_field`.
+///
+/// Grammar (tree-sitter-ruby):
+///   `body_statement` -> `call` -> `[method] identifier "attr_accessor"`,
+///   `[arguments] argument_list` -> `simple_symbol ":owner"` (leading `:`
+///   stripped). Bare-word forms (no parens) parse the same.
+fn collect_ruby_attr_fields(body: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() != "call" {
+            continue;
+        }
+        let is_attr = child
+            .child_by_field_name("method")
+            .and_then(|m| node_text_of(&m, source))
+            .map(|t| {
+                matches!(
+                    t.as_str(),
+                    "attr_accessor" | "attr_reader" | "attr_writer" | "attr"
+                )
+            })
+            .unwrap_or(false);
+        if !is_attr {
+            continue;
+        }
+        if let Some(args) = child.child_by_field_name("arguments") {
+            let mut ac = args.walk();
+            for arg in args.children(&mut ac) {
+                if arg.kind() == "simple_symbol" {
+                    if let Some(t) = node_text_of(&arg, source) {
+                        let nameonly = t.strip_prefix(':').unwrap_or(&t);
+                        if !nameonly.is_empty() {
+                            out.insert(nameonly.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Extract methods from a Ruby class body (body_statement node).
@@ -4022,6 +4615,7 @@ fn extract_csharp_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
 
     let body = node.child_by_field_name("body")?;
     let methods = extract_csharp_methods(&body, source);
+    let declared_fields = collect_csharp_declared_fields(&body, source);
 
     // cohesion-cross-file-aggregation-v1 (v0.4.2 M-030): detect the
     // `partial` modifier on a `class_declaration` / `struct_declaration`
@@ -4042,7 +4636,61 @@ fn extract_csharp_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
         // tracks the enclosing `namespace_declaration` /
         // `file_scoped_namespace_declaration` chain. fix-cl-7-v1 Facet B1'.
         namespace_path: Vec::new(),
+        declared_fields,
     })
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): collect C# declared field and
+/// property names from a class body (`declaration_list`). C# references fields
+/// BARE (`balance = balance + amount`), so the LCOM4 field-access scan needs the
+/// declared set to classify a bare identifier as a field. Grammar
+/// (tree-sitter-c-sharp):
+///   `declaration_list` ->
+///     `field_declaration` -> `variable_declaration` ->
+///        `variable_declarator` -> `[name] identifier`   (one per declarator)
+///     `property_declaration` -> `[name] identifier`
+/// Method declarations are skipped (their names are not data members).
+fn collect_csharp_declared_fields(
+    body: &tree_sitter::Node,
+    source: &str,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        match child.kind() {
+            "field_declaration" => {
+                // field_declaration -> variable_declaration -> variable_declarator+
+                let mut fc = child.walk();
+                for sub in child.children(&mut fc) {
+                    if sub.kind() == "variable_declaration" {
+                        let mut vc = sub.walk();
+                        for vdecl in sub.children(&mut vc) {
+                            if vdecl.kind() == "variable_declarator" {
+                                if let Some(nm) = vdecl.child_by_field_name("name") {
+                                    if let Some(t) = node_text_of(&nm, source) {
+                                        if !t.is_empty() {
+                                            out.insert(t);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "property_declaration" => {
+                if let Some(nm) = child.child_by_field_name("name") {
+                    if let Some(t) = node_text_of(&nm, source) {
+                        if !t.is_empty() {
+                            out.insert(t);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn csharp_class_is_partial(node: &tree_sitter::Node, source: &str) -> bool {
@@ -4154,6 +4802,7 @@ fn extract_scala_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
 
     let line = node.start_position().row + 1;
     let methods = extract_scala_methods(node, source);
+    let declared_fields = collect_scala_declared_fields(node, source);
 
     Some(ClassInfo {
         name,
@@ -4161,7 +4810,78 @@ fn extract_scala_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        declared_fields,
     })
+}
+
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): collect Scala declared field
+/// names. Scala references fields BARE (`balance = balance + amount`), so the
+/// LCOM4 scan needs the declared set. Two sources (grammar tree-sitter-scala):
+///   - class body `template_body` / `body`: `val_definition` / `var_definition`
+///     -> `[pattern] identifier`.
+///   - constructor parameters on the class node: `class_parameters` ->
+///     `class_parameter` -> `[name] identifier` (Scala constructor `val`/`var`
+///     params and even plain params are in-scope as fields of the instance).
+fn collect_scala_declared_fields(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "template_body" | "body" => {
+                let mut bc = child.walk();
+                for body_child in child.children(&mut bc) {
+                    if body_child.kind() == "val_definition"
+                        || body_child.kind() == "var_definition"
+                    {
+                        if let Some(pat) = body_child.child_by_field_name("pattern") {
+                            collect_scala_pattern_identifiers(&pat, source, &mut out);
+                        }
+                    }
+                }
+            }
+            "class_parameters" => {
+                let mut pc = child.walk();
+                for param in child.children(&mut pc) {
+                    if param.kind() == "class_parameter" {
+                        if let Some(nm) = param.child_by_field_name("name") {
+                            if let Some(t) = node_text_of(&nm, source) {
+                                if !t.is_empty() {
+                                    out.insert(t);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Collect identifier leaves under a Scala val/var pattern. Handles the simple
+/// `identifier` case directly and recurses into compound patterns (tuple
+/// destructuring etc.) so every bound name becomes a declared field.
+fn collect_scala_pattern_identifiers(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "identifier" {
+        if let Some(t) = node_text_of(node, source) {
+            if !t.is_empty() {
+                out.insert(t);
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_scala_pattern_identifiers(&child, source, out);
+    }
 }
 
 /// Extract methods from a Scala class/object/trait.
@@ -4246,6 +4966,8 @@ fn extract_php_class_info(node: &tree_sitter::Node, source: &str) -> Option<Clas
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
+        // fix-FixA-bare-field-v1: PHP uses `$this->`-qualified access.
+        declared_fields: HashSet::new(),
     })
 }
 
