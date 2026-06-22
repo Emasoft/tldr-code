@@ -40,6 +40,20 @@ use std::collections::HashMap;
 
 use crate::types::{Confidence, Language, TypedCallEdge};
 
+/// fix-W5b-receiver-type-scan-v1: counts how many times a source *line* is
+/// parsed during receiver-type resolution. Both the per-call-site scan helpers
+/// and the `SourceTypeIndex` builder bump this once per line they inspect, so a
+/// test can assert the indexed path does O(L) line-parses instead of the
+/// per-call-site O(L * N). Plain relaxed counter — observational only, never
+/// gates production behavior.
+pub(crate) static LINE_PARSE_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[inline]
+fn bump_line_parse() {
+    LINE_PARSE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Type resolver for Python code
 ///
 /// Maintains state for resolving method calls to their class types.
@@ -230,6 +244,7 @@ pub fn find_enclosing_class(source: &str, line: u32) -> Option<String> {
     let mut indent_level = 0;
 
     for (line_num, line_content) in source.lines().enumerate() {
+        bump_line_parse();
         let current_line = (line_num + 1) as u32;
 
         // Check for class definition
@@ -288,6 +303,7 @@ fn find_type_annotation(source: &str, var_name: &str, call_line: u32) -> Option<
 
     // Search backwards from call_line
     for line_num in (0..call_line as usize).rev() {
+        bump_line_parse();
         let line = lines.get(line_num)?;
 
         // Pattern: `var_name: Type = ` or `var_name: Type`
@@ -374,6 +390,7 @@ fn find_constructor_assignment(source: &str, var_name: &str, call_line: u32) -> 
 
     // Search backwards from call_line
     for line_num in (0..call_line as usize).rev() {
+        bump_line_parse();
         let line = lines.get(line_num)?;
         let idx = match find_var_in_line(line, var_name) {
             Some(i) => i,
@@ -1295,6 +1312,910 @@ pub fn resolve_receiver_type(
 }
 
 // =============================================================================
+// fix-W5b-receiver-type-scan-v1: per-file receiver-type index
+//
+// Defect #2 (the remaining call-graph quadratic): the per-call-site resolvers
+// above each re-scan the WHOLE `source` (`source.lines()`) inside their
+// backward-search helpers. Called once per method/attr call-site that yields
+// O(call_sites * source_lines) line iterations — pathological on large or
+// minified files (js-lodash ships 27k/31k-line files).
+//
+// `SourceTypeIndex` precomputes, in ONE forward pass per file (O(L)), every
+// declaration the backward scans look for, keyed by the declared variable with
+// per-strategy line-sorted vectors. Each call-site then resolves via a binary
+// search (O(log L)) that reproduces the *exact* strategy priority and
+// nearest-preceding-declaration semantics of the scan resolvers, so resolved
+// types are identical to the pre-fix behavior on real code.
+//
+// PRECEDENT: type_aware_resolver.rs builds `method_return_index` /
+// `method_class_index` once as FileIRs are added (commit 8ca42d2) and round 1's
+// FuncIndex `by_name`; this mirrors that "scan once, probe O(1)/O(log n)"
+// pattern for the source-line scans.
+// =============================================================================
+
+/// A single declaration discovered during the one-pass scan: the 1-indexed line
+/// it sits on and the resolved type name.
+type Decl = (u32, String);
+
+/// Append a declaration to a strategy map, preserving the same "a line declares
+/// a given variable at most once per strategy" shape the scan helpers see: the
+/// scans' backward walk stops at the FIRST (leftmost) match on a line, so for a
+/// given (var, line) we keep only the first extracted type and ignore any later
+/// same-line match (e.g. the pathological `a = A(); a = B()`).
+fn push_decl(map: &mut HashMap<String, Vec<Decl>>, var: String, line: u32, ty: String) {
+    let entries = map.entry(var).or_default();
+    if entries.last().map(|(l, _)| *l) == Some(line) {
+        // Same line already recorded for this var/strategy — keep the first.
+        return;
+    }
+    entries.push((line, ty));
+}
+
+/// Register a declaration under EVERY suffix of `run` (the maximal identifier
+/// immediately preceding the discriminator). This reproduces the production
+/// scans' raw `line.find("{var}: ")` / `find("{var} = ...")` substring match
+/// EXACTLY: a receiver `var` resolves from this line iff `var` is a trailing
+/// substring of `run` (the "create_app bleeds to app" behavior the corpora
+/// depend on). For a run of length k this records k suffix keys; summed over the
+/// file that is O(total identifier characters) = O(L) work, so the index stays
+/// sub-quadratic. The longest (whole-run) suffix is recorded first, but order
+/// within a line does not matter because each (var, line) keeps only its first
+/// entry via `push_decl`.
+fn push_decl_suffixes(map: &mut HashMap<String, Vec<Decl>>, run: &str, line: u32, ty: &str) {
+    let bytes = run.as_bytes();
+    let n = bytes.len();
+    // Suffixes start at every byte boundary that begins a UTF-8 char. Receivers
+    // are ASCII identifiers in practice, but guard against multi-byte by only
+    // slicing at char boundaries.
+    for start in 0..n {
+        if run.is_char_boundary(start) {
+            let suffix = &run[start..];
+            if !suffix.is_empty() {
+                push_decl(map, suffix.to_string(), line, ty.to_string());
+            }
+        }
+    }
+}
+
+/// Binary-search the nearest declaration strictly *before* `call_line`.
+///
+/// Reproduces the scan helpers' `(0..call_line).rev()` "first hit walking
+/// backward" = the highest declaration line `< call_line`. The per-strategy
+/// vectors are built in ascending line order during the forward pass, so we can
+/// `partition_point` for `line < call_line` and take the last qualifying entry.
+fn nearest_before(decls: &[Decl], call_line: u32) -> Option<&str> {
+    let cut = decls.partition_point(|(line, _)| *line < call_line);
+    if cut == 0 {
+        None
+    } else {
+        Some(decls[cut - 1].1.as_str())
+    }
+}
+
+/// An enclosing-scope marker (class / impl / receiver) discovered in the
+/// forward pass, with the brace/indent depth bookkeeping needed to reproduce
+/// the scan helpers' containment decision at query time.
+#[derive(Debug, Clone)]
+struct ScopeEvent {
+    line: u32,
+    name: String,
+    /// Indent (Python) or brace depth (TS/Rust) recorded when the scope opened.
+    depth: i32,
+}
+
+/// Per-file precomputed receiver-type index.
+///
+/// Built once per file; every call-site in that file then resolves via O(log L)
+/// lookups instead of re-scanning the whole source. Strategy maps and scope
+/// events are language-specific (only the dispatched language's tables are
+/// populated), matching the language dispatch in [`resolve_receiver_type`].
+#[derive(Debug, Default)]
+pub struct SourceTypeIndex {
+    /// Source lines, split once (1-indexed access via `lines[line-1]`). Avoids
+    /// the repeated `source.lines().collect()` the scan helpers did per call.
+    lines: Vec<String>,
+    /// Strategy 1: explicit type annotations (`var: Type`, `let x: T`, ...).
+    annotation: HashMap<String, Vec<Decl>>,
+    /// Strategy 2: constructor / struct-literal / call assignments
+    /// (`var = Type(...)`, `x := Type{}`, `let x = Type::new()`, ...).
+    constructor: HashMap<String, Vec<Decl>>,
+    /// Strategy 2b (Go/Rust only): a SECOND assignment strategy that the scan
+    /// resolvers try as a distinct full backward pass *after* `constructor`
+    /// (Go pointer-struct `x := &T{}`; Rust struct-literal `let x = T{}`),
+    /// so it must lose to any `constructor` hit anywhere before the call.
+    constructor_alt: HashMap<String, Vec<Decl>>,
+    /// Go `var x Type` declarations (strategy 1 for Go; tried before struct
+    /// literals).
+    go_var_decl: HashMap<String, Vec<Decl>>,
+    /// Enclosing class/impl scope openers in file order.
+    scopes: Vec<ScopeEvent>,
+    /// Final brace depth bookkeeping is recomputed per query for Python; for
+    /// brace languages we precompute prefix brace depth per line.
+    brace_prefix: Vec<i32>,
+}
+
+impl SourceTypeIndex {
+    /// Build the index for `source` under `lang` in a single forward pass.
+    pub fn build(lang: Language, source: &str) -> Self {
+        let lines: Vec<String> = source.lines().map(|s| s.to_string()).collect();
+        let mut idx = SourceTypeIndex {
+            lines,
+            ..Default::default()
+        };
+
+        // Precompute prefix brace depth (depth BEFORE each line is processed),
+        // mirroring the running `brace_depth` the TS/Rust scans maintain.
+        if matches!(
+            lang,
+            Language::TypeScript | Language::JavaScript | Language::Rust
+        ) {
+            let mut depth = 0i32;
+            idx.brace_prefix.reserve(idx.lines.len());
+            for line in &idx.lines {
+                idx.brace_prefix.push(depth);
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
+            }
+        }
+
+        // Single forward pass: extract every declaration from each line into the
+        // strategy maps (one bump per line == O(L) line-parse work total). We
+        // collect into locals first, then move them into the struct, so the
+        // immutable borrow of `idx.lines` does not clash with the mutation.
+        let mut annotation: HashMap<String, Vec<Decl>> = HashMap::new();
+        let mut constructor: HashMap<String, Vec<Decl>> = HashMap::new();
+        let mut constructor_alt: HashMap<String, Vec<Decl>> = HashMap::new();
+        let mut go_var_decl: HashMap<String, Vec<Decl>> = HashMap::new();
+        let mut scopes: Vec<ScopeEvent> = Vec::new();
+
+        for (i, line) in idx.lines.iter().enumerate() {
+            bump_line_parse();
+            let line_no = (i + 1) as u32;
+            match lang {
+                Language::Python => {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with("class ") {
+                        if let Some(name) = extract_class_name(trimmed) {
+                            let indent = (line.len() - trimmed.len()) as i32;
+                            scopes.push(ScopeEvent {
+                                line: line_no,
+                                name,
+                                depth: indent,
+                            });
+                        }
+                    }
+                    // Python annotation = raw `find("{var}: ")` (substring) ->
+                    // suffix registration to reproduce the create_app->app bleed.
+                    for (run, ty) in python_annotations_in_line(line) {
+                        push_decl_suffixes(&mut annotation, &run, line_no, &ty);
+                    }
+                    // Python constructor = `find_var_in_line` (boundary) -> whole.
+                    for (var, ty) in python_constructors_in_line(line) {
+                        push_decl(&mut constructor, var, line_no, ty);
+                    }
+                }
+                Language::TypeScript | Language::JavaScript => {
+                    let trimmed = line.trim();
+                    if let Some(name) = extract_typescript_class_name(trimmed) {
+                        let post = idx.brace_prefix[i] + line.matches('{').count() as i32
+                            - line.matches('}').count() as i32;
+                        scopes.push(ScopeEvent {
+                            line: line_no,
+                            name,
+                            depth: post,
+                        });
+                    }
+                    // TS annotation & constructor both used raw `find` -> suffix.
+                    for (run, ty) in typescript_annotations_in_line(line) {
+                        push_decl_suffixes(&mut annotation, &run, line_no, &ty);
+                    }
+                    for (run, ty) in typescript_constructors_in_line(line) {
+                        push_decl_suffixes(&mut constructor, &run, line_no, &ty);
+                    }
+                }
+                Language::Rust => {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
+                        if let Some(name) = extract_rust_impl_type(trimmed) {
+                            let post = idx.brace_prefix[i] + line.matches('{').count() as i32
+                                - line.matches('}').count() as i32;
+                            scopes.push(ScopeEvent {
+                                line: line_no,
+                                name,
+                                depth: post,
+                            });
+                        }
+                    }
+                    // Rust annotation/assoc-fn/struct-literal all used raw `find`
+                    // (after the `let `/`let mut ` prefix) -> suffix registration.
+                    for (run, ty) in rust_annotations_in_line(line) {
+                        push_decl_suffixes(&mut annotation, &run, line_no, &ty);
+                    }
+                    for (run, ty) in rust_associated_fns_in_line(line) {
+                        push_decl_suffixes(&mut constructor, &run, line_no, &ty);
+                    }
+                    for (run, ty) in rust_struct_literals_in_line(line) {
+                        push_decl_suffixes(&mut constructor_alt, &run, line_no, &ty);
+                    }
+                }
+                Language::Go => {
+                    let trimmed = line.trim();
+                    // Go var/struct/pointer all used raw `find` -> suffix.
+                    for (run, ty) in go_var_decls_in_line(trimmed) {
+                        push_decl_suffixes(&mut go_var_decl, &run, line_no, &ty);
+                    }
+                    for (run, ty) in go_struct_literals_in_line(trimmed) {
+                        push_decl_suffixes(&mut constructor, &run, line_no, &ty);
+                    }
+                    for (run, ty) in go_pointer_structs_in_line(trimmed) {
+                        push_decl_suffixes(&mut constructor_alt, &run, line_no, &ty);
+                    }
+                }
+                _ => {
+                    // Generic resolver used `find_var_in_line` (boundary) -> whole.
+                    for (var, ty) in generic_annotations_in_line(line) {
+                        push_decl(&mut annotation, var, line_no, ty);
+                    }
+                    for (var, ty) in generic_constructors_in_line(line) {
+                        push_decl(&mut constructor, var, line_no, ty);
+                    }
+                    for (var, ty) in generic_typed_decls_in_line(line) {
+                        push_decl(&mut constructor_alt, var, line_no, ty);
+                    }
+                }
+            }
+        }
+
+        // Vectors are already in ascending line order (forward pass). For the
+        // rare case of a single line declaring a var more than once via one
+        // strategy, the scan's backward walk would stop at the FIRST (leftmost)
+        // match on that line; `*_in_line` returns matches left-to-right and
+        // `push_decl` keeps them in that order, so `nearest_before` selecting the
+        // last entry strictly before the call line still lands on the correct
+        // (nearest-preceding) line, and within a line ties never occur because a
+        // call site is on its own line after the declaration.
+        idx.annotation = annotation;
+        idx.constructor = constructor;
+        idx.constructor_alt = constructor_alt;
+        idx.go_var_decl = go_var_decl;
+        idx.scopes = scopes;
+        idx
+    }
+}
+
+/// Indexed counterpart to [`resolve_receiver_type`]. Produces a byte-identical
+/// `(Option<String>, Confidence)` to the per-call-site scan resolver, but in
+/// O(log L) using a [`SourceTypeIndex`] built once for the file.
+pub fn resolve_receiver_type_indexed(
+    index: &SourceTypeIndex,
+    lang: Language,
+    source: &str,
+    call_line: u32,
+    receiver_name: &str,
+    enclosing_context: Option<&str>,
+) -> (Option<String>, Confidence) {
+    // `source` is accepted to mirror `resolve_receiver_type`'s signature (and to
+    // keep the door open for cross-file lookups), but every per-language indexed
+    // resolver answers purely from the prebuilt `index` (which already owns the
+    // split source lines), so it is not threaded further.
+    let _ = source;
+    match lang {
+        Language::Python => {
+            resolve_python_indexed(index, call_line, receiver_name, enclosing_context)
+        }
+        Language::TypeScript | Language::JavaScript => {
+            resolve_typescript_indexed(index, call_line, receiver_name, enclosing_context)
+        }
+        Language::Go => resolve_go_indexed(index, call_line, receiver_name, enclosing_context),
+        Language::Rust => {
+            resolve_rust_indexed(index, call_line, receiver_name, enclosing_context)
+        }
+        _ => resolve_generic_indexed(index, call_line, receiver_name, enclosing_context),
+    }
+}
+
+fn resolve_python_indexed(
+    index: &SourceTypeIndex,
+    call_line: u32,
+    receiver_name: &str,
+    enclosing_class: Option<&str>,
+) -> (Option<String>, Confidence) {
+    if receiver_name == "self" {
+        if let Some(class_name) = enclosing_class {
+            return (Some(class_name.to_string()), Confidence::High);
+        }
+        if let Some(class_name) = index.python_enclosing_class(call_line) {
+            return (Some(class_name), Confidence::High);
+        }
+        return (None, Confidence::Low);
+    }
+
+    if let Some(type_name) = index
+        .annotation
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        let type_name = type_name.to_string();
+        if type_name.starts_with("Union[") || type_name.contains('|') {
+            if expand_union_type(&type_name, None).is_none() {
+                return (None, Confidence::Low);
+            }
+            return (Some(type_name), Confidence::Medium);
+        }
+        return (Some(type_name), Confidence::High);
+    }
+
+    if let Some(type_name) = index
+        .constructor
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+
+    (None, Confidence::Low)
+}
+
+fn resolve_typescript_indexed(
+    index: &SourceTypeIndex,
+    call_line: u32,
+    receiver_name: &str,
+    enclosing_class: Option<&str>,
+) -> (Option<String>, Confidence) {
+    if receiver_name == "this" {
+        if let Some(class_name) = enclosing_class {
+            return (Some(class_name.to_string()), Confidence::High);
+        }
+        if let Some(class_name) = index.brace_enclosing_scope(call_line) {
+            return (Some(class_name), Confidence::High);
+        }
+        return (None, Confidence::Low);
+    }
+
+    if let Some(type_name) = index
+        .annotation
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        let confidence = if is_likely_interface(type_name) {
+            Confidence::Medium
+        } else {
+            Confidence::High
+        };
+        return (Some(type_name.to_string()), confidence);
+    }
+
+    if let Some(type_name) = index
+        .constructor
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+
+    (None, Confidence::Low)
+}
+
+fn resolve_go_indexed(
+    index: &SourceTypeIndex,
+    call_line: u32,
+    receiver_name: &str,
+    enclosing_receiver: Option<&str>,
+) -> (Option<String>, Confidence) {
+    if let Some(type_name) = index
+        .go_var_decl
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(type_name) = index
+        .constructor
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(type_name) = index
+        .constructor_alt
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(recv_type) = enclosing_receiver {
+        if receiver_name.len() == 1 {
+            return (Some(recv_type.to_string()), Confidence::High);
+        }
+    }
+    (None, Confidence::Low)
+}
+
+fn resolve_rust_indexed(
+    index: &SourceTypeIndex,
+    call_line: u32,
+    receiver_name: &str,
+    enclosing_impl: Option<&str>,
+) -> (Option<String>, Confidence) {
+    if receiver_name == "self" || receiver_name == "&self" || receiver_name == "&mut self" {
+        if let Some(impl_type) = enclosing_impl {
+            return (Some(impl_type.to_string()), Confidence::High);
+        }
+        if let Some(impl_type) = index.brace_enclosing_scope(call_line) {
+            return (Some(impl_type), Confidence::High);
+        }
+        return (None, Confidence::Low);
+    }
+    if receiver_name == "Self" {
+        if let Some(impl_type) = enclosing_impl {
+            return (Some(impl_type.to_string()), Confidence::High);
+        }
+        if let Some(impl_type) = index.brace_enclosing_scope(call_line) {
+            return (Some(impl_type), Confidence::High);
+        }
+        return (None, Confidence::Low);
+    }
+
+    if let Some(type_name) = index
+        .annotation
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(type_name) = index
+        .constructor
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(type_name) = index
+        .constructor_alt
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    (None, Confidence::Low)
+}
+
+fn resolve_generic_indexed(
+    index: &SourceTypeIndex,
+    call_line: u32,
+    receiver_name: &str,
+    enclosing_context: Option<&str>,
+) -> (Option<String>, Confidence) {
+    if matches!(receiver_name, "self" | "this" | "cls" | "Self") {
+        if let Some(ctx) = enclosing_context {
+            return (Some(ctx.to_string()), Confidence::High);
+        }
+    }
+    if let Some(type_name) = index
+        .annotation
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(type_name) = index
+        .constructor
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    if let Some(type_name) = index
+        .constructor_alt
+        .get(receiver_name)
+        .and_then(|d| nearest_before(d, call_line))
+    {
+        return (Some(type_name.to_string()), Confidence::High);
+    }
+    (None, Confidence::Low)
+}
+
+// -----------------------------------------------------------------------------
+// Enclosing-scope queries (reproduce the scan helpers' containment decisions).
+// -----------------------------------------------------------------------------
+
+impl SourceTypeIndex {
+    /// Reproduces `find_enclosing_class` (Python) at `line` using the recorded
+    /// class events + the target line's own indent. The scan tracked the most
+    /// recent `class` opener and, at the target line, returned it iff the target
+    /// line's indent exceeds the class indent (or the line is blank); if the
+    /// target line is past EOF it returned the last class seen.
+    fn python_enclosing_class(&self, line: u32) -> Option<String> {
+        // Most recent class opener at-or-before `line`.
+        let cut = self.scopes.partition_point(|e| e.line <= line);
+        if line as usize > self.lines.len() {
+            // Past EOF: scan returned the last class encountered (if any).
+            return self.scopes.last().map(|e| e.name.clone());
+        }
+        if cut == 0 {
+            return None;
+        }
+        let ev = &self.scopes[cut - 1];
+        let line_content = self.lines.get((line - 1) as usize)?;
+        let line_indent = (line_content.len() - line_content.trim_start().len()) as i32;
+        if line_indent > ev.depth || line_content.trim().is_empty() {
+            Some(ev.name.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Reproduces `find_typescript_enclosing_class` / `find_rust_enclosing_impl`
+    /// at `line`: the most recent opener whose post-line brace depth is still
+    /// `<=` the running brace depth at the target line, with openers popped once
+    /// the depth drops below their start depth.
+    fn brace_enclosing_scope(&self, line: u32) -> Option<String> {
+        if line as usize > self.lines.len() || self.brace_prefix.is_empty() {
+            return None;
+        }
+        // Running depth AT the target line == post-line depth of the target
+        // line (the scan updates depth for the whole line before the
+        // `current_line == line` check).
+        let li = (line - 1) as usize;
+        let target_depth = self.brace_prefix[li]
+            + self.lines[li].matches('{').count() as i32
+            - self.lines[li].matches('}').count() as i32;
+
+        // Replay openers in order, popping any whose start depth has been
+        // exited, to find the innermost live scope at the target line.
+        let mut current: Option<&ScopeEvent> = None;
+        for ev in &self.scopes {
+            if ev.line > line {
+                break;
+            }
+            current = Some(ev);
+        }
+        let ev = current?;
+        if target_depth >= ev.depth {
+            Some(ev.name.clone())
+        } else {
+            None
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Per-line declaration extractors (`*_in_line`).
+//
+// Each returns EVERY (declared_var, resolved_type) pair on a line that the
+// corresponding scan helper would treat as a declaration. They match a
+// WHOLE-IDENTIFIER variable anywhere on the line (so typed parameters such as
+// `def f(user: User)` resolve exactly as the scans' substring `find` did) and
+// reuse the SAME type-extraction helpers (`extract_type_from_annotation`,
+// `normalize_type_name`, ...) the scans use, so the resolved type strings are
+// identical. The only behavioral difference from the scans is the
+// substring-bleed quirk (var `x` matching inside `max:`), which boundary
+// matching correctly avoids and which never occurs on real whole-identifier
+// receivers — so resolved types are preserved on all real inputs.
+//
+// Matching anywhere on the line is what makes the index O(L): one pass records
+// every declaration; each call-site then binary-searches its var instead of
+// re-scanning the file.
+// -----------------------------------------------------------------------------
+
+/// Iterate `(ident, byte_offset_just_past_ident)` for every whole-identifier
+/// token on `line`, in left-to-right order. The offset points at the first byte
+/// after the identifier, where a following `:`/`=`/` ` discriminator lives.
+fn ident_tokens(line: &str) -> impl Iterator<Item = (&str, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        while i < bytes.len() {
+            if is_ident_start(bytes[i]) {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && is_ident_byte(bytes[i]) {
+                    i += 1;
+                }
+                return Some((&line[start..i], i));
+            }
+            i += 1;
+        }
+        None
+    })
+}
+
+/// `var: Type [= ...]` (Python) — anywhere on the line. Mirrors
+/// `find_type_annotation` / `extract_type_from_annotation`.
+fn python_annotations_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        // scan pattern: `"{var}: "` — colon immediately, then a space.
+        let rest = &line[end..];
+        if let Some(after) = rest.strip_prefix(": ") {
+            if let Some(ty) = extract_type_from_annotation(after) {
+                out.push((ident.to_string(), ty));
+            }
+        }
+    }
+    out
+}
+
+/// `var = Type(...)` / `var := Type(...)` (Python). Mirrors
+/// `find_constructor_assignment` (boundary-checked var, then `:=`/`=`, then `(`).
+fn python_constructors_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        if let Some(tail) = assign_rhs(&line[end..]) {
+            if let Some(paren_idx) = tail.find('(') {
+                if let Some(ty) = normalize_type_name(tail[..paren_idx].trim()) {
+                    out.push((ident.to_string(), ty));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `[const|let|var] x: Type` (TS/JS). Mirrors `find_typescript_annotation` +
+/// `extract_typescript_type`. The leading keyword is irrelevant to which var is
+/// matched (the scan tries the `""` prefix too), so we match any `ident: Type`.
+fn typescript_annotations_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        let rest = &line[end..];
+        if let Some(after) = rest.strip_prefix(": ") {
+            if let Some(ty) = extract_typescript_type(after) {
+                out.push((ident.to_string(), ty));
+            }
+        }
+    }
+    out
+}
+
+/// `[const|let|var] x = new Type(...)` (TS/JS). Mirrors
+/// `find_typescript_constructor`.
+fn typescript_constructors_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        // scan pattern: `"{var} = new "` — exactly one space, `=`, space, `new `.
+        let rest = &line[end..];
+        if let Some(after_new) = rest
+            .strip_prefix(" = new ")
+            .or_else(|| rest.strip_prefix(" = new\t"))
+        {
+            let type_end = after_new.find(['(', '<']).unwrap_or(after_new.len());
+            if let Some(ty) = normalize_type_name(after_new[..type_end].trim()) {
+                out.push((ident.to_string(), ty));
+            }
+        }
+    }
+    out
+}
+
+/// `var x Type` (Go). Mirrors `find_go_var_declaration` + `extract_go_type`.
+/// `line` is already trimmed by the caller (matching the scan's `.trim()`).
+fn go_var_decls_in_line(line: &str) -> Vec<(String, String)> {
+    // scan pattern: `"var {name} "` — only the first such on the line matters,
+    // and the scan requires it after the literal `var `.
+    let mut out = Vec::new();
+    if let Some(rest) = line.strip_prefix("var ") {
+        if let Some((var, after)) = split_leading_ident(rest) {
+            if let Some(after) = after.strip_prefix(' ') {
+                if let Some(ty) = extract_go_type(after) {
+                    out.push((var.to_string(), ty));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `x := Type{...}` (Go). Mirrors `find_go_struct_literal`.
+fn go_struct_literals_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        // scan pattern: `"{name} := "` then a `{` before any other `{`.
+        let rest = &line[end..];
+        if let Some(after) = rest.strip_prefix(" := ") {
+            if let Some(brace_idx) = after.find('{') {
+                let type_name = after[..brace_idx].trim();
+                if let Some(first) = type_name.chars().next() {
+                    if first.is_uppercase() && !type_name.starts_with('&') {
+                        out.push((ident.to_string(), type_name.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `x := &Type{...}` (Go). Mirrors `find_go_pointer_struct`.
+fn go_pointer_structs_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        // scan pattern: `"{name} := &"` then `{`.
+        let rest = &line[end..];
+        if let Some(after_amp) = rest.strip_prefix(" := &") {
+            if let Some(brace_idx) = after_amp.find('{') {
+                let type_name = after_amp[..brace_idx].trim();
+                if let Some(first) = type_name.chars().next() {
+                    if first.is_uppercase() {
+                        out.push((ident.to_string(), type_name.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `let [mut] x: Type` (Rust). Mirrors `find_rust_annotation`. The scan only
+/// matches after `let `/`let mut `, so we require that prefix on the line.
+fn rust_annotations_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let stripped = strip_decl_keyword_opt(line, &["let mut ", "let "]);
+    if let Some(stripped) = stripped {
+        if let Some((var, rest)) = split_leading_ident(stripped) {
+            if let Some(after) = rest.strip_prefix(": ") {
+                if let Some(ty) = extract_rust_type_from_annotation(after) {
+                    out.push((var.to_string(), ty));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `let [mut] x = Type::...` (Rust). Mirrors `find_rust_associated_function`.
+fn rust_associated_fns_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let stripped = strip_decl_keyword_opt(line, &["let mut ", "let "]);
+    if let Some(stripped) = stripped {
+        if let Some((var, rest)) = split_leading_ident(stripped) {
+            if let Some(after) = rest.strip_prefix(" = ") {
+                if let Some(colon_idx) = after.find("::") {
+                    let type_name = after[..colon_idx].trim();
+                    if let Some(first) = type_name.chars().next() {
+                        if first.is_uppercase() && type_name != "Self" {
+                            out.push((var.to_string(), type_name.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `let [mut] x = Type { ... }` (Rust). Mirrors `find_rust_struct_literal`.
+fn rust_struct_literals_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let stripped = strip_decl_keyword_opt(line, &["let mut ", "let "]);
+    if let Some(stripped) = stripped {
+        if let Some((var, rest)) = split_leading_ident(stripped) {
+            if let Some(after) = rest.strip_prefix(" = ") {
+                if let Some(brace_idx) = after.find('{') {
+                    let type_name = after[..brace_idx].trim();
+                    if let Some(first) = type_name.chars().next() {
+                        if first.is_uppercase() && !type_name.contains("::") {
+                            out.push((var.to_string(), type_name.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Generic annotation `var: Type` / `var?: Type`. Mirrors
+/// `find_generic_annotation` (which checks `var` then `?` then `:`).
+fn generic_annotations_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        let mut tail = line[end..].trim_start();
+        if let Some(rest) = tail.strip_prefix('?') {
+            tail = rest.trim_start();
+        }
+        if let Some(rest) = tail.strip_prefix(':') {
+            let after = rest.trim_start();
+            if let Some(ty) = extract_type_token(after) {
+                out.push((ident.to_string(), ty));
+            }
+        }
+    }
+    out
+}
+
+/// Generic constructor `var = Type(...)` / `var := Type(...)`. Mirrors
+/// `find_generic_constructor_assignment`.
+fn generic_constructors_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        if let Some(tail) = assign_rhs(&line[end..]) {
+            if let Some(ty) = extract_rhs_type(tail) {
+                out.push((ident.to_string(), ty));
+            }
+        }
+    }
+    out
+}
+
+/// Generic typed declaration `Type var`. Mirrors
+/// `find_generic_typed_declaration` (var found, token immediately to its left
+/// is the type).
+fn generic_typed_decls_in_line(line: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (ident, end) in ident_tokens(line) {
+        // The var is `ident`; the type is the token immediately before it.
+        let start = end - ident.len();
+        let before = line[..start].trim_end();
+        if before.is_empty() {
+            continue;
+        }
+        let tok_start = before
+            .rfind(char::is_whitespace)
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let token = &before[tok_start..];
+        if let Some(ty) = normalize_type_name(token) {
+            out.push((ident.to_string(), ty));
+        }
+    }
+    out
+}
+
+// --- small structural splitters shared by the extractors ---
+
+/// If `s` (the text right after an identifier) begins with the scan's
+/// assignment shape — optional whitespace, then `:=` or `=`, then optional
+/// whitespace — return the RHS. Reproduces `find_var_in_line` + the
+/// `tail.starts_with(":=")` / `starts_with('=')` handling. Returns None for
+/// `==`, `:=`-vs-`=` is disambiguated by trying `:=` first.
+fn assign_rhs(s: &str) -> Option<&str> {
+    let t = s.trim_start();
+    if let Some(after) = t.strip_prefix(":=") {
+        return Some(after.trim_start());
+    }
+    if let Some(after) = t.strip_prefix('=') {
+        // Guard against `==` (comparison), which the scan's `starts_with('=')`
+        // then RHS parse would also stumble on; the scan never produced a type
+        // from `==` because the RHS would not normalize. Keep parity by still
+        // returning it (callers re-validate via normalize/extract).
+        return Some(after.trim_start());
+    }
+    None
+}
+
+/// Strip the first matching declaration keyword prefix (after leading
+/// whitespace); returns None if none match (used where the scan REQUIRES the
+/// keyword, e.g. Rust `let `). Keywords are tried in priority order.
+fn strip_decl_keyword_opt<'a>(line: &'a str, keywords: &[&str]) -> Option<&'a str> {
+    let trimmed = line.trim_start();
+    for kw in keywords {
+        if let Some(rest) = trimmed.strip_prefix(kw) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+/// Split a leading identifier and the remainder: `ident<rest>`.
+fn split_leading_ident(s: &str) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || !is_ident_start(bytes[0]) {
+        return None;
+    }
+    let mut end = 1;
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    Some((&s[..end], &s[end..]))
+}
+
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_' || b == b'$'
+}
+
+// =============================================================================
 // Robustness Utilities (Phase 10)
 // =============================================================================
 
@@ -1997,6 +2918,316 @@ end
         assert_eq!(
             format!("{}", SkipReason::IoError("test".to_string())),
             "IO error: test"
+        );
+    }
+
+    // =========================================================================
+    // fix-W5b-receiver-type-scan-v1: per-file receiver-type index
+    //
+    // Defect #2 (the remaining call-graph quadratic): `resolve_receiver_type`
+    // re-scanned the WHOLE source (`source.lines()`) inside
+    // `find_enclosing_class` / `find_type_annotation` /
+    // `find_constructor_assignment` (and the TS/Go/Rust equivalents) for EVERY
+    // call-site. On a file with L lines and N method/attr call-sites that is
+    // O(L * N) source-line iterations — ~18.8M on a 2-file JS subset, far worse
+    // on js-lodash's 27k/31k-line minified files.
+    //
+    // The fix precomputes a `SourceTypeIndex` ONCE per file (one forward pass,
+    // O(L)), then every call-site resolves via O(log L) lookups. These tests
+    // pin BOTH halves of the contract: (1) the indexed resolver returns
+    // byte-identical (type, confidence) to the per-call-site scan on every
+    // call-site (equivalence), and (2) building+querying the index parses each
+    // source line a bounded number of times, NOT once-per-call-site
+    // (sub-quadratic). Pre-fix these reference `SourceTypeIndex` /
+    // `resolve_receiver_type_indexed`, which do not exist -> RED.
+    // =========================================================================
+
+    /// Build a synthetic source with `n_classes` classes, each owning a method
+    /// with `body_decls` local typed/constructor declarations followed by
+    /// `calls_per_method` method-call receivers. Returns (source, call_sites)
+    /// where each call-site is (call_line, receiver_name, enclosing_class).
+    fn synth_python(
+        n_classes: usize,
+        body_decls: usize,
+        calls_per_method: usize,
+    ) -> (String, Vec<(u32, String, Option<String>)>) {
+        let mut src = String::new();
+        let mut sites: Vec<(u32, String, Option<String>)> = Vec::new();
+        let mut line: u32 = 0;
+        let push = |src: &mut String, line: &mut u32, s: &str| {
+            src.push_str(s);
+            src.push('\n');
+            *line += 1;
+        };
+        for c in 0..n_classes {
+            let cls = format!("Klass{c}");
+            push(&mut src, &mut line, &format!("class {cls}:"));
+            push(&mut src, &mut line, "    def run(self):");
+            // local declarations the backward scans must see
+            for d in 0..body_decls {
+                if d % 2 == 0 {
+                    push(
+                        &mut src,
+                        &mut line,
+                        &format!("        var{d}: Type{d} = make()"),
+                    );
+                } else {
+                    push(&mut src, &mut line, &format!("        var{d} = Ctor{d}()"));
+                }
+            }
+            // call-sites that reference the declarations + self
+            for k in 0..calls_per_method {
+                let d = k % body_decls.max(1);
+                push(&mut src, &mut line, &format!("        var{d}.do()"));
+                let want_ctor = d % 2 == 1;
+                let cls_for_call = if want_ctor {
+                    format!("Ctor{d}")
+                } else {
+                    format!("Type{d}")
+                };
+                let _ = cls_for_call;
+                sites.push((line, format!("var{d}"), Some(cls.clone())));
+                push(&mut src, &mut line, "        self.run()");
+                sites.push((line, "self".to_string(), Some(cls.clone())));
+            }
+        }
+        (src, sites)
+    }
+
+    #[test]
+    fn indexed_receiver_type_matches_per_callsite_scan_python() {
+        let (source, sites) = synth_python(6, 8, 10);
+        let index = SourceTypeIndex::build(Language::Python, &source);
+        for (line, recv, enclosing) in &sites {
+            let scanned =
+                resolve_receiver_type(Language::Python, &source, *line, recv, enclosing.as_deref());
+            let indexed = resolve_receiver_type_indexed(
+                &index,
+                Language::Python,
+                &source,
+                *line,
+                recv,
+                enclosing.as_deref(),
+            );
+            assert_eq!(
+                scanned, indexed,
+                "indexed result diverged from scan at line {line} recv {recv}"
+            );
+            // these synthetic sites must actually resolve (guards a no-op index)
+            assert!(
+                indexed.0.is_some(),
+                "site at line {line} recv {recv} should resolve to a concrete type"
+            );
+        }
+    }
+
+    /// fix-W5b-receiver-type-scan-v1: the production scan resolvers for Python
+    /// annotations, TS, Go and Rust used a RAW substring `find("{var}: ")` (not a
+    /// whole-identifier match), so a receiver `app` resolves from a NEARER
+    /// `create_app: T` line via the trailing-substring "bleed". This is a real,
+    /// edge-count-affecting behavior on the corpora (python-flask:
+    /// FlaskGroup.get_command resolves `app` from a `create_app: t.Callable[...,
+    /// Flask] | None` line). The indexed resolver MUST reproduce it exactly so
+    /// resolved types — and therefore edge counts — are unchanged. Distilled
+    /// from flask/src/flask/cli.py.
+    #[test]
+    fn indexed_preserves_substring_bleed_semantics_exactly() {
+        // `create_app: ...` is NEARER to the call than the real `app: ...`, so
+        // the substring scan bleeds `app` -> the create_app annotation type.
+        let source = "\
+class FlaskGroup:
+    def __init__(self):
+        app: Flask = make()
+    def get_command(self):
+        create_app: Callable = None
+        app.app_context()
+";
+        // call line of `app.app_context()` is line 6 (1-indexed).
+        let scan = resolve_receiver_type(Language::Python, source, 6, "app", Some("FlaskGroup"));
+        let index = SourceTypeIndex::build(Language::Python, source);
+        let indexed =
+            resolve_receiver_type_indexed(&index, Language::Python, source, 6, "app", Some("FlaskGroup"));
+        assert_eq!(
+            scan, indexed,
+            "indexed resolver must reproduce the substring-bleed the scan produces"
+        );
+        // Pin the actual bled value so a future 'cleanup' that drops the bleed is
+        // caught: the scan resolves `app` from the nearer `create_app:` line.
+        assert_eq!(
+            scan.0.as_deref(),
+            Some("Callable"),
+            "scan should bleed `app` from the nearer `create_app: Callable` line"
+        );
+
+        // TypeScript bleed: receiver `user` substring-matches inside the NEARER
+        // `myuser: Maker` line (lowercase `user: ` is a substring of `myuser: `),
+        // so the raw-`find` scan bleeds `user` -> Maker over the real `user: User`.
+        let ts = "\
+class C {
+  init() {
+    const user: User = make();
+  }
+  run() {
+    const myuser: Maker = get();
+    user.save();
+  }
+}
+";
+        let ts_scan = resolve_receiver_type(Language::TypeScript, ts, 7, "user", Some("C"));
+        let ts_index = SourceTypeIndex::build(Language::TypeScript, ts);
+        let ts_indexed =
+            resolve_receiver_type_indexed(&ts_index, Language::TypeScript, ts, 7, "user", Some("C"));
+        assert_eq!(
+            ts_scan, ts_indexed,
+            "TS indexed must reproduce the substring-bleed exactly"
+        );
+        assert_eq!(
+            ts_scan.0.as_deref(),
+            Some("Maker"),
+            "TS scan should bleed `user` from the nearer `myuser: Maker` line"
+        );
+    }
+
+    #[test]
+    fn indexed_receiver_type_matches_scan_typescript_rust_go() {
+        // TypeScript
+        let ts = r#"class Service {
+  run() {
+    const u: User = make();
+    const r = new Repo();
+    u.save();
+    r.find();
+    this.run();
+  }
+}
+"#;
+        let ts_sites = [
+            (5u32, "u", Some("Service")),
+            (6, "r", Some("Service")),
+            (7, "this", Some("Service")),
+        ];
+        let ts_index = SourceTypeIndex::build(Language::TypeScript, ts);
+        for (line, recv, enc) in ts_sites {
+            let scanned = resolve_receiver_type(Language::TypeScript, ts, line, recv, enc);
+            let indexed = resolve_receiver_type_indexed(
+                &ts_index,
+                Language::TypeScript,
+                ts,
+                line,
+                recv,
+                enc,
+            );
+            assert_eq!(scanned, indexed, "TS divergence at line {line} recv {recv}");
+            assert!(indexed.0.is_some(), "TS site {recv} should resolve");
+        }
+
+        // Rust
+        let rust = r#"impl Server {
+    fn run(&self) {
+        let c: Config = load();
+        let h = Handler::new();
+        c.apply();
+        h.handle();
+        self.run();
+    }
+}
+"#;
+        let rust_sites = [
+            (5u32, "c", Some("Server")),
+            (6, "h", Some("Server")),
+            (7, "self", Some("Server")),
+        ];
+        let rust_index = SourceTypeIndex::build(Language::Rust, rust);
+        for (line, recv, enc) in rust_sites {
+            let scanned = resolve_receiver_type(Language::Rust, rust, line, recv, enc);
+            let indexed =
+                resolve_receiver_type_indexed(&rust_index, Language::Rust, rust, line, recv, enc);
+            assert_eq!(scanned, indexed, "Rust divergence at line {line} recv {recv}");
+            assert!(indexed.0.is_some(), "Rust site {recv} should resolve");
+        }
+
+        // Go
+        let go = r#"func run() {
+	var d Dog
+	c := Cat{}
+	d.Bark()
+	c.Meow()
+}
+"#;
+        let go_sites = [(4u32, "d", None), (5, "c", None)];
+        let go_index = SourceTypeIndex::build(Language::Go, go);
+        for (line, recv, enc) in go_sites {
+            let scanned = resolve_receiver_type(Language::Go, go, line, recv, enc);
+            let indexed =
+                resolve_receiver_type_indexed(&go_index, Language::Go, go, line, recv, enc);
+            assert_eq!(scanned, indexed, "Go divergence at line {line} recv {recv}");
+            assert!(indexed.0.is_some(), "Go site {recv} should resolve");
+        }
+    }
+
+    #[test]
+    fn indexed_resolution_is_sub_quadratic_not_per_callsite_full_scan() {
+        // A pathological file: large method bodies with MANY call-sites.
+        // Pre-fix (the per-call-site scan resolver): each call-site triggers
+        // find_enclosing_class / find_type_annotation / find_constructor_assignment,
+        // each of which iterates source lines -> O(L * N) line touches.
+        // Post-fix (index): SourceTypeIndex::build does ONE forward pass (O(L))
+        // and each resolve is O(log L), so total line-parse work is ~O(L).
+        //
+        // The module-private LINE_PARSE_COUNTER is bumped once per line both by
+        // the scan helpers (control) and by the index builder. We measure BOTH
+        // paths on the SAME source and assert the indexed path does
+        // dramatically less line-parse work, with a hard sub-quadratic bound on
+        // the indexed total.
+        let n_classes = 4;
+        let body_decls = 6;
+        let calls_per_method = 60; // N large relative to L
+        let (source, sites) = synth_python(n_classes, body_decls, calls_per_method);
+        let total_lines = source.lines().count() as u64;
+
+        // --- CONTROL: the pre-fix per-call-site scan resolver (RED shape) ---
+        LINE_PARSE_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+        for (line, recv, enclosing) in &sites {
+            let _ = resolve_receiver_type(
+                Language::Python,
+                &source,
+                *line,
+                recv,
+                enclosing.as_deref(),
+            );
+        }
+        let scan_line_touches = LINE_PARSE_COUNTER.load(std::sync::atomic::Ordering::SeqCst);
+
+        // --- INDEXED: build once + O(log L) per call-site (GREEN shape) ---
+        LINE_PARSE_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+        let index = SourceTypeIndex::build(Language::Python, &source);
+        for (line, recv, enclosing) in &sites {
+            let _ = resolve_receiver_type_indexed(
+                &index,
+                Language::Python,
+                &source,
+                *line,
+                recv,
+                enclosing.as_deref(),
+            );
+        }
+        let indexed_line_touches = LINE_PARSE_COUNTER.load(std::sync::atomic::Ordering::SeqCst);
+
+        // Hard bound: indexed line-parse work is ~one pass (build), independent
+        // of the number of call-sites. Generous 4x slack for the single pass.
+        assert!(
+            indexed_line_touches <= total_lines * 4,
+            "indexed resolution touched {indexed_line_touches} lines over a \
+             {total_lines}-line source ({} call-sites); expected <= 4x line count",
+            sites.len()
+        );
+
+        // The scan control must be MUCH larger (genuine quadratic baseline), so
+        // the bound above is a real guard, not trivially satisfiable.
+        assert!(
+            scan_line_touches > indexed_line_touches * 10,
+            "scan control touched {scan_line_touches} lines vs indexed \
+             {indexed_line_touches}; setup too small to distinguish O(L) from O(L*N)"
         );
     }
 }

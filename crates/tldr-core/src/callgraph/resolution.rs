@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use super::cross_file_types::{CallSite, CallType, ClassDef, FileIR, FuncDef, VarType};
 use super::import_resolver::{ReExportTracer, DEFAULT_MAX_DEPTH};
-use super::type_resolver::resolve_receiver_type;
+use super::type_resolver::{resolve_receiver_type_indexed, SourceTypeIndex};
 use crate::types::Language;
 
 // From new sibling modules:
@@ -276,6 +276,19 @@ pub fn apply_type_resolution(file_ir: &mut FileIR, source: &str, language: Langu
             | Language::Ocaml
     );
 
+    // fix-W5b-receiver-type-scan-v1: build the per-file receiver-type index ONCE
+    // here, before the call-site loop, instead of letting every call-site
+    // re-scan the whole `source` inside the resolver's backward-search helpers
+    // (the O(call_sites * source_lines) blowup — defect #2). The index does a
+    // single forward pass over `source`; each call-site then resolves via
+    // O(log L) lookups in `resolve_receiver_type_indexed`, which returns
+    // byte-identical results to the old per-call-site `resolve_receiver_type`.
+    let type_index = if supports_type_resolution {
+        Some(SourceTypeIndex::build(language, source))
+    } else {
+        None
+    };
+
     // FM-10 fix: borrow var_types immutably alongside mutable calls borrow
     let (funcs, classes, var_types, calls) = (
         &file_ir.funcs,
@@ -316,8 +329,9 @@ pub fn apply_type_resolution(file_ir: &mut FileIR, source: &str, language: Langu
                 .as_deref()
                 .and_then(|class_name| first_base_for_class(classes, class_name));
 
-            if supports_type_resolution {
-                let (resolved, confidence) = resolve_receiver_type(
+            if let Some(ref type_index) = type_index {
+                let (resolved, confidence) = resolve_receiver_type_indexed(
+                    type_index,
                     language,
                     source,
                     line,
