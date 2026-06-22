@@ -1839,25 +1839,34 @@ fn measure_chain_length(node: tree_sitter::Node) -> usize {
         return 0;
     }
 
-    // The "object" or "value" or "function" child is the part before the dot
+    // Walk the spine of the chain exactly once. Each node has a single
+    // "previous link" child: for a call it is the callee (`function`), for a
+    // member access it is the receiver (`object`/`value`). Descending into
+    // that one child — and ONLY that child — keeps this linear in the chain
+    // depth. (Previously a `call_expression` recursed into its `function`
+    // child twice: once here and once in a dedicated early-return arm, which
+    // doubled the work at every level and made deeply chained builders such
+    // as `f.debug_struct("X").field(..).field(..)...` cost O(2^depth) and
+    // hang the whole `smells` run.)
+    if kind == "call_expression" || kind == "call" {
+        // A call wrapper does not itself add to the chain length; the chain
+        // part is the function being called (or, lacking a `function` field,
+        // the first child as a fallback). Delegate without a +1 to preserve
+        // the historical counting semantics.
+        let callee = node
+            .child_by_field_name("function")
+            .or_else(|| node.child(0));
+        return callee.map(measure_chain_length).unwrap_or(0);
+    }
+
+    // Member/attribute access: this node contributes one link, plus whatever
+    // precedes it via the receiver child.
     let child_chain = node
         .child_by_field_name("object")
         .or_else(|| node.child_by_field_name("value"))
         .or_else(|| node.child_by_field_name("function"))
-        .map(|c| measure_chain_length(c))
+        .map(measure_chain_length)
         .unwrap_or(0);
-
-    // For call_expression, look at arguments' parent
-    if kind == "call_expression" || kind == "call" {
-        // The function being called is the chain part
-        if let Some(func) = node.child_by_field_name("function") {
-            return measure_chain_length(func);
-        }
-        // Fallback: first child
-        if let Some(first) = node.child(0) {
-            return measure_chain_length(first);
-        }
-    }
 
     1 + child_chain
 }
@@ -7590,6 +7599,111 @@ export function Screenshot({
         assert_eq!(
             report.files_scanned, 3,
             "files_scanned must equal the count of unique files on disk"
+        );
+    }
+
+    // --- Message-chain performance regression guards (B2) ---
+    //
+    // RED before fix: `measure_chain_length` recursed into the `function`
+    // field TWICE per `call_expression` (once while computing `child_chain`,
+    // once in the `call_expression` early-return arm), giving O(2^D) work
+    // for a chain of nesting depth D. Real-world trigger: the 27-deep
+    // `f.debug_struct("Arg").field(..).field(..)...` chain in clap's
+    // `arg.rs`, which made `tldr smells` hang (exit 124) on rust-clap and
+    // scala-zio. These tests pin sub-exponential behaviour on the
+    // production `detect_message_chains` path.
+
+    /// Build a Rust source string containing a single builder chain of the
+    /// given nesting depth: `f.debug_struct("X").field(..).field(..)...`.
+    fn deep_field_chain(depth: usize) -> String {
+        let mut chain = String::from("    let mut ds = f.debug_struct(\"X\")");
+        for i in 0..depth {
+            chain.push_str(&format!(".field(\"f{}\", &self.x)", i));
+        }
+        chain.push(';');
+        format!("fn fmt() {{\n{}\n}}\n", chain)
+    }
+
+    #[test]
+    fn test_message_chain_deep_chain_terminates() {
+        // Depth 30 is 2^30 ≈ 1e9 recursive calls under the old algorithm
+        // (it never returned within any reasonable bound). A correct
+        // implementation is linear in the node count and finishes in
+        // microseconds; we assert a very generous wall-clock bound so the
+        // test is robust on slow CI yet still catches a re-exponentialized
+        // regression (which would blow far past seconds into never).
+        let source = deep_field_chain(30);
+        let start = std::time::Instant::now();
+        let findings = detect_message_chains(&source, "rust");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_secs() < 5,
+            "deep method chain must not go exponential; took {:?}",
+            elapsed
+        );
+        // Detection must still fire on the long chain.
+        assert_eq!(
+            findings.len(),
+            1,
+            "a single deep chain should yield exactly one MessageChain finding"
+        );
+        assert_eq!(findings[0].smell_type, SmellType::MessageChain);
+    }
+
+    #[test]
+    fn test_message_chain_count_preserved() {
+        // Pin the exact measured length so the de-exponentialized algorithm
+        // keeps identical detection semantics: `f.debug_struct("X")` counts
+        // as one access plus one per `.field(..)` (call wrappers delegate
+        // without adding length). Depth 15 => 16.
+        let source = deep_field_chain(15);
+        let findings = detect_message_chains(&source, "rust");
+        assert_eq!(findings.len(), 1, "depth-15 chain yields one finding");
+        assert_eq!(
+            findings[0].reason, "Method chain of length 16 (threshold: 3)",
+            "chain-length count must be preserved by the perf fix"
+        );
+    }
+
+    #[test]
+    fn test_message_chain_scaling_is_subquadratic() {
+        // Direct guard against exponential / super-linear blowup: doubling
+        // the chain depth must not multiply the runtime by orders of
+        // magnitude. Under the old 2^D algorithm depth-40 vs depth-20 was a
+        // factor of ~2^20 (≈ 1e6). We allow a very loose 50x slack to absorb
+        // measurement noise on a near-instant linear path while still
+        // failing hard on any reintroduced exponential.
+        let small = deep_field_chain(20);
+        let large = deep_field_chain(40);
+
+        let t_small = {
+            let s = std::time::Instant::now();
+            let _ = detect_message_chains(&small, "rust");
+            s.elapsed()
+        };
+        let t_large = {
+            let s = std::time::Instant::now();
+            let _ = detect_message_chains(&large, "rust");
+            s.elapsed()
+        };
+
+        // Both must individually be fast (linear path).
+        assert!(
+            t_large.as_secs() < 5,
+            "depth-40 chain must stay fast; took {:?}",
+            t_large
+        );
+
+        // Guard the ratio with a floor to avoid dividing by a sub-microsecond
+        // baseline (timer granularity) that would make the ratio meaningless.
+        let small_ns = t_small.as_nanos().max(50_000);
+        let large_ns = t_large.as_nanos();
+        assert!(
+            large_ns <= small_ns * 50,
+            "runtime must not explode with depth: depth-20={:?}, depth-40={:?}",
+            t_small,
+            t_large
         );
     }
 }
