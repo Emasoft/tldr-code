@@ -32,6 +32,7 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Args;
 use serde_json::{json, Value};
+use tree_sitter::Node;
 use tldr_core::walker::ProjectWalker;
 use tldr_core::Language;
 
@@ -838,8 +839,6 @@ pub(super) fn analyze_rust_file(path: &Path, source: &str) -> Vec<VulnFinding> {
     let is_test_file = is_rust_test_file(path);
     let mut findings = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
-    let mut in_command_block = false;
-    let mut command_block_start_line: u32 = 0;
 
     for (idx, line) in lines.iter().enumerate() {
         let line_number = (idx + 1) as u32;
@@ -981,39 +980,337 @@ pub(super) fn analyze_rust_file(path: &Path, source: &str) -> Vec<VulnFinding> {
             ));
         }
 
-        if trimmed.contains("Command::new(") || trimmed.contains("std::process::Command::new(") {
-            in_command_block = true;
-            command_block_start_line = line_number;
+    }
+
+    // W4-vuln-cli-ast: CommandInjection detection is AST-driven (not the
+    // legacy per-line substring scanner). Parsing the file once and
+    // resolving the call chain's base receiver type lets us distinguish
+    // `std::process::Command` (a real CWE-78 sink) from `clap::Command`
+    // (the crate's own CLI builder API — never a process sink). The old
+    // `trimmed.contains("Command::new(")` + `.arg(` heuristic flagged the
+    // clap builder verbatim, producing a 99.8% false-positive rate on
+    // rust-clap. See `collect_command_injection_findings`.
+    findings.extend(collect_command_injection_findings(source, &file_path));
+
+    findings
+}
+
+/// AST-driven CommandInjection detection for Rust.
+///
+/// Parses `source` once (tree-sitter) and emits a `CommandInjection`
+/// finding for every `Command::new(_)…​.arg(<non-string-literal>)` chain
+/// whose base receiver resolves to `std::process::Command`. clap's
+/// builder (`clap::Command`, or a bare `Command` bound to clap via
+/// `use clap::Command`) is NOT flagged — it is the crate's own CLI API,
+/// never a process sink.
+///
+/// Resolution of the base type (the path before the `::new` call):
+/// - fully-qualified `std::process::Command` → sink
+/// - `process::Command` when the file has `use std::process` → sink
+/// - bare `Command` resolved via `use` imports: a `use …::Command`
+///   ending in `std::process::Command` → sink; ending in anything else
+///   (e.g. `clap::Command`) → NOT sink; no binding at all → NOT sink
+/// - aliased `X` via `use std::process::Command as X` → sink
+/// - any other path (`clap::Command`, `foo::Command`, …) → NOT sink
+///
+/// The `.arg(...)` argument heuristic is preserved from the legacy
+/// scanner: only a non-string-literal argument (a variable / expression,
+/// i.e. potentially user-controlled) is flagged. A string-literal arg
+/// (`.arg("-la")`) is never user-controlled and is skipped.
+fn collect_command_injection_findings(source: &str, file_path: &str) -> Vec<VulnFinding> {
+    let tree = match tldr_core::ast::parser::parse(source, Language::Rust) {
+        Ok(t) => t,
+        // Parse failure: degrade to no Command findings rather than
+        // resurrecting the substring scanner. The rest of
+        // `analyze_rust_file` (line-based smell/unsafe heuristics) still
+        // runs; only the AST-dependent CommandInjection check is skipped.
+        Err(_) => return Vec::new(),
+    };
+    let src = source.as_bytes();
+    let imports = RustCommandImports::collect(tree.root_node(), src);
+
+    let mut findings = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
         }
-        if in_command_block
-            && trimmed.contains(".arg(")
-            && !trimmed.contains(".arg(\"")
-            && !trimmed.contains(".arg('")
-        {
+
+        // Look for a `.arg(<expr>)` method call.
+        if let Some((arg_node, base_callee)) = arg_call_with_base_callee(&node, src) {
+            // Only flag when the base receiver resolves to
+            // std::process::Command.
+            if !imports.resolves_to_std_process_command(&base_callee) {
+                continue;
+            }
+            // Preserve the legacy heuristic: a string-literal argument is
+            // never user-controlled, so skip it. Only flag variable /
+            // expression arguments.
+            if arg_is_string_literal(&arg_node, src) {
+                continue;
+            }
+            let line = node.start_position().row as u32 + 1;
+            let column = node.start_position().column as u32;
             findings.push(rust_finding(
                 VulnType::CommandInjection,
                 Severity::Critical,
                 RustFindingMeta {
                     cwe_id: "CWE-78",
                     title: "Unsanitized Process Argument",
-                    description: "Command argument appears to be variable-driven without visible sanitization",
+                    description:
+                        "Command argument appears to be variable-driven without visible sanitization",
                 },
                 RustFindingLocation {
-                    file: &file_path,
-                    line: command_block_start_line.max(line_number),
-                    column: trimmed.find(".arg(").unwrap_or(0) as u32,
+                    file: file_path,
+                    line,
+                    column,
                 },
                 "Validate/allowlist user-controlled arguments before passing to Command",
                 0.80,
             ));
         }
-        if in_command_block && (trimmed.ends_with(';') || trimmed.contains(");")) {
-            in_command_block = false;
-            command_block_start_line = 0;
+    }
+    findings
+}
+
+/// If `node` is a `.arg(<expr>)` method call, return its first argument
+/// node together with the dotted/scoped callee text of the chain's base
+/// `Command::new(…)` call (e.g. `"Command::new"`, `"clap::Command::new"`,
+/// `"std::process::Command::new"`). Returns `None` when `node` is not an
+/// `.arg(...)` call or the chain does not bottom out in a `…::new(…)`
+/// call whose type segment is `Command`.
+fn arg_call_with_base_callee<'a>(node: &Node<'a>, src: &[u8]) -> Option<(Node<'a>, String)> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    // The callee of a method call is a `field_expression` whose `field`
+    // is the method name and whose `value` is the receiver expression.
+    let func = node.child_by_field_name("function")?;
+    if func.kind() != "field_expression" {
+        return None;
+    }
+    let field = func.child_by_field_name("field")?;
+    if node_text(&field, src) != "arg" {
+        return None;
+    }
+    let receiver = func.child_by_field_name("value")?;
+    let base_callee = base_command_new_callee(&receiver, src)?;
+    // First argument inside the `arguments` node.
+    let args = node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let first_arg = args.children(&mut cursor).find(|c| c.is_named())?;
+    Some((first_arg, base_callee))
+}
+
+/// Walk a receiver expression back down a method chain to the base
+/// `…::new(…)` call and return its callee text when the type segment
+/// (the segment immediately before `::new`) is `Command`.
+///
+/// Handles chains of arbitrary length: `Command::new(x).a().b().arg(y)`
+/// — each intermediate link is a `call_expression` whose `function` is a
+/// `field_expression` whose `value` is the next inner receiver.
+fn base_command_new_callee(receiver: &Node<'_>, src: &[u8]) -> Option<String> {
+    let mut cur = *receiver;
+    loop {
+        match cur.kind() {
+            "call_expression" => {
+                let func = cur.child_by_field_name("function")?;
+                match func.kind() {
+                    // Base of the chain: `<Type>::new` — a scoped_identifier.
+                    "scoped_identifier" => {
+                        let name = func.child_by_field_name("name")?;
+                        if node_text(&name, src) != "new" {
+                            return None;
+                        }
+                        let ty_path = func.child_by_field_name("path")?;
+                        // The type segment must be `Command` (bare or the
+                        // last segment of a scoped path).
+                        if scoped_path_last_segment(&ty_path, src) != "Command" {
+                            return None;
+                        }
+                        return Some(node_text(&func, src));
+                    }
+                    // An intermediate method call: recurse into its receiver.
+                    "field_expression" => {
+                        cur = func.child_by_field_name("value")?;
+                    }
+                    _ => return None,
+                }
+            }
+            // Parenthesised / wrapped receiver: peel one named child.
+            "parenthesized_expression" => {
+                let mut cursor = cur.walk();
+                cur = cur.children(&mut cursor).find(|c| c.is_named())?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Return the last `::`-separated segment of a `scoped_identifier` /
+/// `identifier` type-path node as text. For `std::process::Command`
+/// returns `"Command"`; for a bare `identifier` `Command` returns
+/// `"Command"`.
+fn scoped_path_last_segment(node: &Node<'_>, src: &[u8]) -> String {
+    match node.kind() {
+        "identifier" | "type_identifier" => node_text(node, src),
+        "scoped_identifier" | "scoped_type_identifier" => node
+            .child_by_field_name("name")
+            .map(|n| node_text(&n, src))
+            .unwrap_or_default(),
+        _ => node_text(node, src),
+    }
+}
+
+/// Return a node's source text.
+fn node_text(node: &Node<'_>, src: &[u8]) -> String {
+    node.utf8_text(src).unwrap_or("").to_string()
+}
+
+/// Is `arg_node` a string-literal expression? String literals are never
+/// user-controlled, so they are excluded from CommandInjection flagging.
+fn arg_is_string_literal(arg_node: &Node<'_>, _src: &[u8]) -> bool {
+    matches!(arg_node.kind(), "string_literal" | "raw_string_literal")
+}
+
+/// File-level resolution of `Command` bindings via `use` imports.
+///
+/// Tracks, from the file's `use` declarations:
+/// - `command_binding`: the full path a bare `Command` (or an alias)
+///   resolves to, when imported (e.g. `use std::process::Command` →
+///   `std::process::Command`; `use clap::Command` → `clap::Command`;
+///   `use std::process::Command as Cmd` records `Cmd` → the path).
+/// - `process_is_std`: whether `process` was brought in via
+///   `use std::process`, so `process::Command::new(…)` resolves to
+///   std::process.
+#[derive(Default)]
+struct RustCommandImports {
+    /// Map of bound name (bare `Command` or an alias) → full import path.
+    command_binding: HashMap<String, String>,
+    /// True when `use std::process;` (so `process::Command` is std).
+    process_is_std: bool,
+}
+
+impl RustCommandImports {
+    /// Walk the file's top-level `use_declaration`s and record any binding
+    /// whose final type segment is `Command`, plus a `use std::process`
+    /// import.
+    fn collect(root: Node<'_>, src: &[u8]) -> Self {
+        let mut out = RustCommandImports::default();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                stack.push(child);
+            }
+            if node.kind() == "use_declaration" {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    out.record_use_tree(&arg, src, "");
+                }
+            }
+        }
+        out
+    }
+
+    /// Recursively record bindings from a `use`-tree argument node.
+    ///
+    /// `prefix` is the accumulated module path from enclosing
+    /// `scoped_use_list` segments (e.g. `clap` when inside
+    /// `use clap::{Command, Arg};`).
+    fn record_use_tree(&mut self, node: &Node<'_>, src: &[u8], prefix: &str) {
+        match node.kind() {
+            // `use a::b::Command;` — a plain scoped path.
+            "scoped_identifier" | "identifier" => {
+                let full = join_path(prefix, &node_text(node, src));
+                self.record_binding(&full, last_segment(&full).to_string());
+                // Track `use std::process` so `process::Command` resolves.
+                if full == "std::process" {
+                    self.process_is_std = true;
+                }
+            }
+            // `use std::process::Command as Cmd;`
+            "use_as_clause" => {
+                let path = node
+                    .child_by_field_name("path")
+                    .map(|p| join_path(prefix, &node_text(&p, src)))
+                    .unwrap_or_default();
+                let alias = node
+                    .child_by_field_name("alias")
+                    .map(|a| node_text(&a, src))
+                    .unwrap_or_else(|| last_segment(&path).to_string());
+                self.record_binding(&path, alias);
+            }
+            // `use clap::{Command, Arg};` / `use std::{process, io};`
+            "scoped_use_list" | "use_list" => {
+                let new_prefix = node
+                    .child_by_field_name("path")
+                    .map(|p| join_path(prefix, &node_text(&p, src)))
+                    .unwrap_or_else(|| prefix.to_string());
+                let list = if node.kind() == "use_list" {
+                    Some(*node)
+                } else {
+                    node.child_by_field_name("list")
+                };
+                if let Some(list) = list {
+                    let mut cursor = list.walk();
+                    for child in list.children(&mut cursor) {
+                        if child.is_named() {
+                            self.record_use_tree(&child, src, &new_prefix);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
-    findings
+    /// Record that `full_path` is bound under `bound_name`. Only paths
+    /// whose final segment is `Command` (or a `std::process` import) are
+    /// relevant; we still store everything keyed by `bound_name` so a
+    /// `Command`-typed alias resolves.
+    fn record_binding(&mut self, full_path: &str, bound_name: String) {
+        if last_segment(full_path) == "Command" {
+            self.command_binding.insert(bound_name, full_path.to_string());
+        } else if full_path == "std::process" {
+            self.process_is_std = true;
+        }
+    }
+
+    /// Does `callee` (the base `…::new` text of a Command chain) resolve
+    /// to `std::process::Command`?
+    fn resolves_to_std_process_command(&self, callee: &str) -> bool {
+        // Strip the trailing `::new` to get the type path.
+        let ty_path = callee.strip_suffix("::new").unwrap_or(callee);
+        // 1. Fully-qualified.
+        if ty_path == "std::process::Command" {
+            return true;
+        }
+        // 2. `process::Command` when `use std::process` is present.
+        if ty_path == "process::Command" && self.process_is_std {
+            return true;
+        }
+        // 3/4. Bare `Command` or an alias bound via `use`.
+        if let Some(bound) = self.command_binding.get(ty_path) {
+            return bound == "std::process::Command";
+        }
+        // No binding and not fully-qualified → not a std::process sink.
+        false
+    }
+}
+
+/// Join a module prefix and a path segment with `::` (skips empty prefix).
+fn join_path(prefix: &str, seg: &str) -> String {
+    if prefix.is_empty() {
+        seg.to_string()
+    } else {
+        format!("{prefix}::{seg}")
+    }
+}
+
+/// Last `::`-separated segment of a path string.
+fn last_segment(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
 }
 
 struct RustFindingMeta<'a> {
@@ -1629,6 +1926,129 @@ pub fn run(user: &str, name: &str) {
         assert!(findings
             .iter()
             .any(|f| f.vuln_type == VulnType::CommandInjection));
+    }
+
+    // -------------------------------------------------------------------------
+    // W4-vuln-cli-ast: AST callee-resolution for the CommandInjection sink.
+    //
+    // ROOT CAUSE the old substring scanner (`trimmed.contains("Command::new(")`
+    // + `.arg(` with a non-string-literal arg) flagged clap's *builder* API —
+    // `clap::Command::new("app").arg(Arg::new(..))` — as CWE-78 command
+    // injection, producing a 99.8% false-positive rate on rust-clap (1641 FP).
+    // clap::Command is the crate's OWN CLI API, never `std::process::Command`.
+    //
+    // FIX parse the `.rs` once (tree-sitter), resolve the call-chain's base
+    // receiver type, and only flag CommandInjection when it resolves to
+    // `std::process::Command` (fully-qualified, or a bare `Command` whose
+    // `use` import binds to std::process). Real command injection (TP) MUST
+    // still be flagged; the clap builder (FP) MUST NOT.
+    // -------------------------------------------------------------------------
+
+    /// TP (1): `use std::process::Command;` + bare `Command::new(_).arg(var)`
+    /// — the `use` import binds `Command` to std::process, so the variable
+    /// argument is a real command-injection sink and MUST be flagged.
+    #[test]
+    fn test_command_injection_std_process_bare_use_is_flagged() {
+        let source = r#"
+use std::process::Command;
+
+pub fn run(user: &str) {
+    let _ = Command::new("sh").arg(user).output();
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::CommandInjection),
+            "std::process::Command::new(_).arg(var) is a real sink and must be flagged"
+        );
+    }
+
+    /// TP (2): fully-qualified `std::process::Command::new(_).arg(var)` with no
+    /// `use` import at all — still a real sink, still flagged.
+    #[test]
+    fn test_command_injection_std_process_fully_qualified_is_flagged() {
+        let source = r#"
+pub fn run(user: &str) {
+    let _ = std::process::Command::new("sh").arg(user).output();
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::CommandInjection),
+            "fully-qualified std::process::Command::new(_).arg(var) must be flagged"
+        );
+    }
+
+    /// FP (1): clap's builder chain `clap::Command::new("app").arg(Arg::new(..))`
+    /// — `clap::Command` is NOT `std::process::Command`. This is the exact
+    /// shape behind the rust-clap 99.8% FP rate and MUST NOT be flagged.
+    #[test]
+    fn test_command_injection_clap_builder_qualified_not_flagged() {
+        let source = r#"
+pub fn build() -> clap::Command {
+    clap::Command::new("app")
+        .arg(clap::Arg::new("input"))
+        .arg(clap::Arg::new("output"))
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::CommandInjection),
+            "clap::Command builder is not std::process::Command and must NOT be flagged"
+        );
+    }
+
+    /// FP (2): `use clap::{Command, Arg};` + bare `Command::new("app").arg(..)`
+    /// — the `use` import binds bare `Command` to clap, so the bare form must
+    /// resolve to clap (NOT std::process) and MUST NOT be flagged. This is the
+    /// dominant rust-clap shape (e.g. `clap_bench/benches/complex.rs`).
+    #[test]
+    fn test_command_injection_clap_builder_bare_use_not_flagged() {
+        let source = r#"
+use clap::{ArgMatches, Command, arg};
+
+pub fn create_app() -> Command {
+    Command::new("claptests")
+        .version("0.1")
+        .arg(arg!(-o --option <opt> "tests options"))
+        .arg(arg!([positional] "tests positionals"))
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::CommandInjection),
+            "bare Command bound to clap via `use clap::Command` must NOT be flagged"
+        );
+    }
+
+    /// FP (3): a string-literal argument is never user-controlled, so even a
+    /// genuine `std::process::Command::new(_).arg("literal")` must NOT be
+    /// flagged (preserves the original heuristic that only variable args are
+    /// suspect).
+    #[test]
+    fn test_command_injection_std_process_string_literal_arg_not_flagged() {
+        let source = r#"
+use std::process::Command;
+
+pub fn run() {
+    let _ = Command::new("ls").arg("-la").output();
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::CommandInjection),
+            "string-literal .arg() is not user-controlled and must NOT be flagged"
+        );
     }
 
     #[test]
