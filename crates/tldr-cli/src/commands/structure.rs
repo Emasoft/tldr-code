@@ -171,6 +171,24 @@ impl StructureArgs {
             Some(&IgnoreSpec::default()),
         )?;
 
+        // b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0 AUDIT-FIX, B3):
+        // the default polyglot scan now scopes to the primary language family to
+        // avoid pathological output on repos whose minority languages are
+        // generated/vendored docs (e.g. a 211 MB dump from a single committed
+        // minified dokka `main.js` in an otherwise-Java repo). Scoping must NOT
+        // be silent (the CL-15 contract): `get_polyglot_code_structure` records
+        // a "scoped to the primary language family — dropped …" warning in the
+        // result's `warnings`; mirror it to STDERR here (like the `--lang`
+        // dropped-language warning) so it survives `--quiet` and JSON output and
+        // lands where correctness alerts belong. The warning stays in the JSON
+        // `warnings` array too, so machine consumers see it without parsing
+        // stderr.
+        for w in &merged.warnings {
+            if w.starts_with("polyglot scan: scoped to the primary language family") {
+                eprintln!("Warning: {w}");
+            }
+        }
+
         if writer.is_text() {
             writer.write_text(&format_structure_text(&merged))?;
         } else {

@@ -234,6 +234,91 @@ pub fn detect_project_languages(root: &Path) -> Vec<Language> {
     langs
 }
 
+/// b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0 AUDIT-FIX, B3):
+/// inverse of `PRIMARY_FAMILY_SHARE_DEN` — a detected language is part of the
+/// "primary family" when its file count is at least
+/// `dominant_count / PRIMARY_FAMILY_SHARE_DEN` (i.e. ≥ 20% of the dominant
+/// language's file count).
+///
+/// Tuning rationale (file-count shares observed on the v0.5.0 corpora):
+///   - `java-retrofit`: Java 306 (85%), JavaScript 34 (9%), Kotlin 16 (4%),
+///     TypeScript 1 — only Java clears 306/5 = 61; the 34-file generated-docs
+///     JavaScript bundle (and the rest of the tail) is excluded, killing the
+///     211 MB blow-up.
+///   - `scala-zio`: Scala 895 (96%), JavaScript 26, … → Scala only.
+///   - `typescript-nest`: TypeScript 1673 (97%), JavaScript 51 → TypeScript only.
+///   - The CL-15 balanced fixture (1 Python / 1 Go / 1 TypeScript): dominant
+///     count is 1, threshold is 1/5 → 0, so EVERY language (each ≥ 1) is kept —
+///     the CL-15 "analyze all languages in a balanced tree" contract holds.
+const PRIMARY_FAMILY_SHARE_DEN: usize = 5;
+
+/// b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0 AUDIT-FIX, B3): from
+/// the full set of detected languages under `root`, return
+/// `(kept, dropped)` where `kept` is the primary language family (the dominant
+/// language plus every language whose file count is ≥ 20% of the dominant's)
+/// and `dropped` is everything else.
+///
+/// `all_langs` is the deterministically-ordered output of
+/// [`detect_project_languages`]; both returned vectors preserve that ordering so
+/// the merged structure (which echoes "the first scanned language") stays
+/// reproducible. The dominant language is always in `kept`. A single-language
+/// tree returns `(all_langs, [])` unchanged.
+///
+/// Walks the tree ONCE to count files per language (the same
+/// `walk_project` + `from_path` inventory `detect_project_languages` uses, so
+/// the counts are consistent with detection).
+fn select_primary_language_family(
+    root: &Path,
+    all_langs: &[Language],
+) -> (Vec<Language>, Vec<Language>) {
+    use std::collections::HashMap;
+
+    // Nothing to scope when there is only one language.
+    if all_langs.len() <= 1 {
+        return (all_langs.to_vec(), Vec::new());
+    }
+
+    let mut counts: HashMap<Language, usize> = HashMap::new();
+    for entry in crate::walker::walk_project(root) {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if let Some(lang) = Language::from_path(p) {
+            *counts.entry(lang).or_insert(0) += 1;
+        }
+    }
+
+    let dominant_count = counts.values().copied().max().unwrap_or(0);
+    if dominant_count == 0 {
+        return (all_langs.to_vec(), Vec::new());
+    }
+
+    // Integer threshold: ≥ dominant_count / PRIMARY_FAMILY_SHARE_DEN. The
+    // dominant language itself always clears this (count == dominant_count).
+    let threshold = dominant_count / PRIMARY_FAMILY_SHARE_DEN;
+
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for &lang in all_langs {
+        let c = counts.get(&lang).copied().unwrap_or(0);
+        if c >= threshold {
+            kept.push(lang);
+        } else {
+            dropped.push(lang);
+        }
+    }
+
+    // Safety: never return an empty kept set (would regress to "no source
+    // found" on a non-empty tree). If the gate somehow excluded everything,
+    // fall back to analyzing all languages.
+    if kept.is_empty() {
+        return (all_langs.to_vec(), Vec::new());
+    }
+
+    (kept, dropped)
+}
+
 /// reg-health-regression-v1 (v0.5.0 REG-HEALTH): multi-language structure
 /// extraction for a directory.
 ///
@@ -270,11 +355,11 @@ pub fn get_polyglot_code_structure(
 ) -> TldrResult<CodeStructure> {
     use std::collections::HashMap;
 
-    let langs = detect_project_languages(root);
+    let all_langs = detect_project_languages(root);
 
     // Empty tree → null language + N7 warning. Do NOT default to a
     // language (reg-health-regression-v1: CL-15 leaked a Python fallback).
-    if langs.is_empty() {
+    if all_langs.is_empty() {
         return Ok(CodeStructure {
             root: root.to_path_buf(),
             language: None,
@@ -283,6 +368,30 @@ pub fn get_polyglot_code_structure(
             warnings: vec!["No source files found in directory".to_string()],
         });
     }
+
+    // b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0 AUDIT-FIX, B3):
+    // scope the polyglot scan to the PRIMARY language family.
+    //
+    // CL-15 made a directory scan analyze EVERY detected language and merge the
+    // results — the right call for a genuinely balanced multi-language tree. But
+    // real repos are typically ~one dominant language (85–100% of source files)
+    // plus a long tail of minority-language files that are almost always
+    // generated/vendored *documentation-site* assets. The `java-retrofit`
+    // corpus is the pathological case: 306 `.java` source files plus a 754 KB
+    // minified dokka `website/public/.../main.js` bundle (committed, not
+    // gitignored, and not named `*.min.js` so the oversize cap does not catch
+    // it). The minority JavaScript pass reads that bundle and emits ~211 MB of
+    // structure for a Java project.
+    //
+    // `select_primary_language_family` keeps a language only when its file count
+    // is a meaningful SHARE of the dominant language's count (see the constant
+    // there). A balanced tree (CL-15's 1-Python/1-Go/1-TypeScript fixture) keeps
+    // every language because each is 100% of the dominant; a 306-vs-34 tree
+    // drops the 34-file docs minority. Dropped languages are returned in
+    // `dropped` so the caller can WARN about them — the CL-15 "never silently
+    // drop source" principle is preserved (the warning channel changes, the
+    // silence does not return).
+    let (langs, dropped) = select_primary_language_family(root, &all_langs);
 
     // Per-path winning entry. `from_path_with_siblings` names the owning
     // language; we keep the scan whose language matches it. When no scan
@@ -366,6 +475,24 @@ pub fn get_polyglot_code_structure(
             .collect::<Vec<_>>()
             .join(", ")
     ));
+
+    // b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0 AUDIT-FIX, B3):
+    // never silently drop a minority language. When the primary-family gate
+    // excluded languages, name them (and how to recover them) in the warnings
+    // so the restriction is visible on every surface that echoes
+    // `CodeStructure::warnings`. The CLI additionally mirrors this to stderr.
+    if !dropped.is_empty() {
+        warnings.push(format!(
+            "polyglot scan: scoped to the primary language family — dropped {} minority \
+             language(s): {}. Pass --lang to analyze one of them explicitly.",
+            dropped.len(),
+            dropped
+                .iter()
+                .map(|l| format!("{:?}", l))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
 
     // Dominant autodetected language for schema parity; fall back to the
     // first scanned language only when `from_directory` can't decide on a
@@ -2631,6 +2758,20 @@ fn collect_definitions(
                     "trait_item" => "trait",
                     "interface_declaration" => "interface",
                     "module" => "module",
+                    // b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0
+                    // AUDIT-FIX, B3): Scala-specific container/type kinds. These
+                    // node kinds are only reached as class-LIKE for Scala (the
+                    // language gate in `classify_definition_node` sets
+                    // `is_class` for them only when `language == Scala`), so
+                    // they cannot collide with another grammar that happens to
+                    // reuse a name. `type_definition` is the Scala type ALIAS —
+                    // it is emitted with kind:"type", NOT "class". (OCaml's
+                    // `type_definition` never reaches this switch with a name,
+                    // so it is unaffected.)
+                    "type_definition" if matches!(language, Language::Scala) => "type",
+                    "object_definition" => "object",
+                    "trait_definition" => "trait",
+                    "enum_definition" => "enum",
                     // v0.5.0 SOL-004 (solidity-ast-extractor-v1):
                     // Solidity-specific class-axis kinds.
                     "contract_declaration" => "contract",
@@ -3517,10 +3658,53 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
             | "trait_item"         // Rust
             | "type_spec"          // Go struct
             | "interface_declaration"
-            | "type_definition"    // OCaml type definition
             | "module_definition"  // OCaml module definition
             | "companion_object" // Kotlin companion object (name: "Companion" by convention)
     );
+
+    // b3-structure-polyglot-bound-scala-classify-v1 (v0.5.0 AUDIT-FIX, B3):
+    // `type_definition` is a node kind SHARED by tree-sitter-ocaml and
+    // tree-sitter-scala but with DIFFERENT semantics, so it must be
+    // language-gated rather than living in the unconditional `is_class` list
+    // above (where it was commented "OCaml type definition"):
+    //
+    //   - OCaml `type t = ...` IS a type/class-defining construct. The shared
+    //     `get_definition_node_name` returns `None` for it (the name lives in a
+    //     nested `type_binding > type_constructor`, not a `name` field), so on
+    //     HEAD an OCaml `type_definition` is classified `is_class` but then
+    //     dropped from `definitions[]` for lack of a name — a de-facto no-op.
+    //     We preserve that EXACT behaviour by keeping OCaml's `type_definition`
+    //     in the class-classified set.
+    //
+    //   - Scala `type X = ...` is a TYPE ALIAS, not a class. tree-sitter-scala
+    //     exposes a `name` field on it, so the unconditional rule mislabeled it
+    //     `kind:"class"`. It must surface as `kind:"type"` (handled in the
+    //     entry-kind mapping below). We still flag it class-LIKE here only so
+    //     the `(is_func || is_class)` emission gate lets it through; the
+    //     entry-kind switch refines the reported kind to "type".
+    //
+    //   - Scala's idiomatic containers `object` / `trait` / `enum` are NOT in
+    //     the shared list, so they were dropped from `definitions[]` entirely.
+    //     Add them here (Scala-gated) so they surface with their own kinds.
+    match language {
+        Language::Ocaml => {
+            if kind == "type_definition" {
+                is_class = true;
+            }
+        }
+        Language::Scala => {
+            if matches!(
+                kind,
+                "type_definition"
+                    | "object_definition"
+                    | "trait_definition"
+                    | "enum_definition"
+            ) {
+                is_class = true;
+            }
+        }
+        _ => {}
+    }
 
     // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity-specific
     // node kinds. Gated on the language so that other grammars that
