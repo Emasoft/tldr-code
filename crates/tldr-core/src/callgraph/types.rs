@@ -455,6 +455,24 @@ pub struct FuncIndex {
     /// (which require exactly one candidate) can fire correctly instead of
     /// binding an order-dependent survivor.
     entries: HashMap<(String, String), Vec<FuncEntry>>,
+
+    /// Secondary name index: `func_name` -> every `(module, func_name)` key in
+    /// `entries` whose name component equals `func_name`.
+    ///
+    /// fix-W5-callgraph-blowup-v1: name-keyed lookups
+    /// ([`find_by_name`](Self::find_by_name) and the receiver/fuzzy/type
+    /// fallbacks in `resolution`) previously scanned the *entire* `entries`
+    /// map (one `HashMap<(module,name), _>` linear pass per call-site). On a
+    /// project with `M` distinct keys and `N` call-sites that is `O(N*M)` —
+    /// quadratic — and it never terminated on large bundled files (js-lodash)
+    /// or large multi-repo roots. This index lets `find_by_name` resolve in
+    /// `O(k)` where `k` is the number of keys sharing the name, restoring
+    /// sub-quadratic resolution while preserving the *exact* set and ordering
+    /// guarantees the ambiguity guards depend on.
+    ///
+    /// Invariant: `by_name[name]` lists every key `(m, name)` present in
+    /// `entries`, and only those. Maintained on every `insert`/`merge`.
+    by_name: HashMap<String, Vec<(String, String)>>,
 }
 
 impl FuncIndex {
@@ -462,6 +480,7 @@ impl FuncIndex {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            by_name: HashMap::new(),
         }
     }
 
@@ -469,6 +488,7 @@ impl FuncIndex {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(capacity),
+            by_name: HashMap::with_capacity(capacity),
         }
     }
 
@@ -485,14 +505,31 @@ impl FuncIndex {
         func_name: impl Into<String>,
         entry: FuncEntry,
     ) {
-        let bucket = self.entries.entry((module.into(), func_name.into()));
-        let vec = bucket.or_default();
-        if !vec.iter().any(|e| {
-            e.file_path == entry.file_path
-                && e.line == entry.line
-                && e.class_name == entry.class_name
-        }) {
-            vec.push(entry);
+        let module = module.into();
+        let func_name = func_name.into();
+        let key = (module, func_name);
+        match self.entries.entry(key.clone()) {
+            std::collections::hash_map::Entry::Occupied(mut occ) => {
+                // Key already present (so already registered in `by_name`);
+                // just append the new entry if it is not a dedup-duplicate.
+                let vec = occ.get_mut();
+                if !vec.iter().any(|e| {
+                    e.file_path == entry.file_path
+                        && e.line == entry.line
+                        && e.class_name == entry.class_name
+                }) {
+                    vec.push(entry);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(vac) => {
+                // First entry for this key: register the key under its name so
+                // `find_by_name` can reach it in O(k) without scanning `entries`.
+                self.by_name
+                    .entry(key.1.clone())
+                    .or_default()
+                    .push(key.clone());
+                vac.insert(vec![entry]);
+            }
         }
     }
 
@@ -554,14 +591,50 @@ impl FuncIndex {
 
     /// Finds all entries matching a given function name across all modules.
     /// Used for fallback resolution when the module/receiver cannot be determined.
+    ///
+    /// fix-W5-callgraph-blowup-v1: resolves via the `by_name` secondary index
+    /// in `O(k)` (k = keys sharing this name) instead of the previous
+    /// full-`entries` linear scan, which made every receiver/fuzzy/fallback
+    /// resolution `O(M)` in the total key count and the whole call-graph build
+    /// `O(N*M)` (quadratic) on large inputs. The yielded set and order are
+    /// identical to the old scan for any given index contents (every entry
+    /// under a `(module, func_name)` key whose name component equals
+    /// `func_name`), so resolution semantics and the ambiguity guards are
+    /// unchanged.
     pub fn find_by_name<'a>(
         &'a self,
         func_name: &'a str,
     ) -> impl Iterator<Item = &'a FuncEntry> + 'a {
-        self.entries
-            .iter()
-            .filter(move |((_m, f), _)| f.as_str() == func_name)
-            .flat_map(|(_, entries)| entries.iter())
+        self.by_name
+            .get(func_name)
+            .into_iter()
+            .flat_map(|keys| keys.iter())
+            .filter_map(move |key| self.entries.get(key))
+            .flat_map(|entries| entries.iter())
+    }
+
+    /// Iterates `((module, func_name), entry)` tuples for one `func_name`.
+    ///
+    /// fix-W5-callgraph-blowup-v1: the index-backed counterpart to filtering
+    /// [`iter`](Self::iter) by name. Callers in `resolution` that need the
+    /// owning module/key alongside the entry (and previously paid an `O(M)`
+    /// `iter().filter(name == ...)` scan per call-site) use this to stay
+    /// `O(k)`. Yields exactly the same `((module, name), entry)` items the
+    /// filtered full scan produced for the same name.
+    pub fn iter_by_name<'a>(
+        &'a self,
+        func_name: &'a str,
+    ) -> impl Iterator<Item = ((&'a str, &'a str), &'a FuncEntry)> + 'a {
+        self.by_name
+            .get(func_name)
+            .into_iter()
+            .flat_map(|keys| keys.iter())
+            .filter_map(move |key| {
+                self.entries
+                    .get(key)
+                    .map(|entries| ((key.0.as_str(), key.1.as_str()), entries))
+            })
+            .flat_map(|((m, f), entries)| entries.iter().map(move |e| ((m, f), e)))
     }
 
     /// Convert to path map for TypeAwareCallResolver compatibility.
@@ -839,5 +912,125 @@ mod tests {
             // Just verify they can be created and compared
             assert_eq!(reason.clone(), reason);
         }
+    }
+
+    // ========================================================================
+    // fix-W5-callgraph-blowup-v1: FuncIndex name-lookup must be index-backed.
+    // ========================================================================
+
+    /// Reference implementation of the OLD `find_by_name`: a full linear scan
+    /// over every `(module, name)` key. Used only to prove the indexed
+    /// `find_by_name` returns the *identical* set of entries (semantics are
+    /// preserved exactly), independent of the speed assertion below.
+    fn reference_find_by_name<'a>(idx: &'a FuncIndex, name: &str) -> Vec<&'a FuncEntry> {
+        let mut out: Vec<&FuncEntry> = Vec::new();
+        for ((_m, f), entry) in idx.iter() {
+            if f == name {
+                out.push(entry);
+            }
+        }
+        out
+    }
+
+    /// Char test (W5): `find_by_name` / `iter_by_name` resolve in O(k), not by
+    /// scanning the whole index.
+    ///
+    /// Pre-fix, `find_by_name` did `entries.iter().filter(name == ...)` — an
+    /// O(M) pass over every distinct `(module, name)` key on *each* call. The
+    /// production resolver calls it (and the two name-filtered `iter()` scans
+    /// it replaced) once per call-site, so a project with M funcs and N
+    /// call-sites cost O(N*M) and never terminated on large bundled inputs
+    /// (js-lodash) or large multi-repo roots (the `/tmp`-rooted coupling pair).
+    ///
+    /// This builds a large index (M distinct names across many modules) and
+    /// performs N name-lookups. On the old O(N*M) scan this is ~N*M HashMap
+    /// key-comparisons (tens-to-hundreds of millions in a debug build, taking
+    /// many seconds); the index-backed lookup is O(N*k) and finishes in
+    /// milliseconds. The generous wall bound fails on the quadratic code and
+    /// passes with orders-of-magnitude margin on the fix. A correctness
+    /// assertion against `reference_find_by_name` locks the resolved set so the
+    /// speedup cannot come from dropping or reordering candidates.
+    #[test]
+    fn func_index_find_by_name_is_sub_quadratic() {
+        use std::time::Instant;
+
+        // M distinct function names spread across many modules => a large
+        // `entries` map. `modules * names_per_module` distinct keys.
+        let modules = 200usize;
+        let names_per_module = 50usize; // 10_000 distinct keys
+        let total_names = modules * names_per_module;
+
+        let mut idx = FuncIndex::with_capacity(total_names);
+        for m in 0..modules {
+            let module = format!("mod_{m}");
+            for n in 0..names_per_module {
+                let name = format!("fn_{m}_{n}");
+                idx.insert(
+                    module.clone(),
+                    name.clone(),
+                    FuncEntry::function(PathBuf::from(format!("{module}.py")), n as u32 + 1, 0),
+                );
+            }
+        }
+        // Seed a handful of ambiguous same-name methods across modules so the
+        // O(k) path returns multiple entries (k > 1) and cardinality is real.
+        for m in 0..modules {
+            idx.insert(
+                format!("mod_{m}"),
+                "shared".to_string(),
+                FuncEntry::method(
+                    PathBuf::from(format!("mod_{m}.py")),
+                    900,
+                    910,
+                    format!("Class{m}"),
+                ),
+            );
+        }
+
+        // Correctness: indexed lookup == reference linear scan, for both a
+        // unique name and the ambiguous shared name.
+        let unique = "fn_137_42";
+        let mut got: Vec<_> = idx.find_by_name(unique).collect();
+        let mut want = reference_find_by_name(&idx, unique);
+        got.sort_by_key(|e| (e.file_path.clone(), e.line));
+        want.sort_by_key(|e| (e.file_path.clone(), e.line));
+        assert_eq!(got, want, "find_by_name must match the full-scan reference");
+        assert_eq!(got.len(), 1, "unique name must have exactly one entry");
+
+        let shared_count = idx.find_by_name("shared").count();
+        assert_eq!(
+            shared_count, modules,
+            "ambiguous shared method must surface every definer (cardinality preserved)"
+        );
+
+        // iter_by_name must agree with find_by_name on entries (key-scoped).
+        let via_iter: Vec<_> = idx.iter_by_name(unique).map(|(_k, e)| e).collect();
+        assert_eq!(via_iter, idx.find_by_name(unique).collect::<Vec<_>>());
+
+        // A name absent from the index costs O(1), not O(M).
+        assert_eq!(idx.find_by_name("does_not_exist").count(), 0);
+
+        // Speed: N name-lookups (mix of hits and misses) must finish well
+        // under budget. Old O(N*M): N * 10_000 key-compares. New O(N*k): tiny.
+        let lookups = 40_000usize;
+        let start = Instant::now();
+        let mut sink = 0usize;
+        for i in 0..lookups {
+            let m = i % modules;
+            let n = i % names_per_module;
+            // Real hits...
+            sink += idx.find_by_name(&format!("fn_{m}_{n}")).count();
+            // ...plus the ambiguous name and a guaranteed miss.
+            sink += idx.find_by_name("shared").count();
+            sink += idx.find_by_name("absent_xyz").count();
+        }
+        let elapsed = start.elapsed();
+        assert!(sink > 0, "lookups must do real work");
+        assert!(
+            elapsed.as_secs() < 5,
+            "find_by_name over {total_names} keys x {lookups} lookups took {elapsed:?}; \
+             a full-index scan per lookup (the pre-fix O(N*M) behavior) blows this \
+             generous 5s bound, the O(k) index does not"
+        );
     }
 }

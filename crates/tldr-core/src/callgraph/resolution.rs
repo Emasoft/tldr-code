@@ -1742,10 +1742,15 @@ fn resolve_local_fuzzy_match(
         return None;
     }
 
+    // fix-W5-callgraph-blowup-v1: was `func_index.iter().filter(name == ...)`,
+    // a full O(M) index scan per call-site. `iter_by_name` reaches only the
+    // keys sharing `bare_target` (O(k)) while yielding the identical
+    // `((module, name), entry)` tuples the old name filter produced, so the
+    // unique-match / type-filter logic below is unchanged.
     let local_matches: Vec<_> = func_index
-        .iter()
-        .filter(|((_module, func_name), entry)| {
-            if *func_name != bare_target || entry.file_path != current_file {
+        .iter_by_name(bare_target)
+        .filter(|((_module, _func_name), entry)| {
+            if entry.file_path != current_file {
                 return false;
             }
             // fix-cl-3b-v1 (IT3-rust-07): when the call's receiver is a
@@ -1954,8 +1959,12 @@ fn resolve_type_aware_fallback(
         }
     }
 
-    for ((_module, func_name), entry) in func_index.iter() {
-        if func_name == bare_target && entry.class_name.as_deref() == Some(type_name) {
+    // fix-W5-callgraph-blowup-v1: was `func_index.iter()` over the whole index
+    // per call-site (O(M)); `iter_by_name` restricts to keys named
+    // `bare_target` (O(k)). The `class_name == type_name` predicate and the
+    // first-match return are preserved exactly.
+    for ((_module, _func_name), entry) in func_index.iter_by_name(bare_target) {
+        if entry.class_name.as_deref() == Some(type_name) {
             return Some(ResolvedTarget {
                 file: entry.file_path.clone(),
                 name: bare_target.to_string(),

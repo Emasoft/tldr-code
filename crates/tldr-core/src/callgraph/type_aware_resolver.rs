@@ -344,6 +344,28 @@ pub struct TypeAwareCallResolver<'a> {
 
     /// File IR cache for looking up class methods
     file_ir_cache: HashMap<PathBuf, FileIR>,
+
+    /// fix-W5-callgraph-blowup-v1: `(class_name, method_name) -> return_type`
+    /// index built once as FileIRs are added, so `get_method_return_type`
+    /// resolves in O(1) instead of scanning every cached file's every func
+    /// (the `file_ir_cache.values() x ir.funcs` loop, which was O(total_funcs)
+    /// per resolution / call-site). Only the FIRST definition for a given
+    /// `(class, method)` is kept, matching the old first-match-wins scan.
+    method_return_index: HashMap<(String, String), Option<String>>,
+
+    /// fix-W5-callgraph-blowup-v1: `(file, method_name) -> class_name` index
+    /// for `find_enclosing_class`'s per-file method lookup, so it does an O(1)
+    /// probe instead of scanning `ir.funcs` linearly. Keyed on the same
+    /// (file, method) the old `ir.funcs` scan filtered on; the first
+    /// `is_method` definition wins, matching the old loop's first-hit return.
+    ///
+    /// The value is `Option<String>` (not `String`) to preserve the old scan's
+    /// exact early-return: the loop returned `func_def.class_name.clone()` for
+    /// the first `is_method` func of that name — which could be `None` and
+    /// would then short-circuit *before* the `class_defs` fallback. A present
+    /// key with a `None` value reproduces that "found a nameless method, return
+    /// None without falling through" behavior.
+    method_class_index: HashMap<(PathBuf, String), Option<String>>,
 }
 
 impl<'a> TypeAwareCallResolver<'a> {
@@ -366,6 +388,8 @@ impl<'a> TypeAwareCallResolver<'a> {
             var_types: HashMap::new(),
             class_defs: HashMap::new(),
             file_ir_cache: HashMap::new(),
+            method_return_index: HashMap::new(),
+            method_class_index: HashMap::new(),
         }
     }
 
@@ -379,6 +403,26 @@ impl<'a> TypeAwareCallResolver<'a> {
         // Also extract class definitions from the FileIR
         for class in &ir.classes {
             self.class_defs.insert(class.name.clone(), class.clone());
+        }
+        // fix-W5-callgraph-blowup-v1: populate the method indices once here so
+        // per-call-site lookups never scan `file_ir_cache x funcs`. First
+        // definition wins (matching the old linear scans' first-match return).
+        for func_def in &ir.funcs {
+            // Return-type index is keyed by (class, method); only methods that
+            // carry a class participate (the old scan filtered on
+            // `class_name == Some(class_name)`).
+            if let Some(class_name) = func_def.class_name.as_deref() {
+                self.method_return_index
+                    .entry((class_name.to_string(), func_def.name.clone()))
+                    .or_insert_with(|| func_def.return_type.clone());
+            }
+            // Method->class index mirrors the old `is_method` scan exactly,
+            // capturing the first such def's `class_name` (possibly None).
+            if func_def.is_method {
+                self.method_class_index
+                    .entry((file.clone(), func_def.name.clone()))
+                    .or_insert_with(|| func_def.class_name.clone());
+            }
         }
         self.file_ir_cache.insert(file, ir);
     }
@@ -689,13 +733,15 @@ impl<'a> TypeAwareCallResolver<'a> {
 
     /// Find the enclosing class for a method (using function name pattern).
     fn find_enclosing_class(&self, file: &Path, func: &str) -> Option<String> {
-        // Check if the function is a method by looking at FileIR
-        if let Some(ir) = self.file_ir_cache.get(file) {
-            for func_def in &ir.funcs {
-                if func_def.name == func && func_def.is_method {
-                    return func_def.class_name.clone();
-                }
-            }
+        // fix-W5-callgraph-blowup-v1: O(1) probe of the per-file method->class
+        // index instead of scanning `ir.funcs`. Semantically identical: a
+        // present key means the old loop found a first `is_method` def of
+        // `func` and returned its `class_name` (Some or None) WITHOUT reaching
+        // the `class_defs` fallback below.
+        if let Some(class_name) =
+            self.method_class_index.get(&(file.to_path_buf(), func.to_string()))
+        {
+            return class_name.clone();
         }
 
         // Also check class_defs for classes that have this method
@@ -752,15 +798,16 @@ impl<'a> TypeAwareCallResolver<'a> {
 
     /// Get the return type of a method (if known).
     fn get_method_return_type(&self, class_name: &str, method: &str) -> Option<String> {
-        // Look for the function definition in our caches
-        for ir in self.file_ir_cache.values() {
-            for func_def in &ir.funcs {
-                if func_def.class_name.as_deref() == Some(class_name) && func_def.name == method {
-                    return func_def.return_type.clone();
-                }
-            }
-        }
-        None
+        // fix-W5-callgraph-blowup-v1: O(1) index lookup instead of the
+        // `file_ir_cache.values() x ir.funcs` linear scan (which ran per
+        // resolution / call-site, making chained-call resolution
+        // O(call_sites x total_funcs) — quadratic). The index stores the same
+        // first-match `(class, method) -> return_type` the scan returned, so
+        // resolved return types are unchanged.
+        self.method_return_index
+            .get(&(class_name.to_string(), method.to_string()))
+            .cloned()
+            .flatten()
     }
 
     /// Resolve a method call on a union type.
