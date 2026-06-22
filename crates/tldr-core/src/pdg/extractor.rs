@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use crate::cfg::get_cfg_context;
+use crate::cfg::{get_cfg_context, get_cfg_context_with_line};
 use crate::dfg::get_dfg_context;
 use crate::types::{CfgInfo, DependenceType, DfgInfo, Language, PdgEdge, PdgInfo, PdgNode};
 use crate::TldrResult;
@@ -38,6 +38,36 @@ pub fn get_pdg_context(
     let dfg = get_dfg_context(source_or_path, function_name, language)?;
 
     // Build PDG from CFG and DFG
+    build_pdg(function_name, cfg, dfg)
+}
+
+/// body-aware-fn-resolution-v1 (B1, FAN-IN slice+chop): line-aware PDG
+/// extraction.
+///
+/// `slice`/`chop` know the criterion line the user cares about. Threading
+/// it here lets the CFG resolve the function definition whose range
+/// contains that line (via [`get_cfg_context_with_line`]) instead of the
+/// FIRST same-named definition in source order — which, for a name that is
+/// both a body-less abstract/trait declaration and a concrete impl, used
+/// to be the body-less declaration. The result was an empty slice and a
+/// misleading "line N outside function (lines 51-51)" diagnostic anchored
+/// to the abstract declaration's single line.
+///
+/// The DFG side is resolved by name via [`get_dfg_context`]; that resolver
+/// is already body-aware (it shares
+/// [`crate::ast::function_finder::find_function_node`], which now prefers a
+/// body-bearing definition), so for the common single-implementation case
+/// CFG and DFG agree on the same node. When `target_line` is `None` this
+/// is identical to [`get_pdg_context`].
+pub fn get_pdg_context_with_line(
+    source_or_path: &str,
+    function_name: &str,
+    target_line: Option<u32>,
+    language: Language,
+) -> TldrResult<PdgInfo> {
+    let cfg = get_cfg_context_with_line(source_or_path, function_name, target_line, language)?;
+    let dfg = get_dfg_context(source_or_path, function_name, language)?;
+
     build_pdg(function_name, cfg, dfg)
 }
 

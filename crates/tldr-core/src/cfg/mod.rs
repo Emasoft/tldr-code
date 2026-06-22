@@ -12,4 +12,4 @@
 
 pub mod extractor;
 
-pub use extractor::get_cfg_context;
+pub use extractor::{get_cfg_context, get_cfg_context_with_line};

@@ -24,7 +24,9 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::ast::extract::decl_keyword_line_from_node;
-use crate::ast::function_finder::{find_function_node, get_function_body, get_function_name};
+use crate::ast::function_finder::{
+    find_function_node_with_line, get_function_body, get_function_name,
+};
 use crate::ast::parser::parse;
 use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType, Language};
 use crate::TldrResult;
@@ -56,6 +58,22 @@ pub fn get_cfg_context(
     function_name: &str,
     language: Language,
 ) -> TldrResult<CfgInfo> {
+    get_cfg_context_with_line(source_or_path, function_name, None, language)
+}
+
+/// body-aware-fn-resolution-v1 (B1, FAN-IN slice+chop): line-aware CFG
+/// extraction. When `target_line` is supplied and several definitions
+/// share `function_name`, the function whose line range contains the line
+/// is selected (and otherwise the first body-bearing definition). This is
+/// what lets `slice`/`chop` build the CFG of the concrete implementation
+/// rather than a body-less abstract declaration. With `target_line =
+/// None` the behavior is identical to [`get_cfg_context`].
+pub fn get_cfg_context_with_line(
+    source_or_path: &str,
+    function_name: &str,
+    target_line: Option<u32>,
+    language: Language,
+) -> TldrResult<CfgInfo> {
     // Determine if input is a file path or source code
     let (tree, source) = if Path::new(source_or_path).exists() {
         // Read file content
@@ -70,7 +88,7 @@ pub fn get_cfg_context(
     };
 
     // Extract CFG from the parsed tree
-    extract_cfg_from_tree(&tree, &source, function_name, language)
+    extract_cfg_from_tree_with_line(&tree, &source, function_name, target_line, language)
 }
 
 /// Extract CFG from a parsed tree
@@ -85,10 +103,26 @@ pub(crate) fn extract_cfg_from_tree(
     function_name: &str,
     language: Language,
 ) -> TldrResult<CfgInfo> {
+    extract_cfg_from_tree_with_line(tree, source, function_name, None, language)
+}
+
+/// body-aware-fn-resolution-v1 (B1): line-aware variant of
+/// [`extract_cfg_from_tree`]. Resolves the function node via
+/// [`find_function_node_with_line`] so a supplied `target_line`
+/// disambiguates same-named definitions; `None` preserves the legacy
+/// name-only resolution (now itself body-aware).
+pub(crate) fn extract_cfg_from_tree_with_line(
+    tree: &Tree,
+    source: &str,
+    function_name: &str,
+    target_line: Option<u32>,
+    language: Language,
+) -> TldrResult<CfgInfo> {
     let root = tree.root_node();
 
     // Find the function node
-    let func_node = find_function_node(root, function_name, language, source);
+    let func_node =
+        find_function_node_with_line(root, function_name, target_line, language, source);
 
     match func_node {
         Some(node) => build_cfg_for_function(node, function_name, source, language, 0),

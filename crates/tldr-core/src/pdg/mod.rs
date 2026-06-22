@@ -35,6 +35,6 @@
 pub mod extractor;
 pub mod slice;
 
-pub use extractor::get_pdg_context;
+pub use extractor::{get_pdg_context, get_pdg_context_with_line};
 pub use slice::get_slice;
 pub use slice::{get_slice_rich, RichSlice, SliceEdge, SliceNode};

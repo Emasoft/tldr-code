@@ -55,6 +55,41 @@ pub fn find_function_node<'a>(
     language: Language,
     source: &str,
 ) -> Option<Node<'a>> {
+    find_function_node_impl(root, function_name, language, source, None)
+}
+
+/// body-aware-fn-resolution-v1 (B1, FAN-IN slice+chop+complexity): the
+/// internal resolver that threads an optional `target_line`.
+///
+/// Root cause this addresses: the legacy resolver returned the FIRST
+/// source-order node whose name matched — with no preference for a
+/// definition that actually HAS A BODY, and no notion of the line the
+/// caller cares about. For a name declared once as a body-less
+/// abstract/interface/trait/`expect` declaration and once as a concrete
+/// implementation (Kotlin `Semaphore.tryAcquire` decl@51 + impl@151,
+/// Scala `Semaphore.acquireN` trait-decl@71 + impl@173), the resolver
+/// returned the body-less declaration. Downstream, slice/chop reported
+/// "line X outside function (lines 51-51)" and complexity reported
+/// cyclomatic=1 / lines_of_code=1.
+///
+/// The preference order applied in [`find_function_node_in_subtree`] is:
+///   1. a candidate whose line range CONTAINS `target_line` (when a line
+///      is supplied) — preferring one WITH a body if several overlap;
+///   2. the first source-order candidate WITH a body;
+///   3. the first source-order candidate (body-less fallback — preserves
+///      the truthful single-line stub for pure interface/trait/protocol
+///      declarations, mirroring the pre-existing Elixir bodyless-head
+///      policy in this file).
+///
+/// Single-definition resolution is unchanged: one candidate is returned
+/// verbatim regardless of line or body.
+fn find_function_node_impl<'a>(
+    root: Node<'a>,
+    function_name: &str,
+    language: Language,
+    source: &str,
+    target_line: Option<u32>,
+) -> Option<Node<'a>> {
     // Qualified `Class.method` lookup — try class-scoped resolution first.
     // We deliberately skip this for Lua/Luau because their dot-indexed
     // function form (`function Kong.init() ... end`) is matched directly
@@ -78,7 +113,7 @@ pub fn find_function_node<'a>(
                     .child_by_field_name("body")
                     .unwrap_or(class_node);
                 if let Some(found) =
-                    find_function_node_in_subtree(scope, &remainder, language, source)
+                    find_function_node_in_subtree(scope, &remainder, language, source, target_line)
                 {
                     return Some(found);
                 }
@@ -87,7 +122,7 @@ pub fn find_function_node<'a>(
             // try resolving the LAST component as a bare name. This is the
             // documented graceful degradation behavior.
             let last = *parts.last().unwrap();
-            return find_function_node_in_subtree(root, last, language, source);
+            return find_function_node_in_subtree(root, last, language, source, target_line);
         }
     }
 
@@ -122,7 +157,8 @@ pub fn find_function_node<'a>(
     {
         // Try the full qualified form first — handles the (rare) case
         // where the extractor returned the qualified text verbatim.
-        if let Some(found) = find_function_node_in_subtree(root, function_name, language, source)
+        if let Some(found) =
+            find_function_node_in_subtree(root, function_name, language, source, target_line)
         {
             return Some(found);
         }
@@ -173,7 +209,7 @@ pub fn find_function_node<'a>(
                     .child_by_field_name("body")
                     .unwrap_or(class_node);
                 if let Some(found) =
-                    find_function_node_in_subtree(scope, &remainder, language, source)
+                    find_function_node_in_subtree(scope, &remainder, language, source, target_line)
                 {
                     return Some(found);
                 }
@@ -189,11 +225,36 @@ pub fn find_function_node<'a>(
             // methods, generic impls whose type_identifier is shaped
             // differently).
             let last = *parts.last().unwrap();
-            return find_function_node_in_subtree(root, last, language, source);
+            return find_function_node_in_subtree(root, last, language, source, target_line);
         }
     }
 
-    find_function_node_in_subtree(root, function_name, language, source)
+    find_function_node_in_subtree(root, function_name, language, source, target_line)
+}
+
+/// body-aware-fn-resolution-v1 (B1, FAN-IN slice+chop+complexity):
+/// line- and body-aware function resolution.
+///
+/// Identical to [`find_function_node`] except the caller supplies the
+/// source line it is interested in. When several definitions share
+/// `function_name`, the one whose line range CONTAINS `target_line` is
+/// preferred (this disambiguates concrete overloads); when no line is
+/// supplied or none contain it, the first body-bearing definition wins,
+/// falling back to the first definition overall. See
+/// [`find_function_node_impl`] for the full preference order.
+///
+/// Used by slice/chop (and any per-line analysis) so that a criterion
+/// line inside a concrete implementation resolves to that implementation
+/// rather than to an earlier body-less abstract declaration of the same
+/// name.
+pub fn find_function_node_with_line<'a>(
+    root: Node<'a>,
+    function_name: &str,
+    target_line: Option<u32>,
+    language: Language,
+    source: &str,
+) -> Option<Node<'a>> {
+    find_function_node_impl(root, function_name, language, source, target_line)
 }
 
 /// p19-secondary-fixes-v1 (BUG-P19-04): find a C/C++ `function_definition`
@@ -286,10 +347,36 @@ fn find_function_node_in_subtree<'a>(
     function_name: &str,
     language: Language,
     source: &str,
+    target_line: Option<u32>,
 ) -> Option<Node<'a>> {
     let func_kinds = get_function_node_kinds(language);
 
     let mut stack = vec![root];
+
+    // body-aware-fn-resolution-v1 (B1): generalize the Elixir
+    // bodyless-head precedent to every language. Rather than returning the
+    // FIRST name match, we collect candidates and apply a body/line
+    // preference so a body-less abstract/interface/trait/`expect`
+    // declaration never shadows a concrete implementation of the same
+    // name.
+    //
+    // `first_with_body` — the first source-order candidate that has a real
+    // body (a block/expression body child, detected AST-driven via
+    // [`get_function_body`]). This is the answer when no line is supplied
+    // (or no body-bearing def contains the line).
+    //
+    // `first_any` — the first source-order candidate regardless of body.
+    // Used only as a last resort so pure interface/trait/protocol files
+    // (no impl present) still resolve to a truthful single-line stub.
+    //
+    // `line_match` — a candidate whose line range CONTAINS `target_line`.
+    // Among overlapping candidates we keep the one WITH a body (a concrete
+    // overload) over a body-less one; this is the highest-priority result
+    // when a line is supplied. We stop early once a body-bearing,
+    // line-containing candidate is found — it is the best possible match.
+    let mut first_with_body: Option<Node<'a>> = None;
+    let mut first_any: Option<Node<'a>> = None;
+    let mut line_match: Option<Node<'a>> = None;
 
     // elixir-multiclause-and-mix-v1 (v0.4.2 bug-E1): Elixir multi-clause
     // functions begin with an optional bodyless spec head
@@ -325,13 +412,55 @@ fn find_function_node_in_subtree<'a>(
                             .is_some_and(|short| short == function_name))
                 {
                     // elixir-multiclause-and-mix-v1: defer bodyless heads.
-                    if matches!(language, Language::Elixir)
-                        && !elixir_call_has_do_block(node)
-                    {
-                        if elixir_bodyless_fallback.is_none() {
-                            elixir_bodyless_fallback = Some(node);
+                    // Elixir keeps its dedicated path (heavily exercised by
+                    // the multi-clause / @spec-head tests): stash a bodyless
+                    // head as a fallback and return the first clause that
+                    // has a `do_block`.
+                    if matches!(language, Language::Elixir) {
+                        if !elixir_call_has_do_block(node) {
+                            if elixir_bodyless_fallback.is_none() {
+                                elixir_bodyless_fallback = Some(node);
+                            }
+                            // continue searching for a body-bearing clause
+                        } else {
+                            return Some(node);
                         }
-                        // continue searching for a body-bearing clause
+                    } else if language_has_decl_impl_duality(language) {
+                        // body-aware-fn-resolution-v1 (B1): record this
+                        // candidate rather than returning the first name
+                        // match. `get_function_body` is the AST-driven
+                        // body detector (a block / expression-body child);
+                        // a body-less abstract/interface/trait/`expect`
+                        // declaration yields None and must not win over a
+                        // concrete impl of the same name.
+                        //
+                        // Scoped to languages where a declaration and its
+                        // implementation share the SAME tree-sitter node
+                        // kind (so both land in `func_kinds`) — for every
+                        // other language the first name match is unique at
+                        // this level and we keep the legacy immediate
+                        // return below to preserve exact behavior.
+                        let has_body = get_function_body(node, language).is_some();
+                        if first_any.is_none() {
+                            first_any = Some(node);
+                        }
+                        if has_body && first_with_body.is_none() {
+                            first_with_body = Some(node);
+                        }
+                        if let Some(line) = target_line {
+                            let start = node.start_position().row as u32 + 1;
+                            let end = node.end_position().row as u32 + 1;
+                            if start <= line && line <= end {
+                                // Prefer a body-bearing, line-containing
+                                // candidate. Once found it is the best
+                                // possible match — return immediately.
+                                if has_body {
+                                    return Some(node);
+                                } else if line_match.is_none() {
+                                    line_match = Some(node);
+                                }
+                            }
+                        }
                     } else {
                         return Some(node);
                     }
@@ -496,6 +625,24 @@ fn find_function_node_in_subtree<'a>(
         let children: Vec<_> = node.children(&mut cursor).collect();
         for child in children.into_iter().rev() {
             stack.push(child);
+        }
+    }
+
+    // body-aware-fn-resolution-v1 (B1): resolve the collected candidates
+    // (non-Elixir languages). A body-bearing candidate whose range
+    // contains `target_line` already returned early above, so the
+    // remaining preference is:
+    //   1. the first body-bearing definition (rule 2: prefer a real impl —
+    //      this is also what wins when a line was supplied but only landed
+    //      on a body-less signature line, e.g. slice at the abstract
+    //      declaration's own line);
+    //   2. a body-less candidate whose range contains the line (only
+    //      reachable when NO body-bearing definition exists in this
+    //      subtree — a pure interface/trait/protocol);
+    //   3. the first candidate overall (truthful single-line stub).
+    if language_has_decl_impl_duality(language) {
+        if let Some(found) = first_with_body.or(line_match).or(first_any) {
+            return Some(found);
         }
     }
 
@@ -859,6 +1006,39 @@ fn count_elixir_clause_arguments(head_args: Node) -> usize {
     // pattern (e.g. `def foo(x)` where the grammar emits a single
     // identifier child rather than an `arguments` wrapper).
     1
+}
+
+/// body-aware-fn-resolution-v1 (B1): true for languages where a body-less
+/// declaration and its concrete implementation are emitted with the SAME
+/// tree-sitter node kind (so both appear in [`get_function_node_kinds`]),
+/// creating the abstract-decl-vs-impl ambiguity that
+/// [`find_function_node_in_subtree`] must disambiguate by body / line.
+///
+/// Examples of the duality:
+/// - Kotlin: an interface/abstract method `fun f(): T` and an `override
+///   fun f(): T { ... }` are both `function_declaration`.
+/// - Scala: a trait method `def f: T` and an impl `def f: T = { ... }`
+///   are both `function_definition` / `function_declaration`.
+/// - Java / C#: interface or abstract `T f();` and a concrete `T f() {
+///   ... }` are both `method_declaration`.
+/// - Swift: a protocol requirement `func f()` and an implementation
+///   `func f() { ... }` are both `function_declaration`.
+///
+/// For every other language a body-less declaration uses a DIFFERENT node
+/// kind that is not in `func_kinds` (e.g. Rust trait signatures are
+/// `function_signature_item`, TypeScript interface members are
+/// `method_signature`, C/C++ prototypes are `declaration`), so the first
+/// name match at this level is already unambiguous and the legacy
+/// immediate-return path is preserved unchanged.
+fn language_has_decl_impl_duality(language: Language) -> bool {
+    matches!(
+        language,
+        Language::Kotlin
+            | Language::Scala
+            | Language::Java
+            | Language::CSharp
+            | Language::Swift
+    )
 }
 
 /// Get the node kinds that represent functions in each language
@@ -2393,5 +2573,228 @@ class Inner:
         let root = tree.root_node();
         let result = find_class_node(root, "Anything", Language::C, source);
         assert!(result.is_none(), "C has no class kinds — must return None");
+    }
+
+    // ---------------------------------------------------------------------
+    // body-aware-fn-resolution-v1 (B1): when a name is declared twice —
+    // once as a body-less abstract/interface/trait declaration and once as
+    // a concrete implementation with a body — function resolution must
+    // prefer the definition that HAS A BODY (AST-driven, generic across
+    // languages), and when a line is supplied it must prefer the
+    // definition whose line range CONTAINS that line. Before this fix,
+    // `find_function_node` returned the FIRST source-order name match (the
+    // body-less abstract decl), collapsing slice/chop/complexity onto a
+    // single signature line.
+    // ---------------------------------------------------------------------
+
+    /// AST primitive sanity check: `get_function_body` distinguishes a
+    /// body-less Kotlin interface method from a concrete impl. The fix
+    /// relies on this distinction being correct.
+    #[test]
+    fn test_get_function_body_kotlin_abstract_vs_concrete() {
+        let source = r#"
+interface Sem {
+    public fun tryAcquire(): Boolean
+}
+
+class SemImpl : Sem {
+    override fun tryAcquire(): Boolean {
+        var p = 0
+        if (p > 0) { p = 1 }
+        return p > 0
+    }
+}
+"#;
+        let tree = parse(source, Language::Kotlin).unwrap();
+        let root = tree.root_node();
+        // Collect both function_declaration nodes named tryAcquire.
+        let mut nodes = Vec::new();
+        let mut stack = vec![root];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "function_declaration"
+                && get_function_name(n, Language::Kotlin, source).as_deref() == Some("tryAcquire")
+            {
+                nodes.push(n);
+            }
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                stack.push(ch);
+            }
+        }
+        assert_eq!(nodes.len(), 2, "two tryAcquire declarations expected");
+        let with_body = nodes
+            .iter()
+            .filter(|n| get_function_body(**n, Language::Kotlin).is_some())
+            .count();
+        assert_eq!(
+            with_body, 1,
+            "exactly one of the two Kotlin declarations has a body"
+        );
+    }
+
+    /// Kotlin: abstract interface decl + concrete impl of the same name ->
+    /// `find_function_node` (no line) picks the impl (has body, multi-line).
+    #[test]
+    fn test_find_function_node_kotlin_prefers_body_bearing_impl() {
+        let source = r#"
+interface Sem {
+    public fun tryAcquire(): Boolean
+}
+
+class SemImpl : Sem {
+    override fun tryAcquire(): Boolean {
+        var p = 0
+        if (p > 0) { p = 1 }
+        return p > 0
+    }
+}
+"#;
+        let tree = parse(source, Language::Kotlin).unwrap();
+        let root = tree.root_node();
+        let node = find_function_node(root, "tryAcquire", Language::Kotlin, source)
+            .expect("tryAcquire should resolve");
+        assert!(
+            get_function_body(node, Language::Kotlin).is_some(),
+            "resolution must pick the body-bearing impl, not the abstract decl"
+        );
+        let start = node.start_position().row as u32 + 1;
+        let end = node.end_position().row as u32 + 1;
+        assert!(
+            end > start,
+            "impl spans multiple lines (got {}-{})",
+            start,
+            end
+        );
+    }
+
+    /// Scala: abstract trait decl + concrete impl of the same name ->
+    /// `find_function_node` (no line) picks the impl (has body, multi-line).
+    #[test]
+    fn test_find_function_node_scala_prefers_body_bearing_impl() {
+        let source = r#"
+trait Sem[F[_]] {
+  def acquireN(n: Long): F[Unit]
+}
+
+object Sem {
+  def make[F[_]] =
+    new Sem[F] {
+      def acquireN(n: Long): F[Unit] = {
+        val x = n + 1
+        if (x > 0) doThing(x)
+        else other(x)
+      }
+    }
+}
+"#;
+        let tree = parse(source, Language::Scala).unwrap();
+        let root = tree.root_node();
+        let node = find_function_node(root, "acquireN", Language::Scala, source)
+            .expect("acquireN should resolve");
+        assert!(
+            get_function_body(node, Language::Scala).is_some(),
+            "resolution must pick the body-bearing impl, not the abstract trait decl"
+        );
+        let start = node.start_position().row as u32 + 1;
+        let end = node.end_position().row as u32 + 1;
+        assert!(
+            end > start,
+            "impl spans multiple lines (got {}-{})",
+            start,
+            end
+        );
+    }
+
+    /// Line-aware resolution: when a line is supplied, the definition whose
+    /// range CONTAINS that line wins — even over an earlier body-bearing
+    /// overload. Two concrete overloads of `f` here both have bodies; the
+    /// requested line falls inside the SECOND one.
+    #[test]
+    fn test_find_function_node_with_line_picks_range_containing_def() {
+        let source = r#"
+class C {
+    fun f(): Int {
+        return 1
+    }
+    fun f(x: Int): Int {
+        var y = x
+        if (y > 0) { y = y + 1 }
+        return y
+    }
+}
+"#;
+        let tree = parse(source, Language::Kotlin).unwrap();
+        let root = tree.root_node();
+        // Line 8 (`if (y > 0)`) is inside the SECOND overload.
+        let node = find_function_node_with_line(root, "f", Some(8), Language::Kotlin, source)
+            .expect("f should resolve");
+        let start = node.start_position().row as u32 + 1;
+        let end = node.end_position().row as u32 + 1;
+        assert!(
+            start <= 8 && 8 <= end,
+            "line 8 must fall within the resolved def range (got {}-{})",
+            start,
+            end
+        );
+        // Sanity: a line in the FIRST overload picks that one instead.
+        let first = find_function_node_with_line(root, "f", Some(4), Language::Kotlin, source)
+            .expect("f@4 should resolve");
+        let fs = first.start_position().row as u32 + 1;
+        let fe = first.end_position().row as u32 + 1;
+        assert!(
+            fs <= 4 && 4 <= fe && fe < start,
+            "line 4 must resolve to the earlier overload (got {}-{} vs second {}-)",
+            fs,
+            fe,
+            start
+        );
+    }
+
+    /// Regression: a SINGLE definition resolves exactly as before — the
+    /// has-body / line preference must not perturb the common case.
+    #[test]
+    fn test_find_function_node_single_definition_unchanged() {
+        let source = r#"
+fun onlyOne(a: Int): Int {
+    return a + 1
+}
+"#;
+        let tree = parse(source, Language::Kotlin).unwrap();
+        let root = tree.root_node();
+        let by_name = find_function_node(root, "onlyOne", Language::Kotlin, source)
+            .expect("onlyOne by name");
+        let with_line =
+            find_function_node_with_line(root, "onlyOne", Some(3), Language::Kotlin, source)
+                .expect("onlyOne with line");
+        assert_eq!(
+            by_name.id(),
+            with_line.id(),
+            "single-definition resolution must be identical with or without a line"
+        );
+        // And `find_function_node` (no line) must equal the with-line/None path.
+        let none_line =
+            find_function_node_with_line(root, "onlyOne", None, Language::Kotlin, source)
+                .expect("onlyOne with None line");
+        assert_eq!(by_name.id(), none_line.id());
+    }
+
+    /// Body-less-only fallback: if EVERY matching declaration is body-less
+    /// (a pure interface/trait with no impl in the file), resolution still
+    /// returns the declaration rather than failing — callers degrade to a
+    /// truthful single-line stub (mirrors the Elixir bodyless-head policy).
+    #[test]
+    fn test_find_function_node_bodyless_only_returns_decl() {
+        let source = r#"
+interface Sem {
+    public fun tryAcquire(): Boolean
+}
+"#;
+        let tree = parse(source, Language::Kotlin).unwrap();
+        let root = tree.root_node();
+        let node = find_function_node(root, "tryAcquire", Language::Kotlin, source);
+        assert!(
+            node.is_some(),
+            "a body-less-only declaration must still resolve (truthful stub)"
+        );
     }
 }

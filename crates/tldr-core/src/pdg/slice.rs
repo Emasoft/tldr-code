@@ -32,7 +32,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pdg::get_pdg_context;
+use crate::pdg::get_pdg_context_with_line;
 use crate::types::{DependenceType, Language, PdgInfo, SliceDirection};
 use crate::TldrResult;
 
@@ -120,8 +120,10 @@ pub fn get_slice(
     variable: Option<&str>,
     language: Language,
 ) -> TldrResult<HashSet<u32>> {
-    // Get PDG for the function
-    let pdg = get_pdg_context(source_or_path, function_name, language)?;
+    // body-aware-fn-resolution-v1 (B1): pass the criterion line so the PDG
+    // is built for the definition whose range contains it (the concrete
+    // impl), not the first same-named (possibly body-less) declaration.
+    let pdg = get_pdg_context_with_line(source_or_path, function_name, Some(line), language)?;
 
     // Find the node(s) containing the target line
     let start_nodes = find_nodes_for_line(&pdg, line);
@@ -166,8 +168,8 @@ pub fn get_slice_rich(
     variable: Option<&str>,
     language: Language,
 ) -> TldrResult<RichSlice> {
-    // Get PDG for the function
-    let pdg = get_pdg_context(source_or_path, function_name, language)?;
+    // body-aware-fn-resolution-v1 (B1): line-aware PDG (see `get_slice`).
+    let pdg = get_pdg_context_with_line(source_or_path, function_name, Some(line), language)?;
 
     // Find the node(s) containing the target line
     let start_nodes = find_nodes_for_line(&pdg, line);
