@@ -735,6 +735,53 @@ mod uninitialized_tests {
             "Should detect possibly uninitialized in loop"
         );
     }
+
+    /// T5 (v0.5.0 AUDIT-FIX): a use that lies OUTSIDE every CFG block must
+    /// not be reported as `definite` uninitialized when a definition of that
+    /// variable EXISTS elsewhere. This is the Scala `fold` shape: the CFG
+    /// does not model the match-arm bodies (lines 92-94), so the reads of the
+    /// pattern bindings `e`/`fa` fall outside all blocks. "No enclosing
+    /// block" means "no analysis information", NOT "definitely uninitialized".
+    #[test]
+    fn test_use_outside_block_with_def_not_definite() {
+        // linear_cfg covers lines 1..=6 only. Put a def + use at line 9,
+        // which is outside every block.
+        let cfg = linear_cfg();
+        let refs = vec![
+            make_def("e", 9), // binding outside any modeled block
+            make_use("e", 9), // read outside any modeled block
+        ];
+
+        let reaching = compute_reaching_definitions(&cfg, &refs);
+        let uninit = detect_uninitialized(&reaching, &cfg, &refs);
+
+        assert!(
+            !uninit.iter().any(|u| u.var == "e"
+                && matches!(u.severity, UninitSeverity::Definite)),
+            "A defined var used outside all CFG blocks must not be DEFINITE uninitialized, got {:?}",
+            uninit
+        );
+    }
+
+    /// T5 control: a use outside every block of a variable that has NO
+    /// definition anywhere is still genuinely uninitialized (we must not
+    /// over-suppress).
+    #[test]
+    fn test_use_outside_block_without_def_still_flagged() {
+        let cfg = linear_cfg();
+        let refs = vec![
+            make_use("ghost", 9), // no def anywhere
+        ];
+
+        let reaching = compute_reaching_definitions(&cfg, &refs);
+        let uninit = detect_uninitialized(&reaching, &cfg, &refs);
+
+        assert!(
+            uninit.iter().any(|u| u.var == "ghost"),
+            "An undefined var used outside all blocks should still be flagged, got {:?}",
+            uninit
+        );
+    }
 }
 
 // =============================================================================

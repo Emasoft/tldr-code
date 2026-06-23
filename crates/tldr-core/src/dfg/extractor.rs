@@ -144,6 +144,9 @@ pub(crate) fn extract_dfg_from_tree_with_cfg(
     if matches!(language, Language::Ruby) {
         builder.collect_ruby_local_names(func_node);
     }
+    // T5 (v0.5.0 AUDIT-FIX): pre-collect language-local binding names so
+    // is_use_context never suppresses a genuine local read.
+    builder.collect_t5_local_names(func_node);
     if let Some(body) = body_node {
         builder.extract_refs_from_node(body, 0)?;
     }
@@ -179,6 +182,9 @@ fn build_dfg_for_function(
     if matches!(language, Language::Ruby) {
         builder.collect_ruby_local_names(func_node);
     }
+    // T5 (v0.5.0 AUDIT-FIX): pre-collect language-local binding names so
+    // is_use_context never suppresses a genuine local read.
+    builder.collect_t5_local_names(func_node);
     if let Some(body) = body_node {
         builder.extract_refs_from_node(body, 0)?;
     }
@@ -230,6 +236,27 @@ struct DfgBuilder<'a> {
     /// NOT suppress the analyzed function's reads of its own variable.
     /// `None` until set in the build path.
     analyzed_fn_span: Option<(usize, usize)>,
+    /// T5 (v0.5.0 AUDIT-FIX, root cause B1): TS/JS local-variable names
+    /// DECLARED anywhere inside the analyzed function (its own `const`/`let`/
+    /// `var` declarations and its own parameters, including those of nested
+    /// helpers). `collect_imports` adds nested-helper PARAMETER names to
+    /// `imported_type_names` for not-a-use suppression, but a sibling helper's
+    /// parameter can collide with a genuine local of the analyzed function
+    /// (axios `mergeConfig`: sibling `mergeDeepProperties(a, b)` vs the
+    /// callback's `const a`/`const b`). The position-independent suppression
+    /// then dropped EVERY read of that local, so its store looked dead. An
+    /// identifier that has a real local DECLARATION here must never be
+    /// suppressed. Populated from the AST for TS/JS only; empty otherwise.
+    ts_js_local_names: HashSet<String>,
+    /// T5 (v0.5.0 AUDIT-FIX, root cause B3): OCaml names bound by a
+    /// `let`/`let rec` binding or a parameter inside the analyzed function.
+    /// The blanket `value_path` suppression in `is_ocaml_use_context`
+    /// (added to silence module-qualified and top-level value references)
+    /// also dropped the recursive references to a local `let rec inner ...`,
+    /// so `inner` looked like a dead store. An UNQUALIFIED `value_path`
+    /// whose name is one of these local bindings IS a genuine use. Mirrors
+    /// the Ruby `ruby_local_names` precedent. Empty for non-OCaml.
+    ocaml_local_names: HashSet<String>,
 }
 
 impl<'a> DfgBuilder<'a> {
@@ -243,6 +270,24 @@ impl<'a> DfgBuilder<'a> {
             imported_type_names: HashSet::new(),
             ruby_local_names: HashSet::new(),
             analyzed_fn_span: None,
+            ts_js_local_names: HashSet::new(),
+            ocaml_local_names: HashSet::new(),
+        }
+    }
+
+    /// T5 (v0.5.0 AUDIT-FIX): per-language pre-pass collecting local binding
+    /// names of the analyzed function so `is_use_context` never suppresses a
+    /// genuine local read. Dispatches to the language-specific collector;
+    /// no-op for languages that don't need it.
+    fn collect_t5_local_names(&mut self, func_node: Node) {
+        match self.language {
+            Language::TypeScript | Language::JavaScript => {
+                self.collect_ts_js_local_names(func_node);
+            }
+            Language::Ocaml => {
+                self.collect_ocaml_local_names(func_node);
+            }
+            _ => {}
         }
     }
 
@@ -330,6 +375,88 @@ impl<'a> DfgBuilder<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// T5 (v0.5.0 AUDIT-FIX, root cause B1): collect the names of TS/JS
+    /// local variables DECLARED inside the analyzed function subtree, so the
+    /// position-independent import/param suppression in `is_use_context`
+    /// never drops a read of a genuine local that happens to share a name
+    /// with a sibling helper's parameter.
+    ///
+    /// A local name is introduced by a `variable_declarator`'s `name` field
+    /// (covers `const a`, `let b`, `var c`, and destructuring identifier
+    /// leaves). We collect ONLY explicit `const`/`let`/`var` declarations —
+    /// NOT parameters — so the existing nested-helper-parameter suppression
+    /// (which fixes a separate uninitialized-in-nested-body FP) is preserved
+    /// exactly. The axios case is a genuine `const a`/`const b` collision, so
+    /// declaration collection is sufficient to rescue it. We walk the whole
+    /// analyzed-function subtree once.
+    fn collect_ts_js_local_names(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        if node.kind() == "variable_declarator" {
+            if let Some(name) = node.child_by_field_name("name") {
+                self.collect_ts_js_binding_identifiers(name);
+            }
+        }
+        for child in node.children(&mut cursor) {
+            self.collect_ts_js_local_names(child);
+        }
+    }
+
+    /// Collect plain binding identifiers from a TS/JS binding pattern
+    /// (identifier, object_pattern, array_pattern, rest/default wrappers).
+    fn collect_ts_js_binding_identifiers(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" | "shorthand_property_identifier_pattern"
+            | "shorthand_property_identifier" => {
+                if let Ok(t) = node.utf8_text(self.source.as_bytes()) {
+                    if !t.is_empty() {
+                        self.ts_js_local_names.insert(t.to_string());
+                    }
+                }
+            }
+            _ => {
+                for child in node.children(&mut node.walk()) {
+                    self.collect_ts_js_binding_identifiers(child);
+                }
+            }
+        }
+    }
+
+    /// T5 (v0.5.0 AUDIT-FIX, root cause B3): collect OCaml local binding
+    /// names (`let`/`let rec` pattern names and `parameter` value-pattern
+    /// names) declared inside the analyzed function subtree.
+    fn collect_ocaml_local_names(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        match node.kind() {
+            "let_binding" => {
+                if let Some(pat) = node.child_by_field_name("pattern") {
+                    if matches!(pat.kind(), "value_name" | "identifier") {
+                        if let Ok(t) = pat.utf8_text(self.source.as_bytes()) {
+                            if !t.is_empty() {
+                                self.ocaml_local_names.insert(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            "parameter" => {
+                // parameter -> [pattern] value_pattern (the bound name).
+                for inner in node.children(&mut node.walk()) {
+                    if matches!(inner.kind(), "value_pattern" | "value_name" | "identifier") {
+                        if let Ok(t) = inner.utf8_text(self.source.as_bytes()) {
+                            if !t.is_empty() {
+                                self.ocaml_local_names.insert(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in node.children(&mut cursor) {
+            self.collect_ocaml_local_names(child);
         }
     }
 
@@ -585,43 +712,24 @@ impl<'a> DfgBuilder<'a> {
             // the module-qualified case directly.
             // language-specific-bugs-v1 (P14.AGG14-12): collect class
             // field names. Java `field_declaration` carries one or more
-            // `variable_declarator { name: <ident>, ... }` children — pull
-            // every variable name into the same suppression set as
-            // imported types. C# `field_declaration` uses the same
-            // grammar layout in tree-sitter-c-sharp. Recurse INTO class
-            // bodies so we see the fields (the early-return below for
-            // class_declaration is now overridden for field collection).
+            // `variable_declarator { name: <ident>, ... }` children directly.
+            //
+            // T5 (v0.5.0 AUDIT-FIX, root cause A1): tree-sitter-c-sharp does
+            // NOT share the Java layout. A C# `field_declaration` wraps its
+            // declarator(s) one level deeper:
+            //   field_declaration
+            //     modifier* variable_declaration
+            //       [type] ...
+            //       variable_declarator { [name]: identifier }
+            //       (',' variable_declarator)*  -- for `int a, b;`
+            // The pre-fix collector only looked for `variable_declarator` as a
+            // DIRECT child, so NO C# field was ever registered — every bare
+            // field read (`_writer.Write(...)`) was then flagged `definite`
+            // uninitialized (45 FPs in BsonBinaryWriter.WriteTokenInternal).
+            // Collect declarator names through any `variable_declaration`
+            // wrapper, which covers both grammars.
             if kind == "field_declaration" {
-                for declarator in node.children(&mut node.walk()) {
-                    if declarator.kind() != "variable_declarator" {
-                        continue;
-                    }
-                    if let Some(name_node) = declarator.child_by_field_name("name") {
-                        let name = name_node
-                            .utf8_text(self.source.as_bytes())
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        if !name.is_empty() {
-                            self.imported_type_names.insert(name);
-                        }
-                    } else {
-                        // Fallback: first identifier child of the declarator.
-                        for inner in declarator.children(&mut declarator.walk()) {
-                            if inner.kind() == "identifier" {
-                                let name = inner
-                                    .utf8_text(self.source.as_bytes())
-                                    .unwrap_or("")
-                                    .trim()
-                                    .to_string();
-                                if !name.is_empty() {
-                                    self.imported_type_names.insert(name);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
+                self.collect_field_declarator_names(node);
                 continue;
             }
             // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
@@ -719,6 +827,57 @@ impl<'a> DfgBuilder<'a> {
             }
             for child in node.children(&mut node.walk()) {
                 stack.push((child, is_file_level));
+            }
+        }
+    }
+
+    /// T5 (v0.5.0 AUDIT-FIX, root cause A1): collect every field name declared
+    /// by a Java/C# `field_declaration` into `imported_type_names`.
+    ///
+    /// Java places `variable_declarator` directly under `field_declaration`;
+    /// C# nests it under an intermediate `variable_declaration`. We collect a
+    /// declarator's `name` field (or its first identifier child as a fallback)
+    /// wherever it appears in the declaration subtree, descending only through
+    /// the structural `variable_declaration` wrapper so we never reach into an
+    /// initializer expression (a field initializer's identifiers are not field
+    /// names and must not be suppressed).
+    fn collect_field_declarator_names(&mut self, node: Node) {
+        for child in node.children(&mut node.walk()) {
+            match child.kind() {
+                "variable_declarator" => {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let name = name_node
+                            .utf8_text(self.source.as_bytes())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if !name.is_empty() {
+                            self.imported_type_names.insert(name);
+                        }
+                    } else {
+                        // Fallback: first identifier child of the declarator.
+                        for inner in child.children(&mut child.walk()) {
+                            if inner.kind() == "identifier" {
+                                let name = inner
+                                    .utf8_text(self.source.as_bytes())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_string();
+                                if !name.is_empty() {
+                                    self.imported_type_names.insert(name);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                // C#: `variable_declaration` wraps the declarator(s). Descend
+                // one structural level (it also holds the `[type]`, which we
+                // ignore — a declarator's name is what we want).
+                "variable_declaration" => {
+                    self.collect_field_declarator_names(child);
+                }
+                _ => {}
             }
         }
     }
@@ -1306,6 +1465,21 @@ impl<'a> DfgBuilder<'a> {
             }
 
             // =================================================================
+            // Scala match-arm pattern bindings.
+            //
+            // T5 (v0.5.0 AUDIT-FIX, root cause A6): `case Errored(e) =>
+            // errored(e)` binds `e` as a pattern variable (a Definition); the
+            // arm body's read `errored(e)` must resolve to it. Without a
+            // `case_clause` arm the binding was never registered, so `e`/`fa`
+            // (Outcome.fold) were reported as `definite` uninitialized. Extract
+            // the pattern's bound identifiers as definitions, then analyze the
+            // guard and body for uses.
+            // =================================================================
+            "case_clause" if matches!(self.language, Language::Scala) => {
+                self.process_scala_case_clause(node, depth)?;
+            }
+
+            // =================================================================
             // Elixir match operator: x = ... (pattern matching assignment)
             // Elixir grammar uses binary_operator with "=" for pattern matching
             // =================================================================
@@ -1370,6 +1544,17 @@ impl<'a> DfgBuilder<'a> {
                 Language::C | Language::Cpp => {
                     self.process_c_for_statement(node, depth)?
                 }
+                // T5 (v0.5.0 AUDIT-FIX, root cause A5): Lua/Luau reuse the
+                // `for_statement` node kind for both numeric and generic for,
+                // exposing a `[clause]` (`for_numeric_clause` /
+                // `for_generic_clause`) plus a `[body]` block — NOT the
+                // left/right fields the Python handler expects. Without a
+                // shape-aware arm the loop variables (`issue`, `line`) were
+                // never registered as definitions, so their body reads were
+                // flagged `definite` uninitialized.
+                Language::Lua | Language::Luau => {
+                    self.process_lua_for_statement(node, depth)?
+                }
                 _ => self.process_for_loop(node, depth)?,
             },
 
@@ -1394,9 +1579,20 @@ impl<'a> DfgBuilder<'a> {
             }
 
             // PHP: foreach ($arr as $key => $val) { }
-            "foreach_statement" => {
-                self.process_php_foreach(node, depth)?;
-            }
+            //
+            // T5 (v0.5.0 AUDIT-FIX, root cause A3): C# reuses the
+            // `foreach_statement` node kind but with a different shape —
+            // `foreach (T x in coll) { }` exposes `[type]` / `[left]` /
+            // `[right]` / `[body]` fields and has NO `as` child. The pre-fix
+            // code routed ALL `foreach_statement` nodes to the PHP handler,
+            // which scans for an `as` token; finding none it dropped the C#
+            // loop variable (`property`, `c`), so every body read of it was
+            // flagged `definite` uninitialized. Route C# to a shape-aware
+            // handler. (PHP is the only other grammar using this node kind.)
+            "foreach_statement" => match self.language {
+                Language::CSharp => self.process_csharp_foreach(node, depth)?,
+                _ => self.process_php_foreach(node, depth)?,
+            },
 
             // Go: for i, v := range items { }
             "range_clause" => {
@@ -1871,19 +2067,28 @@ impl<'a> DfgBuilder<'a> {
 
     /// Process with statement
     fn process_with_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // T5 (v0.5.0 AUDIT-FIX, root cause B2): tree-sitter-python nests the
+        // `with_item`s under a `with_clause` wrapper:
+        //   with_statement
+        //     'with' with_clause { with_item { [value] <ctx-expr> } } ':' [body]
+        // The pre-fix loop scanned only the DIRECT children of
+        // `with_statement` for `with_item`, found none, and dropped the
+        // context-expression reads — so a variable used ONLY as a context
+        // argument (`with set_environ("k", no_proxy_arg):`) had no recorded
+        // use and its prior store was flagged dead. Descend through any
+        // `with_clause` wrapper while still tolerating a flat layout.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "with_item" {
-                // Process the context expression (use)
-                if let Some(value) = child.child_by_field_name("value") {
-                    self.extract_refs_from_node(value, depth + 1)?;
-                }
-                // Process the alias (definition)
-                if let Some(alias) = child.child_by_field_name("alias") {
-                    if alias.kind() == "identifier" {
-                        self.add_ref_from_node(alias, RefType::Definition);
+            match child.kind() {
+                "with_item" => self.process_with_item(child, depth)?,
+                "with_clause" => {
+                    for item in child.children(&mut child.walk()) {
+                        if item.kind() == "with_item" {
+                            self.process_with_item(item, depth)?;
+                        }
                     }
                 }
+                _ => {}
             }
         }
 
@@ -1892,6 +2097,62 @@ impl<'a> DfgBuilder<'a> {
             self.extract_refs_from_node(body, depth + 1)?;
         }
 
+        Ok(())
+    }
+
+    /// Process a single Python `with_item`: the context expression is a use,
+    /// the optional `as <name>` alias is a definition.
+    ///
+    /// Two shapes occur. Without an alias the `[value]` field is the bare
+    /// context expression. With `as`, tree-sitter-python wraps it as
+    /// `[value] as_pattern { <ctx-expr> 'as' [alias] as_pattern_target {
+    /// identifier } }` — there is NO `alias` field directly on `with_item`.
+    fn process_with_item(&mut self, item: Node, depth: usize) -> TldrResult<()> {
+        if let Some(value) = item.child_by_field_name("value") {
+            if value.kind() == "as_pattern" {
+                self.process_with_as_pattern(value, depth)?;
+            } else {
+                // Bare context expression: every identifier in it is a use.
+                self.extract_refs_from_node(value, depth + 1)?;
+            }
+        }
+        // Legacy flat layout: an explicit `alias` field on with_item.
+        if let Some(alias) = item.child_by_field_name("alias") {
+            if alias.kind() == "identifier" {
+                self.add_ref_from_node(alias, RefType::Definition);
+            }
+        }
+        Ok(())
+    }
+
+    /// Process a Python `as_pattern` (`<expr> as <target>`) used as a
+    /// `with`-item value: the leading expression is a use, the
+    /// `as_pattern_target` identifier is a definition.
+    fn process_with_as_pattern(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        for child in node.children(&mut node.walk()) {
+            match child.kind() {
+                "as_pattern_target" => {
+                    // The bound name(s): register identifier leaves as defs.
+                    for inner in child.children(&mut child.walk()) {
+                        if inner.kind() == "identifier" {
+                            self.add_ref_from_node(inner, RefType::Definition);
+                        } else {
+                            self.extract_assignment_targets(inner)?;
+                        }
+                    }
+                    // A bare `identifier` target with no wrapper.
+                    if child.child_count() == 0 && child.kind() == "identifier" {
+                        self.add_ref_from_node(child, RefType::Definition);
+                    }
+                }
+                "as" => {}
+                other if !other.is_empty() && child.is_named() => {
+                    // The context expression preceding `as` — a use.
+                    self.extract_refs_from_node(child, depth + 1)?;
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -2535,6 +2796,50 @@ impl<'a> DfgBuilder<'a> {
         Ok(())
     }
 
+    /// T5 (v0.5.0 AUDIT-FIX, root cause A3): process a C#
+    /// `foreach (T x in coll) { }` statement.
+    ///
+    /// tree-sitter-c-sharp shape:
+    ///   foreach_statement
+    ///     'foreach' '(' [type] [left] 'in' [right] ')' [body]
+    /// `[left]` is the loop-variable binding (a Definition), `[right]` is the
+    /// iterated collection (a Use), `[body]` is the loop body. C# also allows
+    /// a deconstructing `foreach ((a, b) in pairs)` whose `[left]` is a
+    /// `tuple_pattern`; descend through it to register each name. Mirrors
+    /// `process_java_enhanced_for` (which keys off `[name]`/`[value]`).
+    fn process_csharp_foreach(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        if let Some(left) = node.child_by_field_name("left") {
+            self.extract_csharp_foreach_binding(left);
+        }
+        if let Some(right) = node.child_by_field_name("right") {
+            self.extract_refs_from_node(right, depth + 1)?;
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            self.extract_refs_from_node(body, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// Register the binding name(s) of a C# foreach `[left]` as definitions.
+    /// Handles the simple `identifier` form and the deconstructing
+    /// `tuple_pattern` / `declaration_expression` forms.
+    fn extract_csharp_foreach_binding(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                self.add_ref_from_node(node, RefType::Definition);
+            }
+            _ => {
+                // tuple_pattern / declaration_expression / parenthesized: the
+                // bound names are the identifier leaves. Descend and register
+                // each one (skip the element type identifiers, which appear as
+                // a `[type]` field, never as a bare identifier leaf here).
+                for child in node.children(&mut node.walk()) {
+                    self.extract_csharp_foreach_binding(child);
+                }
+            }
+        }
+    }
+
     // =====================================================================
     // Scala processing
     // =====================================================================
@@ -2563,6 +2868,62 @@ impl<'a> DfgBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// T5 (v0.5.0 AUDIT-FIX, root cause A6): process a Scala `case_clause`.
+    ///
+    /// Shape: `case_clause { case [pattern] <pat> (if [guard])? => [body] }`.
+    /// The pattern binds variables (e.g. `e` in `Errored(e)`, `fa` in
+    /// `Succeeded(fa)`) that the arm body reads. We register those bound
+    /// identifiers as definitions, then analyze the optional guard and the
+    /// body for uses.
+    fn process_scala_case_clause(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        if let Some(pattern) = node.child_by_field_name("pattern") {
+            self.extract_scala_pattern_bindings(pattern);
+        }
+        if let Some(guard) = node.child_by_field_name("guard") {
+            self.extract_refs_from_node(guard, depth + 1)?;
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            self.extract_refs_from_node(body, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// Register the variables bound by a Scala pattern as definitions.
+    ///
+    /// Lower-case `identifier` leaves of a pattern are bound variables
+    /// (`case Errored(e)` binds `e`). A `case_class_pattern`'s `[type]` field
+    /// is a `type_identifier` (the extractor's `case_class_pattern` walk skips
+    /// it because it is not a bare `identifier`), and upper-case identifier
+    /// leaves are stable-identifier (constant) patterns, never bindings — so
+    /// we only register lower-case identifiers. Nested patterns (tuples,
+    /// nested case-class patterns, typed patterns, bindings via `@`) are
+    /// handled by recursion.
+    fn extract_scala_pattern_bindings(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                // Scala convention: a bound pattern variable is lower-case; an
+                // upper-case identifier in pattern position is a stable
+                // (constant) match, not a binding.
+                if text
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                {
+                    self.add_ref_from_node(node, RefType::Definition);
+                }
+            }
+            // type_identifier is a type name in a constructor pattern; do not
+            // descend (it carries no bindings).
+            "type_identifier" => {}
+            _ => {
+                for child in node.children(&mut node.walk()) {
+                    self.extract_scala_pattern_bindings(child);
+                }
+            }
+        }
     }
 
     // =====================================================================
@@ -2616,6 +2977,62 @@ impl<'a> DfgBuilder<'a> {
     /// Process Lua local declaration: local x = ...
     /// AST: variable_declaration -> local, assignment_statement -> variable_list -> identifier(s), = , expression_list
     /// Also handles simpler form: variable_declaration -> local, identifier(s)
+    /// T5 (v0.5.0 AUDIT-FIX, root cause A5): process a Lua/Luau
+    /// `for_statement`.
+    ///
+    /// Two shapes share the node kind:
+    ///   * numeric — `for i = a, b, step do ... end`
+    ///       for_statement [clause] for_numeric_clause { [name] identifier,
+    ///         [start], [end], [step] } [body] block
+    ///   * generic — `for k, v in iter do ... end`
+    ///       for_statement [clause] for_generic_clause { variable_list (the
+    ///         loop vars), expression_list (the iterators) } [body] block
+    /// The loop variables are definitions; the bounds / iterators are uses;
+    /// the body is analyzed normally.
+    fn process_lua_for_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        if let Some(clause) = node.child_by_field_name("clause") {
+            match clause.kind() {
+                "for_numeric_clause" => {
+                    if let Some(name) = clause.child_by_field_name("name") {
+                        if name.kind() == "identifier" {
+                            self.add_ref_from_node(name, RefType::Definition);
+                        }
+                    }
+                    // start / end / step are reads.
+                    for field in ["start", "end", "step"] {
+                        if let Some(bound) = clause.child_by_field_name(field) {
+                            self.extract_refs_from_node(bound, depth + 1)?;
+                        }
+                    }
+                }
+                "for_generic_clause" => {
+                    // variable_list -> loop-var definitions; expression_list ->
+                    // iterator uses.
+                    for child in clause.children(&mut clause.walk()) {
+                        match child.kind() {
+                            "variable_list" => {
+                                for v in child.children(&mut child.walk()) {
+                                    if v.kind() == "identifier" {
+                                        self.add_ref_from_node(v, RefType::Definition);
+                                    }
+                                }
+                            }
+                            "expression_list" => {
+                                self.extract_refs_from_node(child, depth + 1)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            self.extract_refs_from_node(body, depth + 1)?;
+        }
+        Ok(())
+    }
+
     fn process_lua_local_declaration(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -3154,7 +3571,24 @@ impl<'a> DfgBuilder<'a> {
                 // reaching-defs sense. (Function arguments and let-
                 // bound names still carry their definitions, which
                 // populate the reaching-defs report normally.)
+                //
+                // T5 (v0.5.0 AUDIT-FIX, root cause B3): EXCEPT an UNQUALIFIED
+                // `value_path` (no `module_path` segment) whose name is a
+                // local binding of the analyzed function — e.g. the recursive
+                // references to `inner` in `let rec inner ... in inner [] l`.
+                // The blanket rule dropped those uses, so the `inner` binding
+                // looked like a dead store. A module-qualified path
+                // (`List.rev` -> has a `module_path` child) stays not-a-use.
                 "value_path" => {
+                    let is_qualified = parent
+                        .children(&mut parent.walk())
+                        .any(|c| c.kind() == "module_path");
+                    if !is_qualified {
+                        let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                        if !text.is_empty() && self.ocaml_local_names.contains(text) {
+                            return true;
+                        }
+                    }
                     return false;
                 }
                 // Field-of-record access `r.f`: `f` is on the RHS of
@@ -3325,6 +3759,24 @@ impl<'a> DfgBuilder<'a> {
                         }
                     }
                 }
+                // T5 (v0.5.0 AUDIT-FIX, root cause A2): the `[type]` of a
+                // `new Foo(...)` / `new Foo[...]` expression is a type name,
+                // never a local variable. `throw new
+                // ArgumentOutOfRangeException(...)` flagged
+                // `ArgumentOutOfRangeException` as `definite` uninitialized.
+                // (C# `object_creation_expression` / `array_creation_expression`
+                // expose the constructed type in the `[type]` field; Java uses
+                // `object_creation_expression` too.)
+                if matches!(
+                    pkind,
+                    "object_creation_expression" | "array_creation_expression"
+                ) {
+                    if let Some(type_field) = parent.child_by_field_name("type") {
+                        if self.node_contains(type_field, node) {
+                            return false;
+                        }
+                    }
+                }
                 // Field-access receiver / method-invocation receiver
                 // matching an imported type name: `PageRequest.of(...)`,
                 // `Sort.by(...)`. The text of the identifier matches a
@@ -3344,6 +3796,32 @@ impl<'a> DfgBuilder<'a> {
                         if obj.id() == node.id() {
                             let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
                             if !text.is_empty() && self.imported_type_names.contains(text) {
+                                return false;
+                            }
+                            // T5 (v0.5.0 AUDIT-FIX, root cause A2): a C#
+                            // member-access / invocation RECEIVER whose name
+                            // begins with an uppercase letter is, by .NET
+                            // naming convention, a type / enum / namespace
+                            // reference resolved from another compilation unit
+                            // — never a local variable (locals and parameters
+                            // are camelCase). `BsonType.Object`,
+                            // `Convert.ToInt32(...)`, `CultureInfo.X`,
+                            // `MathUtils.IntLength(...)` were all flagged
+                            // `definite` uninitialized because they are not in
+                            // any same-file import/field set. A local that
+                            // shadows such a name would itself appear as a
+                            // Definition (its declaration), so suppressing the
+                            // receiver here cannot hide a genuine local read:
+                            // the only identifiers reaching this branch with an
+                            // uppercase initial AND no recorded definition are
+                            // external type references. Scoped to C# to
+                            // preserve Java behavior exactly.
+                            if matches!(self.language, Language::CSharp)
+                                && text
+                                    .chars()
+                                    .next()
+                                    .is_some_and(|c| c.is_ascii_uppercase())
+                            {
                                 return false;
                             }
                         }
@@ -3411,7 +3889,20 @@ impl<'a> DfgBuilder<'a> {
             // single-statement locals, which the reaching-defs analyzer
             // handles correctly.)
             let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
-            if !text.is_empty() && self.imported_type_names.contains(text) {
+            // T5 (v0.5.0 AUDIT-FIX, root cause B1): never suppress an
+            // identifier that has a genuine `const`/`let`/`var` declaration in
+            // the analyzed function. `collect_imports` adds nested-helper
+            // PARAMETER names to `imported_type_names`; a sibling helper's
+            // param (axios `mergeDeepProperties(a, b)`) can collide with a
+            // real local (`const a`/`const b` in the `computeConfigValue`
+            // callback), and the suppression below would otherwise drop every
+            // read of that local — making its store look dead. Member-name
+            // positions (`obj.a`) were already classified not-a-use earlier in
+            // this block, so the surviving identifiers are value reads.
+            if !text.is_empty()
+                && self.imported_type_names.contains(text)
+                && !self.ts_js_local_names.contains(text)
+            {
                 return false;
             }
         }
@@ -3459,6 +3950,33 @@ impl<'a> DfgBuilder<'a> {
                 let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
                 if !text.is_empty() && self.imported_type_names.contains(text) {
                     return false;
+                }
+                // T5 (v0.5.0 AUDIT-FIX, root cause A4): a module-table
+                // receiver whose name begins with an uppercase letter
+                // (`Config.builtins`, `Globals.x`, `Config:method()`) is an
+                // implicit module-level global in Lua, defined in another
+                // module / earlier file scope — never a function-local. Such
+                // receivers were flagged `definite` uninitialized because they
+                // are not in the file-level `imported_type_names` set. Suppress
+                // the receiver position of a dot/method/bracket index when its
+                // name is uppercase-initial (the LSP-server convention for
+                // shared config tables). A genuine uppercase local would carry
+                // its own Definition from its `local`/assignment site.
+                if matches!(
+                    pkind,
+                    "dot_index_expression"
+                        | "method_index_expression"
+                        | "bracket_index_expression"
+                ) && text.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                {
+                    let recv = parent
+                        .child_by_field_name("table")
+                        .or_else(|| parent.child_by_field_name("object"));
+                    if let Some(recv) = recv {
+                        if recv.id() == node.id() {
+                            return false;
+                        }
+                    }
                 }
                 // Suppress identifiers whose grandparent is a variable
                 // node (lua `variable` wraps `identifier`) only when the
@@ -5014,6 +5532,14 @@ fn is_keyword(name: &str, language: Language) -> bool {
                 | "virtual"
                 | "while"
         ),
+        // T5 (v0.5.0 AUDIT-FIX, root cause A2): C# CONTEXTUAL operator
+        // keywords that tree-sitter-c-sharp surfaces as plain `identifier`
+        // nodes (the reserved keywords `case`/`switch`/`new`/... are distinct
+        // token kinds and never reach the identifier-as-use path). `nameof(x)`
+        // parses as `invocation_expression > [function] identifier 'nameof'`,
+        // so `nameof` was flagged `definite` uninitialized. `typeof`/`sizeof`
+        // share the shape. These are operators, never local variables.
+        Language::CSharp => matches!(name, "nameof" | "typeof" | "sizeof"),
         _ => false,
     }
 }
@@ -6403,6 +6929,310 @@ end"#;
             uses.contains(&"items".to_string()),
             "Python for iterable `items` should be a use, got {:?}",
             uses
+        );
+    }
+
+    // =====================================================================
+    // T5 (v0.5.0 AUDIT-FIX): reaching-defs / dead-stores false positives.
+    //
+    // The reaching-defs analyzer was reporting bare references to CLASS
+    // FIELDS, MODULE GLOBALS, FOREACH LOOP VARS, and match-arm PATTERN
+    // BINDINGS as `definite` uninitialized uses; and the dead-stores
+    // analyzer was flagging locals that ARE read later (inside closures,
+    // context-manager calls, and recursive bindings) as dead — both
+    // because the DFG use/def extraction dropped those nodes. These tests
+    // pin the corrected extraction on the production `get_dfg_context`
+    // path. RED before the fix, GREEN after.
+    // =====================================================================
+
+    /// Helper: lines of refs with a given (name, ref_type).
+    fn lines_of(dfg: &DfgInfo, name: &str, rt: RefType) -> Vec<u32> {
+        dfg.refs
+            .iter()
+            .filter(|r| r.name == name && r.ref_type == rt)
+            .map(|r| r.line)
+            .collect()
+    }
+
+    #[test]
+    fn t5_csharp_class_field_not_a_bare_use() {
+        // ROOT CAUSE A1: a method reading a bare class field `_writer`
+        // (declared `private readonly BinaryWriter _writer;`) must NOT be
+        // collected as a local-variable use — otherwise reaching-defs flags
+        // it `definite` uninitialized. The C# `field_declaration` nests its
+        // `variable_declarator` under a `variable_declaration` (unlike Java),
+        // so the field collector missed it.
+        let source = r#"
+class W
+{
+    private readonly BinaryWriter _writer;
+
+    private void Write(BsonToken t)
+    {
+        _writer.Write(t.Size);
+    }
+}
+"#;
+        let dfg = get_dfg_context(source, "Write", Language::CSharp).unwrap();
+        let writer_uses = lines_of(&dfg, "_writer", RefType::Use);
+        assert!(
+            writer_uses.is_empty(),
+            "C# bare class field `_writer` must not be a local use, got use lines {:?}",
+            writer_uses
+        );
+    }
+
+    #[test]
+    fn t5_csharp_type_receiver_not_a_bare_use() {
+        // ROOT CAUSE A2: PascalCase type/enum receivers in member access
+        // (`BsonType.Object`, `Convert.ToInt32(...)`, `CultureInfo.X`) are
+        // compile-time type references resolved from other compilation
+        // units, never local variables. They must not be bare uses.
+        let source = r#"
+class W
+{
+    private int Pick(BsonToken t)
+    {
+        switch (t.Type)
+        {
+            case BsonType.Object:
+                return Convert.ToInt32(t.Value, CultureInfo.InvariantCulture);
+            default:
+                return 0;
+        }
+    }
+}
+"#;
+        let dfg = get_dfg_context(source, "Pick", Language::CSharp).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for ty in ["BsonType", "Convert", "CultureInfo"] {
+            assert!(
+                !uses.contains(&ty.to_string()),
+                "C# type receiver `{}` must not be a local use, got uses {:?}",
+                ty,
+                uses
+            );
+        }
+    }
+
+    #[test]
+    fn t5_csharp_new_type_and_nameof_not_a_bare_use() {
+        // ROOT CAUSE A2 (tail): `throw new ArgumentOutOfRangeException(
+        // nameof(t), ...)` — the constructed type in `new T(...)` and the
+        // `nameof` contextual operator both surface as bare identifiers and
+        // were flagged `definite` uninitialized. Neither is a local variable.
+        let source = r#"
+class W
+{
+    private void Check(object t)
+    {
+        throw new ArgumentOutOfRangeException(nameof(t), "bad");
+    }
+}
+"#;
+        let dfg = get_dfg_context(source, "Check", Language::CSharp).unwrap();
+        let uses = names_of(&dfg, RefType::Use);
+        for n in ["ArgumentOutOfRangeException", "nameof"] {
+            assert!(
+                !uses.contains(&n.to_string()),
+                "C# `{}` must not be a local use, got uses {:?}",
+                n,
+                uses
+            );
+        }
+        // The argument `t` (a parameter) IS read by `nameof(t)`.
+        assert!(
+            uses.contains(&"t".to_string()),
+            "C# `nameof(t)` argument `t` should be a use, got uses {:?}",
+            uses
+        );
+    }
+
+    #[test]
+    fn t5_csharp_foreach_loop_var_is_definition() {
+        // ROOT CAUSE A3: C# `foreach (BsonProperty property in value)` shares
+        // the `foreach_statement` node kind with PHP but uses [left]/[right]
+        // fields. The loop variable `property` is a DEFINITION and its reads
+        // in the body must resolve to it (not be uninitialized).
+        let source = r#"
+class W
+{
+    private void Walk(BsonObject value)
+    {
+        foreach (BsonProperty property in value)
+        {
+            Write(property.Name);
+        }
+    }
+}
+"#;
+        let dfg = get_dfg_context(source, "Walk", Language::CSharp).unwrap();
+        let prop_defs = lines_of(&dfg, "property", RefType::Definition);
+        assert!(
+            !prop_defs.is_empty(),
+            "C# foreach loop var `property` must be a Definition, got refs {:?}",
+            dfg.refs
+        );
+        // The iterable `value` (a parameter) is read by the loop header.
+        let value_uses = lines_of(&dfg, "value", RefType::Use);
+        assert!(
+            !value_uses.is_empty(),
+            "C# foreach iterable `value` must be a use, got uses {:?}",
+            names_of(&dfg, RefType::Use)
+        );
+    }
+
+    #[test]
+    fn t5_lua_module_global_receiver_not_uninitialized() {
+        // ROOT CAUSE A4: a bare module global `Config` used as the receiver
+        // of `Config.builtins` is an implicit Lua global, defined elsewhere;
+        // it must not be reported as a local use / uninitialized var.
+        let source = r#"
+local function f()
+    return Config.builtins
+end
+"#;
+        let dfg = get_dfg_context(source, "f", Language::Lua).unwrap();
+        let cfg_uses = lines_of(&dfg, "Config", RefType::Use);
+        assert!(
+            cfg_uses.is_empty(),
+            "Lua module global `Config` must not be a local use, got use lines {:?}",
+            cfg_uses
+        );
+    }
+
+    #[test]
+    fn t5_lua_generic_for_loop_var_is_definition() {
+        // ROOT CAUSE A5: Lua `for _, issue in ipairs(t) do` uses a
+        // `for_generic_clause` (variable_list / expression_list), not
+        // left/right fields. The loop var `issue` is a DEFINITION.
+        let source = r#"
+local function f(t)
+    for _, issue in ipairs(t) do
+        use(issue)
+    end
+end
+"#;
+        let dfg = get_dfg_context(source, "f", Language::Lua).unwrap();
+        let issue_defs = lines_of(&dfg, "issue", RefType::Definition);
+        assert!(
+            !issue_defs.is_empty(),
+            "Lua generic-for loop var `issue` must be a Definition, got refs {:?}",
+            dfg.refs
+        );
+    }
+
+    #[test]
+    fn t5_scala_match_arm_binding_is_definition() {
+        // ROOT CAUSE A6: Scala `case Errored(e) => errored(e)` binds `e` as a
+        // pattern variable (a Definition). Its read in the arm body must
+        // resolve to that binding instead of being flagged uninitialized.
+        let source = r#"
+object O {
+  def fold[B](errored: E => B, completed: F => B): B =
+    this match {
+      case Errored(e) => errored(e)
+      case Succeeded(fa) => completed(fa)
+    }
+}
+"#;
+        let dfg = get_dfg_context(source, "fold", Language::Scala).unwrap();
+        let e_defs = lines_of(&dfg, "e", RefType::Definition);
+        let fa_defs = lines_of(&dfg, "fa", RefType::Definition);
+        assert!(
+            !e_defs.is_empty(),
+            "Scala match-arm binding `e` must be a Definition, got refs {:?}",
+            dfg.refs
+        );
+        assert!(
+            !fa_defs.is_empty(),
+            "Scala match-arm binding `fa` must be a Definition, got refs {:?}",
+            dfg.refs
+        );
+    }
+
+    #[test]
+    fn t5_deadstore_ts_sibling_callback_local_read_captured() {
+        // ROOT CAUSE B1: `const a = ...; const b = ...; merge(a, b, prop)`
+        // inside a callback. `a`/`b` are ALSO parameter names of sibling
+        // nested helpers, which were over-collected into the suppression set
+        // and dropped EVERY `a`/`b` read — so the stores looked dead. A
+        // local declaration's reads must survive.
+        let source = r#"
+function mergeConfig(config1, config2) {
+  function helper(a, b) {
+    return a;
+  }
+  forEach(keys, function compute(prop) {
+    const a = config1[prop];
+    const b = config2[prop];
+    return merge(a, b, prop);
+  });
+}
+"#;
+        let dfg = get_dfg_context(source, "mergeConfig", Language::JavaScript).unwrap();
+        let a_uses = lines_of(&dfg, "a", RefType::Use);
+        let b_uses = lines_of(&dfg, "b", RefType::Use);
+        assert!(
+            !a_uses.is_empty(),
+            "JS callback local `a` read in `merge(a, b, prop)` must be a use, got uses {:?}",
+            names_of(&dfg, RefType::Use)
+        );
+        assert!(
+            !b_uses.is_empty(),
+            "JS callback local `b` read in `merge(a, b, prop)` must be a use, got uses {:?}",
+            names_of(&dfg, RefType::Use)
+        );
+    }
+
+    #[test]
+    fn t5_deadstore_python_with_context_read_captured() {
+        // ROOT CAUSE B2: `with set_environ("k", no_proxy_arg):` — the context
+        // expression lives under a `with_clause` wrapper the handler skipped,
+        // so the read of `no_proxy_arg` was dropped and the prior store
+        // looked dead. The use must be captured.
+        let source = r#"
+def f(no_proxy):
+    no_proxy_arg = no_proxy
+    with set_environ("no_proxy", no_proxy_arg):
+        do_work()
+"#;
+        let dfg = get_dfg_context(source, "f", Language::Python).unwrap();
+        let arg_uses = lines_of(&dfg, "no_proxy_arg", RefType::Use);
+        assert!(
+            !arg_uses.is_empty(),
+            "Python `with` context read of `no_proxy_arg` must be a use, got uses {:?}",
+            names_of(&dfg, RefType::Use)
+        );
+    }
+
+    #[test]
+    fn t5_deadstore_ocaml_recursive_binding_read_captured() {
+        // ROOT CAUSE B3: `let rec inner acc = ... in inner [] l` — the
+        // recursive references to `inner` are unqualified `value_path`s that
+        // the blanket value_path suppression dropped, so the binding looked
+        // dead. An unqualified value_path matching a local binding IS a use.
+        let source = r#"
+let map_s f l =
+  let rec inner acc = function
+    | [] -> List.rev acc
+    | hd :: tl -> inner (hd :: acc) tl
+  in
+  inner [] l
+"#;
+        let dfg = get_dfg_context(source, "map_s", Language::Ocaml).unwrap();
+        let inner_uses = lines_of(&dfg, "inner", RefType::Use);
+        assert!(
+            !inner_uses.is_empty(),
+            "OCaml recursive binding `inner` must have its calls recorded as uses, got refs {:?}",
+            dfg.refs
+        );
+        // The module-qualified `List.rev` must still NOT be a bare use.
+        let list_uses = lines_of(&dfg, "List", RefType::Use);
+        assert!(
+            list_uses.is_empty(),
+            "OCaml module path `List` must not be a local use, got use lines {:?}",
+            list_uses
         );
     }
 }

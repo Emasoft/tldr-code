@@ -985,15 +985,32 @@ pub fn detect_uninitialized(
             .map(|b| b.id);
 
         let Some(block_id) = block_id else {
-            // Use not in any block - treat as definitely uninitialized
-            uninit.push(UninitializedUse {
-                var: var_ref.name.clone(),
-                line: var_ref.line,
-                column: Some(var_ref.column),
-                block: 0,
-                reason: "use not within any block".to_string(),
-                severity: UninitSeverity::Definite,
-            });
+            // Use not in any block.
+            //
+            // T5 (v0.5.0 AUDIT-FIX): "no enclosing block" means the CFG did
+            // not model this line — NOT that the variable is uninitialized. If
+            // a definition of this variable exists ANYWHERE in the function,
+            // we have no evidence of an uninitialized read, so we must not
+            // emit a `definite` report. This is the Scala `Outcome.fold`
+            // shape: the match-arm bodies (and thus the reads of pattern
+            // bindings `e`/`fa`) fall outside every modeled block, while the
+            // bindings themselves are real definitions. Only when the variable
+            // has NO definition at all does an out-of-block use remain
+            // evidence of a genuinely undefined name.
+            let has_any_def = defs_by_var
+                .get(var_ref.name.as_str())
+                .map(|d| !d.is_empty())
+                .unwrap_or(false);
+            if !has_any_def {
+                uninit.push(UninitializedUse {
+                    var: var_ref.name.clone(),
+                    line: var_ref.line,
+                    column: Some(var_ref.column),
+                    block: 0,
+                    reason: "no definition of this variable exists".to_string(),
+                    severity: UninitSeverity::Definite,
+                });
+            }
             continue;
         };
 
