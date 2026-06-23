@@ -2594,6 +2594,19 @@ pub(crate) fn analyze_file(
         CppApiCheckContext::default()
     };
 
+    // fix-C5-1 (v0.5.0 AUDIT-FIX): for JavaScript/TypeScript, pre-compute the
+    // AST context that gates JS005/TS005 `eval-call` flagging. The context
+    // holds the set of lines carrying a genuine `eval(...)` call_expression.
+    // Other languages get an empty default context — the gate in
+    // `check_regex_rule` is itself language-gated so the default is never
+    // consulted for non-JS/TS files.
+    let js_ctx: JsApiCheckContext =
+        if matches!(language, ApiLanguage::JavaScript | ApiLanguage::TypeScript) {
+            compute_js_api_check_context(&content, language)
+        } else {
+            JsApiCheckContext::default()
+        };
+
     for (line_num, line) in content.lines().enumerate() {
         let line_number = (line_num + 1) as u32;
         let trimmed = line.trim();
@@ -2632,6 +2645,7 @@ pub(crate) fn analyze_file(
                 py_ctx,
                 &lua_ctx,
                 &cpp_ctx,
+                &js_ctx,
                 &regex_specs,
             ) {
                 findings.push(finding);
@@ -2915,6 +2929,15 @@ pub(crate) struct LuaApiCheckContext {
     /// LU001 — it's a reassignment of a previously declared local, not
     /// a new global.
     pub local_names_in_scope: HashSet<String>,
+    /// fix-C5-1 (v0.5.0 AUDIT-FIX): line numbers (1-indexed) that overlap
+    /// a `comment` AST node. The line-level `is_comment_line` skip only
+    /// catches `--` single-line comments; a Lua/Luau `--[[ ... ]]` *block*
+    /// comment spans many lines whose interior text (`name = "x"`,
+    /// `version = "1"`, lit-meta headers) matches the LU001
+    /// `implicit-global` regex (`^ident =`). tree-sitter lexes the whole
+    /// block as ONE `comment` node, so marking every line it overlaps is
+    /// the root-cause gate. A line in this set must not flag any rule.
+    pub comment_line_set: HashSet<u32>,
 }
 
 /// Build a [`LuaApiCheckContext`] by parsing `content` as Lua or Luau and
@@ -2937,6 +2960,23 @@ fn compute_lua_api_check_context(content: &str, language: ApiLanguage) -> LuaApi
 
     fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut LuaApiCheckContext) {
         let kind = node.kind();
+
+        if kind == "comment" {
+            // fix-C5-1: a `--[[ ... ]]` block comment is one `comment` node
+            // spanning multiple lines. Mark every line it overlaps so the
+            // LU001 gate suppresses the lit-meta `name = "x"` field lines
+            // that match the implicit-global regex inside it. Single-line
+            // `--` comments are also captured (harmless — `is_comment_line`
+            // already skips those, this is belt-and-suspenders).
+            let start_line = node.start_position().row as u32 + 1;
+            let end_line = node.end_position().row as u32 + 1;
+            for ln in start_line..=end_line {
+                ctx.comment_line_set.insert(ln);
+            }
+            // Comments contain no locals / table constructors — no need to
+            // recurse into the comment's children.
+            return;
+        }
 
         if kind == "table_constructor" {
             // Mark every line that intersects this node's byte range. Use
@@ -3091,6 +3131,110 @@ fn compute_cpp_api_check_context(content: &str, language: ApiLanguage) -> CppApi
     ctx
 }
 
+/// fix-C5-1 (v0.5.0 AUDIT-FIX): per-file AST context for the JavaScript /
+/// TypeScript api-check scanner. The `JS005` / `TS005` `eval-call` rules are
+/// regex-only (`\beval\s*\(`). That word-boundary pattern matches the literal
+/// text `eval(` *anywhere* on a line — including inside string literals.
+/// Concretely `var xss = 'javascript:eval(document.body.innerHTML);';`
+/// (js-express `test/res.redirect.js:115`) matches `eval(` inside the string
+/// and reports a phantom eval call.
+///
+/// We pre-compute one set per file by walking the tree-sitter parse:
+///
+///   - `eval_call_line_set`: every source line (1-indexed) that overlaps a
+///     genuine `call_expression` whose callee resolves to `eval` — either a
+///     bare `identifier` named `eval` (`eval(x)`) or a `member_expression`
+///     whose terminal `property_identifier` is `eval` (`window.eval(x)`).
+///     String literals are lexed as `string` / `template_string` nodes and
+///     comments as `comment` nodes, so `eval(` inside either never produces
+///     a `call_expression` and can never appear in this set.
+///
+/// The context is consulted ONLY for `JS005` / `TS005` inside
+/// [`check_regex_rule`]. Other JS/TS rules and other languages are
+/// unaffected. A parse failure yields a context whose `parsed` flag is
+/// `false`; the gate then falls back to the regex-only behaviour rather than
+/// silently suppressing every finding (the gate is a precision optimisation,
+/// not a correctness pre-condition — same contract as `CppApiCheckContext`).
+#[derive(Debug, Default)]
+pub(crate) struct JsApiCheckContext {
+    /// Whether the file parsed successfully. When `false` (parse error or
+    /// non-JS/TS language) the JS005/TS005 gate falls back to regex-only
+    /// behaviour so a parser hiccup cannot suppress real eval calls.
+    pub parsed: bool,
+    /// Line numbers (1-indexed) that overlap a genuine `eval(...)`
+    /// `call_expression`. A JS005/TS005 regex match on a line NOT in this
+    /// set is a phantom (the text `eval(` appeared in a string literal or
+    /// comment) and must be suppressed.
+    pub eval_call_line_set: HashSet<u32>,
+}
+
+/// Build a [`JsApiCheckContext`] by parsing `content` as TypeScript/JavaScript
+/// (both dialects share the `tree-sitter-typescript` grammar) and walking the
+/// parse, collecting every line that overlaps an `eval(...)` call. Returns a
+/// context with `parsed = false` on any parse failure or for a non-JS/TS
+/// language — the caller then keeps the regex-only behaviour for that file.
+fn compute_js_api_check_context(content: &str, language: ApiLanguage) -> JsApiCheckContext {
+    let lang = match language {
+        ApiLanguage::JavaScript => Language::JavaScript,
+        ApiLanguage::TypeScript => Language::TypeScript,
+        _ => return JsApiCheckContext::default(),
+    };
+    let tree = match tldr_core::ast::parser::parse(content, lang) {
+        Ok(t) => t,
+        Err(_) => return JsApiCheckContext::default(),
+    };
+    let mut ctx = JsApiCheckContext {
+        parsed: true,
+        eval_call_line_set: HashSet::new(),
+    };
+    let bytes = content.as_bytes();
+
+    /// Whether the `function` child of a `call_expression` resolves to a
+    /// call of `eval`: a bare `identifier` named `eval`, or a
+    /// `member_expression` whose terminal `property_identifier` is `eval`.
+    fn callee_is_eval(func: tree_sitter::Node, source: &[u8]) -> bool {
+        match func.kind() {
+            "identifier" => &source[func.byte_range()] == b"eval",
+            "member_expression" => func
+                .child_by_field_name("property")
+                .map(|p| {
+                    matches!(p.kind(), "property_identifier" | "identifier")
+                        && &source[p.byte_range()] == b"eval"
+                })
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut JsApiCheckContext) {
+        if node.kind() == "call_expression" {
+            if let Some(func) = node.child_by_field_name("function") {
+                if callee_is_eval(func, source) {
+                    // Mark only the callee's line(s). A multi-line argument
+                    // list is irrelevant — the JS005 regex matches `eval(`
+                    // which sits on the callee/open-paren line.
+                    let start_line = func.start_position().row as u32 + 1;
+                    let end_line = node
+                        .child_by_field_name("function")
+                        .map(|f| f.end_position().row as u32 + 1)
+                        .unwrap_or(start_line);
+                    for ln in start_line..=end_line {
+                        ctx.eval_call_line_set.insert(ln);
+                    }
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx);
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx);
+    ctx
+}
+
 /// lu001-ast-gate-v1: extract the LHS identifier from a line that the
 /// LU001 regex (`^[A-Za-z_][A-Za-z0-9_]*\s*=`) has just matched. Returns
 /// `None` if the regex shape isn't present (defensive — should never
@@ -3127,6 +3271,7 @@ fn check_rule(
     py_ctx: PyLineContext,
     lua_ctx: &LuaApiCheckContext,
     cpp_ctx: &CppApiCheckContext,
+    js_ctx: &JsApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     let trimmed = line_text.trim();
@@ -3178,6 +3323,7 @@ fn check_rule(
             language,
             lua_ctx,
             cpp_ctx,
+            js_ctx,
             regex_specs,
         ),
     }
@@ -3249,12 +3395,30 @@ fn check_regex_rule(
     language: ApiLanguage,
     lua_ctx: &LuaApiCheckContext,
     cpp_ctx: &CppApiCheckContext,
+    js_ctx: &JsApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     // fastpath-extend-non-vuln-v1: lookup the pre-compiled regex by rule id
     // (compiled ONCE per file in `analyze_file`, not once per line).
     let (spec, regex) = regex_specs.iter().find(|(spec, _)| spec.id == rule.id)?;
     if !regex.is_match(line_text) {
+        return None;
+    }
+
+    // fix-C5-1 (v0.5.0 AUDIT-FIX): the JS005/TS005 `eval-call` rules are
+    // regex-only (`\beval\s*\(`). The `\beval` word-boundary matches the
+    // literal text `eval(` anywhere on a line — including inside string
+    // literals (e.g. `var xss = 'javascript:eval(...)';`). The AST pre-pass
+    // populated `js_ctx` with the set of lines that carry a genuine
+    // `eval(...)` call_expression; consult it here. Only fires for JS/TS —
+    // other languages share neither the rule id nor the gate. When the file
+    // did not parse (`js_ctx.parsed == false`) we keep the regex-only
+    // behaviour so a parser hiccup cannot suppress real eval calls.
+    if matches!(rule.id.as_str(), "JS005" | "TS005")
+        && matches!(language, ApiLanguage::JavaScript | ApiLanguage::TypeScript)
+        && js_ctx.parsed
+        && !js_ctx.eval_call_line_set.contains(&line)
+    {
         return None;
     }
 
@@ -3302,6 +3466,19 @@ fn check_regex_rule(
     // `lua_ctx` with two precision sets; consult them here. Only fires
     // for Lua / Luau — other languages share the rule-id namespace via
     // `rule_applies_to_language` but no other LU* rule needs this gate.
+    // fix-C5-1 (v0.5.0 AUDIT-FIX): suppress ANY Lua/Luau rule on a line that
+    // lives inside a `--[[ ... ]]` block comment. The line-level
+    // `is_comment_line` skip in `check_rule` only catches `--` single-line
+    // comments; a multi-line block comment's interior lines (`name = "x"`,
+    // `version = "1"` lit-meta headers) reach here and would otherwise match
+    // LU001's implicit-global regex. tree-sitter lexes the whole block as one
+    // `comment` node, so `comment_line_set` carries every line it spans.
+    if matches!(language, ApiLanguage::Lua | ApiLanguage::Luau)
+        && lua_ctx.comment_line_set.contains(&line)
+    {
+        return None;
+    }
+
     if rule.id == "LU001" && matches!(language, ApiLanguage::Lua | ApiLanguage::Luau) {
         // Skip table-constructor lines: `{ foo = 1, bar = 2 }` matches
         // the LU001 regex on the inner lines, but `foo`/`bar` are
@@ -4472,5 +4649,143 @@ mod tests {
                 lang
             );
         }
+    }
+
+    // =====================================================================
+    // fix-C5-1 (v0.5.0 AUDIT-FIX): api-check AST-ify — JS005 eval-call must
+    // not fire inside string literals, LU001 must not fire inside Lua
+    // `--[[ ]]` block comments.
+    // =====================================================================
+
+    fn write_tmp(dir: &TempDir, name: &str, content: &str) -> PathBuf {
+        let p = dir.path().join(name);
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+
+    /// RED→GREEN: `eval(` appearing *inside a string literal* is not a real
+    /// call and must not trigger JS005. Mirrors js-express
+    /// `test/res.redirect.js:115-116`
+    /// (`var xss = 'javascript:eval(document.body.innerHTML=...);'`).
+    #[test]
+    fn test_js005_eval_in_string_literal_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "function f() {\n  var xss = 'javascript:eval(document.body.innerHTML);';\n  var enc = \"x:eval(y)\";\n}\n";
+        let path = write_tmp(&dir, "redirect.js", src);
+        let rules = rules_for_language(ApiLanguage::JavaScript);
+        let findings = analyze_file(&path, &rules, ApiLanguage::JavaScript).unwrap();
+        let js005: Vec<_> = findings.iter().filter(|f| f.rule.id == "JS005").collect();
+        assert!(
+            js005.is_empty(),
+            "JS005 must not fire on eval() inside string literals, got {:?}",
+            js005.iter().map(|f| (f.line, &f.code_context)).collect::<Vec<_>>()
+        );
+    }
+
+    /// Guard against over-suppression: a genuine top-level `eval(userInput)`
+    /// call MUST still be flagged by JS005.
+    #[test]
+    fn test_js005_real_eval_call_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "function f(userInput) {\n  eval(userInput);\n}\n";
+        let path = write_tmp(&dir, "real.js", src);
+        let rules = rules_for_language(ApiLanguage::JavaScript);
+        let findings = analyze_file(&path, &rules, ApiLanguage::JavaScript).unwrap();
+        let js005: Vec<_> = findings.iter().filter(|f| f.rule.id == "JS005").collect();
+        assert_eq!(
+            js005.len(),
+            1,
+            "a real eval() call must still be flagged, got {:?}",
+            js005.iter().map(|f| f.line).collect::<Vec<_>>()
+        );
+        assert_eq!(js005[0].line, 2);
+    }
+
+    /// The TS variant of the eval rule (TS005) shares the gate.
+    #[test]
+    fn test_ts005_eval_in_string_literal_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "const s: string = 'do not eval(this)';\n";
+        let path = write_tmp(&dir, "x.ts", src);
+        let rules = rules_for_language(ApiLanguage::TypeScript);
+        let findings = analyze_file(&path, &rules, ApiLanguage::TypeScript).unwrap();
+        assert!(
+            findings.iter().all(|f| f.rule.id != "TS005"),
+            "TS005 must not fire on eval() inside a string literal"
+        );
+    }
+
+    /// Direct unit test on the JS eval call-site context builder: only the
+    /// line carrying a real `call_expression` to `eval` is in the set.
+    #[test]
+    fn test_js_eval_context_only_real_call_lines() {
+        let src = "var s = 'eval(x)';\neval(y);\nwindow.eval(z);\n";
+        let ctx = compute_js_api_check_context(src, ApiLanguage::JavaScript);
+        assert!(ctx.parsed, "expected a successful parse");
+        assert!(
+            !ctx.eval_call_line_set.contains(&1),
+            "line 1 (eval inside string) must NOT be an eval call-site"
+        );
+        assert!(
+            ctx.eval_call_line_set.contains(&2),
+            "line 2 (real eval call) must be an eval call-site"
+        );
+        assert!(
+            ctx.eval_call_line_set.contains(&3),
+            "line 3 (window.eval member call) must be an eval call-site"
+        );
+    }
+
+    /// RED→GREEN: LU001 implicit-global must not fire on `name = "..."`
+    /// lines that live inside a Lua `--[[ ]]` block comment (lit-meta
+    /// headers). Mirrors lua-luvit `deps/ustring.lua:19-24`.
+    #[test]
+    fn test_lu001_block_comment_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "--[[lit-meta\n  name = \"luvit/ustring\"\n  version = \"2.0.3\"\n  license = \"Apache 2\"\n]]\n\nlocal x = 1\n";
+        let path = write_tmp(&dir, "ustring.lua", src);
+        let rules = rules_for_language(ApiLanguage::Lua);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Lua).unwrap();
+        let lu001: Vec<_> = findings.iter().filter(|f| f.rule.id == "LU001").collect();
+        assert!(
+            lu001.is_empty(),
+            "LU001 must not fire inside a --[[ ]] block comment, got {:?}",
+            lu001.iter().map(|f| (f.line, &f.code_context)).collect::<Vec<_>>()
+        );
+    }
+
+    /// Guard: a genuine top-level implicit global outside any comment MUST
+    /// still be flagged by LU001. Use a scalar RHS (`42`) so the
+    /// pre-existing table-constructor gate (lu001-ast-gate-v1) does not also
+    /// apply — this isolates the comment-line gate added in fix-C5-1.
+    #[test]
+    fn test_lu001_real_implicit_global_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "GLOBAL_COUNTER = 42\n";
+        let path = write_tmp(&dir, "g.lua", src);
+        let rules = rules_for_language(ApiLanguage::Lua);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Lua).unwrap();
+        let lu001: Vec<_> = findings.iter().filter(|f| f.rule.id == "LU001").collect();
+        assert_eq!(
+            lu001.len(),
+            1,
+            "a real implicit global must still be flagged, got {:?}",
+            lu001.iter().map(|f| f.line).collect::<Vec<_>>()
+        );
+    }
+
+    /// Direct unit test on the Lua comment line-set: the block-comment span
+    /// is captured (multi-line `comment` node), normal code lines are not.
+    #[test]
+    fn test_lua_comment_line_set_covers_block_comment() {
+        let src = "--[[lit-meta\n  name = \"x\"\n]]\nlocal a = 1\n";
+        let ctx = compute_lua_api_check_context(src, ApiLanguage::Lua);
+        assert!(ctx.comment_line_set.contains(&1), "line 1 (--[[) in block comment");
+        assert!(ctx.comment_line_set.contains(&2), "line 2 (name = ...) in block comment");
+        assert!(ctx.comment_line_set.contains(&3), "line 3 (]]) in block comment");
+        assert!(
+            !ctx.comment_line_set.contains(&4),
+            "line 4 (local a = 1) is real code, not a comment"
+        );
     }
 }
