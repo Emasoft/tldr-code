@@ -2699,10 +2699,20 @@ fn js_expect_inner(
             Some(true)
         }
         JsMatcherKind::Throw => {
+            // R7 RC8: read the matcher's argument instead of hardcoding
+            // "Error". `.throw(Class)` / `.toThrow(Class)` -> the class name;
+            // `.toThrow(new Class(..))` -> the constructed class; a string
+            // argument is a message MATCH PATTERN (not the type); a bare
+            // `.toThrow()` keeps the generic `Error` fallback.
+            let (exception_type, match_pattern) = matcher_args
+                .as_ref()
+                .and_then(|a| a.first())
+                .map(|n| js_throw_exception_from_arg(*n, source))
+                .unwrap_or_else(|| ("Error".to_string(), None));
             fs.exception_specs.push(ExceptionSpec {
                 function: fname,
-                exception_type: "Error".to_string(),
-                match_pattern: None,
+                exception_type,
+                match_pattern,
                 inputs,
                 test_function: test_func_name.to_string(),
                 line,
@@ -2760,6 +2770,46 @@ fn js_classify_matcher(matcher: &str) -> Option<JsMatcherKind> {
         // Throwing matchers.
         "toThrow" | "toThrowError" | "throw" | "throws" => Some(JsMatcherKind::Throw),
         _ => None,
+    }
+}
+
+/// R7 RC8 (invariants-specs cluster): derive `(exception_type, match_pattern)`
+/// from a JS/TS throw-matcher argument node.
+///
+/// `.throw(X)` / `.toThrow(X)` / `.toThrowError(X)` accept several argument
+/// shapes (chai + Jest), each AST-driven by the argument node kind:
+///   - `identifier`        (`UnknownModuleException`, `TypeError`) -> that name
+///     is the exception type.
+///   - `new_expression`    (`new TypeError('x')`)                  -> the
+///     `constructor` identifier is the exception type.
+///   - `string`            (`'invalid value'`)                     -> a message
+///     MATCH PATTERN; the type stays the generic `Error` (a message is not a
+///     type).
+///   - `regex`             (`/bad/`)                               -> a match
+///     pattern; the type stays `Error`.
+///   - anything else                                              -> fall back
+///     to `Error` with no pattern.
+fn js_throw_exception_from_arg(arg: Node, source: &[u8]) -> (String, Option<String>) {
+    match arg.kind() {
+        "identifier" => (get_node_text(arg, source).to_string(), None),
+        "new_expression" => {
+            // `new X(...)` -> the `constructor` field identifier is the class.
+            if let Some(ctor) = arg.child_by_field_name("constructor") {
+                (get_node_text(ctor, source).to_string(), None)
+            } else {
+                ("Error".to_string(), None)
+            }
+        }
+        "string" | "template_string" => {
+            // A message string is a match pattern, never the exception type.
+            let pat = strip_string_quotes(get_node_text(arg, source));
+            ("Error".to_string(), Some(pat))
+        }
+        "regex" => (
+            "Error".to_string(),
+            Some(get_node_text(arg, source).to_string()),
+        ),
+        _ => ("Error".to_string(), None),
     }
 }
 
@@ -6243,6 +6293,86 @@ mod tests {
         assert!(
             names.iter().any(|n| n == "lookup"),
             "`lookup` (the real call opposite `None`) must be the FUT; got {names:?}"
+        );
+    }
+
+    /// R7 RC8 (invariants-specs cluster): JS/TS throw matchers must read the
+    /// matcher's argument as the exception type instead of always reporting the
+    /// hardcoded `Error`. `expect(() => f(x)).to.throw(UnknownModuleException)`
+    /// and `expect(() => g()).toThrow(TypeError)` must surface the named class;
+    /// `.toThrow('message')` keeps the string as the match pattern, and a bare
+    /// `.toThrow()` with no argument still falls back to `Error`.
+    #[test]
+    fn js_throw_matcher_reads_exception_argument() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("module.test.ts");
+        let src = r#"
+describe('module', () => {
+    it('rejects unknown modules', () => {
+        expect(() => resolveModule(name)).to.throw(UnknownModuleException);
+    });
+    it('rejects bad input', () => {
+        expect(() => parseInput(bad)).toThrow(TypeError);
+    });
+    it('reports a message', () => {
+        expect(() => validate(v)).toThrow('invalid value');
+    });
+    it('throws something', () => {
+        expect(() => crashes()).toThrow();
+    });
+});
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let exc_type = |fname: &str| -> String {
+            report
+                .functions
+                .iter()
+                .find(|f| f.function_name == fname)
+                .and_then(|f| f.exception_specs.first())
+                .map(|e| e.exception_type.clone())
+                .unwrap_or_else(|| format!("<no exception spec for {fname}>"))
+        };
+
+        // chai `.throw(Class)` -> the named class, not "Error".
+        assert_eq!(
+            exc_type("resolveModule"),
+            "UnknownModuleException",
+            "chai .throw(UnknownModuleException) must surface the class name"
+        );
+        // Jest `.toThrow(Class)` -> the named class.
+        assert_eq!(
+            exc_type("parseInput"),
+            "TypeError",
+            "Jest toThrow(TypeError) must surface the class name"
+        );
+
+        // `.toThrow('message')`: the string is a match pattern, not the type.
+        let validate = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "validate")
+            .expect("validate FUT from toThrow('message')");
+        let validate_exc = validate
+            .exception_specs
+            .first()
+            .expect("validate exception spec");
+        assert_eq!(
+            validate_exc.match_pattern.as_deref(),
+            Some("invalid value"),
+            "string toThrow argument must be recorded as the match pattern"
+        );
+        assert_ne!(
+            validate_exc.exception_type, "invalid value",
+            "a message string must not be used as the exception type"
+        );
+
+        // Bare `.toThrow()` with no argument keeps the generic fallback.
+        assert_eq!(
+            exc_type("crashes"),
+            "Error",
+            "argument-less toThrow() must fall back to Error"
         );
     }
 }

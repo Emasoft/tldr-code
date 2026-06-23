@@ -1889,14 +1889,48 @@ fn unwrap_solidity_statement(node: Node<'_>) -> Node<'_> {
     found.unwrap_or(node)
 }
 
+/// R7 RC1 (invariants-specs cluster): peel a Swift `statements` body wrapper.
+///
+/// tree-sitter-swift's `function_body` wraps every top-level body statement in
+/// an intermediate `statements` named node:
+///   function_declaration -> function_body{`{`, statements{call_expression,
+///   property_declaration, control_transfer_statement, ...}, `}`}
+///
+/// The contracts extractors (extract_preconditions / extract_postconditions /
+/// extract_invariants) iterate the DIRECT children of the body returned by
+/// `get_function_body`, so without this unwrap they only ever see `{`, the
+/// `statements` wrapper, and `}` — never the real `call_expression`/guard
+/// statements. As a result Swift `precondition()`/`assert()`/`guard` were
+/// invisible and preconditions were always empty.
+///
+/// Swift is the only supported language whose function body interposes a
+/// `statements` node, so gating on `kind() == "statements"` is naturally
+/// language-safe and a no-op everywhere else. When the wrapper is absent (or
+/// the grammar drifts) the original body node is returned unchanged.
+fn unwrap_statements_wrapper(body: Node<'_>) -> Node<'_> {
+    let mut cursor = body.walk();
+    let mut stmts: Option<Node<'_>> = None;
+    for child in body.children(&mut cursor) {
+        if child.kind() == "statements" {
+            if stmts.is_some() {
+                // More than one `statements` child: unexpected grammar shape,
+                // stay a no-op rather than guess.
+                return body;
+            }
+            stmts = Some(child);
+        }
+    }
+    stmts.unwrap_or(body)
+}
+
 fn get_function_body<'a>(func: Node<'a>, config: &LanguageConfig) -> Option<Node<'a>> {
     // Try the configured field name first
     if let Some(body) = func.child_by_field_name(config.func_body_field) {
         // If the body node has a "block" child, prefer that (e.g., Swift function_body -> block)
         if let Some(block) = body.child_by_field_name("body") {
-            return Some(block);
+            return Some(unwrap_statements_wrapper(block));
         }
-        return Some(body);
+        return Some(unwrap_statements_wrapper(body));
     }
 
     // Fallback: search for common body node kinds among children
@@ -1910,13 +1944,13 @@ fn get_function_body<'a>(func: Node<'a>, config: &LanguageConfig) -> Option<Node
                 let mut inner = child.walk();
                 for inner_child in child.children(&mut inner) {
                     if inner_child.kind() == "block" {
-                        return Some(inner_child);
+                        return Some(unwrap_statements_wrapper(inner_child));
                     }
                 }
                 // If no block inside function_body, return function_body itself
-                return Some(child);
+                return Some(unwrap_statements_wrapper(child));
             }
-            return Some(child);
+            return Some(unwrap_statements_wrapper(child));
         }
     }
 
@@ -2183,11 +2217,29 @@ fn extract_first_call_argument(call_node: Node, source: &[u8]) -> Option<String>
     }
 
     // For Kotlin: call_expression has children [expression, value_arguments]
-    // For Swift: call_expression has children [expression, call_suffix]
+    // For Swift: call_expression has children [expression, call_suffix],
+    //   and call_suffix wraps the real `value_arguments`:
+    //   call_suffix -> value_arguments -> ( value_argument ... )
+    //   so descend one level into the `value_arguments` before scanning args,
+    //   otherwise the whole "(!isEmpty, \"msg\")" arg list is returned and the
+    //   diagnostic message string leaks into the extracted condition.
     let mut cursor = call_node.walk();
-    for child in call_node.children(&mut cursor) {
-        let kind = child.kind();
-        if kind == "value_arguments" || kind == "call_suffix" || kind == "argument_list" {
+    for raw_child in call_node.children(&mut cursor) {
+        let raw_kind = raw_child.kind();
+        if raw_kind == "value_arguments" || raw_kind == "call_suffix" || raw_kind == "argument_list"
+        {
+            // Swift: unwrap call_suffix -> value_arguments. For Kotlin the
+            // value_arguments node is already the direct child, so this is a
+            // no-op (no nested value_arguments to find).
+            let child = if raw_kind == "call_suffix" {
+                let mut suffix_cursor = raw_child.walk();
+                let found = raw_child
+                    .children(&mut suffix_cursor)
+                    .find(|c| c.kind() == "value_arguments");
+                found.unwrap_or(raw_child)
+            } else {
+                raw_child
+            };
             let mut inner = child.walk();
             for arg in child.children(&mut inner) {
                 let ak = arg.kind();
@@ -5173,6 +5225,108 @@ func add(x int, y int) int {
             has_return,
             "Should detect int return type postcondition, got: {:?}",
             report.postconditions
+        );
+    }
+
+    // =========================================================================
+    // RC1 (R7 invariants-specs cluster): Swift contracts must detect
+    // precondition()/assert()/guard. tree-sitter-swift wraps the top-level
+    // body statements in an intermediate `statements` node that the
+    // precondition body-walk never unwrapped, so Swift call-asserts were
+    // never visited and `preconditions` was always empty.
+    // =========================================================================
+
+    const SWIFT_PRECONDITION_CALL: &str = r#"
+struct Heap {
+    var isEmpty: Bool = false
+
+    mutating func replaceMin(with replacement: Int) -> Int {
+        precondition(!isEmpty, "No element to replace")
+        var removed = replacement
+        return removed
+    }
+}
+"#;
+
+    #[test]
+    fn test_swift_precondition_call_detected() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("Heap.swift");
+        fs::write(&file_path, SWIFT_PRECONDITION_CALL).unwrap();
+
+        let report = run_contracts(&file_path, "replaceMin", Language::Swift, 100).unwrap();
+
+        // The `precondition(!isEmpty, ...)` call lives under the `statements`
+        // wrapper inside `function_body`. It must be surfaced as a precondition.
+        assert!(
+            !report.preconditions.is_empty(),
+            "Swift: should detect precondition() call, got: {:?}",
+            report.preconditions
+        );
+        let has_isempty = report
+            .preconditions
+            .iter()
+            .any(|p| p.constraint.contains("isEmpty") || p.variable.contains("isEmpty"));
+        assert!(
+            has_isempty,
+            "Swift: precondition should reference isEmpty, got: {:?}",
+            report.preconditions
+        );
+        // The extracted condition must be ONLY the first argument (`!isEmpty`),
+        // not the whole `(!isEmpty, "No element to replace")` argument list:
+        // the diagnostic message string must not leak into the constraint.
+        let leaks_message = report
+            .preconditions
+            .iter()
+            .any(|p| p.constraint.contains("No element to replace"));
+        assert!(
+            !leaks_message,
+            "Swift: precondition constraint must not include the message string, got: {:?}",
+            report.preconditions
+        );
+    }
+
+    const SWIFT_GUARD_AND_ASSERT: &str = r#"
+struct Stack {
+    var count: Int = 0
+
+    func popChecked(_ index: Int) -> Int {
+        guard index >= 0 else {
+            fatalError("index must be non-negative")
+        }
+        assert(count > 0, "stack must be non-empty")
+        return index
+    }
+}
+"#;
+
+    #[test]
+    fn test_swift_guard_and_assert_detected() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("Stack.swift");
+        fs::write(&file_path, SWIFT_GUARD_AND_ASSERT).unwrap();
+
+        let report = run_contracts(&file_path, "popChecked", Language::Swift, 100).unwrap();
+
+        // Both the guard-with-fatalError and the assert() call live under the
+        // `statements` wrapper. Each should yield a precondition.
+        let has_guard = report
+            .preconditions
+            .iter()
+            .any(|p| p.constraint.contains("index") || p.variable.contains("index"));
+        let has_assert = report
+            .preconditions
+            .iter()
+            .any(|p| p.constraint.contains("count") || p.variable.contains("count"));
+        assert!(
+            has_guard,
+            "Swift: should detect guard precondition on index, got: {:?}",
+            report.preconditions
+        );
+        assert!(
+            has_assert,
+            "Swift: should detect assert() precondition on count, got: {:?}",
+            report.preconditions
         );
     }
 }

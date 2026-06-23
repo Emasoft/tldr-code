@@ -1765,4 +1765,100 @@ def test_add():
         );
         assert_eq!(kt_nn.expression, "arg0 != null");
     }
+
+    /// R7 (invariants-specs cluster) item 2 — "invariant type/null vocabulary
+    /// remaining non-Python leaks": exhaustively assert that for EVERY
+    /// non-Python language the type and non-null/optionality vocabulary never
+    /// emits a Python idiom (`str`/`int`/`float`/`bool`/`list`/`NoneType` as a
+    /// reported type, or `is not None`). Python itself is the regression anchor
+    /// and is asserted to KEEP its historical spelling.
+    #[test]
+    fn all_non_python_langs_emit_no_python_vocab_leak() {
+        // Every supported language EXCEPT Python.
+        let non_python = [
+            Language::Kotlin,
+            Language::Java,
+            Language::Scala,
+            Language::CSharp,
+            Language::Swift,
+            Language::TypeScript,
+            Language::JavaScript,
+            Language::Go,
+            Language::Rust,
+            Language::Ocaml,
+            Language::Ruby,
+            Language::Php,
+            Language::Lua,
+            Language::Luau,
+            Language::Elixir,
+            Language::Solidity,
+            Language::C,
+            Language::Cpp,
+        ];
+
+        // Python-EXCLUSIVE type token. NOTE: `int`/`float`/`bool` are
+        // deliberately NOT flagged — they are the genuine native spelling for
+        // several C-family / ML languages (Java/Go/C#/C/C++/OCaml `int`,
+        // Elixir/OCaml `float`). The Python-exclusive type token is `str`
+        // (others use String/string/&str/binary); `NoneType` / `is not None`
+        // are the Python null idioms the T2 work eliminated. The type token is
+        // compared EXACTLY (split on `": "`) so `str` is not confused with
+        // `string` (Go/PHP/C#/TS) or `&str` (Rust, a deliberate Rust spelling).
+        let python_str_token = "str";
+
+        // Exercise each lattice element so every `lang_type_word` arm is hit.
+        let samples = [
+            ObservedValue::Int(1),
+            ObservedValue::Float(1.5),
+            ObservedValue::String("x".to_string()),
+            ObservedValue::Bool(true),
+            ObservedValue::List(vec![ObservedValue::Int(1)]),
+        ];
+
+        for lang in non_python {
+            for sample in &samples {
+                let vals = [sample];
+                let refs: Vec<&ObservedValue> = vals.iter().copied().collect();
+
+                if let Some(ti) =
+                    infer_type_invariant("arg0", &refs, 3, Confidence::Low, lang)
+                {
+                    // The rendered form is `arg0: <type>`. Compare the type
+                    // token EXACTLY so `str` is distinguished from the
+                    // legitimate `string` / `&str` spellings.
+                    let type_token = ti.expression.rsplit(": ").next().unwrap_or("");
+                    assert_ne!(
+                        type_token, python_str_token,
+                        "{lang:?} type invariant leaked Python `str` token: {:?}",
+                        ti.expression
+                    );
+                    assert!(
+                        !ti.expression.contains("NoneType"),
+                        "{lang:?} type invariant leaked Python `NoneType`: {:?}",
+                        ti.expression
+                    );
+                }
+
+                if let Some(nn) =
+                    infer_non_null_invariant("arg0", &refs, 3, Confidence::Low, lang)
+                {
+                    assert!(
+                        !nn.expression.contains("is not None"),
+                        "{lang:?} non-null invariant leaked Python `is not None`: {:?}",
+                        nn.expression
+                    );
+                }
+            }
+        }
+
+        // Python regression anchor: it KEEPS its historical spelling.
+        let vals = [ObservedValue::String("x".to_string())];
+        let refs: Vec<&ObservedValue> = vals.iter().collect();
+        let py_t = infer_type_invariant("arg0", &refs, 3, Confidence::Low, Language::Python)
+            .expect("python type inv");
+        assert_eq!(py_t.expression, "arg0: str");
+        let py_nn = infer_non_null_invariant("arg0", &refs, 3, Confidence::Low, Language::Python)
+            .expect("python nn inv");
+        assert_eq!(py_nn.expression, "arg0 is not None");
+    }
 }

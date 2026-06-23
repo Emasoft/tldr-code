@@ -496,6 +496,27 @@ fn python_is_test_function(node: &Node, source: &[u8]) -> bool {
 }
 
 // -- JS/TS: `it(...)` / `test(...)` -------------------------------------------
+
+/// Bare-identifier JS/TS test-registration callees (`it("...")`,
+/// `test("...")`, plus focus/skip variants).
+fn js_is_bare_test_name(name: &str) -> bool {
+    matches!(name, "it" | "test" | "fit" | "xit" | "xtest")
+}
+
+/// R7 RC10: framework objects whose `<obj>.<method>(...)` member call is a test
+/// registration. Kept deliberately tight (only `QUnit`) so that unrelated
+/// member calls like `regexp.test(...)` (RegExp.prototype.test) or
+/// `someObject.it(...)` are NOT misread as tests.
+const JS_TEST_FRAMEWORK_OBJECTS: &[&str] = &["QUnit"];
+
+/// QUnit member-call test methods: `QUnit.test`, `QUnit.module` groups tests
+/// but is itself a SUITE, not a test, so it is excluded. `QUnit.test.only`
+/// (and `.skip` / `.todo`) appear as nested member expressions and are handled
+/// by walking down to the base `QUnit.test`.
+fn js_is_qunit_test_method(name: &str) -> bool {
+    matches!(name, "test" | "asyncTest")
+}
+
 fn js_is_test_call(node: &Node, source: &[u8]) -> bool {
     // tree-sitter-typescript / -javascript both expose `call_expression`
     // with a `function` child that's an identifier for top-level calls.
@@ -506,13 +527,47 @@ fn js_is_test_call(node: &Node, source: &[u8]) -> bool {
         Some(n) => n,
         None => return false,
     };
-    // We only want unqualified identifiers (`it("...")`, `test("...")`),
-    // not member calls like `obj.it(...)` which are unrelated.
-    if func_node.kind() != "identifier" {
-        return false;
+    match func_node.kind() {
+        // Unqualified identifiers (`it("...")`, `test("...")`).
+        "identifier" => js_is_bare_test_name(&node_text(func_node, source)),
+        // R7 RC10: framework member calls (`QUnit.test(...)`). We accept the
+        // member form ONLY when the object is a known framework object and the
+        // property is a test method, keeping the obj.it()/regexp.test() FP
+        // guard tight. `QUnit.test.only(...)` nests another member_expression
+        // as the object; resolve via the call's base member spine.
+        "member_expression" => js_member_is_framework_test(&func_node, source),
+        _ => false,
     }
-    let name = node_text(func_node, source);
-    matches!(name.as_str(), "it" | "test" | "fit" | "xit" | "xtest")
+}
+
+/// R7 RC10: true when `member` is `<FrameworkObject>.<testMethod>` (e.g.
+/// `QUnit.test`) or a focus/skip chain rooted at one (`QUnit.test.only`).
+fn js_member_is_framework_test(member: &Node, source: &[u8]) -> bool {
+    let object = match member.child_by_field_name("object") {
+        Some(o) => o,
+        None => return false,
+    };
+    let property = match member.child_by_field_name("property") {
+        Some(p) => node_text(p, source),
+        None => return false,
+    };
+
+    match object.kind() {
+        // Direct `QUnit.test` / `QUnit.asyncTest`.
+        "identifier" => {
+            let obj_name = node_text(object, source);
+            JS_TEST_FRAMEWORK_OBJECTS.contains(&obj_name.as_str())
+                && js_is_qunit_test_method(&property)
+        }
+        // Chained `QUnit.test.only` / `QUnit.test.skip` / `QUnit.test.todo`:
+        // the modifier is the leaf property and the base `QUnit.test` is the
+        // object. Accept only known modifiers so unrelated chains stay out.
+        "member_expression" => {
+            matches!(property.as_str(), "only" | "skip" | "todo" | "each")
+                && js_member_is_framework_test(&object, source)
+        }
+        _ => false,
+    }
 }
 
 // -- Java/Kotlin: methods with @Test / @ParameterizedTest / @RepeatedTest ----
@@ -1308,5 +1363,55 @@ mod tests {
             "`test-*.lua` must be recognised as a test file"
         );
         assert_eq!(info.test_function_count, 2, "two `test(...)` registrations");
+    }
+
+    /// R7 RC10 (invariants-specs cluster): QUnit registers tests via the
+    /// `QUnit.test(...)` MEMBER call (and `QUnit.module` / `QUnit.test.only`).
+    /// `js_is_test_call` only accepted bare-identifier callees, so QUnit suites
+    /// (e.g. lodash `test/test-fp.js`, 219 `QUnit.test` calls) reported
+    /// `test_function_count = 0`. The member-call form must be counted, while
+    /// the obj.it() false-positive guard stays tight (only the `QUnit` object).
+    #[test]
+    fn js_qunit_member_test_calls_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "qunit.test.js",
+            "QUnit.module('math');\n\
+             QUnit.test('adds', function(assert) { assert.equal(add(1,2), 3); });\n\
+             QUnit.test('subs', function(assert) { assert.equal(sub(2,1), 1); });\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::JavaScript);
+        assert!(info.is_test_file, "qunit.test.js must be a test file");
+        assert_eq!(
+            info.test_function_count, 2,
+            "two QUnit.test(...) member calls must be counted (QUnit.module is not a test)"
+        );
+    }
+
+    /// R7 RC10: the QUnit member-call acceptance must NOT widen into a generic
+    /// `obj.test(...)` / `obj.it(...)` acceptance — only known framework
+    /// objects (`QUnit`) qualify. An unrelated `foo.test(...)` member call on a
+    /// non-framework object must still be rejected to avoid false positives.
+    #[test]
+    fn js_unrelated_member_test_call_not_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "regexp.test.js",
+            "const re = /x/;\n\
+             const ok = re.test('xyz');\n\
+             const matcher = { it(name) { return name; } };\n\
+             matcher.it('not a test');\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::JavaScript);
+        // `re.test(...)` (RegExp.prototype.test) and `matcher.it(...)` are NOT
+        // test registrations.
+        assert_eq!(
+            info.test_function_count, 0,
+            "non-framework member calls (re.test / matcher.it) must not count as tests"
+        );
     }
 }
