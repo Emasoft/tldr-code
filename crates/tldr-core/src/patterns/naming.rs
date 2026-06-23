@@ -214,6 +214,65 @@ fn detect_majority_convention(names: &[(String, NamingCase, String, u32)]) -> Na
         }
     }
 
+    // T4 (v0.5.0 AUDIT-FIX): fold degenerate single-word forms into the
+    // concrete conventions they are compatible with BEFORE picking the
+    // majority. `LowerAlpha` (e.g. `get`, `use`) is the zero-underscore
+    // degenerate of BOTH `snake_case` and `camelCase`; `UpperAlpha`
+    // (e.g. `URL`, `E1`) is the degenerate of BOTH `PascalCase` and
+    // `UPPER_SNAKE_CASE`. Pre-fix, degenerate forms were counted as
+    // their own bucket and — when numerically dominant — out-voted the
+    // genuine concrete convention, then collapsed to a single arbitrary
+    // side (`LowerAlpha → snake_case`, `UpperAlpha → pascal_case`).
+    //
+    // On js-express that produced a 123×`LowerAlpha` vs 82×`CamelCase`
+    // plurality that wrongly resolved to `snake_case`, flagging 48
+    // idiomatic camelCase names as violations. Likewise luau-roact's
+    // method bodies (after colon-split) are camelCase-dominant but
+    // LowerAlpha-plural.
+    //
+    // The fold credits each degenerate count to whichever CONCRETE
+    // sibling is actually present. Concrete conventions decide the
+    // winner; degenerate forms only reinforce, never override. If NO
+    // concrete convention is present, we fall back to the raw
+    // count/specificity tie-break (so an all-degenerate set still
+    // resolves deterministically via `naming_case_to_convention`).
+    let concrete_present = counts.keys().any(|c| naming_case_specificity(*c) == 4);
+    if concrete_present {
+        let lower_alpha = counts.get(&NamingCase::LowerAlpha).copied().unwrap_or(0);
+        let upper_alpha = counts.get(&NamingCase::UpperAlpha).copied().unwrap_or(0);
+
+        // Effective support per concrete convention = its own count plus
+        // the count of every degenerate form compatible with it.
+        let concrete_cases = [
+            NamingCase::SnakeCase,
+            NamingCase::CamelCase,
+            NamingCase::PascalCase,
+            NamingCase::UpperSnakeCase,
+        ];
+        return concrete_cases
+            .into_iter()
+            .filter_map(|case| {
+                let base = counts.get(&case).copied().unwrap_or(0);
+                if base == 0 {
+                    return None;
+                }
+                let degenerate = match case {
+                    NamingCase::SnakeCase | NamingCase::CamelCase => lower_alpha,
+                    NamingCase::PascalCase | NamingCase::UpperSnakeCase => upper_alpha,
+                    _ => 0,
+                };
+                Some((case, base + degenerate))
+            })
+            // Tie-break: higher effective support, then a stable
+            // `sort_key` (snake < camel < pascal < upper_snake) so
+            // identical inputs always pick the same winner.
+            .max_by_key(|(case, support)| {
+                (*support, std::cmp::Reverse(naming_case_sort_key(*case)))
+            })
+            .map(|(case, _)| case)
+            .unwrap_or(NamingCase::Unknown);
+    }
+
     counts
         .into_iter()
         // Sort key: (count, specificity, Reverse(sort_key)).
@@ -475,5 +534,117 @@ mod tests {
         assert_eq!(pattern.violations[0].name, "getUser");
         assert_eq!(pattern.violations[0].expected, NamingConvention::SnakeCase);
         assert_eq!(pattern.violations[0].actual, NamingConvention::CamelCase);
+    }
+
+    /// T4 (v0.5.0 AUDIT-FIX): a camelCase-dominant function set must
+    /// resolve to `camel_case` with ZERO false-positive violations,
+    /// even when single-word degenerate identifiers (`LowerAlpha`, e.g.
+    /// `use`, `get`) are the numeric plurality.
+    ///
+    /// Root cause (pre-fix): `detect_majority_convention` counted
+    /// `LowerAlpha` as its own bucket. On js-express the plurality was
+    /// 123×`LowerAlpha` vs 82×`CamelCase`, so the degenerate bucket won
+    /// and collapsed to `snake_case` via `naming_case_to_convention`,
+    /// producing a flood of 48 spurious `expected snake_case, got
+    /// camel_case` violations on idiomatic names like `loadUser`.
+    /// `LowerAlpha` is the zero-underscore degenerate form of BOTH
+    /// snake_case and camelCase, so it must reinforce whichever
+    /// CONCRETE convention is present rather than out-voting it.
+    #[test]
+    fn test_camelcase_dominant_with_degenerate_plurality() {
+        let mut signals = PatternSignals::default();
+        // Concrete camelCase functions (the genuine convention).
+        for n in ["loadUser", "andRestrictTo", "initializeRedis", "getEmptyTime"] {
+            signals.naming.function_names.push((
+                n.to_string(),
+                NamingCase::CamelCase,
+                "app.js".to_string(),
+                1,
+            ));
+        }
+        // More-numerous single-word lowercase names (degenerate; compatible
+        // with both snake_case and camelCase). These must NOT swing the
+        // majority to snake_case.
+        for n in ["get", "set", "use", "send", "json", "next", "end"] {
+            signals.naming.function_names.push((
+                n.to_string(),
+                NamingCase::LowerAlpha,
+                "app.js".to_string(),
+                1,
+            ));
+        }
+
+        let pattern = signals_to_pattern(&signals).unwrap();
+        assert_eq!(
+            pattern.functions,
+            NamingConvention::CamelCase,
+            "camelCase-dominant set with a LowerAlpha plurality must resolve to \
+             camel_case (LowerAlpha is the degenerate form of camelCase, not a \
+             separate snake_case majority). Got {:?}",
+            pattern.functions
+        );
+        assert!(
+            pattern.violations.is_empty(),
+            "no false-positive violations expected for a clean camelCase set; got {:?}",
+            pattern.violations
+        );
+    }
+
+    /// T4 (v0.5.0 AUDIT-FIX): the inverse direction — a snake_case
+    /// project with a LowerAlpha plurality must still resolve to
+    /// `snake_case` (degenerate reinforces the present concrete winner).
+    #[test]
+    fn test_snakecase_dominant_with_degenerate_plurality() {
+        let mut signals = PatternSignals::default();
+        for n in ["find_user_by_id", "get_all_users", "create_user"] {
+            signals.naming.function_names.push((
+                n.to_string(),
+                NamingCase::SnakeCase,
+                "service.py".to_string(),
+                1,
+            ));
+        }
+        for n in ["get", "set", "save", "load", "run", "stop"] {
+            signals.naming.function_names.push((
+                n.to_string(),
+                NamingCase::LowerAlpha,
+                "service.py".to_string(),
+                1,
+            ));
+        }
+
+        let pattern = signals_to_pattern(&signals).unwrap();
+        assert_eq!(
+            pattern.functions,
+            NamingConvention::SnakeCase,
+            "snake_case-dominant set with a LowerAlpha plurality must resolve to \
+             snake_case; got {:?}",
+            pattern.functions
+        );
+        assert!(
+            pattern.violations.is_empty(),
+            "no false-positive violations expected; got {:?}",
+            pattern.violations
+        );
+    }
+
+    /// T4 (v0.5.0 AUDIT-FIX): with no concrete convention present at all
+    /// (pure single-word lowercase), the majority falls back to the
+    /// degenerate-derived `snake_case` (zero-underscore default). This
+    /// pins the fallback so the fold logic does not regress the
+    /// all-degenerate case.
+    #[test]
+    fn test_pure_degenerate_falls_back_to_snake() {
+        let mut signals = PatternSignals::default();
+        for n in ["get", "set", "use", "run"] {
+            signals.naming.function_names.push((
+                n.to_string(),
+                NamingCase::LowerAlpha,
+                "x.lua".to_string(),
+                1,
+            ));
+        }
+        let pattern = signals_to_pattern(&signals).unwrap();
+        assert_eq!(pattern.functions, NamingConvention::SnakeCase);
     }
 }

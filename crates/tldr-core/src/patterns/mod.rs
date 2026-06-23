@@ -122,6 +122,17 @@ impl PatternMiner {
         // Aggregate signals across all files
         let mut aggregated_signals = PatternSignals::default();
 
+        // T4 (v0.5.0 AUDIT-FIX): also accumulate signals PER LANGUAGE so
+        // that `patterns_by_language` can credit the language that
+        // actually produced each signal (instead of spraying one global
+        // count across a hardcoded allowlist), and so the
+        // language-specific top-level patterns (naming convention,
+        // framework) can be computed from the PRIMARY language alone
+        // rather than a cross-language mix (which made an Elixir/Phoenix
+        // repo report `framework: express` from vendored `.js` and a
+        // camelCase JS repo report `snake_case`).
+        let mut per_language_signals: HashMap<String, PatternSignals> = HashMap::new();
+
         for (file_path, file_lang) in files.iter().take(self.config.max_files) {
             // Read file content
             let content = match std::fs::read_to_string(file_path) {
@@ -136,6 +147,10 @@ impl PatternMiner {
             match self.extract_file_signals(&content, *file_lang, file_path) {
                 Ok(signals) => {
                     aggregated_signals.merge(&signals);
+                    per_language_signals
+                        .entry(file_lang.to_string())
+                        .or_default()
+                        .merge(&signals);
                     files_analyzed += 1;
                     *files_by_language.entry(file_lang.to_string()).or_insert(0) += 1;
                 }
@@ -145,6 +160,10 @@ impl PatternMiner {
                         self.extract_partial_signals(&content, *file_lang, file_path)
                     {
                         aggregated_signals.merge(&partial);
+                        per_language_signals
+                            .entry(file_lang.to_string())
+                            .or_default()
+                            .merge(&partial);
                         files_partial += 1;
                         *files_by_language.entry(file_lang.to_string()).or_insert(0) += 1;
                     } else {
@@ -157,18 +176,42 @@ impl PatternMiner {
             }
         }
 
+        // T4: the primary language is the one with the most analyzed
+        // files; ties broken alphabetically for determinism. The
+        // language-specific top-level patterns (naming, api_conventions)
+        // are derived from this language's signals so a minority of
+        // foreign/vendored files cannot corrupt them.
+        let primary_language: Option<String> = files_by_language
+            .iter()
+            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+            .map(|(lang, _)| lang.clone());
+        let primary_signals: &PatternSignals = primary_language
+            .as_ref()
+            .and_then(|lang| per_language_signals.get(lang))
+            .unwrap_or(&aggregated_signals);
+
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        // Convert signals to patterns
+        // Convert signals to patterns.
+        //
+        // T4 (v0.5.0 AUDIT-FIX): `naming` and `api_conventions` are
+        // language-specific conventions, so they are derived from the
+        // PRIMARY language's signals — not the cross-language aggregate.
+        // This is what stops a camelCase JS repo from reporting
+        // `snake_case` (when mixed with a stray snake_case `.py`) and an
+        // Elixir/Phoenix repo from reporting `framework: express` (from
+        // vendored `.js`). The remaining categories stay global: they are
+        // language-agnostic idioms and several are pinned global by
+        // existing tests.
         let soft_delete = self.signals_to_soft_delete(&aggregated_signals);
         let error_handling = self.signals_to_error_handling(&aggregated_signals);
-        let naming = self.signals_to_naming(&aggregated_signals);
+        let naming = self.signals_to_naming(primary_signals);
         let resource_management = self.signals_to_resource_mgmt(&aggregated_signals);
         let validation = self.signals_to_validation(&aggregated_signals);
         let test_idioms = self.signals_to_test_idioms(&aggregated_signals);
         let import_patterns = self.signals_to_import_patterns(&aggregated_signals);
         let type_coverage = self.signals_to_type_coverage(&aggregated_signals);
-        let api_conventions = self.signals_to_api_conventions(&aggregated_signals);
+        let api_conventions = self.signals_to_api_conventions(primary_signals);
         let async_patterns = self.signals_to_async_patterns(&aggregated_signals);
 
         // Count patterns before/after filter
@@ -226,39 +269,38 @@ impl PatternMiner {
         let design_patterns = Self::dedup_design_patterns(&aggregated_signals);
 
         // Update patterns_by_language.
-        // Languages without AST pattern handlers (detector.rs) genuinely detect 0 patterns.
-        // For supported languages, use the global patterns_after count since signals are
-        // aggregated globally and cannot be attributed to individual languages.
-        // TODO: per-language pattern detection requires running the pipeline per language.
         //
-        // pack-patterns-v1: solidity / php / ocaml join the supported set —
-        // they now have real AST pattern handlers (design-pattern detection
-        // for solidity/php; module/functor idioms + naming for ocaml).
-        let supported_pattern_languages: &[&str] = &[
-            "python",
-            "typescript",
-            "javascript",
-            "go",
-            "rust",
-            "java",
-            "solidity",
-            "php",
-            "ocaml",
-        ];
-        // pack-patterns-v1: per-language design-pattern counts. Unlike the
-        // globally-aggregated idiom signals, design patterns ARE
-        // attributable to a single language, so we count them per-language
-        // and add them on top of the global idiom count.
+        // T4 (v0.5.0 AUDIT-FIX): credit each language with the pattern
+        // categories detected from ITS OWN signal bucket, plus its own
+        // design-pattern hits. Pre-fix, this used a hardcoded
+        // `supported_pattern_languages` allowlist and assigned the single
+        // global `patterns_after` count to every listed language. That
+        // had two failure modes, both seen in the audit corpora:
+        //   1. A primary language NOT on the allowlist (kotlin, scala,
+        //      cpp, c, ruby) reported 0 even though it produced real
+        //      signals — `cpp-tinyxml2 {cpp:0,c:0}`, `kotlin {kotlin:0}`,
+        //      `scala {scala:0}`, `ruby {ruby:0}`.
+        //   2. A tiny foreign minority that WAS on the allowlist
+        //      (java/python from a stray `.java`/`.py`) inherited the
+        //      whole global count — `kotlin-coroutines {python:2,java:2}`,
+        //      `scala-cats-effect {java:2}`.
+        // Counting per-language signals fixes both: a language is credited
+        // iff it actually detected something, and only for what IT
+        // detected. Every language now has an AST pattern profile
+        // (`language_profile()`), so there is no longer any allowlist.
+        //
+        // pack-patterns-v1: per-language design-pattern counts. Design
+        // patterns ARE attributable to a single language, so they are
+        // added on top of that language's idiom-category count.
         let mut design_by_language: HashMap<String, usize> = HashMap::new();
         for dp in &design_patterns {
             *design_by_language.entry(dp.language.clone()).or_insert(0) += 1;
         }
         for lang in files_by_language.keys() {
-            let idiom_count = if supported_pattern_languages.contains(&lang.as_str()) {
-                patterns_after
-            } else {
-                0
-            };
+            let idiom_count = per_language_signals
+                .get(lang)
+                .map(|sig| self.count_categories_for_signals(sig))
+                .unwrap_or(0);
             let dp_count = design_by_language.get(lang).copied().unwrap_or(0);
             patterns_by_language.insert(lang.clone(), idiom_count + dp_count);
         }
@@ -513,6 +555,35 @@ impl PatternMiner {
         pattern.filter(|p| p.confidence() >= self.config.min_confidence)
     }
 
+    // T4 (v0.5.0 AUDIT-FIX): count the confidence-surviving pattern
+    // categories produced by a SINGLE language's signal bucket. Mirrors
+    // the global conversion + filter pipeline exactly (same
+    // `signals_to_*` + `filter_by_confidence`) so a language's
+    // per-language count is consistent with how patterns would be
+    // reported if that language were analyzed alone. Used to build a
+    // faithful `patterns_by_language` histogram.
+    fn count_categories_for_signals(&self, signals: &PatternSignals) -> usize {
+        let detected = DetectedPatterns {
+            soft_delete: &self.filter_by_confidence(self.signals_to_soft_delete(signals)),
+            error_handling: &self
+                .filter_by_confidence(self.signals_to_error_handling(signals)),
+            naming: &self.filter_by_confidence(self.signals_to_naming(signals)),
+            resource_management: &self
+                .filter_by_confidence(self.signals_to_resource_mgmt(signals)),
+            validation: &self.filter_by_confidence(self.signals_to_validation(signals)),
+            test_idioms: &self.filter_by_confidence(self.signals_to_test_idioms(signals)),
+            import_patterns: &self
+                .filter_by_confidence(self.signals_to_import_patterns(signals)),
+            type_coverage: &self
+                .filter_by_confidence(self.signals_to_type_coverage(signals)),
+            api_conventions: &self
+                .filter_by_confidence(self.signals_to_api_conventions(signals)),
+            async_patterns: &self
+                .filter_by_confidence(self.signals_to_async_patterns(signals)),
+        };
+        self.count_patterns_before_filter(&detected)
+    }
+
     // Count total patterns before filter
     fn count_patterns_before_filter(&self, patterns: &DetectedPatterns<'_>) -> usize {
         let mut count = 0;
@@ -762,64 +833,67 @@ mod tests {
     // Bug: patterns_by_language uses global count for all languages
     // =========================================================================
 
-    /// patterns_by_language should contain per-language pattern counts,
-    /// not the same global count duplicated for every language.
+    /// patterns_by_language must credit the language that ACTUALLY
+    /// produced the signals — computed from that language's own
+    /// per-language signal bucket — not a single global count sprayed
+    /// across a hardcoded allowlist.
     ///
-    /// Scenario: A project with Python files that have naming patterns and
-    /// TypeScript files that have async patterns. The per-language counts
-    /// should differ.
+    /// T4 (v0.5.0 AUDIT-FIX): pre-fix, the histogram used a hardcoded
+    /// `supported_pattern_languages` allowlist and assigned the global
+    /// `patterns_after` count to every listed language. A Kotlin-majority
+    /// repo therefore reported `kotlin: 0` (kotlin absent from the list)
+    /// while a single stray `.java`/`.py` file inherited the full global
+    /// count (`java: 2`, `python: 2`). This drives the real production
+    /// path (`mine_patterns`) over a temp dir and asserts the primary
+    /// language is credited and the foreign minority is not over-credited.
     #[test]
-    fn test_patterns_by_language_independent() {
-        // The fix: languages without AST pattern handlers get count=0,
-        // while supported languages get the global patterns_after count.
-        // This ensures unsupported languages honestly report 0 patterns
-        // instead of inheriting the global count.
+    fn test_patterns_by_language_credits_primary_language() {
+        use std::io::Write;
 
-        use std::collections::HashMap;
+        let dir = tempfile::tempdir().expect("tempdir");
 
-        // Simulate a project with both a supported (python) and unsupported (lua) language
-        let mut files_by_language = HashMap::new();
-        files_by_language.insert("python".to_string(), 10_usize);
-        files_by_language.insert("lua".to_string(), 5_usize);
+        // Kotlin file with real, detectable signals (class + function +
+        // import => naming + import_patterns categories).
+        let kt = dir.path().join("App.kt");
+        let mut f = std::fs::File::create(&kt).unwrap();
+        writeln!(
+            f,
+            "import kotlin.coroutines.CoroutineContext\n\nclass MyService {{\n    fun doWork() {{}}\n    fun loadData() {{}}\n}}\n"
+        )
+        .unwrap();
 
-        let patterns_after = 4_usize;
+        // A single foreign Java file (the historical mis-attribution
+        // target). It also has signals, but must only be credited for
+        // ITS OWN count, never the global one.
+        let jv = dir.path().join("Helper.java");
+        let mut g = std::fs::File::create(&jv).unwrap();
+        writeln!(
+            g,
+            "package x;\npublic class Helper {{\n  public void run() {{}}\n}}\n"
+        )
+        .unwrap();
 
-        // Apply the fixed logic (mirrors mine_patterns)
-        let supported_pattern_languages: &[&str] =
-            &["python", "typescript", "javascript", "go", "rust", "java"];
-        let mut patterns_by_language = HashMap::new();
-        for lang in files_by_language.keys() {
-            let count = if supported_pattern_languages.contains(&lang.as_str()) {
-                patterns_after
-            } else {
-                0
-            };
-            patterns_by_language.insert(lang.clone(), count);
-        }
+        let report =
+            detect_patterns(dir.path(), None).expect("mine_patterns over temp dir");
+        let by_lang = &report.metadata.language_distribution.patterns_by_language;
 
-        let python_count = *patterns_by_language.get("python").unwrap();
-        let lua_count = *patterns_by_language.get("lua").unwrap();
-
-        // Supported language gets the global pattern count
-        assert_eq!(
-            python_count, patterns_after,
-            "Supported language (python) should get patterns_after count ({}), got {}",
-            patterns_after, python_count
+        let kotlin_count = by_lang.get("kotlin").copied().unwrap_or(0);
+        assert!(
+            kotlin_count >= 1,
+            "kotlin (the primary language) must be credited with its own detected \
+             pattern categories (>= 1); got {}. Full patterns_by_language: {:?}",
+            kotlin_count,
+            by_lang
         );
 
-        // Unsupported language gets 0
-        assert_eq!(
-            lua_count, 0,
-            "Unsupported language (lua) should get 0 patterns, got {}",
-            lua_count
-        );
-
-        // They must differ — unsupported languages should NOT inherit the global count
-        assert_ne!(
-            python_count, lua_count,
-            "patterns_by_language should have per-language counts: supported languages get \
-             the global count, unsupported languages get 0. Both got {}.",
-            python_count
+        // Python must NOT appear at all (no python files in the dir): the
+        // old code injected `python: N` whenever python was in the
+        // allowlist even with zero python files — but here there are none,
+        // so it should simply be absent.
+        assert!(
+            by_lang.get("python").copied().unwrap_or(0) == 0,
+            "no python files were analyzed, so python must not be credited; got {:?}",
+            by_lang
         );
     }
 
