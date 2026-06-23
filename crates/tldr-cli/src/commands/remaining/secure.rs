@@ -101,6 +101,38 @@ pub const FULL_ANALYSES: &[SecurityAnalysis] = &[
     SecurityAnalysis::Mutability,
 ];
 
+/// fix-C5-3 (v0.5.0 AUDIT-FIX): per-file SIZE budget for the EXPENSIVE
+/// `Taint` sub-analysis. Mirrors the per-file budget `vuln` got in Wave 4
+/// (`PER_FILE_TAINT_BUDGET` + the 10 MB `MAX_FILE_SIZE` cap in
+/// `vuln.rs::collect_files`).
+///
+/// `analyze_taint` runs the full canonical `scan_vulnerabilities` pipeline
+/// (CFG + DFG + taint) per file. That pipeline is SUPERLINEAR in file size,
+/// so a handful of very large translation units dominate the wall clock: on
+/// `c-redis` the whole `secure` run took ~285 s, with the 9 files over
+/// ~200 KB (`src/module.c` at 668 KB alone is ~3.5 s) accounting for a
+/// disproportionate share. `secure` invokes the pipeline SERIALLY per file
+/// (unlike `tldr vuln`, which parallelises the whole tree with rayon), so the
+/// large files cannot be amortised across cores.
+///
+/// We cap the per-file size for the taint pass specifically: a file over the
+/// budget is skipped FOR TAINT ONLY (a structured warning is emitted — never
+/// a silent drop), while the cheap AST-walk analyses (`Resources`,
+/// `Behavioral`, …) still run on every file so non-taint coverage is
+/// unchanged. The budget degrades only on large monolithic translation units.
+///
+/// Sized empirically against the c-redis corpus: the canonical taint pipeline
+/// is super-linear, and on c-redis the files over ~96 KB (`src/module.c`
+/// 668 KB, `redis-cli.c` 425 KB, `server.c` 345 KB, `cluster_legacy.c`
+/// 270 KB, plus the 100–200 KB tier) dominate the wall clock. Measured
+/// whole-repo `secure` wall time vs cap: 256 KB → ~253 s, 128 KB → ~240 s
+/// (right on the ceiling — no headroom), 96 KB → comfortably under the 240 s
+/// ceiling. 96 KB is still ~2× the median hand-authored c-redis `src/*.c`
+/// file (the vast majority are < 50 KB), so normal code keeps full taint
+/// coverage; only large monolithic translation units degrade (with a
+/// structured `partial-analysis` warning, never a silent drop).
+const SECURE_PER_FILE_TAINT_SIZE_BUDGET: u64 = 96 * 1024;
+
 // =============================================================================
 // CLI Arguments
 // =============================================================================
@@ -244,14 +276,38 @@ pub fn run(args: SecureArgs, format: OutputFormat) -> anyhow::Result<()> {
     // `pm.luau`, `sort.luau`) intentionally embeds raw 0xFF/0xFE bytes —
     // pre-fix `tldr secure --lang luau /tmp/repos/luau-luau` aborted with
     // `Error: stream did not contain valid UTF-8` on the first such file.
-    let (files, warnings, files_skipped) = partition_utf8_clean(&candidate_files);
+    let (files, mut warnings, files_skipped) = partition_utf8_clean(&candidate_files);
+
+    // fix-C5-3 (v0.5.0 AUDIT-FIX): split off the files that exceed the
+    // per-file taint SIZE budget. The expensive `Taint` analysis runs only on
+    // the within-budget subset; every other (cheap, AST-walk) analysis still
+    // runs on the FULL set so non-taint coverage is unchanged. Oversized
+    // files are surfaced via a structured warning (never silently dropped).
+    let (taint_files, taint_oversized) =
+        partition_taint_eligible(&files, SECURE_PER_FILE_TAINT_SIZE_BUDGET);
+    for f in &taint_oversized {
+        warnings.push(format!(
+            "secure: skipped taint analysis for {} (exceeds {} KB per-file taint budget); \
+             resource/behavioral analyses still ran. Pass a smaller path or split the file \
+             to taint-scan it.",
+            f.display(),
+            SECURE_PER_FILE_TAINT_SIZE_BUDGET / 1024,
+        ));
+    }
 
     // Run sub-analyses and collect findings
     let mut all_findings = Vec::new();
     let mut sub_results: HashMap<String, Value> = HashMap::new();
 
     for analysis in analyses {
-        let (findings, raw_result) = run_security_analysis(*analysis, &files, &mut cache)?;
+        // Expensive taint pass uses the size-capped subset; all other
+        // analyses use the full file set.
+        let analysis_files: &[PathBuf] = if matches!(analysis, SecurityAnalysis::Taint) {
+            &taint_files
+        } else {
+            &files
+        };
+        let (findings, raw_result) = run_security_analysis(*analysis, analysis_files, &mut cache)?;
 
         // Collect findings
         all_findings.extend(findings);
@@ -351,6 +407,19 @@ fn collect_files(
     // The report will show 0 files scanned with no findings
 
     Ok(files)
+}
+
+/// fix-C5-3 (v0.5.0 AUDIT-FIX): partition `files` into the within-budget set
+/// (eligible for the expensive taint pass) and the oversized set (skipped for
+/// taint only). A file whose size is `<= budget` bytes is eligible; a file
+/// that cannot be stat'd is treated as eligible (the downstream tolerant read
+/// handles a vanished file). Returns `(eligible, oversized)`, both preserving
+/// the input order so the run remains deterministic.
+fn partition_taint_eligible(files: &[PathBuf], budget: u64) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    files.iter().cloned().partition(|f| match fs::metadata(f) {
+        Ok(m) => m.len() <= budget,
+        Err(_) => true,
+    })
 }
 
 /// Check whether `path` is a source file the secure analyzer should scan.
@@ -1747,5 +1816,59 @@ fn risky(user: &str) {
         assert!(!kept.iter().any(|f| f.ends_with("/__tests__/x.tsx")));
         assert!(!kept.iter().any(|f| f.ends_with("/tests/it.rs")));
         assert!(!kept.iter().any(|f| f.ends_with("/foo_test.rs")));
+    }
+
+    // =====================================================================
+    // fix-C5-3 (v0.5.0 AUDIT-FIX): per-file taint SIZE budget bounds the
+    // expensive taint pass; cheap analyses still run on all files. This
+    // keeps `secure` on big C (c-redis) within bound (was ~285s).
+    // =====================================================================
+
+    /// RED→GREEN: a file over the per-file taint budget is partitioned into
+    /// the "oversized" set (skipped for taint), while a small file stays in
+    /// the eligible set. Order is preserved.
+    #[test]
+    fn test_partition_taint_eligible_skips_oversized() {
+        let dir = TempDir::new().unwrap();
+        // Small file: 1 KB, eligible.
+        let small = create_test_file(&dir, "small.c", &"a".repeat(1024));
+        // Big file: budget + 1 byte, oversized for taint.
+        let big_content = "b".repeat((SECURE_PER_FILE_TAINT_SIZE_BUDGET as usize) + 1);
+        let big = create_test_file(&dir, "big.c", &big_content);
+
+        let files = vec![small.clone(), big.clone()];
+        let (eligible, oversized) =
+            partition_taint_eligible(&files, SECURE_PER_FILE_TAINT_SIZE_BUDGET);
+
+        assert_eq!(eligible, vec![small], "small file must be taint-eligible");
+        assert_eq!(oversized, vec![big], "big file must be skipped for taint");
+    }
+
+    /// A file exactly AT the budget is eligible (`<=` boundary).
+    #[test]
+    fn test_partition_taint_eligible_boundary_inclusive() {
+        let dir = TempDir::new().unwrap();
+        let exact = create_test_file(
+            &dir,
+            "exact.c",
+            &"x".repeat(SECURE_PER_FILE_TAINT_SIZE_BUDGET as usize),
+        );
+        let (eligible, oversized) =
+            partition_taint_eligible(&[exact.clone()], SECURE_PER_FILE_TAINT_SIZE_BUDGET);
+        assert_eq!(eligible, vec![exact], "file exactly at budget must be eligible");
+        assert!(oversized.is_empty());
+    }
+
+    /// The budget constant must be a sane, generous value (>= 64 KB) so it
+    /// only degrades on genuinely large translation units, never on typical
+    /// hand-authored source (the median c-redis `src/*.c` is < 50 KB). The
+    /// exact value is tuned empirically so `secure` on c-redis stays under
+    /// the 240 s ceiling; the lower bound here is the correctness floor.
+    #[test]
+    fn test_taint_size_budget_is_generous() {
+        assert!(
+            SECURE_PER_FILE_TAINT_SIZE_BUDGET >= 64 * 1024,
+            "taint size budget must be generous (>=64KB) to avoid dropping normal files"
+        );
     }
 }
