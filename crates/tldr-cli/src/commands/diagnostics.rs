@@ -210,18 +210,13 @@ impl DiagnosticsArgs {
                 }
             }
 
-            // Advisory on stderr (S6-R36 mitigation kept).
-            eprintln!(
-                "Note: No diagnostic tools available for {:?}. Install one of:",
-                language
-            );
-            for tool in tools_for_language(language) {
-                eprintln!(
-                    "  - {} ({})",
-                    tool.name,
-                    tldr_core::diagnostics::get_install_suggestion(tool.name)
-                );
-            }
+            // Advisory on stderr (S6-R36 mitigation kept). The leading
+            // "No diagnostic tools available for {lang}" phrase is a contract
+            // pinned by hygiene_and_crash_fixes_v1 (agg12_6) — keep it.
+            //
+            // fix-C5-5 (v0.5.0 AUDIT-FIX): emit a complete, non-dangling
+            // advisory (see `build_no_tools_advisory`).
+            eprint!("{}", build_no_tools_advisory(language));
             // Preserve exit code 60 so existing skip-on-no-tools test gates
             // (e.g. high_bundle_progress_determinism_coverage_v1) continue to
             // distinguish "no tools" from a real diagnostics run that found
@@ -348,6 +343,49 @@ impl DiagnosticsArgs {
         }
 
         Ok(())
+    }
+}
+
+/// fix-C5-5 (v0.5.0 AUDIT-FIX): build the stderr advisory shown when no
+/// diagnostic tool is available for `language`.
+///
+/// Two cases:
+///
+///   1. tldr knows of tools for the language but none are installed
+///      (`tools_for_language` non-empty): the message ends with
+///      `Install one of:` followed by one `  - <tool> (<hint>)` line per
+///      known tool. This is the actionable path.
+///
+///   2. tldr has NO tool integration for the language at all
+///      (`tools_for_language` empty — OCaml, Solidity, Luau, …): the old
+///      code still printed the dangling `Install one of:` with an empty
+///      list, which reads as a broken/error message. Instead emit a single,
+///      self-contained sentence making clear there is simply nothing to run
+///      (not an analysis failure).
+///
+/// Both cases keep the leading `No diagnostic tools available for {lang}`
+/// phrase that `hygiene_and_crash_fixes_v1` pins as a contract. The returned
+/// string is newline-terminated and printed verbatim with `eprint!`.
+fn build_no_tools_advisory(language: Language) -> String {
+    let installable = tools_for_language(language);
+    if installable.is_empty() {
+        format!(
+            "Note: No diagnostic tools available for {language:?}. \
+             tldr has no type-checker or linter integration for {language:?} yet, \
+             so there is nothing to run — this is not an analysis error.\n"
+        )
+    } else {
+        let mut msg = format!(
+            "Note: No diagnostic tools available for {language:?}. Install one of:\n"
+        );
+        for tool in installable {
+            msg.push_str(&format!(
+                "  - {} ({})\n",
+                tool.name,
+                tldr_core::diagnostics::get_install_suggestion(tool.name)
+            ));
+        }
+        msg
     }
 }
 
@@ -777,5 +815,69 @@ mod tests {
 
         assert_eq!(bd1, bd2);
         assert_eq!(bd1.message_hash, bd2.message_hash);
+    }
+
+    // =====================================================================
+    // fix-C5-5 (v0.5.0 AUDIT-FIX): the no-tools advisory must not dangle.
+    // =====================================================================
+
+    /// RED→GREEN: for a language with NO tool integration (OCaml), the
+    /// advisory must be a complete sentence — it must NOT end with the
+    /// dangling "Install one of:" promise followed by nothing.
+    #[test]
+    fn test_no_tools_advisory_not_dangling_for_unsupported_language() {
+        // Precondition: OCaml genuinely has no tool config.
+        assert!(
+            tools_for_language(Language::Ocaml).is_empty(),
+            "test precondition: OCaml must have no diagnostic tool config"
+        );
+
+        let msg = build_no_tools_advisory(Language::Ocaml);
+
+        // Contract pinned by hygiene_and_crash_fixes_v1: the leading phrase
+        // must be present.
+        assert!(
+            msg.contains("No diagnostic tools available"),
+            "advisory must keep the pinned 'No diagnostic tools available' phrase: {msg:?}"
+        );
+        // The defect: a trailing "Install one of:" with no list.
+        assert!(
+            !msg.contains("Install one of:"),
+            "advisory for a language with no tools must NOT dangle an empty 'Install one of:' list: {msg:?}"
+        );
+        // It must read as informative, not an error.
+        assert!(
+            msg.contains("not an analysis error"),
+            "advisory should clarify this is not an error: {msg:?}"
+        );
+        // No line should be an empty bullet.
+        assert!(
+            !msg.lines().any(|l| l.trim() == "-" || l.trim() == "- ()"),
+            "advisory must not contain an empty tool bullet: {msg:?}"
+        );
+    }
+
+    /// Guard: for a language that HAS tool integrations (Python), the
+    /// advisory still lists installable tools after "Install one of:".
+    #[test]
+    fn test_no_tools_advisory_lists_tools_for_supported_language() {
+        assert!(
+            !tools_for_language(Language::Python).is_empty(),
+            "test precondition: Python must have diagnostic tool configs"
+        );
+        let msg = build_no_tools_advisory(Language::Python);
+        assert!(
+            msg.contains("No diagnostic tools available"),
+            "must keep the pinned phrase: {msg:?}"
+        );
+        assert!(
+            msg.contains("Install one of:"),
+            "Python advisory must offer an install list: {msg:?}"
+        );
+        // At least one concrete tool bullet (e.g. pyright / ruff).
+        assert!(
+            msg.lines().filter(|l| l.trim_start().starts_with("- ")).count() >= 1,
+            "Python advisory must list at least one tool: {msg:?}"
+        );
     }
 }
