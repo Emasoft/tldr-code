@@ -458,6 +458,19 @@ pub fn find_definition_by_position(
         return Ok(result);
     }
 
+    // C2 (v0.5.0 AUDIT-FIX): Lua/Luau standard-library member access
+    // (`string.find`, `table.insert`, …). A local binding that shadows
+    // the stdlib name would already have resolved in Pass 1 above, so by
+    // the time we get here a `lib.member` whose base is a stdlib table is
+    // genuinely a builtin call. Return a clean builtin result rather than
+    // letting the trailing-segment cross-file fallback latch onto an
+    // unrelated user symbol named after the member (the live
+    // `string.find` -> `tables.luau:182` regression).
+    if let Some(lib) = lua_stdlib_member(&symbol_name, language) {
+        let member = trailing_segment(&symbol_name);
+        return Ok(builtin_definition_result(&member, lib));
+    }
+
     // Pass 2 (+ optional cross-file): existing name-based search. This
     // covers top-level functions, classes, and Python module-level
     // assignments.
@@ -554,6 +567,10 @@ fn resolve_local_scope(
             | Language::Elixir
             | Language::Ocaml
             | Language::CSharp
+            // C2 (v0.5.0 AUDIT-FIX): Solidity participates so contract
+            // state variables and function parameters resolve via
+            // `scan_solidity_scope`.
+            | Language::Solidity
     ) {
         return Ok(None);
     }
@@ -572,28 +589,83 @@ fn resolve_local_scope(
     // Walk up ancestors, scanning each scope-introducing ancestor for
     // bindings.
     let mut current = Some(start_node);
+    let mut scanned_root = false;
     while let Some(node) = current {
         if is_scope_node(node.kind(), language) {
+            if node.parent().is_none() {
+                scanned_root = true;
+            }
             if let Some(loc) = scan_scope_for_binding(node, source, symbol, language, file) {
-                return Ok(Some(DefinitionResult {
-                    symbol: SymbolInfo {
-                        name: symbol.to_string(),
-                        kind: loc.0,
-                        location: Some(loc.1.clone()),
-                        type_annotation: None,
-                        docstring: None,
-                        is_builtin: false,
-                        module: None,
-                    },
-                    definition: Some(loc.1),
-                    type_definition: None,
-                }));
+                return Ok(Some(make_local_result(symbol, loc)));
             }
         }
         current = node.parent();
     }
 
+    // C2 (v0.5.0 AUDIT-FIX): class fields / properties declared at the
+    // class-body level are SIBLINGS of the method that uses them, so the
+    // ancestor walk above only reaches them when the enclosing class
+    // container is itself a scope node (kotlin `class_body`, scala
+    // `template_body`, solidity `contract_declaration`, …). Two cases
+    // slip through:
+    //
+    //   1. A class container kind that is not (yet) listed in
+    //      `is_scope_node` for the language.
+    //   2. A file that failed to fully parse, leaving the tree-sitter
+    //      ROOT as an `ERROR` node rather than the normal
+    //      `source_file` / `compilation_unit`. The real Semaphore.kt
+    //      audit case parses to an `ERROR` root with the `private val`
+    //      property and the consuming function as direct children of
+    //      that ERROR node.
+    //
+    // For languages whose scope scanner is class-field-aware (it matches
+    // property / field / val-var declarations and stops at nested
+    // class/function boundaries), do a final scan of the ROOT node when
+    // it was not already scanned. This is safe and idempotent: the
+    // scanner only returns property/field bindings, never re-derives an
+    // inner-scope local that the ancestor walk already rejected.
+    if !scanned_root && language_has_class_fields(language) {
+        if let Some(loc) = scan_scope_for_binding(root, source, symbol, language, file) {
+            return Ok(Some(make_local_result(symbol, loc)));
+        }
+    }
+
     Ok(None)
+}
+
+/// Build a [`DefinitionResult`] for a local-scope binding hit.
+fn make_local_result(symbol: &str, loc: (SymbolKind, Location)) -> DefinitionResult {
+    DefinitionResult {
+        symbol: SymbolInfo {
+            name: symbol.to_string(),
+            kind: loc.0,
+            location: Some(loc.1.clone()),
+            type_annotation: None,
+            docstring: None,
+            is_builtin: false,
+            module: None,
+        },
+        definition: Some(loc.1),
+        type_definition: None,
+    }
+}
+
+/// Languages whose local-scope scanner can resolve a class-body-level
+/// field / property declaration (and therefore benefit from the
+/// root-node fallback scan in [`resolve_local_scope`]). These scanners
+/// match `val`/`var`/property/state-variable forms and stop at nested
+/// class/function boundaries, so scanning the outermost node never
+/// leaks an unrelated inner binding.
+fn language_has_class_fields(language: Language) -> bool {
+    matches!(
+        language,
+        Language::Kotlin
+            | Language::Scala
+            | Language::Swift
+            | Language::Java
+            | Language::CSharp
+            | Language::Solidity
+    )
 }
 
 /// Returns true for tree-sitter node kinds that introduce a new
@@ -662,6 +734,15 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
                 | "lambda_literal"
                 | "function_body"
                 | "statements"
+                // C2 (v0.5.0 AUDIT-FIX): the class body is a scope so a
+                // method can see its enclosing class's `val`/`var`
+                // properties. `kotlin_walk_for_binding` still stops at a
+                // *nested* `class_declaration`, so this does not leak
+                // inner-class fields into an outer scope.
+                | "class_body"
+                | "class_declaration"
+                | "object_declaration"
+                | "enum_class_body"
                 | "source_file"
         ),
         Language::Swift => matches!(
@@ -672,6 +753,14 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
                 | "lambda_literal"
                 | "function_body"
                 | "statements"
+                // C2 (v0.5.0 AUDIT-FIX): class/struct/enum/protocol body
+                // scope so a method can resolve sibling `let`/`var`
+                // properties. `swift_walk_for_binding` stops at nested
+                // type declarations.
+                | "class_body"
+                | "class_declaration"
+                | "protocol_body"
+                | "enum_class_body"
                 | "source_file"
         ),
         Language::Scala => matches!(
@@ -680,6 +769,14 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
                 | "function_declaration"
                 | "lambda_expression"
                 | "block"
+                // C2 (v0.5.0 AUDIT-FIX): scan the class/trait/object
+                // body so a method can resolve sibling `val`/`var`
+                // fields. `scala_walk_for_binding` stops at a nested
+                // class/object/trait definition.
+                | "class_definition"
+                | "object_definition"
+                | "trait_definition"
+                | "template_body"
                 | "compilation_unit"
         ),
         Language::Php => matches!(
@@ -776,11 +873,9 @@ fn scan_scope_for_binding(
         Language::Elixir => scan_elixir_scope(node, bytes, symbol, file),
         Language::Ocaml => scan_ocaml_scope(node, bytes, symbol, file),
         Language::CSharp => scan_csharp_scope(node, bytes, symbol, file),
-        // v0.5.0 SOL-001 Solidity foundation: scope-binding scanner
-        // lands in SOL-002. None preserves "no definition found"
-        // semantics — the user just gets a clean miss instead of
-        // a crash.
-        Language::Solidity => None,
+        // v0.5.0 C2 AUDIT-FIX: Solidity scope-binding scanner resolves
+        // contract state variables and function/constructor parameters.
+        Language::Solidity => scan_solidity_scope(node, bytes, symbol, file),
     }
 }
 
@@ -2572,6 +2667,158 @@ fn csharp_walk_for_binding(
     }
 }
 
+/// Solidity scope binding scanner (v0.5.0 C2 AUDIT-FIX).
+///
+/// Handles two binding forms that previously left the resolver returning
+/// `None` (and therefore falling through to a wrong cross-file hit):
+///
+/// 1. **Contract state variables** — `mapping(...) public balanceOf;`,
+///    `uint256 public totalSupply;`, `address owner;`. These are
+///    `state_variable_declaration` nodes whose name is the last
+///    `identifier` child (after the `type_name` and any `visibility` /
+///    modifier children). They live directly under the `contract_body`
+///    (and interface/library bodies), so when the cursor's enclosing
+///    `contract_declaration` scope is scanned we descend through the
+///    `contract_body` to reach them.
+/// 2. **Function / constructor / modifier parameters** — the `parameter`
+///    nodes inside the parameter list.
+///
+/// AST kinds verified via debug-parse against
+/// `solidity-solmate/src/tokens/ERC20.sol` (the live audit corpus):
+/// `state_variable_declaration` → [`type_name`, `visibility`,
+/// `identifier`, `;`].
+fn scan_solidity_scope(
+    node: Node,
+    src: &[u8],
+    symbol: &str,
+    file: &Path,
+) -> Option<(SymbolKind, Location)> {
+    // Function-shaped scopes: scan their parameter list first so a
+    // parameter shadows an outer state variable of the same name.
+    if matches!(
+        node.kind(),
+        "function_definition"
+            | "constructor_definition"
+            | "fallback_function_definition"
+            | "receive_function_definition"
+            | "modifier_definition"
+    ) {
+        if let Some(loc) = solidity_scan_params(node, src, symbol, file) {
+            return Some(loc);
+        }
+    }
+    // Walk children for state-variable declarations (and nested params),
+    // stopping at nested contract/function boundaries.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(loc) = solidity_walk_for_binding(child, src, symbol, file) {
+            return Some(loc);
+        }
+    }
+    None
+}
+
+/// Scan a Solidity function/constructor/modifier node for a parameter
+/// named `symbol`. Parameters are `parameter` nodes; the name is the
+/// `identifier` child (a `parameter` may also be name-less, e.g.
+/// `uint256` in an interface, which we skip).
+fn solidity_scan_params(
+    node: Node,
+    src: &[u8],
+    symbol: &str,
+    file: &Path,
+) -> Option<(SymbolKind, Location)> {
+    fn find_param<'a>(
+        n: Node<'a>,
+        src: &[u8],
+        symbol: &str,
+        file: &Path,
+    ) -> Option<(SymbolKind, Location)> {
+        if n.kind() == "parameter" {
+            // Name is the identifier child (after the type_name).
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                if ch.kind() == "identifier" && name_node_matches(ch, src, symbol) {
+                    return Some(make_param_location(ch, file));
+                }
+            }
+            return None;
+        }
+        // Do not descend into the function body when scanning params.
+        if matches!(n.kind(), "function_body" | "block") {
+            return None;
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            if let Some(loc) = find_param(ch, src, symbol, file) {
+                return Some(loc);
+            }
+        }
+        None
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(loc) = find_param(child, src, symbol, file) {
+            return Some(loc);
+        }
+    }
+    None
+}
+
+/// Recursive walk for Solidity bindings. Resolves `state_variable_declaration`
+/// (and `constant_variable_declaration`) names. Stops at nested
+/// contract/function boundaries so an inner scope's bindings are scanned
+/// by their own scope node rather than leaking across boundaries.
+fn solidity_walk_for_binding(
+    node: Node,
+    src: &[u8],
+    symbol: &str,
+    file: &Path,
+) -> Option<(SymbolKind, Location)> {
+    match node.kind() {
+        // Do not descend into nested definitions — their bindings belong
+        // to a different scope.
+        "function_definition"
+        | "constructor_definition"
+        | "fallback_function_definition"
+        | "receive_function_definition"
+        | "modifier_definition"
+        | "contract_declaration"
+        | "interface_declaration"
+        | "library_declaration"
+        | "struct_declaration" => None,
+        "state_variable_declaration" | "constant_variable_declaration" => {
+            // The variable name is the last `identifier` child (the
+            // `type_name`'s own identifiers are nested under `type_name`,
+            // not direct children, so a direct-child identifier is the
+            // declared name).
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "identifier" && name_node_matches(child, src, symbol) {
+                    return Some((
+                        SymbolKind::Property,
+                        Location::with_column(
+                            file.display().to_string(),
+                            child.start_position().row as u32 + 1,
+                            child.start_position().column as u32 + 1,
+                        ),
+                    ));
+                }
+            }
+            None
+        }
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(loc) = solidity_walk_for_binding(child, src, symbol, file) {
+                    return Some(loc);
+                }
+            }
+            None
+        }
+    }
+}
+
 /// Pass 3: import-scope resolution.
 ///
 /// Scans the source for `import` / `from ... import` (Python),
@@ -4325,6 +4572,68 @@ pub fn is_builtin(name: &str, language: &Language) -> bool {
     }
 }
 
+/// Lua / Luau standard-library global tables.
+///
+/// A member access whose base is one of these (e.g. `string.find`,
+/// `table.insert`, `math.max`) is a call into the standard library, not
+/// a reference to a user-defined symbol. C2 (v0.5.0 AUDIT-FIX): without
+/// this check the resolver fell through to a trailing-segment cross-file
+/// search and produced a *wrong* hit on an unrelated user `find` in
+/// another file (the live `string.find` -> `tables.luau` regression).
+///
+/// Covers Lua 5.x and Luau standard libraries. These names are reserved
+/// stdlib globals in the supported corpus; treating their members as
+/// builtins is the correct go-to-definition answer (an external/builtin
+/// symbol with no user source location).
+const LUA_STDLIB_TABLES: &[&str] = &[
+    "string", "table", "math", "os", "io", "coroutine", "debug", "utf8",
+    "package", "bit32", "buffer", "vector", "task",
+];
+
+/// If `symbol` is a dotted member access `lib.member` whose base `lib` is
+/// a Lua/Luau standard-library table, return `Some(lib)`. Used to short
+/// circuit go-to-definition with a clean builtin result instead of a
+/// bogus user-symbol cross-file hit.
+///
+/// Only the FIRST segment is inspected: `string.find` -> `Some("string")`,
+/// `mytable.find` -> `None`, `find` -> `None`. A user variable that
+/// happens to be named after a stdlib table (e.g. a local `string`) is a
+/// rare shadowing case; if a local binding exists it is resolved by the
+/// earlier local-scope pass before this check runs, so the stdlib answer
+/// only applies when no user binding shadows the name.
+fn lua_stdlib_member(symbol: &str, language: Language) -> Option<&'static str> {
+    if !matches!(language, Language::Lua | Language::Luau) {
+        return None;
+    }
+    // Must be a dotted/colon member access with a single base segment.
+    let base = symbol.split(['.', ':']).next()?;
+    if base.is_empty() || base == symbol {
+        return None;
+    }
+    LUA_STDLIB_TABLES
+        .iter()
+        .copied()
+        .find(|&lib| lib == base)
+}
+
+/// Build a builtin [`DefinitionResult`] for a standard-library / external
+/// symbol that has no user source location.
+fn builtin_definition_result(name: &str, module: &str) -> DefinitionResult {
+    DefinitionResult {
+        symbol: SymbolInfo {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            location: None,
+            type_annotation: None,
+            docstring: None,
+            is_builtin: true,
+            module: Some(module.to_string()),
+        },
+        definition: None,
+        type_definition: None,
+    }
+}
+
 /// Detect language from a file extension or an explicit hint.
 ///
 /// Supports all 18 TLDR languages (VAL-015). The hint is the lower-case
@@ -5259,5 +5568,162 @@ from . import types
         assert_eq!(result.symbol.kind, SymbolKind::Variable);
         let def = result.definition.expect("definition must be Some");
         assert_eq!(def.line, 3);
+    }
+
+    // =========================================================================
+    // C2 (v0.5.0 AUDIT-FIX): go-to-definition for class fields/properties
+    // (kotlin val/var, scala), Solidity contract state variables, and
+    // correct handling of stdlib/builtin member access (luau string.find
+    // must NOT resolve to a bogus user symbol).
+    // =========================================================================
+
+    /// Kotlin: a usage of a class-level `private val` property must resolve
+    /// to that property's declaration — not error "not found in scope".
+    /// Mirrors the live Semaphore.kt `_availablePermits` gap.
+    #[test]
+    fn test_definition_resolves_class_property_kotlin() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Sem.kt");
+        // Line 1: class Sem {
+        // Line 2:   private val _permits = atomic(0)
+        // Line 3:   fun acquire(): Boolean {
+        // Line 4:     val p = _permits.value
+        // Line 5:     return p > 0
+        // Line 6:   }
+        // Line 7: }
+        fs::write(
+            &file,
+            "class Sem {\n  private val _permits = atomic(0)\n  fun acquire(): Boolean {\n    val p = _permits.value\n    return p > 0\n  }\n}\n",
+        )
+        .unwrap();
+        // Cursor on `_permits` in line 4 (the usage). Column 12 lands on `_`.
+        let result = find_definition_by_position(&file, 4, 12, None, "kotlin")
+            .expect("kotlin private property usage should resolve to its declaration");
+        assert_eq!(result.symbol.name, "_permits");
+        let def = result.definition.expect("definition must be Some");
+        assert_eq!(
+            def.line, 2,
+            "private val _permits declared on line 2, got {}",
+            def.line
+        );
+    }
+
+    /// Scala: a usage of a class-level `private[this] val` field must
+    /// resolve to that field's declaration.
+    #[test]
+    fn test_definition_resolves_class_field_scala() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Fiber.scala");
+        // Line 1: class Fiber {
+        // Line 2:   private[this] val objectState = newStack()
+        // Line 3:   def run(): Int = {
+        // Line 4:     val x = objectState
+        // Line 5:     0
+        // Line 6:   }
+        // Line 7: }
+        fs::write(
+            &file,
+            "class Fiber {\n  private[this] val objectState = newStack()\n  def run(): Int = {\n    val x = objectState\n    0\n  }\n}\n",
+        )
+        .unwrap();
+        // Cursor on `objectState` in line 4 (usage). `    val x = ` is 12
+        // bytes, so column 12 lands on `o`.
+        let result = find_definition_by_position(&file, 4, 12, None, "scala")
+            .expect("scala class field usage should resolve to its declaration");
+        assert_eq!(result.symbol.name, "objectState");
+        let def = result.definition.expect("definition must be Some");
+        assert_eq!(
+            def.line, 2,
+            "val objectState declared on line 2, got {}",
+            def.line
+        );
+    }
+
+    /// Solidity: a usage of a contract STATE VARIABLE (a `mapping`) must
+    /// resolve to the state-variable declaration in the SAME file — not a
+    /// same-named declaration in another file. Mirrors the live solmate
+    /// ERC20.sol `balanceOf` gap (was wrongly resolving to ERC721.sol).
+    #[test]
+    fn test_definition_resolves_state_variable_solidity() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Token.sol");
+        // Line 1: contract Token {
+        // Line 2:   mapping(address => uint256) public balanceOf;
+        // Line 3:
+        // Line 4:   function burn(address from, uint256 amount) public {
+        // Line 5:     balanceOf[from] -= amount;
+        // Line 6:   }
+        // Line 7: }
+        fs::write(
+            &file,
+            "contract Token {\n  mapping(address => uint256) public balanceOf;\n\n  function burn(address from, uint256 amount) public {\n    balanceOf[from] -= amount;\n  }\n}\n",
+        )
+        .unwrap();
+        // Cursor on `balanceOf` in line 5 (the usage). Column 4 lands on `b`.
+        let result = find_definition_by_position(&file, 5, 4, None, "solidity")
+            .expect("solidity state variable usage should resolve to its declaration");
+        assert_eq!(result.symbol.name, "balanceOf");
+        let def = result.definition.expect("definition must be Some");
+        assert_eq!(
+            def.line, 2,
+            "state variable balanceOf declared on line 2, got {}",
+            def.line
+        );
+        // And it must point back to THIS file, not leak to another.
+        assert!(
+            def.file.ends_with("Token.sol"),
+            "state var must resolve in the same file, got {}",
+            def.file
+        );
+    }
+
+    /// Luau: a member access on a standard-library table (`string.find`)
+    /// must NOT be resolved to an unrelated user-defined `find` symbol in
+    /// some other file. It should be reported as a builtin / external
+    /// symbol (no bogus source location). Mirrors the live classes.luau
+    /// `string.find` gap (was wrongly resolving to tables.luau:182).
+    #[test]
+    fn test_definition_stdlib_member_not_bogus_user_symbol_luau() {
+        let dir = tempfile::tempdir().unwrap();
+        // A decoy user file defining `find` so cross-file resolution has
+        // something wrong to latch onto if the stdlib guard is missing.
+        let decoy = dir.path().join("decoy.luau");
+        fs::write(&decoy, "local function find(a, b)\n  return a\nend\nreturn find\n").unwrap();
+        let file = dir.path().join("main.luau");
+        // Line 1: local function check(actual, expected)
+        // Line 2:   assert(string.find(actual, expected))
+        // Line 3: end
+        fs::write(
+            &file,
+            "local function check(actual, expected)\n  assert(string.find(actual, expected))\nend\n",
+        )
+        .unwrap();
+        // Cursor on `string` (base of the stdlib member access) in line 2.
+        // `  assert(` is 9 bytes, so column 9 is `s` of `string`.
+        let result =
+            find_definition_by_position(&file, 2, 9, Some(dir.path()), "luau");
+        match result {
+            Ok(def) => {
+                // Must be flagged as a builtin and carry NO bogus source
+                // location pointing at the decoy file.
+                assert!(
+                    def.symbol.is_builtin,
+                    "string.find must be reported as a builtin, got {:?}",
+                    def.symbol
+                );
+                if let Some(loc) = def.definition {
+                    assert!(
+                        !loc.file.ends_with("decoy.luau"),
+                        "stdlib member must NOT resolve to the decoy user symbol, got {}",
+                        loc.file
+                    );
+                }
+            }
+            Err(_) => {
+                // A clean "external/builtin" miss is also acceptable — what
+                // is NOT acceptable is a bogus hit on decoy.luau, which the
+                // Ok branch guards against.
+            }
+        }
     }
 }
