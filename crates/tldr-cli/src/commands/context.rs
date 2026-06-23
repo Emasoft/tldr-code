@@ -9,7 +9,10 @@ use anyhow::Result;
 use clap::Args;
 
 use tldr_core::types::RelevantContext as TypesRelevantContext;
-use tldr_core::{get_relevant_context, Language, RelevantContext};
+use tldr_core::{
+    build_project_call_graph, extract_file, get_relevant_context, FunctionContext, Language,
+    RelevantContext,
+};
 
 use crate::commands::daemon_router::{params_with_entry_depth, try_daemon_route};
 use crate::output::{OutputFormat, OutputWriter};
@@ -181,6 +184,36 @@ impl ContextArgs {
             effective_file.as_deref(),
         )?;
 
+        // c3-context-neighborhood-v1 (v0.5.0 AUDIT-FIX, C3 gap-c): for some
+        // languages (Lua/Luau nested `local function`s; Swift cross-file
+        // `Type.method` definitions) the core builder's BFS collapses to a
+        // degenerate result — it returns the bare entry only, or even an
+        // unrelated function — because its entry resolution / per-node
+        // verification goes through `extract_file`, which does NOT surface
+        // nested local functions or reconcile the call graph's cross-file
+        // `Type.method` keys. The PROJECT call graph (post Wave-2/5) DOES carry
+        // those edges. When the standard result is degenerate, rebuild the
+        // neighborhood directly from the call graph: locate the entry among the
+        // graph's edges, BFS the forward edges to `depth`, and synthesize one
+        // `FunctionContext` per reached node with its `calls` populated from the
+        // graph. Signatures/line numbers are filled best-effort from
+        // `extract_file`; the call-relationship neighborhood is the load-bearing
+        // output and always reflects the working call graph.
+        if context_is_degenerate(&context, &entry) {
+            if let Some(rebuilt) = build_context_from_call_graph(
+                &project_path,
+                &entry,
+                self.depth,
+                language,
+                self.include_docstrings,
+                effective_file.as_deref(),
+            ) {
+                if rebuilt.functions.len() > context.functions.len() {
+                    context = rebuilt;
+                }
+            }
+        }
+
         // scala-path-canonical-v1 (v0.4.1 bug-C): preserve the user's
         // input path shape for the entry-point function's `file:` field.
         // `get_relevant_context` -> `build_function_context` strips the
@@ -333,4 +366,255 @@ fn infer_project_root_from_file(file: &Path) -> Option<PathBuf> {
         cursor = dir.parent();
     }
     Some(parent.to_path_buf())
+}
+
+/// c3-context-neighborhood-v1 (v0.5.0 AUDIT-FIX, C3 gap-c): decide whether the
+/// core `get_relevant_context` result is degenerate and warrants a
+/// call-graph-driven rebuild.
+///
+/// A result is degenerate when EITHER:
+///   - it contains no function whose name matches `entry` (the BFS landed on an
+///     unrelated function because entry resolution failed — observed for Lua
+///     nested `local function`s where the result is some other top-level
+///     function), OR
+///   - it contains the entry but with an EMPTY `calls` list while collapsing to
+///     a single function (no neighborhood expanded at all — observed for Swift
+///     cross-file `Type.method` entries).
+///
+/// Name matching is last-segment aware so a graph key `Type.method` / a bare
+/// `method` reconcile with the user-typed entry.
+fn context_is_degenerate(context: &RelevantContext, entry: &str) -> bool {
+    let entry_leaf = last_segment(entry);
+    let entry_fn = context
+        .functions
+        .iter()
+        .find(|f| name_matches(&f.name, entry, entry_leaf));
+    match entry_fn {
+        None => true,
+        Some(f) => context.functions.len() <= 1 && f.calls.is_empty(),
+    }
+}
+
+/// Last `.`/`::`-separated segment of a (possibly qualified) name.
+fn last_segment(name: &str) -> &str {
+    name.rsplit(['.', ':']).next().unwrap_or(name)
+}
+
+/// Whether `candidate` names the same function as the user-typed `entry`,
+/// tolerant of qualifier shape on either side (`Type.method` vs bare `method`).
+fn name_matches(candidate: &str, entry: &str, entry_leaf: &str) -> bool {
+    candidate == entry
+        || last_segment(candidate) == entry_leaf
+        || candidate == entry_leaf
+        || last_segment(candidate) == entry
+}
+
+/// c3-context-neighborhood-v1 (v0.5.0 AUDIT-FIX, C3 gap-c): build a
+/// [`RelevantContext`] for `entry` directly from the project call graph.
+///
+/// Locates the entry among the graph's edges (by exact or last-segment name
+/// match, honouring an optional `file_filter`), BFS-traverses the forward
+/// (caller -> callee) edges to `depth`, and synthesizes a `FunctionContext` per
+/// reached `(file, func)` node. Each node's `calls` is the set of its outgoing
+/// callee names from the graph. Signature / line / docstring are filled
+/// best-effort from `extract_file` (works for top-level functions and class
+/// methods; nested locals fall back to a name-only signature). Returns `None`
+/// when the graph has no node matching `entry` (the caller then keeps the
+/// original — possibly empty — result).
+fn build_context_from_call_graph(
+    project: &std::path::Path,
+    entry: &str,
+    depth: usize,
+    language: Language,
+    include_docstrings: bool,
+    file_filter: Option<&Path>,
+) -> Option<RelevantContext> {
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+    let graph = build_project_call_graph(project, language, None, true).ok()?;
+    let entry_leaf = last_segment(entry);
+
+    let file_ok = |f: &std::path::Path| -> bool {
+        match file_filter {
+            None => true,
+            Some(filter) => f.ends_with(filter) || filter.ends_with(f),
+        }
+    };
+
+    // Forward adjacency keyed by (file, func) -> ordered set of (callee names).
+    // Keep a parallel map of node -> outgoing callee NAME list for `calls`.
+    let mut forward: BTreeMap<(std::path::PathBuf, String), Vec<(std::path::PathBuf, String)>> =
+        BTreeMap::new();
+    for edge in graph.edges() {
+        forward
+            .entry((edge.src_file.clone(), edge.src_func.clone()))
+            .or_default()
+            .push((edge.dst_file.clone(), edge.dst_func.clone()));
+    }
+
+    // Find the entry node among the graph's callers (nodes WITH outgoing
+    // edges). Prefer an EXACT name match over a last-segment match so a
+    // qualified `Deque.init` entry is not captured by some bare `init` node.
+    let mut exact_node: Option<(std::path::PathBuf, String)> = None;
+    let mut fuzzy_node: Option<(std::path::PathBuf, String)> = None;
+    for (key, _callees) in forward.iter() {
+        let (file, func) = key;
+        if !file_ok(file) {
+            continue;
+        }
+        if func == entry {
+            exact_node = Some(key.clone());
+            break;
+        }
+        if fuzzy_node.is_none() && name_matches(func, entry, entry_leaf) {
+            fuzzy_node = Some(key.clone());
+        }
+    }
+    // If not found as a caller, accept it as a callee (leaf) so we at least
+    // anchor the neighborhood — though with no outgoing edges the result would
+    // be a single node, which the caller will reject in favour of the original.
+    if exact_node.is_none() && fuzzy_node.is_none() {
+        for edge in graph.edges() {
+            if name_matches(&edge.dst_func, entry, entry_leaf) && file_ok(&edge.dst_file) {
+                fuzzy_node = Some((edge.dst_file.clone(), edge.dst_func.clone()));
+                break;
+            }
+        }
+    }
+    let entry_node = exact_node.or(fuzzy_node)?;
+
+    // BFS forward to `depth`, collecting nodes in discovery order.
+    let mut visited: BTreeSet<(std::path::PathBuf, String)> = BTreeSet::new();
+    let mut ordered: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut queue: VecDeque<((std::path::PathBuf, String), usize)> = VecDeque::new();
+    queue.push_back((entry_node.clone(), 0));
+    visited.insert(entry_node.clone());
+    while let Some((node, d)) = queue.pop_front() {
+        ordered.push(node.clone());
+        if d >= depth {
+            continue;
+        }
+        if let Some(callees) = forward.get(&node) {
+            for callee in callees {
+                if visited.insert(callee.clone()) {
+                    queue.push_back((callee.clone(), d + 1));
+                }
+            }
+        }
+    }
+
+    // Synthesize FunctionContext per node.
+    let mut functions: Vec<FunctionContext> = Vec::new();
+    let mut module_cache: std::collections::HashMap<std::path::PathBuf, tldr_core::types::ModuleInfo> =
+        std::collections::HashMap::new();
+    for (file, func) in &ordered {
+        // Distinct, sorted callee NAMES for this node.
+        let mut calls: Vec<String> = forward
+            .get(&(file.clone(), func.clone()))
+            .map(|v| v.iter().map(|(_, n)| n.clone()).collect())
+            .unwrap_or_default();
+        calls.sort();
+        calls.dedup();
+
+        let full_path = if file.is_relative() {
+            project.join(file)
+        } else {
+            file.clone()
+        };
+        let module = module_cache.entry(file.clone()).or_insert_with(|| {
+            extract_file(&full_path, Some(project)).unwrap_or_else(|_| {
+                tldr_core::types::ModuleInfo {
+                    file_path: file.clone(),
+                    language,
+                    docstring: None,
+                    imports: vec![],
+                    functions: vec![],
+                    classes: vec![],
+                    constants: vec![],
+                    call_graph: Default::default(),
+                    modifiers: Vec::new(),
+                    events: Vec::new(),
+                    errors: Vec::new(),
+                }
+            })
+        });
+
+        let (signature, line, docstring) = lookup_signature(module, func, include_docstrings);
+
+        functions.push(FunctionContext {
+            name: func.clone(),
+            file: file.clone(),
+            line,
+            signature,
+            docstring,
+            calls,
+            blocks: None,
+            cyclomatic: None,
+        });
+    }
+
+    Some(RelevantContext {
+        entry_point: entry.to_string(),
+        depth,
+        functions,
+    })
+}
+
+/// Best-effort signature/line/docstring lookup for `func` within an extracted
+/// module. Matches top-level functions and class methods by exact name or last
+/// segment (`Type.method`). Falls back to a name-only signature when the symbol
+/// is not surfaced by extraction (e.g. a nested local function).
+fn lookup_signature(
+    module: &tldr_core::types::ModuleInfo,
+    func: &str,
+    include_docstrings: bool,
+) -> (String, u32, Option<String>) {
+    let leaf = last_segment(func);
+    for f in &module.functions {
+        if f.name == func || f.name == leaf {
+            let sig = format!(
+                "{}({}){}",
+                f.name,
+                f.params.join(", "),
+                f.return_type
+                    .as_ref()
+                    .map(|t| format!(" -> {}", t))
+                    .unwrap_or_default()
+            );
+            return (
+                sig,
+                f.line_number,
+                if include_docstrings {
+                    f.docstring.clone()
+                } else {
+                    None
+                },
+            );
+        }
+    }
+    for c in &module.classes {
+        for m in &c.methods {
+            if m.name == func || m.name == leaf || format!("{}.{}", c.name, m.name) == func {
+                let sig = format!(
+                    "{}({}){}",
+                    m.name,
+                    m.params.join(", "),
+                    m.return_type
+                        .as_ref()
+                        .map(|t| format!(" -> {}", t))
+                        .unwrap_or_default()
+                );
+                return (
+                    sig,
+                    m.line_number,
+                    if include_docstrings {
+                        m.docstring.clone()
+                    } else {
+                        None
+                    },
+                );
+            }
+        }
+    }
+    (func.to_string(), 0, None)
 }
