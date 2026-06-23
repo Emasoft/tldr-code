@@ -683,49 +683,60 @@ pub fn resolve_call(
                 // Also strip single ./ prefix
                 let bare_module = bare.strip_prefix("./").unwrap_or(bare);
 
+                // fix-R7 (R5): every (module, name) lookup below is
+                // DISAMBIGUATED. The `simple_module` / `bare_module` aliases
+                // collapse distinct files that share a final module segment, so
+                // a plain `get().first()` here bound an arbitrary (often test)
+                // file. `resolve_disambiguated` returns the entry only when it
+                // is unambiguous (single file, the caller's file, or a unique
+                // production file) and DECLINES on a genuine multi-file
+                // collision — falling through to the next, more-specific key
+                // (the full `module_path`) rather than guessing. Cardinality-1
+                // keys resolve exactly as before.
+
                 // Try extension-stripped path first (preserves ./ for TS/JS)
                 if stripped_ext != bare_module {
-                    if let Some(entry) = func_index.get(stripped_ext, original_name) {
-                        return Some(ResolvedTarget {
-                            file: entry.file_path.clone(),
-                            name: original_name.clone(),
-                            line: Some(entry.line),
-                            is_method: entry.is_method,
-                            class_name: entry.class_name.clone(),
-                        });
+                    if let Some(resolved) = resolve_disambiguated(
+                        func_index,
+                        stripped_ext,
+                        original_name,
+                        original_name,
+                        current_file,
+                    ) {
+                        return Some(resolved);
                     }
                 }
 
                 // Try bare module name (without ./ prefix) -- matches Python-style keys
-                if let Some(entry) = func_index.get(bare_module, original_name) {
-                    return Some(ResolvedTarget {
-                        file: entry.file_path.clone(),
-                        name: original_name.clone(),
-                        line: Some(entry.line),
-                        is_method: entry.is_method,
-                        class_name: entry.class_name.clone(),
-                    });
+                if let Some(resolved) = resolve_disambiguated(
+                    func_index,
+                    bare_module,
+                    original_name,
+                    original_name,
+                    current_file,
+                ) {
+                    return Some(resolved);
                 }
 
                 // Try simple module name (last dot component)
-                if let Some(entry) = func_index.get(simple_module, original_name) {
-                    return Some(ResolvedTarget {
-                        file: entry.file_path.clone(),
-                        name: original_name.clone(),
-                        line: Some(entry.line),
-                        is_method: entry.is_method,
-                        class_name: entry.class_name.clone(),
-                    });
+                if let Some(resolved) = resolve_disambiguated(
+                    func_index,
+                    simple_module,
+                    original_name,
+                    original_name,
+                    current_file,
+                ) {
+                    return Some(resolved);
                 }
                 // Fallback to full module path
-                if let Some(entry) = func_index.get(module_path, original_name) {
-                    return Some(ResolvedTarget {
-                        file: entry.file_path.clone(),
-                        name: original_name.clone(),
-                        line: Some(entry.line),
-                        is_method: entry.is_method,
-                        class_name: entry.class_name.clone(),
-                    });
+                if let Some(resolved) = resolve_disambiguated(
+                    func_index,
+                    module_path,
+                    original_name,
+                    original_name,
+                    current_file,
+                ) {
+                    return Some(resolved);
                 }
 
                 // It might be a class (constructor call via import)
@@ -1330,6 +1341,7 @@ pub fn resolve_call_with_receiver(
         class_index,
         reexport_tracer: context.reexport_tracer,
         language,
+        current_file,
     };
 
     if let Some(resolved) = resolve_module_import_receiver(
@@ -1352,6 +1364,36 @@ pub fn resolve_call_with_receiver(
         return Some(resolved);
     }
 
+    // fix-R7 (R5): OCaml `Module.func` canonically denotes the SIBLING FILE
+    // `module.ml`. Resolve that (disambiguated) BEFORE the generic global class
+    // resolver so a nested `module Module = struct ... end` buried in another
+    // file — very often a TEST file — cannot SHADOW the real file-module
+    // definition (the `bench.ml -> path_tests.ml::Path.relative` edge and the
+    // colliding `path.ml` files in ocaml-dune, #132/#140).
+    //
+    // A LOCAL nested module in the caller's own file still wins first via
+    // `resolve_local_qualified_receiver` (the `(current_module, "Module.func")`
+    // key). If both the local key and the sibling file-module miss, we fall
+    // through to the UNCHANGED generic chain (class resolver, etc.) so that
+    // `open`-reachable cross-file nested modules — which DO occur legitimately
+    // in OCaml (e.g. `Storage.get` after `open Lwt_direct`) — are still found.
+    // (Distinguishing a legit `open`-reachable nested module from a stray
+    // same-named module that merely captures a stdlib call requires per-file
+    // open/import scope; that is the documented design-fork follow-up. This
+    // ordering fix removes the wrong-SHADOWING without dropping the legit edges.)
+    if language == "ocaml" {
+        if let Some(resolved) =
+            resolve_local_qualified_receiver(receiver, bare_target, &current_module, func_index)
+        {
+            return Some(resolved);
+        }
+        if let Some(resolved) =
+            resolve_ocaml_module_receiver(receiver, bare_target, func_index, current_file)
+        {
+            return Some(resolved);
+        }
+    }
+
     if let Some(resolved) =
         resolve_method_in_class_or_bases(receiver, bare_target, class_index, func_index, language)
     {
@@ -1368,23 +1410,6 @@ pub fn resolve_call_with_receiver(
         resolve_capitalized_receiver(receiver, bare_target, class_index, func_index, language)
     {
         return Some(resolved);
-    }
-
-    // VAL-011: OCaml module-of-file resolution (no explicit imports).
-    //
-    // OCaml derives the module name from a file's basename with the first
-    // letter capitalized (e.g. `util.ml` → module `Util`). Sibling modules
-    // are visible without an `open` statement, and the canonical call
-    // syntax is `Util.b_util ()`.
-    //
-    // The class_index doesn't help (OCaml has no classes), and
-    // module_imports is empty (no `import` statement was parsed), so the
-    // standard receiver-lookup chain produces nothing. We bridge that gap
-    // by looking up the receiver lower-cased as a func_index module key.
-    if language == "ocaml" {
-        if let Some(resolved) = resolve_ocaml_module_receiver(receiver, bare_target, func_index) {
-            return Some(resolved);
-        }
     }
 
     let type_filter = receiver_type_filter(receiver_type, receiver, class_index);
@@ -1525,6 +1550,10 @@ struct ReceiverLookupContext<'a, 'b> {
     class_index: &'a ClassIndex,
     reexport_tracer: &'a mut ReExportTracer<'b>,
     language: &'a str,
+    /// fix-R7 (R5): caller file, used to disambiguate the `simple_module`
+    /// receiver fallback (prefer the caller's own file / a unique production
+    /// file over an arbitrary `Vec::first()` survivor).
+    current_file: &'a Path,
 }
 
 fn resolve_module_import_receiver(
@@ -1537,35 +1566,38 @@ fn resolve_module_import_receiver(
     let module_path = module_imports.get(receiver)?;
     let simple_module = module_path.split('.').next_back().unwrap_or(module_path);
 
-    if let Some(entry) = context.func_index.get(module_path, bare_target) {
-        return Some(ResolvedTarget {
-            file: entry.file_path.clone(),
-            name: bare_target.to_string(),
-            line: Some(entry.line),
-            is_method: entry.is_method,
-            class_name: entry.class_name.clone(),
-        });
+    // fix-R7 (R5): disambiguate the module-keyed lookups so the `simple_module`
+    // fallback can no longer bind an arbitrary `Vec::first()` when several files
+    // share the final module segment. Single-candidate keys are unaffected.
+    if let Some(resolved) = resolve_disambiguated(
+        context.func_index,
+        module_path,
+        bare_target,
+        bare_target,
+        context.current_file,
+    ) {
+        return Some(resolved);
     }
     if simple_module != module_path.as_str() {
-        if let Some(entry) = context.func_index.get(simple_module, bare_target) {
-            return Some(ResolvedTarget {
-                file: entry.file_path.clone(),
-                name: bare_target.to_string(),
-                line: Some(entry.line),
-                is_method: entry.is_method,
-                class_name: entry.class_name.clone(),
-            });
+        if let Some(resolved) = resolve_disambiguated(
+            context.func_index,
+            simple_module,
+            bare_target,
+            bare_target,
+            context.current_file,
+        ) {
+            return Some(resolved);
         }
     }
     if bare_target != target {
-        if let Some(entry) = context.func_index.get(module_path, target) {
-            return Some(ResolvedTarget {
-                file: entry.file_path.clone(),
-                name: target.to_string(),
-                line: Some(entry.line),
-                is_method: entry.is_method,
-                class_name: entry.class_name.clone(),
-            });
+        if let Some(resolved) = resolve_disambiguated(
+            context.func_index,
+            module_path,
+            target,
+            target,
+            context.current_file,
+        ) {
+            return Some(resolved);
         }
     }
 
@@ -1672,43 +1704,131 @@ fn resolve_capitalized_receiver(
     resolve_method_in_class_or_bases(&capitalized, bare_target, class_index, func_index, language)
 }
 
+/// fix-R7 (R5): a path is "test" when any of its components is a conventional
+/// test directory name. Mirrors `context::builder::is_test_path` so the
+/// resolver's prefer-production tiebreak matches the rest of the codebase.
+///
+/// Used ONLY as a disambiguation tiebreak (see [`pick_disambiguated_entry`]) —
+/// never to exclude a file outright, so a legitimately test-only definition is
+/// still resolvable when it is the sole candidate.
+fn is_test_path(p: &Path) -> bool {
+    p.components().any(|c| {
+        matches!(
+            c.as_os_str().to_string_lossy().as_ref(),
+            "tests" | "test" | "__tests__" | "spec" | "specs" | "testing"
+        )
+    })
+}
+
+/// fix-R7 (R5 / calls-half of R8): choose a single definition among the entries
+/// stored under ONE `(module, name)` key, WITHOUT the arbitrary `Vec::first()`
+/// survivor pick that corrupts the call graph when a key collapses several
+/// distinct files (e.g. two `path.ml` reduced to simple-module `path`, or
+/// js/jvm-native `ArrayStack.scala` under one full module key).
+///
+/// Disambiguation order:
+///  1. an entry in the caller's own file — a genuine intra binding;
+///  2. when the colliding entries reduce to exactly ONE distinct file, that
+///     entry (no real ambiguity, just duplicate keys for one definition);
+///  3. when the distinct files reduce to exactly ONE *non-test* file, an entry
+///     from it — the "prefer same-module over a test file" rule;
+///  4. otherwise DECLINE (`None`): the call is genuinely ambiguous (multiple
+///     production files, or only test files) and we emit no edge rather than an
+///     order-dependent one.
+///
+/// Cardinality-1 keys (the overwhelming common case) return that entry
+/// unchanged, so resolution for languages whose module keys are file-unique
+/// (TS/JS `./path`, Python dotted, Go dir, Rust `crate::`) is byte-for-byte
+/// identical — only multi-file collisions change behavior.
+fn pick_disambiguated_entry<'a>(
+    entries: &'a [FuncEntry],
+    current_file: &Path,
+) -> Option<&'a FuncEntry> {
+    match entries.len() {
+        0 => return None,
+        1 => return entries.first(),
+        _ => {}
+    }
+    // (1) Same-file (intra) binding wins outright.
+    if let Some(e) = entries.iter().find(|e| e.file_path == current_file) {
+        return Some(e);
+    }
+    // (2) All entries point at a single distinct file -> not actually ambiguous
+    // (the duplicate entries are bare- and qualified-key inserts of one def).
+    let first_file = &entries[0].file_path;
+    if entries.iter().all(|e| &e.file_path == first_file) {
+        return entries.first();
+    }
+    // (3) Prefer a unique non-test production file.
+    let mut nontest: Vec<&'a FuncEntry> =
+        entries.iter().filter(|e| !is_test_path(&e.file_path)).collect();
+    nontest.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+    let distinct_nontest_files = {
+        let mut files: Vec<&Path> = nontest.iter().map(|e| e.file_path.as_path()).collect();
+        files.dedup();
+        files.len()
+    };
+    if distinct_nontest_files == 1 {
+        return nontest.into_iter().next();
+    }
+    // (4) Genuinely ambiguous -> decline.
+    None
+}
+
+/// Build a [`ResolvedTarget`] from a disambiguated `(module, name)` lookup,
+/// declining when the key holds an unresolvable multi-file collision. Shared by
+/// the cross-file fallbacks that previously called `func_index.get().first()`.
+fn resolve_disambiguated(
+    func_index: &FuncIndex,
+    module: &str,
+    name: &str,
+    result_name: &str,
+    current_file: &Path,
+) -> Option<ResolvedTarget> {
+    let entry = pick_disambiguated_entry(func_index.get_all(module, name), current_file)?;
+    Some(ResolvedTarget {
+        file: entry.file_path.clone(),
+        name: result_name.to_string(),
+        line: Some(entry.line),
+        is_method: entry.is_method,
+        class_name: entry.class_name.clone(),
+    })
+}
+
 /// VAL-011: Resolve a `Module.target` receiver call for OCaml.
 ///
 /// OCaml requires no explicit `open` for sibling modules — `Util.b_util ()`
 /// in `main.ml` directly references the `b_util` function defined in
 /// `util.ml`. The func_index keys lowercase module names (`util`), so we
-/// try the lowercase form, the bare receiver, and the dot-segment lower
-/// transforms before giving up.
+/// try the lowercase form and the bare receiver.
 ///
-/// We accept the match unconditionally (no ambiguity-check) because OCaml
-/// module names are file-bound: at most one `util.ml` exists per directory,
-/// so `Util.b_util` cannot collide.
+/// fix-R7 (R5): the lookup is DISAMBIGUATED rather than `get().first()`. When
+/// several files reduce to the same simple file-module (e.g. `otherlibs/.../
+/// path.ml` and `src/dune_lang/path.ml` both -> module `path`), picking the
+/// first-inserted entry produced arbitrary — frequently test-file — edges
+/// (#132/#140). [`pick_disambiguated_entry`] prefers the caller's file, then a
+/// unique production file, else declines.
 fn resolve_ocaml_module_receiver(
     receiver: &str,
     bare_target: &str,
     func_index: &FuncIndex,
+    current_file: &Path,
 ) -> Option<ResolvedTarget> {
     let lowercase = receiver.to_ascii_lowercase();
     // Try direct lowercase ("Util" → "util")
-    if let Some(entry) = func_index.get(&lowercase, bare_target) {
-        return Some(ResolvedTarget {
-            file: entry.file_path.clone(),
-            name: bare_target.to_string(),
-            line: Some(entry.line),
-            is_method: entry.is_method,
-            class_name: entry.class_name.clone(),
-        });
+    if let Some(resolved) =
+        resolve_disambiguated(func_index, &lowercase, bare_target, bare_target, current_file)
+    {
+        return Some(resolved);
     }
     // Try bare receiver as-is (in case the index already used the
     // capitalized alias from `compute_module_aliases`)
-    if let Some(entry) = func_index.get(receiver, bare_target) {
-        return Some(ResolvedTarget {
-            file: entry.file_path.clone(),
-            name: bare_target.to_string(),
-            line: Some(entry.line),
-            is_method: entry.is_method,
-            class_name: entry.class_name.clone(),
-        });
+    if lowercase != receiver {
+        if let Some(resolved) =
+            resolve_disambiguated(func_index, receiver, bare_target, bare_target, current_file)
+        {
+            return Some(resolved);
+        }
     }
     None
 }
@@ -3949,6 +4069,413 @@ mod tests {
              wired into resolution — it would bind Animal.speak (false positive). \
              Expected DECLINE, got {:?}",
             result
+        );
+    }
+
+    // =========================================================================
+    // fix-R7 (R5 / calls-half of R8): arbitrary same-name SURVIVOR binding.
+    //
+    // The `calls` resolver must not pick `Vec::first()` arbitrarily when a
+    // single (module, name) key holds entries from more than one distinct file.
+    // It must (1) prefer the caller's own file, (2) prefer the sole non-test
+    // file, else (3) DECLINE rather than bind an order-dependent survivor.
+    // =========================================================================
+
+    /// Index an OCaml-style top-level (free) function under its file-module key,
+    /// exactly as `builder_v2` does (`FuncEntry::function`, module = lowercased
+    /// file basename). Mirrors the real index state for `let relative ... = ...`
+    /// at file scope.
+    fn index_ocaml_free_fn(
+        func_index: &mut FuncIndex,
+        module: &str,
+        name: &str,
+        file: &str,
+        line: u32,
+    ) {
+        let entry = FuncEntry::function(PathBuf::from(file), line, line + 3);
+        func_index.insert(module, name, entry);
+    }
+
+    /// R5 (OCaml): two `path.ml` files in different directories both reduce to
+    /// the simple file-module `path` (OCAML_PREFIXES strips `src/`/`lib/`), so
+    /// their `relative` definitions collide under the single key
+    /// ("path","relative"). A `Path.relative` call from a third file cannot be
+    /// disambiguated by the receiver alone (both candidates ARE `Path`), and
+    /// neither is the caller's file nor a uniquely-non-test file (both are
+    /// non-test). The resolver MUST DECLINE.
+    ///
+    /// RED before fix: `resolve_ocaml_module_receiver` did `get("path",
+    /// "relative")` -> `Vec::first()` and bound whichever file was inserted
+    /// first (an arbitrary, order-dependent edge — the #132 mechanism).
+    #[test]
+    fn test_ocaml_module_call_ambiguous_two_files_declines() {
+        let mut func_index = FuncIndex::new();
+        index_ocaml_free_fn(
+            &mut func_index,
+            "path",
+            "relative",
+            "otherlibs/stdune/src/path.ml",
+            10,
+        );
+        index_ocaml_free_fn(
+            &mut func_index,
+            "path",
+            "relative",
+            "otherlibs/dune-action-plugin/src/path.ml",
+            20,
+        );
+
+        // Precondition: the collision really exists under one key.
+        assert_eq!(
+            func_index.get_all("path", "relative").len(),
+            2,
+            "precondition: both path.ml files collide under (\"path\",\"relative\")"
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let class_index = ClassIndex::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "ocaml");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "Path.relative",
+            "Path",
+            None,
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("bench/bench.ml"),
+            Path::new("."),
+            "ocaml",
+        );
+        assert_eq!(
+            result, None,
+            "two non-test files share the (\"path\",\"relative\") key and the \
+             receiver `Path` cannot disambiguate them; the resolver must DECLINE \
+             rather than bind Vec::first(). Got {:?}",
+            result
+        );
+    }
+
+    /// R5 (OCaml), "prefer same-file/same-module over a test file": the real
+    /// definition lives in `src/path.ml` (module `path`) and a TEST file also
+    /// contributes a `relative` under the same `path` key (e.g. via a nested
+    /// `module Path` or a colliding simple-module). The `Path.relative` call
+    /// from `bench.ml` MUST bind to the production file, never the test file.
+    ///
+    /// RED before fix: `get("path","relative").first()` could return the test
+    /// entry depending on insertion order (the #132 test-edge mechanism).
+    #[test]
+    fn test_ocaml_module_call_prefers_nontest_over_test() {
+        let mut func_index = FuncIndex::new();
+        // Insert the TEST entry FIRST so a naive `.first()` would pick it —
+        // makes the test a genuine guard against order-dependent survival.
+        index_ocaml_free_fn(
+            &mut func_index,
+            "path",
+            "relative",
+            "otherlibs/stdune/test/path_tests.ml",
+            5,
+        );
+        index_ocaml_free_fn(
+            &mut func_index,
+            "path",
+            "relative",
+            "otherlibs/stdune/src/path.ml",
+            10,
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let class_index = ClassIndex::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "ocaml");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "Path.relative",
+            "Path",
+            None,
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("bench/bench.ml"),
+            Path::new("."),
+            "ocaml",
+        );
+        let resolved = result.expect(
+            "with one production and one test candidate under the same key, the \
+             resolver must bind the sole non-test file (not decline, not pick \
+             the test file)",
+        );
+        assert_eq!(
+            resolved.file,
+            PathBuf::from("otherlibs/stdune/src/path.ml"),
+            "Path.relative must resolve to the production path.ml, never the \
+             test file path_tests.ml (which was inserted first). Got {:?}",
+            resolved.file
+        );
+    }
+
+    /// R5 (OCaml), file-module must win over a nested `module X` (class) of the
+    /// same name that lives in a TEST file. `src/path.ml` defines a top-level
+    /// `relative`; a test file defines `module Path = struct let relative ... end`,
+    /// which the extractor records as class `Path` + method `Path.relative`. A
+    /// `Path.relative` call from `bench.ml` MUST resolve to the file-module
+    /// `src/path.ml`, because in OCaml `Module.func` canonically denotes the
+    /// sibling file `module.ml`.
+    ///
+    /// RED before fix: `resolve_method_in_class_or_bases("Path","relative")`
+    /// ran BEFORE the OCaml file-module resolver and bound the test file's
+    /// nested-module method (the `bench.ml -> path_tests.ml::Path.relative`
+    /// edge observed in ocaml-dune).
+    #[test]
+    fn test_ocaml_file_module_wins_over_nested_class_in_test_file() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // Production: free function `relative` in src/path.ml (module "path").
+        index_ocaml_free_fn(&mut func_index, "path", "relative", "src/path.ml", 10);
+
+        // Test file: nested `module Path` -> class Path + method Path.relative.
+        index_method_both_keys(
+            &mut func_index,
+            "test.path_tests",
+            "Path",
+            "relative",
+            "test/path_tests.ml",
+            3,
+        );
+        class_index.insert(
+            "Path",
+            ClassEntry::new(
+                PathBuf::from("test/path_tests.ml"),
+                1,
+                5,
+                vec!["relative".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "ocaml");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "Path.relative",
+            "Path",
+            None,
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("bench/bench.ml"),
+            Path::new("."),
+            "ocaml",
+        );
+        let resolved = result.expect("Path.relative must resolve to the file-module src/path.ml");
+        assert_eq!(
+            resolved.file,
+            PathBuf::from("src/path.ml"),
+            "OCaml `Path.relative` must bind the sibling file-module src/path.ml, \
+             not a nested `module Path` in a test file. Got {:?}",
+            resolved.file
+        );
+    }
+
+    /// R5 (Direct arm): a non-receiver cross-file call resolved through the
+    /// `simple_module` import alias must not bind `Vec::first()` when the simple
+    /// module collapses two distinct production files. With an import
+    /// `helper = ("pkg1.helper", ...)` but the function present only under the
+    /// COLLAPSED simple key `helper` (two files: pkg1/helper and pkg2/helper),
+    /// the resolver must DECLINE rather than pick an arbitrary file.
+    #[test]
+    fn test_direct_simple_module_alias_ambiguous_declines() {
+        let mut func_index = FuncIndex::new();
+        // Two distinct files share the simple module `helper`. Builder indexes
+        // each under its full key AND the simple alias `helper`.
+        let e1 = FuncEntry::function(PathBuf::from("pkg1/helper.py"), 10, 15);
+        let e2 = FuncEntry::function(PathBuf::from("pkg2/helper.py"), 20, 25);
+        func_index.insert("pkg1.helper", "process", e1.clone());
+        func_index.insert("helper", "process", e1);
+        func_index.insert("pkg2.helper", "process", e2.clone());
+        func_index.insert("helper", "process", e2);
+
+        // The caller imports `process` from a module spelling whose simple form
+        // is the colliding `helper`, but NOT matching either full key, so only
+        // the simple alias can resolve it.
+        let mut import_map: ImportMap = HashMap::new();
+        import_map.insert(
+            "process".to_string(),
+            ("vendor.helper".to_string(), "process".to_string()),
+        );
+
+        // Precondition: the simple alias key really holds two distinct files.
+        assert_eq!(
+            func_index.get_all("helper", "process").len(),
+            2,
+            "precondition: simple alias `helper` collapses two files"
+        );
+
+        let module_imports: ModuleImports = HashMap::new();
+        let class_index = ClassIndex::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call!(
+            "process",
+            &CallType::Direct,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("app/main.py"),
+            Path::new("."),
+            "python",
+        );
+        assert_eq!(
+            result, None,
+            "the simple-module alias `helper` collapses two distinct files; the \
+             Direct-arm fallback must DECLINE instead of binding Vec::first(). \
+             Got {:?}",
+            result
+        );
+    }
+
+    /// Guard the happy path: a UNIQUE simple-module alias still resolves (the
+    /// fix must not break single-candidate alias resolution — this is the case
+    /// the alias fallback was built for, and the reason JS/Python edge counts
+    /// stay unchanged).
+    #[test]
+    fn test_direct_simple_module_alias_unique_still_resolves() {
+        let mut func_index = FuncIndex::new();
+        let e = FuncEntry::function(PathBuf::from("pkg/helper.py"), 10, 15);
+        func_index.insert("pkg.helper", "process", e.clone());
+        func_index.insert("helper", "process", e);
+
+        let mut import_map: ImportMap = HashMap::new();
+        import_map.insert(
+            "process".to_string(),
+            ("vendor.helper".to_string(), "process".to_string()),
+        );
+
+        let module_imports: ModuleImports = HashMap::new();
+        let class_index = ClassIndex::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call!(
+            "process",
+            &CallType::Direct,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("app/main.py"),
+            Path::new("."),
+            "python",
+        );
+        let resolved = result.expect("unique simple-module alias must still resolve");
+        assert_eq!(resolved.file, PathBuf::from("pkg/helper.py"));
+    }
+
+    /// Guard: a UNIQUE OCaml file-module call still resolves after the fix
+    /// (single candidate under the key -> bind it). Protects the common case.
+    #[test]
+    fn test_ocaml_module_call_unique_still_resolves() {
+        let mut func_index = FuncIndex::new();
+        index_ocaml_free_fn(&mut func_index, "util", "b_util", "src/util.ml", 10);
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let class_index = ClassIndex::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "ocaml");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "Util.b_util",
+            "Util",
+            None,
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("src/main.ml"),
+            Path::new("."),
+            "ocaml",
+        );
+        let resolved = result.expect("unique OCaml file-module call must resolve");
+        assert_eq!(resolved.file, PathBuf::from("src/util.ml"));
+    }
+
+    /// Guard the same-file nested module: a nested `module M` in the CALLER'S OWN
+    /// file is a legitimate target for `M.func` and must still resolve after the
+    /// OCaml file-module-before-class reordering. Here the method is indexed ONLY
+    /// under its bare name (not the qualified `M.func` key) and `M` is not a
+    /// sibling file-module, so resolution must reach it by FALLING THROUGH to the
+    /// generic class path — confirming the OCaml block does not short-circuit
+    /// legitimate in-file (and, by the same fall-through, `open`-reachable)
+    /// nested-module calls.
+    #[test]
+    fn test_ocaml_same_file_nested_module_still_resolves() {
+        let mut func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+
+        // Caller file `src/app.ml` (module `app`) has a nested `module M` whose
+        // `helper` is indexed under the bare ("app","helper") key only.
+        let entry = FuncEntry::method(PathBuf::from("src/app.ml"), 12, 18, "M".to_string());
+        func_index.insert("app", "helper", entry);
+        class_index.insert(
+            "M",
+            ClassEntry::new(
+                PathBuf::from("src/app.ml"),
+                10,
+                20,
+                vec!["helper".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "ocaml");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "M.helper",
+            "M",
+            None,
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("src/app.ml"),
+            Path::new("."),
+            "ocaml",
+        );
+        let resolved = result.expect(
+            "a nested module in the caller's own file must still resolve under the \
+             file-scoped OCaml rule",
+        );
+        assert_eq!(
+            resolved.file,
+            PathBuf::from("src/app.ml"),
+            "same-file nested-module call must bind to the caller's file"
         );
     }
 }
