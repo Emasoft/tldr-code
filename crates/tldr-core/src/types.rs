@@ -3176,6 +3176,11 @@ pub enum VarRefContext {
     Destructuring,
     /// Closure captures variable by reference
     ClosureCapture,
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT): `|a, b| ...` — a closure /
+    /// lambda PARAMETER, scoped to the closure body. Its value is supplied by
+    /// the closure invocation, so a body read is initialized-by-construction and
+    /// must not be reported as uninitialized.
+    ClosureParam,
     /// Optional chaining (?.) short-circuit
     OptionalChain,
 

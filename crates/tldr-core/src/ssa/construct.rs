@@ -1550,6 +1550,17 @@ pub fn process_var_ref_with_context(
             handle_match_binding(&var_ref.name, state, block_id, var_ref.line),
         ),
 
+        // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT): a closure / lambda
+        // parameter is a fresh binding scoped to the closure body — treat it
+        // like a normal definition (a new SSA name) for defs, and a current-
+        // version lookup for the body reads.
+        Some(VarRefContext::ClosureParam) => match var_ref.ref_type {
+            RefType::Definition | RefType::Update => {
+                Some(state.new_name(&var_ref.name, block_id, var_ref.line))
+            }
+            RefType::Use => state.current(&var_ref.name),
+        },
+
         Some(VarRefContext::OwnershipMove) => {
             // Record the move
             handle_ownership_move(var_ref, state);

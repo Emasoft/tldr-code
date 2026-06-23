@@ -29,7 +29,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::types::{CfgInfo, RefType, VarRef};
+use crate::types::{CfgInfo, RefType, VarRef, VarRefContext};
 
 // Re-export chain types from chains module for convenience
 pub use super::chains::{
@@ -64,11 +64,26 @@ pub struct DefId {
 /// # Returns
 /// * `ReachingDefinitions` - IN and OUT sets for each block
 pub fn compute_reaching_definitions(cfg: &CfgInfo, refs: &[VarRef]) -> ReachingDefinitions {
+    compute_reaching_definitions_counted(cfg, refs).0
+}
+
+/// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC5a): identical to
+/// `compute_reaching_definitions` (same "owning block" GEN/KILL assignment and
+/// fixpoint) but ALSO returns the number of worklist iterations performed, so
+/// callers can report a truthful `stats.iterations` instead of the old
+/// hardcoded `0` stub WITHOUT switching to the less-precise RPO variant.
+pub fn compute_reaching_definitions_counted(
+    cfg: &CfgInfo,
+    refs: &[VarRef],
+) -> (ReachingDefinitions, usize) {
     if cfg.blocks.is_empty() {
-        return ReachingDefinitions {
-            reaching_in: HashMap::new(),
-            reaching_out: HashMap::new(),
-        };
+        return (
+            ReachingDefinitions {
+                reaching_in: HashMap::new(),
+                reaching_out: HashMap::new(),
+            },
+            0,
+        );
     }
 
     // Build predecessor map from edges
@@ -184,8 +199,10 @@ pub fn compute_reaching_definitions(cfg: &CfgInfo, refs: &[VarRef]) -> ReachingD
 
     // Iterative algorithm until fixed point
     let max_iterations = 100; // Prevent infinite loops
+    let mut iterations = 0usize;
     for _ in 0..max_iterations {
         let mut changed = false;
+        iterations += 1;
 
         for block in &cfg.blocks {
             // IN[B] = union of OUT[P] for all predecessors P
@@ -226,10 +243,13 @@ pub fn compute_reaching_definitions(cfg: &CfgInfo, refs: &[VarRef]) -> ReachingD
         }
     }
 
-    ReachingDefinitions {
-        reaching_in,
-        reaching_out,
-    }
+    (
+        ReachingDefinitions {
+            reaching_in,
+            reaching_out,
+        },
+        iterations,
+    )
 }
 
 /// Find which definitions reach a specific line
@@ -636,8 +656,17 @@ pub fn build_reaching_defs_report_with_params(
     file_path: PathBuf,
     params: &[String],
 ) -> ReachingDefsReport {
-    // 1. Compute reaching definitions
-    let reaching = compute_reaching_definitions(cfg, refs);
+    // 1. Compute reaching definitions.
+    //
+    // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC5a): keep the canonical
+    // `compute_reaching_definitions` for the reaching SETS — it uses the
+    // "owning block" (largest-block) GEN/KILL assignment that the RPO variant
+    // does NOT, so the two are NOT interchangeable on overlapping-block CFGs
+    // (swapping them regressed multi-path use-def chains). The `iterations: 0`
+    // field was a misleading reporting STUB (audits mis-cited it as "the
+    // fixpoint never ran"); compute the real fixpoint iteration count with the
+    // dedicated tracker below WITHOUT altering the reaching sets.
+    let (reaching, iterations) = compute_reaching_definitions_counted(cfg, refs);
 
     // Auto-detect parameters from first-line definitions if not provided.
     // Parameters are definitions on the minimum definition line (function signature).
@@ -718,7 +747,9 @@ pub fn build_reaching_defs_report_with_params(
         definitions: def_count,
         uses: use_count,
         blocks: cfg.blocks.len(),
-        iterations: 0, // TODO: Track iterations in compute_reaching_definitions
+        // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC5a): real fixpoint
+        // iteration count from the RPO worklist (was a hardcoded `0` stub).
+        iterations,
         uninitialized_count: uninitialized.len(),
     };
 
@@ -936,12 +967,30 @@ pub fn detect_uninitialized(
 ) -> Vec<UninitializedUse> {
     let mut uninit = Vec::new();
 
-    // Build set of variables that are "pre-initialized" (params and globals)
-    let pre_initialized: HashSet<&str> = params
+    // Build set of variables that are "pre-initialized" (params and globals).
+    //
+    // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC4 mitigation): closure /
+    // lambda PARAMETERS and comprehension BINDERS are micro-scoped bindings
+    // whose value is supplied by the closure invocation / comprehension iterator
+    // — a body read on the SAME line as the binder is initialized-by-
+    // construction. The intraprocedural CFG over-segments these single-line
+    // expressions, so reaching analysis cannot see the same-line binder; treat
+    // any name that appears as a `ClosureParam` / `ComprehensionScope` def as
+    // pre-initialized. (This is the reaudit's recommended low-risk mitigation
+    // for nested-scope FPs; the principled per-closure sub-CFG is a design-fork.)
+    let mut pre_initialized: HashSet<&str> = params
         .iter()
         .chain(globals.iter())
         .map(|s| s.as_str())
         .collect();
+    for var_ref in refs.iter() {
+        if matches!(
+            var_ref.context,
+            Some(VarRefContext::ClosureParam) | Some(VarRefContext::ComprehensionScope)
+        ) {
+            pre_initialized.insert(var_ref.name.as_str());
+        }
+    }
 
     // Build map of variable -> all definitions (with their DefId)
     let defs_by_var: HashMap<&str, Vec<DefId>> = {

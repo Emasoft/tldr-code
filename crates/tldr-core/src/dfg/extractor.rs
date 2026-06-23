@@ -38,7 +38,7 @@ use crate::ast::function_finder::{find_function_node, get_function_body};
 use crate::ast::parser::parse;
 use crate::cfg::get_cfg_context;
 use crate::dfg::reaching::compute_reaching_definitions;
-use crate::types::{CfgInfo, DataflowEdge, DfgInfo, Language, RefType, VarRef};
+use crate::types::{CfgInfo, DataflowEdge, DfgInfo, Language, RefType, VarRef, VarRefContext};
 use crate::TldrError;
 use crate::TldrResult;
 
@@ -257,6 +257,15 @@ struct DfgBuilder<'a> {
     /// whose name is one of these local bindings IS a genuine use. Mirrors
     /// the Ruby `ruby_local_names` precedent. Empty for non-OCaml.
     ocaml_local_names: HashSet<String>,
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): names DECLARED as locals
+    /// (parameters, `let`/`var`/`const`/`:=` bindings, for-binders) inside the
+    /// analyzed function, for the languages whose value-position file-level
+    /// symbols are suppressed via `imported_type_names` (Go, Python, Rust,
+    /// C/C++). A file-level macro/const/import/builtin name is only suppressed
+    /// when it is NOT also one of these locals, so a local that shadows such a
+    /// name keeps its genuine reads (its store never looks dead). Empty for
+    /// other languages. Mirrors the `ts_js_local_names` precedent.
+    generic_local_names: HashSet<String>,
 }
 
 impl<'a> DfgBuilder<'a> {
@@ -272,6 +281,7 @@ impl<'a> DfgBuilder<'a> {
             analyzed_fn_span: None,
             ts_js_local_names: HashSet::new(),
             ocaml_local_names: HashSet::new(),
+            generic_local_names: HashSet::new(),
         }
     }
 
@@ -287,7 +297,77 @@ impl<'a> DfgBuilder<'a> {
             Language::Ocaml => {
                 self.collect_ocaml_local_names(func_node);
             }
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): collect local
+            // binding names so the file-level macro/const/import/builtin
+            // suppression never drops a genuine local read that shadows one of
+            // those names.
+            Language::Go | Language::Python | Language::Rust | Language::C | Language::Cpp => {
+                self.collect_generic_local_names(func_node);
+            }
             _ => {}
+        }
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): walk the analyzed
+    /// function once and record every name bound as a local (declarator names,
+    /// pattern binders, parameter names, short-var / range binders). This is a
+    /// SHADOW GUARD only — it does not change which refs are emitted, just which
+    /// file-level names may be suppressed. Conservative over-collection is safe:
+    /// a name in this set is simply NOT suppressed (treated as a possible local).
+    fn collect_generic_local_names(&mut self, node: Node) {
+        match node.kind() {
+            // C/C++/Java/C#/Go declarators; Rust/JS variable_declarator.
+            "init_declarator" | "variable_declarator" => {
+                if let Some(d) = node
+                    .child_by_field_name("declarator")
+                    .or_else(|| node.child_by_field_name("name"))
+                {
+                    self.insert_generic_local_leaf_names(d);
+                }
+            }
+            // Rust `let pat = ..` / for-binder pattern.
+            "let_declaration" | "let_condition" | "for_expression" => {
+                if let Some(p) = node.child_by_field_name("pattern") {
+                    self.insert_generic_local_leaf_names(p);
+                }
+            }
+            // Go `x := ..` / `x = ..` / `for i, v := range`.
+            "short_var_declaration" | "range_clause" => {
+                if let Some(l) = node.child_by_field_name("left") {
+                    self.insert_generic_local_leaf_names(l);
+                }
+            }
+            // Go `var x T` spec / parameter names across grammars.
+            "var_spec" | "parameter_declaration" | "parameter" | "typed_parameter"
+            | "default_parameter" => {
+                if let Some(n) = node
+                    .child_by_field_name("name")
+                    .or_else(|| node.child_by_field_name("declarator"))
+                {
+                    self.insert_generic_local_leaf_names(n);
+                }
+            }
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_generic_local_names(child);
+        }
+    }
+
+    /// Insert every leaf `identifier` under a binder node into
+    /// `generic_local_names`.
+    fn insert_generic_local_leaf_names(&mut self, node: Node) {
+        if matches!(node.kind(), "identifier" | "shorthand_property_identifier_pattern") {
+            if let Ok(t) = node.utf8_text(self.source.as_bytes()) {
+                if !t.is_empty() {
+                    self.generic_local_names.insert(t.to_string());
+                }
+            }
+            return;
+        }
+        for child in node.children(&mut node.walk()) {
+            self.insert_generic_local_leaf_names(child);
         }
     }
 
@@ -505,6 +585,38 @@ impl<'a> DfgBuilder<'a> {
                 }
             }
             Language::Ocaml => {} // OCaml uses value_path-based suppression
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): the position-based
+            // callee/member/type classifier handles `make`/`len`/`str(...)` etc.
+            // (callees) and `Type::assoc` (scoped paths), but a value-position
+            // READ of a file-level constant / macro / import is structurally
+            // indistinguishable from a local read (`SDS_TYPE_MASK` in a
+            // `binary_expression`, `stackBufSize` as a call argument, `os` as an
+            // attribute object). Such names have no in-function definition and
+            // were flagged `definite uninitialized`. Seed language builtins and
+            // collect file-level const/macro/import names (below) so the
+            // position-independent suppression in `is_use_context` can reject
+            // them. A genuine local that shadows one of these still carries its
+            // own Definition, so suppression cannot hide a real local read.
+            Language::Go => {
+                for g in GO_BUILTINS {
+                    self.imported_type_names.insert((*g).to_string());
+                }
+            }
+            Language::Python => {
+                for g in PYTHON_BUILTINS {
+                    self.imported_type_names.insert((*g).to_string());
+                }
+            }
+            Language::Rust => {
+                for g in RUST_PRELUDE {
+                    self.imported_type_names.insert((*g).to_string());
+                }
+            }
+            Language::C | Language::Cpp => {
+                // No language-builtin name set (C has no reserved value
+                // identifiers worth listing); rely on file-level macro / const
+                // collection below.
+            }
             _ => return,
         }
         // dfg-extractor-test-sync-v1: track whether each node on the walk
@@ -814,6 +926,33 @@ impl<'a> DfgBuilder<'a> {
             ) {
                 continue;
             }
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): for C/C++/Go/
+            // Python/Rust we only want FILE-LEVEL symbols (macros, package
+            // consts, imports). These languages previously early-returned before
+            // the walk loop, so we must now STOP descending at any function
+            // boundary — otherwise we (a) waste time walking every body and
+            // (b) would wrongly collect function-LOCAL `const`/`var` names into
+            // the file-level suppression set. (The C-family `declaration` /
+            // C# `local_variable_declaration` are NOT in this list, so genuine
+            // file-scope decls are still visited.)
+            if matches!(
+                self.language,
+                Language::C
+                    | Language::Cpp
+                    | Language::Go
+                    | Language::Python
+                    | Language::Rust
+            ) && matches!(
+                kind,
+                "function_definition"
+                    | "function_declaration"
+                    | "function_item"
+                    | "method_declaration"
+                    | "closure_expression"
+                    | "lambda"
+            ) {
+                continue;
+            }
             // dfg-extractor-test-sync-v1: for Lua/Luau also stop at
             // `function_declaration` (e.g. `function foo(x) ... end`).
             // Previously only `local_function` and `function_definition`
@@ -825,8 +964,98 @@ impl<'a> DfgBuilder<'a> {
             {
                 continue;
             }
+
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): collect file-level
+            // names that read like locals in value positions but are not.
+            //
+            // C/C++ preprocessor macros: `#define SDS_TYPE_MASK 7` ->
+            // `preproc_def` / `preproc_function_def` with `[name] identifier`.
+            if matches!(self.language, Language::C | Language::Cpp)
+                && matches!(kind, "preproc_def" | "preproc_function_def")
+            {
+                if let Some(name) = node.child_by_field_name("name") {
+                    if let Ok(t) = name.utf8_text(self.source.as_bytes()) {
+                        if !t.is_empty() {
+                            self.imported_type_names.insert(t.to_string());
+                        }
+                    }
+                }
+                // Macros never enclose function bodies; nothing to descend.
+                continue;
+            }
+            // Go package-level `const_spec` / `var_spec` names (only at file
+            // scope — a const inside a function is a genuine local).
+            if matches!(self.language, Language::Go)
+                && is_file_level
+                && matches!(kind, "const_spec" | "var_spec")
+            {
+                if let Some(name) = node.child_by_field_name("name") {
+                    self.insert_identifier_names(name);
+                }
+            }
+            // Python import bindings: `import os` / `import sys as system` /
+            // `from a.b import c, d as e`.
+            if matches!(self.language, Language::Python)
+                && matches!(kind, "import_statement" | "import_from_statement")
+            {
+                self.collect_python_import_bindings(node);
+                continue;
+            }
+
             for child in node.children(&mut node.walk()) {
                 stack.push((child, is_file_level));
+            }
+        }
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): insert every leaf
+    /// `identifier` under `node` into `imported_type_names` (handles a single
+    /// identifier or a Go `expression_list` of const names).
+    fn insert_identifier_names(&mut self, node: Node) {
+        if node.kind() == "identifier" {
+            if let Ok(t) = node.utf8_text(self.source.as_bytes()) {
+                if !t.is_empty() {
+                    self.imported_type_names.insert(t.to_string());
+                }
+            }
+            return;
+        }
+        for child in node.children(&mut node.walk()) {
+            self.insert_identifier_names(child);
+        }
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): collect the LOCAL binding
+    /// names introduced by a Python `import` / `from ... import`. The bound name
+    /// is the alias when present, else the FIRST segment of `import a.b.c` (`a`)
+    /// or the imported name for `from m import x`.
+    fn collect_python_import_bindings(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                // `import a.b.c` -> binds `a`; `from m import name` -> `name`.
+                "dotted_name" => {
+                    if let Some(first) = child.child(0) {
+                        if first.kind() == "identifier" {
+                            if let Ok(t) = first.utf8_text(self.source.as_bytes()) {
+                                if !t.is_empty() {
+                                    self.imported_type_names.insert(t.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                // `import x as y` / `from m import x as y` -> binds the alias.
+                "aliased_import" => {
+                    if let Some(alias) = child.child_by_field_name("alias") {
+                        if let Ok(t) = alias.utf8_text(self.source.as_bytes()) {
+                            if !t.is_empty() {
+                                self.imported_type_names.insert(t.to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -892,9 +1121,23 @@ impl<'a> DfgBuilder<'a> {
             Language::Go => func_node.child_by_field_name("parameters"),
             Language::Rust => func_node.child_by_field_name("parameters"),
             Language::Java => func_node.child_by_field_name("parameters"),
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2): a C/C++ function
+            // RETURNING A POINTER/REFERENCE nests its `function_declarator`
+            // (which holds the `parameters` field) inside the return-type
+            // `pointer_declarator` / `reference_declarator`:
+            //   function_definition
+            //     [declarator] pointer_declarator        <- return-type `*`
+            //       [declarator] function_declarator     <- has [parameters]
+            // The pre-fix lookup read `declarator.parameters` directly, found
+            // none on the `pointer_declarator`, and dropped EVERY parameter
+            // (`const char* GetCharacterRef(const char* p, ...)` lost `p`), so
+            // each param read was flagged `definite uninitialized`. Descend
+            // through any pointer/reference wrappers to the `function_declarator`
+            // before reading `parameters`.
             Language::C | Language::Cpp => func_node
                 .child_by_field_name("declarator")
-                .and_then(|d| d.child_by_field_name("parameters")),
+                .and_then(|d| Self::c_cpp_function_declarator(d))
+                .and_then(|fd| fd.child_by_field_name("parameters")),
             Language::Ruby => func_node.child_by_field_name("parameters"),
             Language::Php => func_node.child_by_field_name("parameters"),
             Language::CSharp => func_node.child_by_field_name("parameters"),
@@ -1092,6 +1335,20 @@ impl<'a> DfgBuilder<'a> {
         }
     }
 
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2): descend through any
+    /// return-type `pointer_declarator` / `reference_declarator` wrappers to the
+    /// `function_declarator` that actually carries the `parameters` field.
+    /// Returns `node` itself when it is already a `function_declarator`.
+    fn c_cpp_function_declarator(node: Node<'_>) -> Option<Node<'_>> {
+        match node.kind() {
+            "function_declarator" => Some(node),
+            "pointer_declarator" | "reference_declarator" => node
+                .child_by_field_name("declarator")
+                .and_then(Self::c_cpp_function_declarator),
+            _ => None,
+        }
+    }
+
     fn extract_c_cpp_param(&mut self, child: Node) {
         if child.kind() != "parameter_declaration" {
             return;
@@ -1227,6 +1484,32 @@ impl<'a> DfgBuilder<'a> {
             line,
             column,
             context: None,
+            group_id: None,
+        });
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT): like `add_ref_from_node` but
+    /// tags the ref with a `VarRefContext`. Used to mark closure / lambda /
+    /// comprehension BINDERS so the uninitialized detector can treat them as
+    /// micro-scoped, self-initializing bindings (their value comes from the
+    /// closure call / comprehension iterator, not a prior reaching def).
+    fn add_ref_with_context(&mut self, node: Node, ref_type: RefType, context: VarRefContext) {
+        let name = node
+            .utf8_text(self.source.as_bytes())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() || is_keyword(&name, self.language) {
+            return;
+        }
+        let line = node.start_position().row as u32 + 1;
+        let column = node.start_position().column as u32;
+        self.variables.insert(name.clone());
+        self.refs.push(VarRef {
+            name,
+            ref_type,
+            line,
+            column,
+            context: Some(context),
             group_id: None,
         });
     }
@@ -1544,6 +1827,19 @@ impl<'a> DfgBuilder<'a> {
                 Language::C | Language::Cpp => {
                     self.process_c_for_statement(node, depth)?
                 }
+                // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2): C# and Java
+                // C-style `for (T i = 0; ...; ...)` expose the loop binding in
+                // an `[initializer]` (C#) / `[init]` (Java) declaration field —
+                // NOT the `left`/`right` fields the Python handler reads. The
+                // pre-fix `_ => process_for_loop` arm dropped the `int i = 0`
+                // declarator entirely, so every body read of `i` was flagged
+                // `definite uninitialized`. Route to a shape-aware handler that
+                // recurses into the declaration field (where the existing
+                // `variable_declaration` / `local_variable_declaration` arms
+                // record `i` as a Definition) plus condition/update/body.
+                Language::CSharp | Language::Java => {
+                    self.process_csharp_java_for_statement(node, depth)?
+                }
                 // T5 (v0.5.0 AUDIT-FIX, root cause A5): Lua/Luau reuse the
                 // `for_statement` node kind for both numeric and generic for,
                 // exposing a `[clause]` (`for_numeric_clause` /
@@ -1563,9 +1859,58 @@ impl<'a> DfgBuilder<'a> {
                 self.process_for_loop(node, depth)?;
             }
 
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Python
+            // comprehensions / generator expressions bind their loop variable
+            // in a `for_in_clause` (`[left]` binder, `[right]` iterable). The
+            // binder is a DEFINITION whose scope is the comprehension body; the
+            // body reads it (`h` in `[h for h in items if h]`). Without
+            // recording the binder as a def, every body read of `h` had no
+            // reaching definition and was flagged `definite uninitialized`.
+            "list_comprehension"
+            | "set_comprehension"
+            | "dictionary_comprehension"
+            | "generator_expression"
+                if matches!(self.language, Language::Python) =>
+            {
+                self.process_python_comprehension(node, depth)?;
+            }
+
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC4 mitigation): a Python
+            // NESTED function definition inside the analyzed function body. The
+            // intraprocedural analysis flattens it into the outer CFG, so (a) the
+            // nested function NAME (`def get_proxy`) was misclassified as a
+            // variable use and (b) the nested function's PARAMETERS (`key`) were
+            // never recorded as definitions — both flagged `definite
+            // uninitialized`. Record the name as a Definition and each parameter
+            // as a `ClosureParam`-scoped (pre-initialized) Definition, then
+            // analyze the nested body. (The principled per-function sub-CFG is a
+            // design-fork; this is the reaudit's recommended low-risk mitigation.)
+            "function_definition" if matches!(self.language, Language::Python) => {
+                self.process_python_nested_function(node, depth)?;
+            }
+
+            // Python `lambda x: expr` — the lambda parameters are micro-scoped
+            // bindings; record them as `ClosureParam` defs so body reads are not
+            // flagged, then analyze the lambda body.
+            "lambda" if matches!(self.language, Language::Python) => {
+                self.process_python_lambda(node, depth)?;
+            }
+
             // Rust: for x in items { }
             "for_expression" => {
                 self.process_rust_for(node, depth)?;
+            }
+
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Rust closure
+            // `|a, &b| body`. The closure parameters are bindings local to the
+            // closure body; without recording them as Definitions, body reads of
+            // `b`/`e` (ripgrep `parse_human_readable_size`'s `take_while(|&b|
+            // b...)` and `map_err(|e| ...)`) had no reaching def and were
+            // flagged `definite uninitialized`. Record each binder identifier
+            // (through `reference_pattern` / `mut_pattern` / tuple wrappers) as a
+            // Definition, then analyze the body.
+            "closure_expression" if matches!(self.language, Language::Rust) => {
+                self.process_rust_closure(node, depth)?;
             }
 
             // JS/TS: for (const x of items) { }
@@ -1602,6 +1947,18 @@ impl<'a> DfgBuilder<'a> {
             // Ruby: for x in items do ... end
             "for" if matches!(self.language, Language::Ruby) => {
                 self.process_for_loop(node, depth)?;
+            }
+
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2): Ruby block
+            // parameters `do |k, v|` / `{ |k, v| ... }`. tree-sitter-ruby emits
+            // a `block_parameters` node (`|k, v|`) whose identifier children are
+            // the block-local bindings. They were never recorded as Definitions
+            // (only `collect_ruby_local_names` saw them, which merely prevents
+            // them being misread as method calls), so every body read of `k`/`v`
+            // was flagged `definite uninitialized`. Record each binder as a
+            // Definition. (Encountered while recursing into `do_block`/`block`.)
+            "block_parameters" if matches!(self.language, Language::Ruby) => {
+                self.process_ruby_block_parameters(node)?;
             }
 
             // =================================================================
@@ -1716,6 +2073,41 @@ impl<'a> DfgBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2): record Ruby block
+    /// parameters (`|k, v|`, including splats / optionals / destructured /
+    /// keyword params) as Definitions. Mirrors the structural cases handled by
+    /// `collect_ruby_assignment_target_names` but emits a `RefType::Definition`
+    /// VarRef for each binder identifier.
+    fn process_ruby_block_parameters(&mut self, node: Node) -> TldrResult<()> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.add_ruby_binder_defs(child);
+        }
+        Ok(())
+    }
+
+    /// Recursive helper for `process_ruby_block_parameters`: emit a Definition
+    /// for every binder identifier inside a Ruby parameter node.
+    fn add_ruby_binder_defs(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                self.add_ref_from_node(node, RefType::Definition);
+            }
+            "splat_parameter"
+            | "block_parameter"
+            | "optional_parameter"
+            | "keyword_parameter"
+            | "destructured_parameter"
+            | "rest_assignment" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.add_ruby_binder_defs(child);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Extract assignment targets (definitions)
@@ -2009,6 +2401,138 @@ impl<'a> DfgBuilder<'a> {
         Ok(())
     }
 
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Python comprehension /
+    /// generator-expression handler.
+    ///
+    /// Shape (verified by debug-parse): the container holds a `[body]`
+    /// expression plus one or more `for_in_clause` children, each with a
+    /// `[left]` binder and `[right]` iterable, optionally followed by
+    /// `if_clause` filters. The binder is a Definition; the iterable, body and
+    /// filters are uses. We record the binders FIRST so that body/filter reads
+    /// of them resolve to a reaching definition (the binders precede the body
+    /// textually, so line ordering in the analyzer is satisfied).
+    fn process_python_comprehension(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // First pass: record every for_in_clause binder as a definition,
+        // tagged ComprehensionScope so the uninit detector treats it as a
+        // self-initializing micro-scoped binding (its value comes from the
+        // iterator, not a prior reaching def on the same line).
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "for_in_clause" {
+                if let Some(left) = child.child_by_field_name("left") {
+                    self.add_comprehension_binder_defs(left);
+                }
+            }
+        }
+        // Second pass: process iterables, filters and the body as uses.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "for_in_clause" => {
+                    // Only the iterable (`[right]`) is a use here; the binder
+                    // was handled above and is suppressed by
+                    // `generic_non_use_position`.
+                    if let Some(right) = child.child_by_field_name("right") {
+                        self.extract_refs_from_node(right, depth + 1)?;
+                    }
+                }
+                _ => {
+                    // `[body]` expression and `if_clause` filters.
+                    self.extract_refs_from_node(child, depth + 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC4 mitigation): handle a
+    /// Python NESTED function definition. Records the function name as a
+    /// Definition (so callers/self-refs are not flagged), each parameter as a
+    /// `ClosureParam`-scoped Definition (pre-initialized), then analyzes the
+    /// body.
+    fn process_python_nested_function(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        if let Some(name) = node.child_by_field_name("name") {
+            if name.kind() == "identifier" {
+                self.add_ref_from_node(name, RefType::Definition);
+            }
+        }
+        if let Some(params) = node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            for child in params.children(&mut cursor) {
+                self.add_python_param_scoped(child);
+            }
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            self.extract_refs_from_node(body, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC4 mitigation): Python
+    /// `lambda params: body`. Records lambda parameters as `ClosureParam`-scoped
+    /// Definitions, then analyzes the body.
+    fn process_python_lambda(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        if let Some(params) = node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            for child in params.children(&mut cursor) {
+                self.add_python_param_scoped(child);
+            }
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            self.extract_refs_from_node(body, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// Record a Python parameter node (identifier / typed / default /
+    /// splat) as a `ClosureParam`-scoped Definition.
+    fn add_python_param_scoped(&mut self, child: Node) {
+        match child.kind() {
+            "identifier" => {
+                self.add_ref_with_context(child, RefType::Definition, VarRefContext::ClosureParam);
+            }
+            "typed_parameter" | "default_parameter" | "typed_default_parameter"
+            | "list_splat_pattern" | "dictionary_splat_pattern" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    if name.kind() == "identifier" {
+                        self.add_ref_with_context(
+                            name,
+                            RefType::Definition,
+                            VarRefContext::ClosureParam,
+                        );
+                        return;
+                    }
+                }
+                if let Some(id) = first_child_of_kind(child, "identifier") {
+                    self.add_ref_with_context(id, RefType::Definition, VarRefContext::ClosureParam);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT): record every leaf identifier
+    /// of a Python comprehension binder (`x`, or `k, v` / `(a, b)` tuples) as a
+    /// `ComprehensionScope`-tagged Definition.
+    fn add_comprehension_binder_defs(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                self.add_ref_with_context(
+                    node,
+                    RefType::Definition,
+                    VarRefContext::ComprehensionScope,
+                );
+            }
+            "tuple" | "list" | "pattern_list" | "tuple_pattern" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.add_comprehension_binder_defs(child);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// fix-B4-dfg-coverage-v1 (v0.5.0 AUDIT-FIX, root cause 2): Go
     /// `for_statement`.
     ///
@@ -2060,6 +2584,92 @@ impl<'a> DfgBuilder<'a> {
         for field in ["initializer", "condition", "update", "body"] {
             if let Some(child) = node.child_by_field_name(field) {
                 self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2): C#/Java C-style
+    /// `for_statement`. Grammars differ in the init field name:
+    ///   * C#   uses `[initializer]` (a `variable_declaration`).
+    ///   * Java uses `[init]` (a `local_variable_declaration`).
+    /// Both expose `[condition]` / `[update]` / `[body]`. Recurse into whichever
+    /// init field is present (the inner declaration arm records the loop-var
+    /// definition) plus the rest. Falls back to recursing every named child so
+    /// any positional update expressions are still analyzed.
+    fn process_csharp_java_for_statement(
+        &mut self,
+        node: Node,
+        depth: usize,
+    ) -> TldrResult<()> {
+        // The init declaration's binder (`int i = 0`) is the loop variable.
+        // Record it with a loop-scope context (treated as pre-initialized by the
+        // uninit detector) AND recurse the init for any RHS uses. The CFG
+        // over-segments the single `for (...)` line into overlapping blocks, so
+        // a plain def of `i` on that line does not reliably reach the
+        // condition/body reads — tagging it avoids the residual FP. (RC4
+        // mitigation; same approach as closures/comprehensions.)
+        let init = node
+            .child_by_field_name("initializer")
+            .or_else(|| node.child_by_field_name("init"));
+        if let Some(init) = init {
+            self.process_for_init_declaration(init, depth)?;
+        }
+        for field in ["condition", "update", "body"] {
+            if let Some(child) = node.child_by_field_name(field) {
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        if init.is_none() {
+            // Defensive: unknown shape — recurse all named children.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.is_named() {
+                    self.extract_refs_from_node(child, depth + 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC2/RC4): process a C#/Java
+    /// for-init declaration. The loop-variable binder(s) are recorded ONCE with
+    /// a `ComprehensionScope` tag (reused as a generic "loop-scoped, self-
+    /// initialized" marker) so the uninit detector treats them as pre-
+    /// initialized despite CFG over-segmentation of the `for (...)` header line;
+    /// the initializer EXPRESSIONS (`= start`) are recursed for their uses. This
+    /// avoids the double-recording a plain `extract_refs_from_node(init)` would
+    /// cause (the binder + a separate tagged def). Walks
+    /// `variable_declaration` / `local_variable_declaration` ->
+    /// `variable_declarator` -> `[name] identifier` + `[value] expr`.
+    fn process_for_init_declaration(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        match node.kind() {
+            "variable_declarator" => {
+                if let Some(name) = node.child_by_field_name("name") {
+                    if name.kind() == "identifier" {
+                        self.add_ref_with_context(
+                            name,
+                            RefType::Definition,
+                            VarRefContext::ComprehensionScope,
+                        );
+                    } else {
+                        self.process_for_init_declaration(name, depth)?;
+                    }
+                }
+                if let Some(value) = node.child_by_field_name("value") {
+                    self.extract_refs_from_node(value, depth + 1)?;
+                }
+            }
+            // Not a declaration shape (e.g. C# `i = 0` assignment as init, or a
+            // bare expression) — fall back to normal extraction.
+            "assignment_expression" | "expression_statement" | "comma_expression" => {
+                self.extract_refs_from_node(node, depth + 1)?;
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.process_for_init_declaration(child, depth)?;
+                }
             }
         }
         Ok(())
@@ -2487,6 +3097,43 @@ impl<'a> DfgBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Rust closure
+    /// `|a, &b| body` — record each closure parameter as a Definition (reusing
+    /// the binding-pattern walker, which handles `reference_pattern`,
+    /// `mut_pattern`, tuples, etc.), then analyze the body for uses.
+    fn process_rust_closure(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        if let Some(params) = node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            for child in params.children(&mut cursor) {
+                if child.is_named() {
+                    self.add_closure_param_defs(child);
+                }
+            }
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            self.extract_refs_from_node(body, depth + 1)?;
+        }
+        Ok(())
+    }
+
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT): record every leaf identifier
+    /// of a Rust closure parameter pattern as a `ClosureParam`-tagged
+    /// Definition (handles `reference_pattern`, `mut_pattern`, tuple patterns).
+    fn add_closure_param_defs(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                self.add_ref_with_context(node, RefType::Definition, VarRefContext::ClosureParam);
+            }
+            "mutable_specifier" => {}
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.add_closure_param_defs(child);
+                }
+            }
+        }
     }
 
     // =====================================================================
@@ -3645,6 +4292,17 @@ impl<'a> DfgBuilder<'a> {
                 "type_identifier" | "user_type" | "type_annotation" => {
                     return false;
                 }
+                // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): the callee /
+                // constructor of a `call_expression` is the FIRST child (Swift
+                // has no `function` field). `Process()`, `URL(...)`, `Pipe()`
+                // are type/constructor names resolved from the standard library
+                // — never local-variable uses. (A genuine closure call
+                // `myClosure()` would carry its own definition.)
+                "call_expression" => {
+                    if parent.child(0).map(|c| c.id()) == Some(node.id()) {
+                        return false;
+                    }
+                }
                 // Navigation expression (member access): foo.bar -> foo is a use, bar is not
                 "navigation_expression" => {
                     // The suffix (after .) is not a use - only the target object is
@@ -4053,6 +4711,49 @@ impl<'a> DfgBuilder<'a> {
             }
         }
 
+        // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): position-independent
+        // suppression of file-level macro / const / import / builtin names for
+        // the C-family + Python + Rust. These are value-position reads that are
+        // structurally identical to local reads (`SDS_TYPE_MASK` in an
+        // expression, `stackBufSize` as a call argument, `os` as an attribute
+        // object) but resolve to a non-local symbol collected from the file
+        // (or a language builtin seeded in `collect_imports`). Guarded by
+        // `generic_local_names`: a local that shadows such a name is NOT
+        // suppressed, so its genuine reads survive and its store never looks
+        // dead. (Member-NAME and callee positions were already classified
+        // not-a-use by `generic_non_use_position`, so only true value reads of
+        // file-level symbols reach here.)
+        if matches!(
+            self.language,
+            Language::Go | Language::Python | Language::Rust | Language::C | Language::Cpp
+        ) {
+            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+            if !text.is_empty()
+                && self.imported_type_names.contains(text)
+                && !self.generic_local_names.contains(text)
+            {
+                return false;
+            }
+            // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): C/C++ preprocessor
+            // macros and enum/#define constants are conventionally
+            // SCREAMING_SNAKE_CASE and are frequently defined in a HEADER, so a
+            // single-file translation unit never sees their `#define` (sds.c
+            // reads `SDS_TYPE_MASK` / `SDS_MAX_PREALLOC` defined in sds.h). A
+            // bare ALL-UPPERCASE value-position identifier that is NOT a local
+            // (locals are lower/camelCase; a genuine all-caps local constant
+            // would carry its own Definition and so be in `generic_local_names`)
+            // is such a macro/constant, never a local-variable use. Mirrors the
+            // sanctioned uppercase-receiver heuristics already used for
+            // C#/Lua/Scala. Scoped to C/C++ where the convention is near-
+            // absolute.
+            if matches!(self.language, Language::C | Language::Cpp)
+                && !self.generic_local_names.contains(text)
+                && is_screaming_snake_case(text)
+            {
+                return false;
+            }
+        }
+
         if let Some(parent) = node.parent() {
             if let Some(is_use) = self.parent_use_context(parent, node) {
                 return is_use;
@@ -4240,8 +4941,170 @@ impl<'a> DfgBuilder<'a> {
         None
     }
 
+    /// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): structural
+    /// (position-based) NON-use classifier shared by every language that
+    /// reaches the generic fallback. An identifier in one of these positions is
+    /// NEVER a local-variable read, regardless of language:
+    ///
+    ///   * the callee / function field of a call node
+    ///     (`call_expression.function`, Elixir `call.target`, Kotlin/Swift
+    ///     first child of `call_expression`);
+    ///   * a member / property / field NAME on the rhs of a member-access node
+    ///     (`a.b -> b`): Python `attribute.attribute`, Elixir `dot` right,
+    ///     Kotlin `navigation_expression` selector;
+    ///   * a scoped / qualified path segment (Rust `scoped_identifier`,
+    ///     C++ `qualified_identifier` / `namespace_identifier`);
+    ///   * a type-name position (`type_identifier`, `primitive_type`,
+    ///     `generic_type`, `scoped_type_identifier`, `type_descriptor`, ...);
+    ///   * a closure / lambda binder (`closure_parameters`, `lambda_parameters`)
+    ///     or a comprehension target (`for_in_clause.left`) — these are
+    ///     DEFINITIONS, never uses (and are recorded as defs elsewhere).
+    ///
+    /// Returns `Some(false)` when `node` is in such a NON-use position, else
+    /// `None` (defer to the rest of `parent_use_context`). All decisions are
+    /// keyed on tree-sitter node kinds verified by debug-parse for the C-family,
+    /// Python, Rust, Go, Kotlin and Elixir grammars; member fields that the
+    /// grammars already model as a DISTINCT node kind (`field_identifier`,
+    /// `field_expression`, Go `selector_expression.field`) never reach the
+    /// `identifier` arm and so need no rule here.
+    fn generic_non_use_position(&self, parent: Node, node: Node) -> Option<bool> {
+        let kind = parent.kind();
+
+        // ---- Callee / function position -------------------------------------
+        // Grammars that expose a named `function` field on the call node:
+        // C `call_expression`, C++ `call_expression`, Go `call_expression`,
+        // Rust `call_expression`, Python `call`.
+        if matches!(kind, "call_expression" | "call") {
+            if let Some(func) = parent.child_by_field_name("function") {
+                if func.id() == node.id() {
+                    return Some(false);
+                }
+            }
+            // Kotlin / Swift `call_expression` has NO `function` field — the
+            // callee is the FIRST child (the remainder are `value_arguments` /
+            // `call_suffix`). A bare-identifier first child is the callee /
+            // constructor name (`foo(...)`, `DivRemResult(...)`, `Process()`),
+            // never a local-variable use.
+            if matches!(self.language, Language::Kotlin | Language::Swift)
+                && parent.child(0).map(|c| c.id()) == Some(node.id())
+            {
+                return Some(false);
+            }
+            // Elixir: `call` exposes the callee via the `target` field — a bare
+            // `identifier` target is a function/macro name (`floor(...)`).
+            if matches!(self.language, Language::Elixir) {
+                if let Some(target) = parent.child_by_field_name("target") {
+                    if target.id() == node.id() {
+                        return Some(false);
+                    }
+                }
+            }
+        }
+
+        // ---- Member / attribute NAME position -------------------------------
+        // Python `attribute`: `[object]` is a use, `[attribute]` (an
+        // `identifier`) is a member name — never a local variable.
+        if kind == "attribute" {
+            if let Some(attr) = parent.child_by_field_name("attribute") {
+                if attr.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+        // Elixir `dot`: `a.b` -> `[left]` is the receiver (use / `alias`),
+        // `[right]` is the called/looked-up member name.
+        if matches!(self.language, Language::Elixir) && kind == "dot" {
+            if let Some(right) = parent.child_by_field_name("right") {
+                if right.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+        // Java / Kotlin `field_access` member NAME: `xs.length` -> the `[field]`
+        // child (an `identifier`, unlike Go/Rust which use `field_identifier`)
+        // is a field name, never a local-variable use. (The `[object]` receiver
+        // is a genuine use and falls through.)
+        if kind == "field_access" {
+            if let Some(field) = parent.child_by_field_name("field") {
+                if field.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+        // Kotlin `navigation_expression`: `obj.member` — the receiver is the
+        // FIRST child (a use); any later `identifier` is the member/selector
+        // name and is never a local-variable use.
+        if matches!(self.language, Language::Kotlin) && kind == "navigation_expression" {
+            if parent.child(0).map(|c| c.id()) != Some(node.id()) {
+                return Some(false);
+            }
+        }
+
+        // ---- Scoped / qualified path segments -------------------------------
+        // Rust `Type::assoc` / `module::item` — both the `[path]` (a type /
+        // module) and the `[name]` (an associated fn / variant) are path
+        // segments, never a local-variable use.
+        if kind == "scoped_identifier" || kind == "scoped_type_identifier" {
+            return Some(false);
+        }
+        // C++ `ns::item` — `qualified_identifier` wraps `[scope]
+        // namespace_identifier` + `[name]`; neither segment is a local use.
+        if kind == "qualified_identifier" {
+            return Some(false);
+        }
+
+        // ---- Type-name positions --------------------------------------------
+        // An identifier whose parent IS a type node is a type reference, not a
+        // value read. (`generic_type` wraps the base `type_identifier`;
+        // `type_descriptor` is the C/C++ cast/type-operand wrapper.)
+        if matches!(
+            kind,
+            "type_identifier"
+                | "primitive_type"
+                | "generic_type"
+                | "type_descriptor"
+                | "type_arguments"
+                | "user_type"
+        ) {
+            return Some(false);
+        }
+
+        // ---- Closure / lambda binders & comprehension targets ---------------
+        // These positions introduce a DEFINITION (recorded elsewhere), so the
+        // binder identifier itself is never a use.
+        if matches!(
+            kind,
+            "closure_parameters" | "lambda_parameters" | "closure_parameter"
+        ) {
+            return Some(false);
+        }
+        // Python comprehension / generator binding: `x for x in xs` — the
+        // `[left]` of a `for_in_clause` is the loop binder.
+        if kind == "for_in_clause" {
+            if let Some(left) = parent.child_by_field_name("left") {
+                if self.node_contains(left, node) {
+                    return Some(false);
+                }
+            }
+        }
+
+        None
+    }
+
     fn parent_use_context(&self, parent: Node, node: Node) -> Option<bool> {
         let kind = parent.kind();
+
+        // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): the generic fallback
+        // historically suppressed ONLY LHS/declaration/parameter positions, so
+        // the ten languages without a bespoke `is_use_context` block (C, C++,
+        // Go, Rust, Python, Kotlin, Elixir, ...) recorded callee names, member/
+        // attribute NAME fields, type names, scoped-path segments, and
+        // closure/comprehension binders as variable Uses — all flagged
+        // `definite uninitialized`. Classify these structural NON-use positions
+        // first (AST-keyed on tree-sitter node kinds, verified by debug-parse).
+        if let Some(non_use) = self.generic_non_use_position(parent, node) {
+            return Some(non_use);
+        }
 
         if matches!(
             kind,
@@ -4507,6 +5370,28 @@ impl<'a> DfgBuilder<'a> {
     }
 }
 
+/// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): true when `s` is a
+/// SCREAMING_SNAKE_CASE identifier — at least one ASCII letter, and every
+/// character is an uppercase ASCII letter, an ASCII digit, or an underscore.
+/// Used to recognize C/C++ preprocessor macros / `#define` constants (which a
+/// single-file analysis cannot otherwise resolve when they live in a header).
+fn is_screaming_snake_case(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut has_letter = false;
+    for c in s.chars() {
+        if c.is_ascii_uppercase() {
+            has_letter = true;
+        } else if c.is_ascii_digit() || c == '_' {
+            // allowed, not a letter
+        } else {
+            return false;
+        }
+    }
+    has_letter
+}
+
 fn first_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     for i in 0..node.child_count() {
         let child = node.child(i)?;
@@ -4561,6 +5446,56 @@ const JS_TS_GLOBALS: &[&str] = &[
     "document", "window", "navigator", "self", "location", "history",
     "fetch", "XMLHttpRequest", "FormData", "URL", "URLSearchParams",
     "localStorage", "sessionStorage",
+];
+
+/// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Go predeclared identifiers
+/// (the universe block — Go spec "Predeclared identifiers"). Used as builtins
+/// in value/conversion/call positions (`make`, `len`, `string(b)`); none is a
+/// local-variable use. Seeding them lets the value-position read of a builtin
+/// (and the conversion form `string(x)`) be classified not-a-use.
+const GO_BUILTINS: &[&str] = &[
+    // Functions
+    "append", "cap", "clear", "close", "complex", "copy", "delete", "imag", "len", "make",
+    "max", "min", "new", "panic", "print", "println", "real", "recover",
+    // Types (also used as conversions: `string(b)`, `int(x)`)
+    "any", "bool", "byte", "comparable", "complex64", "complex128", "error", "float32",
+    "float64", "int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8",
+    "uint16", "uint32", "uint64", "uintptr",
+    // Constants / zero value
+    "true", "false", "iota", "nil",
+];
+
+/// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Python builtins (CPython
+/// `builtins` module). A bare reference to one of these in a value position is
+/// not a local-variable use. (Callee positions like `str(x)` are already
+/// handled structurally; this catches non-call reads such as passing `len` as
+/// a callback or `str` as a default.)
+const PYTHON_BUILTINS: &[&str] = &[
+    // Common callable builtins
+    "abs", "aiter", "all", "anext", "any", "ascii", "bin", "bool", "breakpoint", "bytearray",
+    "bytes", "callable", "chr", "classmethod", "compile", "complex", "delattr", "dict", "dir",
+    "divmod", "enumerate", "eval", "exec", "filter", "float", "format", "frozenset", "getattr",
+    "globals", "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance",
+    "issubclass", "iter", "len", "list", "locals", "map", "max", "memoryview", "min", "next",
+    "object", "oct", "open", "ord", "pow", "print", "property", "range", "repr", "reversed",
+    "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super",
+    "tuple", "type", "vars", "zip",
+    // Constants / singletons
+    "True", "False", "None", "NotImplemented", "Ellipsis", "__debug__",
+    // Common exception names (used bare in `raise X` / `except (A, B)`)
+    "Exception", "BaseException", "ValueError", "TypeError", "KeyError", "IndexError",
+    "AttributeError", "RuntimeError", "StopIteration", "OSError", "IOError", "FileNotFoundError",
+    "NotImplementedError", "ZeroDivisionError", "ArithmeticError", "ImportError",
+];
+
+/// fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Rust prelude value names
+/// (variants / functions) that appear as bare value-position reads. Type names
+/// and `Type::assoc` paths are handled structurally by
+/// `generic_non_use_position`; this covers the bare variant reads (`None`,
+/// `Ok`, `Err`, `Some` used without a path) that occur in value positions.
+const RUST_PRELUDE: &[&str] = &[
+    "Some", "None", "Ok", "Err", "Box", "Vec", "String", "Option", "Result", "Default",
+    "Clone", "Copy", "drop", "Drop",
 ];
 
 /// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
