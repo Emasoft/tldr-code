@@ -625,6 +625,15 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
     // the ONLY source file lives under a "build" directory). The hint is
     // passed to `should_skip_path_with_lang` so JS/TS projects opt out of
     // skipping `build/`, `dist/`, etc.
+    // fix-C5-6 (v0.5.0 AUDIT-FIX): does the project contain ANY unambiguous
+    // C++ source/header anywhere? Used as the project-level fallback for
+    // attributing `.h` headers that live in a headers-only directory (e.g.
+    // `include/fmt/*.h` in cpp-fmt — a pure-header tree with no `.cc`/`.cpp`
+    // sibling in the SAME directory; the translation units live under
+    // `src/`). Without this fallback the per-directory sibling check leaves
+    // those `.h` files mis-bucketed as C even though the project is plainly
+    // C++. Set during the same single walk that computes `lang_hint`.
+    let mut project_has_cpp = false;
     let lang_hint: Option<Language> = options.lang.or_else(|| {
         let mut counts: HashMap<Language, usize> = HashMap::new();
         let mut detect = ignore::WalkBuilder::new(path);
@@ -633,6 +642,11 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
             let p = entry.path();
             if !p.is_file() {
                 continue;
+            }
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if CPP_SIBLING_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+                    project_has_cpp = true;
+                }
             }
             if let Some(lang) = Language::from_path(p) {
                 *counts.entry(lang).or_insert(0) += 1;
@@ -643,6 +657,28 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
             .max_by_key(|(_, n)| *n)
             .map(|(l, _)| l)
     });
+    // When an explicit `--lang` is supplied the `lang_hint` closure is not
+    // run, so compute the C++-presence flag directly for the `.h` fallback.
+    // (Only needed when the filter itself is C/C++; otherwise `.h` files are
+    // filtered out before language resolution anyway.)
+    if options.lang.is_some()
+        && !project_has_cpp
+        && matches!(options.lang, Some(Language::C) | Some(Language::Cpp))
+    {
+        let mut detect = ignore::WalkBuilder::new(path);
+        detect.follow_links(false).hidden(true);
+        for entry in detect.build().flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    if CPP_SIBLING_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
+                        project_has_cpp = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     // Build walker with options
     let mut builder = ignore::WalkBuilder::new(path);
@@ -755,7 +791,7 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         // the header to C++. The per-directory decision is memoised in
         // `h_is_cpp_cache` so we read each parent directory at most once
         // during the walk. Non-`.h` files defer to the canonical classifier.
-        let lang = match resolve_loc_language(entry_path, &mut h_is_cpp_cache) {
+        let lang = match resolve_loc_language(entry_path, project_has_cpp, &mut h_is_cpp_cache) {
             Some(l) => l,
             None => continue, // Skip unsupported files
         };
@@ -903,13 +939,21 @@ const CPP_SIBLING_EXTS: &[&str] = &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx
 /// containing directory holds C++ siblings.
 ///
 /// For every extension other than `.h` this is exactly `Language::from_path`.
-/// For `.h` we check (and memoise per parent directory) whether the directory
-/// contains any `.cpp/.cc/.cxx/.c++` source or `.hpp/.hh/.hxx/.h++` header; if
-/// so the header is C++, otherwise it stays C. This mirrors
-/// [`crate::types::Language::from_path_with_siblings`] but caches the
-/// per-directory decision so a project with N headers reads each directory
-/// once rather than N times.
-fn resolve_loc_language(path: &Path, cache: &mut HashMap<PathBuf, bool>) -> Option<Language> {
+/// For `.h` the header is attributed to C++ when EITHER:
+///   1. the SAME directory contains a C++ source/header sibling
+///      (`.cpp/.cc/.cxx/.c++/.hpp/.hh/.hxx/.h++`) — memoised per parent
+///      directory so a project with N headers reads each directory once; OR
+///   2. `project_has_cpp` is set — the project contains C++ translation units
+///      somewhere, so a `.h` sitting in a headers-only directory
+///      (`include/fmt/*.h`) is still a C++ header.
+/// Otherwise the header stays C. This extends
+/// [`crate::types::Language::from_path_with_siblings`] (same-dir only) with
+/// the project-level fallback that a whole-directory LOC report needs.
+fn resolve_loc_language(
+    path: &Path,
+    project_has_cpp: bool,
+    cache: &mut HashMap<PathBuf, bool>,
+) -> Option<Language> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -918,6 +962,11 @@ fn resolve_loc_language(path: &Path, cache: &mut HashMap<PathBuf, bool>) -> Opti
     // Only `.h` is ambiguous; everything else uses the canonical classifier.
     if ext.as_deref() != Some("h") {
         return Language::from_path(path);
+    }
+
+    // Project-level signal: any C++ TU anywhere → `.h` is a C++ header.
+    if project_has_cpp {
+        return Some(Language::Cpp);
     }
 
     let parent = match path.parent() {
@@ -1238,6 +1287,44 @@ def foo():
         assert_eq!(
             cpp.files, 2,
             "both widget.cc and widget.h must be counted as C++, got {:?}",
+            langs
+        );
+    }
+
+    /// RED→GREEN: a `.h` header in a HEADERS-ONLY directory (no `.cc`/`.cpp`
+    /// sibling in the same dir) must still be attributed to C++ when the
+    /// project has C++ translation units elsewhere. Mirrors cpp-fmt's
+    /// `include/fmt/*.h` (headers under `include/`, `.cc` units under `test/`).
+    #[test]
+    fn test_loc_h_header_in_headers_only_dir_attributed_to_cpp() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        // C++ translation units live under src/.
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src").join("driver.cc"),
+            "#include \"../include/lib.h\"\nint main() { return 0; }\n",
+        )
+        .unwrap();
+        // Headers-only directory: include/ has ONLY a .h (no .cc sibling).
+        std::fs::create_dir_all(dir.path().join("include")).unwrap();
+        std::fs::write(
+            dir.path().join("include").join("lib.h"),
+            "// header-only\ntemplate <class T> struct Box { T v; };\n",
+        )
+        .unwrap();
+
+        let report = analyze_directory(dir.path(), &LocOptions::new()).unwrap();
+        let langs: Vec<&str> = report.by_language.keys().map(|s| s.as_str()).collect();
+        assert!(
+            !report.by_language.contains_key("c"),
+            "headers-only .h in a C++ project must not be bucketed as C, got {:?}",
+            langs
+        );
+        let cpp = report.by_language.get("cpp").expect("cpp bucket must exist");
+        assert_eq!(
+            cpp.files, 2,
+            "driver.cc + include/lib.h must both be C++, got {:?}",
             langs
         );
     }
