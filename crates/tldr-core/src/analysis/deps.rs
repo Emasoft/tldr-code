@@ -39,6 +39,13 @@ use crate::types::{IgnoreSpec, ImportInfo, Language};
 use crate::TldrResult;
 use std::str::FromStr as _;
 
+// deps-manifest-external-v1 (v0.5.0 T1 AUDIT-FIX): dependency-manifest parser.
+// Declared via `#[path]` so the helper lives in its own file without an extra
+// `mod` line in `analysis/mod.rs`.
+#[path = "deps_manifest.rs"]
+mod manifest;
+use manifest::{parse_manifest_dependencies, ManifestDeps};
+
 // =============================================================================
 // Core Types
 // =============================================================================
@@ -613,6 +620,39 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                 }
             }
         }
+    }
+
+    // deps-manifest-external-v1 (v0.5.0 T1 AUDIT-FIX): merge the project's
+    // DECLARED dependencies from its ecosystem manifest(s)
+    // (go.mod / Cargo.toml / package.json / pom.xml|build.gradle /
+    // Gemfile+*.gemspec / mix.exs / Package.swift). This is done
+    // UNCONDITIONALLY — i.e. independent of `options.include_external`.
+    //
+    // Rationale: pre-fix, `external_dependencies` was populated solely from
+    // per-file import statements AND only when the caller passed
+    // `--include-external` (a flag defaulting to `false`). So a plain
+    // `tldr deps <dir>` reported `external_dependencies = {}` /
+    // `total_external_deps = 0` for every ecosystem even though the manifest
+    // unambiguously declares the third-party set. The manifest is the cheap,
+    // authoritative source of truth, so we always surface it. The
+    // `include_external` flag still governs ONLY the noisier import-derived
+    // augmentation above.
+    //
+    // Manifest entries are keyed by the manifest path (relative to root) so
+    // the report attributes each declared dependency to the file declaring
+    // it, distinct from the per-file import-site keys.
+    for md in parse_manifest_dependencies(&root, language) {
+        let ManifestDeps { manifest, packages } = md;
+        if packages.is_empty() {
+            continue;
+        }
+        let entry = external_dependencies.entry(manifest).or_default();
+        for pkg in packages {
+            if !entry.contains(&pkg) {
+                entry.push(pkg);
+            }
+        }
+        entry.sort();
     }
 
     // Calculate stats
@@ -2300,9 +2340,23 @@ fn resolve_python_import(
         return resolve_python_relative_import(module, root, current_file, index);
     }
 
-    // Try direct lookup
+    // python-decoy-resolution-v1 (v0.5.0 T1 AUDIT-FIX): an absolute import
+    // (`import flask` / `from flask import X`) is resolvable from a sys.path
+    // ROOT — the project root or a recognised source root (`src/`). A file
+    // buried at `tests/test_apps/cliapp/inner1/inner2/flask.py` has module
+    // path `tests.test_apps.cliapp.inner1.inner2.flask`, NOT `flask`, so it is
+    // NOT importable as bare `flask` and must never satisfy that query.
+    //
+    // Pre-fix `index_python_module` registered the bare leaf name of every
+    // file, so the deep test fixture `flask.py` registered a bare `flask` key
+    // that the direct lookup below returned — manufacturing 52 phantom
+    // internal edges into the decoy across the flask corpus. We now require
+    // the candidate's importable module path to actually MATCH the query
+    // before accepting it.
     if let Some(path) = index.get(module) {
-        return Some(path.clone());
+        if python_candidate_matches(path, module, root) {
+            return Some(path.clone());
+        }
     }
 
     // Try first component (from pkg.submodule import X -> pkg/submodule.py)
@@ -2312,12 +2366,57 @@ fn resolve_python_import(
         for i in (1..=parts.len()).rev() {
             let prefix = parts[..i].join(".");
             if let Some(path) = index.get(&prefix) {
-                return Some(path.clone());
+                if python_candidate_matches(path, &prefix, root) {
+                    return Some(path.clone());
+                }
             }
         }
     }
 
     None
+}
+
+/// Verify a candidate file is genuinely importable under the absolute module
+/// name `module` from a sys.path root.
+///
+/// python-decoy-resolution-v1. The candidate's importable module path is its
+/// path relative to `root`, with a recognised source root (`src/`) stripped,
+/// path separators turned into `.`, and a trailing `.__init__` removed
+/// (package import). The candidate matches iff that importable path EQUALS
+/// `module`.
+///
+/// Equality (not a suffix rule) is deliberate: a bare `import flask` is
+/// importable only as the top-level module `flask` from a sys.path root, so a
+/// deeply-nested fixture whose importable path is
+/// `tests.test_apps.cliapp.inner1.inner2.flask` (which merely *ends with*
+/// `.flask`) is correctly rejected. A `src/`-rooted package
+/// (`src/flask/__init__.py`) matches because `src.` is stripped first,
+/// yielding the importable name `flask`.
+fn python_candidate_matches(path: &Path, module: &str, root: &Path) -> bool {
+    let rel = match path.strip_prefix(root) {
+        Ok(r) => r,
+        // Index entries are absolute project paths; if it isn't under root we
+        // cannot reason about its importability — accept conservatively.
+        Err(_) => return true,
+    };
+    let stem = rel.with_extension("");
+    let mut importable = path_to_module_name(&stem);
+    // Strip a trailing `.__init__` so `flask/__init__.py` -> `flask`.
+    if let Some(base) = importable.strip_suffix(".__init__") {
+        importable = base.to_string();
+    }
+
+    // Exact match against the on-disk path (covers `from src.utils import X`).
+    if importable == module {
+        return true;
+    }
+    // Otherwise treat `src/` as a sys.path root and retry (covers the common
+    // `from utils import X` against `src/utils.py`). Only strip when the query
+    // itself does NOT already carry the `src.` prefix (handled above).
+    if let Some(rest) = importable.strip_prefix("src.") {
+        return rest == module;
+    }
+    false
 }
 
 /// Resolve Python relative import.
@@ -2741,10 +2840,68 @@ fn resolve_kotlin_import(
     module: &str,
     index: &HashMap<String, PathBuf>,
 ) -> Option<PathBuf> {
+    // kotlin-internal-self-package-v1 (v0.5.0 T1 AUDIT-FIX): try to resolve
+    // the import against the PROJECT's own index with a PRECISE
+    // (exact-FQN / exact-package) match BEFORE applying the stdlib filter.
+    //
+    // `is_kotlin_stdlib` deliberately classifies `kotlinx.coroutines.*` (and
+    // `kotlin.*`, `java.*`) as library/stdlib so an ordinary consumer project
+    // doesn't tally them as internal. But when the project under analysis IS
+    // kotlinx-coroutines itself, `import kotlinx.coroutines.internal.*` refers
+    // to its OWN package — those files exist in the index. Pre-fix the
+    // unconditional `is_kotlin_stdlib` bail at the top dropped every such
+    // self-referential import, so the coroutines repo reported only ~24 of
+    // 1000+ files with any internal edge.
+    //
+    // We only run the PRECISE matcher here (no fuzzy simple-name / parent-
+    // strip fallbacks) so an external `kotlinx.coroutines.launch` cannot
+    // accidentally bind to an unrelated project file named `launch` — that
+    // fuzzy path stays gated behind the stdlib filter below.
+    if let Some(found) = resolve_kotlin_precise(module, index) {
+        return Some(found);
+    }
+
     if is_kotlin_stdlib(module) {
         return None;
     }
 
+    resolve_kotlin_against_index(module, index)
+}
+
+/// Precise Kotlin index resolution: exact-package wildcard or exact-FQN only.
+///
+/// kotlin-internal-self-package-v1: this runs BEFORE the stdlib filter, so it
+/// must NOT use any fuzzy fallback that could bind an external symbol to an
+/// unrelated same-named project file. Only an exact package-key (for a
+/// `pkg.*` wildcard, registered by `index_kotlin_module`) or an exact
+/// fully-qualified-name match counts as project-owned.
+fn resolve_kotlin_precise(
+    module: &str,
+    index: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(prefix) = module.strip_suffix(".*").or_else(|| module.strip_suffix("*")) {
+        let prefix = prefix.trim_end_matches('.');
+        if !prefix.is_empty() {
+            // Only the exact package key — the project genuinely owns this
+            // package iff a file declared `package <prefix>`.
+            if let Some(path) = index.get(prefix) {
+                return Some(path.clone());
+            }
+        }
+        return None;
+    }
+    index.get(module).cloned()
+}
+
+/// Resolve a Kotlin import against the project file index (no stdlib gate),
+/// including the fuzzy simple-name / parent-strip fallbacks.
+///
+/// Split out of [`resolve_kotlin_import`] so the resolver can consult the
+/// index after the stdlib filter (kotlin-internal-self-package-v1).
+fn resolve_kotlin_against_index(
+    module: &str,
+    index: &HashMap<String, PathBuf>,
+) -> Option<PathBuf> {
     // Wildcard: `import com.foo.bar.*` — return any file whose qualified
     // name starts with `com.foo.bar.`.
     if let Some(prefix) = module.strip_suffix(".*").or_else(|| module.strip_suffix("*")) {
@@ -2890,11 +3047,47 @@ fn resolve_c_cpp_import(
 ///   resolution is handled by the index entries already containing relative paths
 fn resolve_ruby_import(
     import: &ImportInfo,
-    _root: &Path,
-    _current_file: &Path,
+    root: &Path,
+    current_file: &Path,
     index: &HashMap<String, PathBuf>,
 ) -> Option<PathBuf> {
     let module = &import.module;
+
+    // ruby-stdlib-shadow-v1 (v0.5.0 T1 AUDIT-FIX): a bare absolute require of a
+    // standard-library name (`require 'logger'`, `require 'set'`, `require
+    // 'json'`) must resolve to the stdlib, NOT to a same-named project file.
+    //
+    // Pre-fix this resolver had no stdlib guard (unlike the C# / Scala / Java
+    // resolvers, which DO bail on their `is_<lang>_stdlib`). `index_ruby_module`
+    // registers the bare leaf name of every file, so a project shipping
+    // `lib/sinatra/middleware/logger.rb` registered a bare `logger` key; the
+    // direct lookup below then bound the stdlib `require 'logger'` to that
+    // project file and counted it as an internal edge.
+    //
+    // Ruby's `require` searches the load path: a bare stdlib name resolves to
+    // the stdlib unless the project places a file of that name at a load-path
+    // ROOT (e.g. `lib/logger.rb`, which `index_ruby_module` ALSO registers
+    // under the lib-stripped key `logger`). We therefore only decline when the
+    // require is a BARE name (no `/`, no relative prefix) that is a known
+    // stdlib module AND there is no load-path-root file of that name. A
+    // require carrying a path (`sinatra/middleware/logger`) is unaffected and
+    // resolves normally below.
+    if !module.contains('/')
+        && !module.starts_with('.')
+        && is_ruby_stdlib(module)
+    {
+        // The bare stdlib name might still be a genuine load-path-root file
+        // (`lib/<name>.rb`), which the indexer registers under the lib-stripped
+        // bare key. Distinguish "project owns a root file named <name>" from
+        // "the bare key is only a deep-leaf decoy" by checking whether the
+        // matched file actually sits at a load-path root.
+        match index.get(module) {
+            Some(path) if ruby_is_loadpath_root_file(path, module) => {
+                return Some(path.clone());
+            }
+            _ => return None,
+        }
+    }
 
     // Direct index lookup
     if let Some(path) = index.get(module) {
@@ -2909,7 +3102,66 @@ fn resolve_ruby_import(
         }
     }
 
+    // ruby-require-relative-resolution-v1 (v0.5.0 T1 AUDIT-FIX): a
+    // `require_relative '<path>'` resolves the path against the CURRENT
+    // file's directory, not the load path. The AST extractor collapses
+    // `require` and `require_relative` to the same `module` string, so we
+    // cannot tell them apart here — but a path-bearing require (one that
+    // carries a `/`, or an explicit `./`/`../`) that did not resolve via the
+    // index above is overwhelmingly a `require_relative`. Resolve it against
+    // `current_file`'s directory so legitimate intra-project edges like
+    // `lib/sinatra/base.rb` -> `require_relative 'middleware/logger'` ->
+    // `lib/sinatra/middleware/logger.rb` are counted. This was previously
+    // dropped (the resolver ignored `current_file` entirely), undercounting
+    // internal edges. Bare stdlib names were already handled above and never
+    // reach here.
+    let rel_spec = module
+        .trim_start_matches("./");
+    if let Some(parent) = current_file.parent() {
+        let joined = parent.join(rel_spec);
+        let normalised = normalise_path(&joined);
+        // Try the `.rb` form and the path verbatim, scoped under root.
+        for candidate in [normalised.with_extension("rb"), normalised.clone()] {
+            if candidate.starts_with(root) && candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
     None
+}
+
+/// Does `path` sit at a Ruby load-path ROOT for the bare module `name`?
+///
+/// ruby-stdlib-shadow-v1. A bare `require '<name>'` only finds a project file
+/// when that file is `<name>.rb` directly under a conventional load-path root
+/// (`lib/`, `app/`, or the project root) — i.e. its require-path IS the bare
+/// name. A deeply-nested `.../middleware/<name>.rb` is reachable only via its
+/// full path (`sinatra/middleware/<name>`), never the bare name, so it must
+/// NOT shadow the stdlib. We detect the root case structurally: the file's
+/// stem equals `name` AND its parent directory is a load-path root (`lib`,
+/// `app`, or empty).
+fn ruby_is_loadpath_root_file(path: &Path, name: &str) -> bool {
+    let stem_ok = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s == name)
+        .unwrap_or(false);
+    if !stem_ok {
+        return false;
+    }
+    // The directory component immediately containing the file must be a
+    // recognised load-path root (or the path is just `<name>.rb`).
+    match path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()) {
+        Some("lib") | Some("app") => true,
+        // File sits at the very top (no meaningful parent dir name).
+        None => true,
+        Some("") => true,
+        _ => {
+            // Path of the form `<name>.rb` with no directory at all.
+            path.parent().map(|p| p.as_os_str().is_empty()).unwrap_or(true)
+        }
+    }
 }
 
 // =============================================================================
@@ -5304,5 +5556,481 @@ mod tests {
             Language::Scala,
         );
         assert!(result.is_some());
+    }
+
+    // =========================================================================
+    // deps-manifest-external-v1 (v0.5.0 T1 AUDIT-FIX) — manifest parsing +
+    // unconditional external-dependency population. RED before fix: every
+    // ecosystem reported `external_dependencies = {}` / `total_external_deps
+    // = 0` for a plain `analyze_dependencies` (no `--include-external`).
+    // =========================================================================
+
+    use tempfile::TempDir;
+
+    /// Write `content` to `root/rel`, creating parent dirs.
+    fn write_at(root: &Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Run `analyze_dependencies` with default options (i.e. WITHOUT
+    /// `include_external`) to prove the manifest path populates externals
+    /// regardless of the flag.
+    fn analyze_default(root: &Path) -> DepsReport {
+        analyze_dependencies(root, &DepsOptions::default()).unwrap()
+    }
+
+    /// Flatten every external package across all manifest/import entries.
+    fn all_external(report: &DepsReport) -> std::collections::BTreeSet<String> {
+        report
+            .external_dependencies
+            .values()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn test_manifest_go_mod_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "go.mod",
+            "module github.com/me/app\n\ngo 1.21\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n\tgolang.org/x/net v0.1.0\n\tgithub.com/transitive/dep v0.0.1 // indirect\n)\n",
+        );
+        write_at(
+            root,
+            "main.go",
+            "package main\n\nimport \"github.com/gin-gonic/gin\"\n\nfunc main() {}\n",
+        );
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        // Declared direct deps present; the `// indirect` one is excluded.
+        assert!(
+            ext.contains("github.com/gin-gonic/gin"),
+            "go.mod direct dep missing: {ext:?}"
+        );
+        assert!(
+            ext.contains("golang.org/x/net"),
+            "go.mod direct dep missing: {ext:?}"
+        );
+        assert!(
+            !ext.contains("github.com/transitive/dep"),
+            "indirect dep must be excluded: {ext:?}"
+        );
+        assert!(
+            report.stats.total_external_deps >= 2,
+            "external count not populated: {}",
+            report.stats.total_external_deps
+        );
+    }
+
+    #[test]
+    fn test_manifest_cargo_toml_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "Cargo.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"  #:version\n\n[dependencies]\nanyhow = \"1.0\"\nserde = { version = \"1.0\", features = [\"derive\"] }\n\n[dev-dependencies]\ntempfile = \"3\"\n\n[dependencies.tokio]\nversion = \"1\"\nfeatures = [\"full\"]\n",
+        );
+        write_at(root, "src/main.rs", "fn main() {}\n");
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(ext.contains("anyhow"), "missing anyhow: {ext:?}");
+        assert!(ext.contains("serde"), "missing serde: {ext:?}");
+        assert!(ext.contains("tempfile"), "missing dev-dep tempfile: {ext:?}");
+        assert!(
+            ext.contains("tokio"),
+            "missing detail-table dep tokio: {ext:?}"
+        );
+        // The detail table's inner keys must NOT leak as deps.
+        assert!(!ext.contains("version"), "inner key leaked: {ext:?}");
+        assert!(!ext.contains("features"), "inner key leaked: {ext:?}");
+    }
+
+    #[test]
+    fn test_manifest_package_json_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "package.json",
+            "{\n  \"name\": \"app\",\n  \"dependencies\": { \"axios\": \"^1.0.0\", \"@scope/pkg\": \"1.2.3\" },\n  \"devDependencies\": { \"typescript\": \"^5.0.0\" }\n}\n",
+        );
+        write_at(root, "index.ts", "export const x = 1;\n");
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(ext.contains("axios"), "missing axios: {ext:?}");
+        assert!(ext.contains("@scope/pkg"), "missing scoped dep: {ext:?}");
+        assert!(ext.contains("typescript"), "missing devDep: {ext:?}");
+    }
+
+    #[test]
+    fn test_manifest_gradle_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "build.gradle",
+            "dependencies {\n  api libs.okhttp.client\n  implementation \"com.squareup.retrofit2:retrofit:2.9.0\"\n  compileOnly libs.kotlinx.coroutines\n}\n",
+        );
+        // A Java source so the language detector picks Java.
+        write_at(
+            root,
+            "src/main/java/com/app/Main.java",
+            "package com.app;\npublic class Main {}\n",
+        );
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(
+            ext.contains("com.squareup.retrofit2:retrofit"),
+            "missing maven-style gradle coord: {ext:?}"
+        );
+        assert!(
+            ext.contains("okhttp.client"),
+            "missing version-catalog accessor: {ext:?}"
+        );
+        assert!(
+            ext.contains("kotlinx.coroutines"),
+            "missing compileOnly accessor: {ext:?}"
+        );
+    }
+
+    #[test]
+    fn test_manifest_pom_xml_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "pom.xml",
+            "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.squareup.okhttp3</groupId>\n      <artifactId>okhttp</artifactId>\n      <version>4.0.0</version>\n    </dependency>\n    <dependency>\n      <groupId>io.reactivex.rxjava3</groupId>\n      <artifactId>rxjava</artifactId>\n    </dependency>\n  </dependencies>\n</project>\n",
+        );
+        write_at(
+            root,
+            "src/main/java/com/app/Main.java",
+            "package com.app;\npublic class Main {}\n",
+        );
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(
+            ext.contains("com.squareup.okhttp3:okhttp"),
+            "missing pom coord: {ext:?}"
+        );
+        assert!(
+            ext.contains("io.reactivex.rxjava3:rxjava"),
+            "missing pom coord: {ext:?}"
+        );
+    }
+
+    #[test]
+    fn test_manifest_gemfile_gemspec_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "Gemfile",
+            "source 'https://rubygems.org'\ngemspec\ngem 'rake', '~> 13.0'\ngroup :test do\n  gem 'rspec', require: false\nend\n",
+        );
+        write_at(
+            root,
+            "app.gemspec",
+            "Gem::Specification.new do |s|\n  s.name = 'app'\n  s.add_dependency 'activesupport', '~> 7.0'\n  s.add_development_dependency 'minitest'\nend\n",
+        );
+        write_at(root, "lib/app.rb", "module App; end\n");
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(ext.contains("rake"), "missing Gemfile gem: {ext:?}");
+        assert!(ext.contains("rspec"), "missing grouped gem: {ext:?}");
+        assert!(
+            ext.contains("activesupport"),
+            "missing gemspec add_dependency: {ext:?}"
+        );
+        assert!(
+            ext.contains("minitest"),
+            "missing gemspec add_development_dependency: {ext:?}"
+        );
+    }
+
+    #[test]
+    fn test_manifest_mix_exs_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "mix.exs",
+            "defmodule App.MixProject do\n  use Mix.Project\n\n  def project do\n    [app: :app, deps: deps()]\n  end\n\n  defp deps do\n    [\n      {:plug, \"~> 1.14\"},\n      {:jason, \"~> 1.0\", optional: true},\n      {:ex_doc, \"~> 0.38\", only: :docs}\n    ]\n  end\nend\n",
+        );
+        write_at(root, "lib/app.ex", "defmodule App do\nend\n");
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(ext.contains("plug"), "missing hex dep plug: {ext:?}");
+        assert!(ext.contains("jason"), "missing hex dep jason: {ext:?}");
+        assert!(ext.contains("ex_doc"), "missing hex dep ex_doc: {ext:?}");
+        // The keyword-list option atoms must NOT be harvested as deps.
+        assert!(!ext.contains("docs"), "option atom leaked: {ext:?}");
+        assert!(!ext.contains("test"), "option atom leaked: {ext:?}");
+    }
+
+    #[test]
+    fn test_manifest_package_swift_external_deps() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "Package.swift",
+            "// swift-tools-version:5.7\nimport PackageDescription\nlet package = Package(\n    name: \"App\",\n    dependencies: [\n        .package(url: \"https://github.com/apple/swift-numerics\", from: \"1.0.0\"),\n        .package(url: \"https://github.com/apple/swift-argument-parser.git\", from: \"1.2.0\"),\n    ]\n)\n",
+        );
+        write_at(root, "Sources/App/main.swift", "print(\"hi\")\n");
+
+        let report = analyze_default(root);
+        let ext = all_external(&report);
+        assert!(
+            ext.contains("swift-numerics"),
+            "missing swift pkg (url leaf): {ext:?}"
+        );
+        assert!(
+            ext.contains("swift-argument-parser"),
+            "missing swift pkg (.git stripped): {ext:?}"
+        );
+    }
+
+    #[test]
+    fn test_manifest_parse_unit_go_mod_single_line() {
+        // Single-line `require` form + block form mixed.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "go.mod",
+            "module x\nrequire github.com/a/b v1.0.0\nrequire (\n\tgithub.com/c/d v2.0.0\n)\n",
+        );
+        let mds = parse_manifest_dependencies(root, Language::Go);
+        let pkgs: std::collections::BTreeSet<String> =
+            mds.iter().flat_map(|m| m.packages.clone()).collect();
+        assert!(pkgs.contains("github.com/a/b"));
+        assert!(pkgs.contains("github.com/c/d"));
+    }
+
+    // =========================================================================
+    // kotlin-internal-self-package-v1 (v0.5.0 T1 AUDIT-FIX): a project that
+    // OWNS the `kotlinx.coroutines.*` namespace must resolve its own imports
+    // as INTERNAL, not have them swallowed by the kotlinx-as-stdlib filter.
+    // RED before fix: resolve_kotlin_import bailed on is_kotlin_stdlib first.
+    // =========================================================================
+
+    #[test]
+    fn test_kotlin_self_owned_kotlinx_package_is_internal() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // The project itself lives under kotlinx.coroutines.* (like the real
+        // kotlinx-coroutines repo).
+        write_at(
+            root,
+            "src/Builders.kt",
+            "package kotlinx.coroutines\n\nimport kotlinx.coroutines.internal.Foo\n\nfun bar() {}\n",
+        );
+        write_at(
+            root,
+            "src/internal/Foo.kt",
+            "package kotlinx.coroutines.internal\n\nclass Foo\n",
+        );
+
+        let report = analyze_dependencies(root, &DepsOptions::with_external()).unwrap();
+        // The import of the project's OWN kotlinx.coroutines.internal must
+        // resolve to the internal file, NOT be dropped as stdlib/external.
+        let builders = PathBuf::from("src/Builders.kt");
+        let internal = report
+            .internal_dependencies
+            .get(&builders)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            internal.contains(&PathBuf::from("src/internal/Foo.kt")),
+            "self-owned kotlinx package import not resolved internal: {internal:?}"
+        );
+        // And it must NOT have been counted as an external dep.
+        let ext = all_external(&report);
+        assert!(
+            !ext.iter().any(|e| e.starts_with("kotlinx.coroutines")),
+            "self-owned package wrongly classified external: {ext:?}"
+        );
+    }
+
+    #[test]
+    fn test_kotlin_real_external_kotlinx_still_external() {
+        // Control: a project that does NOT own kotlinx.coroutines must still
+        // treat it as external/stdlib (no regression of the stdlib filter).
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "src/App.kt",
+            "package com.example.app\n\nimport kotlinx.coroutines.launch\n\nfun run() {}\n",
+        );
+        let report = analyze_dependencies(root, &DepsOptions::with_external()).unwrap();
+        let app = PathBuf::from("src/App.kt");
+        let internal = report
+            .internal_dependencies
+            .get(&app)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            internal.is_empty(),
+            "external kotlinx wrongly resolved internal: {internal:?}"
+        );
+    }
+
+    // =========================================================================
+    // ruby-stdlib-shadow-v1 (v0.5.0 T1 AUDIT-FIX): a bare `require 'logger'`
+    // must classify as stdlib even when the project ships a file named
+    // `logger.rb` at a NON-loadpath-root location. RED before fix:
+    // resolve_ruby_import had no stdlib guard, so the project file shadowed
+    // the stdlib and the dep was counted internal.
+    // =========================================================================
+
+    #[test]
+    fn test_ruby_bare_stdlib_require_not_shadowed_by_project_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Project ships its OWN logger at a nested path (not loadpath root).
+        write_at(
+            root,
+            "lib/app/middleware/logger.rb",
+            "module App\n  class Logger\n  end\nend\n",
+        );
+        // A consumer does `require 'logger'` (the stdlib) AND a project file.
+        write_at(
+            root,
+            "lib/app/base.rb",
+            "require 'logger'\nrequire 'app/middleware/logger'\n\nmodule App\n  class Base\n  end\nend\n",
+        );
+
+        let report = analyze_dependencies(root, &DepsOptions::with_external()).unwrap();
+        let base = PathBuf::from("lib/app/base.rb");
+        let internal = report
+            .internal_dependencies
+            .get(&base)
+            .cloned()
+            .unwrap_or_default();
+        // The bare stdlib `logger` require must NOT resolve to the project's
+        // nested logger.rb. (The `app/middleware/logger` require may resolve.)
+        assert!(
+            internal.contains(&PathBuf::from("lib/app/middleware/logger.rb")),
+            "project-path require should resolve: {internal:?}"
+        );
+        // Stdlib `require 'logger'` must not be counted as external either.
+        let ext = all_external(&report);
+        assert!(
+            !ext.contains("logger"),
+            "stdlib logger wrongly counted external: {ext:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_ruby_bare_stdlib_returns_none() {
+        // Direct unit on the resolver: a bare stdlib name with a colliding
+        // project index entry must return None (stdlib wins).
+        let mut index = HashMap::new();
+        index.insert(
+            "logger".to_string(),
+            PathBuf::from("/proj/lib/app/middleware/logger.rb"),
+        );
+        let import = ImportInfo {
+            module: "logger".to_string(),
+            names: Vec::new(),
+            is_from: None,
+            alias: None,
+            line: 1,
+        };
+        let resolved = resolve_ruby_import(
+            &import,
+            Path::new("/proj"),
+            Path::new("/proj/lib/app/base.rb"),
+            &index,
+        );
+        assert!(
+            resolved.is_none(),
+            "bare stdlib require must not resolve to a project file"
+        );
+    }
+
+    /// ruby-require-relative-resolution-v1: `require_relative 'middleware/logger'`
+    /// from `lib/app/base.rb` must resolve to `lib/app/middleware/logger.rb`
+    /// (current-file-relative), an internal edge the pre-fix resolver dropped.
+    #[test]
+    fn test_ruby_require_relative_resolves_against_current_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "lib/app/middleware/logger.rb",
+            "module App\n  class Logger; end\nend\n",
+        );
+        write_at(
+            root,
+            "lib/app/base.rb",
+            "require_relative 'middleware/logger'\nmodule App\n  class Base; end\nend\n",
+        );
+
+        let report = analyze_dependencies(root, &DepsOptions::default()).unwrap();
+        let base = PathBuf::from("lib/app/base.rb");
+        let internal = report
+            .internal_dependencies
+            .get(&base)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            internal.contains(&PathBuf::from("lib/app/middleware/logger.rb")),
+            "require_relative path not resolved against current file: {internal:?}"
+        );
+    }
+
+    // =========================================================================
+    // python-decoy-resolution-v1 (v0.5.0 T1 AUDIT-FIX): `from flask import X`
+    // must NOT resolve to a deeply-nested test fixture `flask.py`; a top-level
+    // package/module of that name (or external) takes priority. RED before
+    // fix: the bare-leaf index entry of a nested fixture shadowed the real one.
+    // =========================================================================
+
+    #[test]
+    fn test_python_import_not_resolved_to_nested_test_decoy() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // A real top-level package `mypkg`.
+        write_at(root, "src/mypkg/__init__.py", "value = 1\n");
+        write_at(root, "src/mypkg/app.py", "from mypkg import value\n");
+        // A nested test fixture that happens to be named `mypkg.py`.
+        write_at(
+            root,
+            "tests/fixtures/inner/deep/mypkg.py",
+            "# decoy module named like the package\n",
+        );
+        // A consumer importing the package.
+        write_at(root, "src/consumer.py", "from mypkg import value\n");
+
+        let report = analyze_dependencies(root, &DepsOptions::with_external()).unwrap();
+        let consumer = PathBuf::from("src/consumer.py");
+        let internal = report
+            .internal_dependencies
+            .get(&consumer)
+            .cloned()
+            .unwrap_or_default();
+        // It must resolve to the real package __init__, NOT the nested decoy.
+        assert!(
+            !internal.contains(&PathBuf::from("tests/fixtures/inner/deep/mypkg.py")),
+            "import resolved to nested test decoy: {internal:?}"
+        );
     }
 }

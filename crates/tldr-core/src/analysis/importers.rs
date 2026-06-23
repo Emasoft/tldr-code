@@ -114,7 +114,24 @@ fn find_import_in_file(
             let matched_from_name = import.is_from.unwrap_or(false)
                 && import.names.iter().any(|n| n == target_module);
 
-            if !matched_module && !matched_from_name {
+            // importers-named-symbol-v1 (v0.5.0 T1 AUDIT-FIX): match a queried
+            // symbol against the import's NAMED bindings for languages whose
+            // import directive carries the symbol separately from the module
+            // path — e.g. Solidity `import {ERC20} from "../tokens/ERC20.sol"`
+            // captures `module = "../tokens/ERC20.sol"`, `names = ["ERC20"]`.
+            // Pre-fix `importers ERC20` returned 0 because the module path
+            // (`../tokens/ERC20.sol`) never matched the bare symbol query and
+            // the `names` list was only consulted for Python `is_from`. We
+            // accept a `names` hit when the query is a single-segment symbol
+            // (no path / dotted FQN separators), which is exactly the
+            // named-symbol-query shape and cannot be confused with a
+            // module-path query.
+            let query_is_symbol = !target_module.contains(['/', '\\', '.'])
+                && !target_module.is_empty();
+            let matched_named_symbol = query_is_symbol
+                && import.names.iter().any(|n| n == target_module);
+
+            if !matched_module && !matched_from_name && !matched_named_symbol {
                 continue;
             }
 
@@ -157,15 +174,23 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             if import_module == target {
                 return true;
             }
-            // Submodule match: services.auth matches services
+            // Submodule match (FORWARD): a query for the PARENT package
+            // `services` matches a more-specific import `services.auth` — the
+            // file that imports `services.auth` is an importer of `services`.
             if import_module.starts_with(&format!("{}.", target)) {
                 return true;
             }
-            // Target is submodule: services matches services.auth
-            if target.starts_with(&format!("{}.", import_module)) {
-                return true;
-            }
-            // Handle relative imports
+            // python-importers-submodule-granularity-v1 (v0.5.0 T1 AUDIT-FIX):
+            // the REVERSE-prefix rule (a query for the more-specific submodule
+            // `flask.helpers` matching a bare parent import `flask`) is WRONG
+            // for Python. `from flask import Flask` imports the package
+            // `flask`; it does NOT import `flask.helpers`. Pre-fix this rule
+            // made `importers flask.helpers` return all 44 `from flask import …`
+            // sites (wrong granularity). A more-specific submodule query must
+            // only match imports of that submodule (or deeper), handled by the
+            // exact + forward-prefix rules above. The reverse rule is removed.
+            //
+            // Handle relative imports (`.auth` queried as `auth`).
             let cleaned_import = import_module.trim_start_matches('.');
             let cleaned_target = target.trim_start_matches('.');
             cleaned_import == cleaned_target
@@ -676,5 +701,117 @@ mod tests {
         let (line, stmt) = find_import_line(&lines, "services.auth", true, Language::Python);
         assert_eq!(line, 4);
         assert!(stmt.contains("services.auth"));
+    }
+
+    // =========================================================================
+    // importers-granularity-and-named-symbol-v1 (v0.5.0 T1 AUDIT-FIX)
+    // =========================================================================
+
+    use tempfile::TempDir;
+
+    fn write_at(root: &std::path::Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// python-importers-submodule-granularity-v1: a query for the more-specific
+    /// submodule `flask.helpers` must NOT return files that only import the
+    /// parent package (`from flask import Flask`). RED before fix: the
+    /// reverse-prefix rule matched `flask` for a `flask.helpers` query.
+    #[test]
+    fn test_python_importers_submodule_query_excludes_parent_only_importers() {
+        // import_module = "flask" (from `from flask import Flask`)
+        // target        = "flask.helpers"
+        // Must NOT match: importing the parent package is not importing the
+        // specific submodule.
+        assert!(
+            !module_matches("flask", "flask.helpers", Language::Python),
+            "querying a submodule must not match a parent-package import"
+        );
+
+        // A file that imports flask.helpers directly DOES match the query.
+        assert!(
+            module_matches("flask.helpers", "flask.helpers", Language::Python),
+            "exact submodule import must match"
+        );
+        // And `from flask.helpers import url_for` (module captured as
+        // flask.helpers) matches too.
+        assert!(
+            module_matches("flask.helpers.deep", "flask.helpers", Language::Python),
+            "deeper submodule of the queried one should still match"
+        );
+    }
+
+    /// Regression guard: the FORWARD submodule rule (query a PARENT package,
+    /// match a specific import) must still work — querying `services` returns
+    /// files importing `services.auth`. This is the intended behavior and must
+    /// not be broken by the granularity fix above.
+    #[test]
+    fn test_python_importers_parent_query_still_matches_submodule_imports() {
+        assert!(
+            module_matches("services.auth", "services", Language::Python),
+            "parent-package query must still match submodule imports"
+        );
+    }
+
+    /// solidity-importers-named-symbol-v1: `tldr importers ERC20` over a repo
+    /// whose files do `import {ERC20} from "../tokens/ERC20.sol"` must find
+    /// those files. RED before fix: importers only matched `names` for Python
+    /// `is_from`, so the named Solidity symbol was ignored and the path
+    /// (`../tokens/ERC20.sol`) did not match the bare query `ERC20`.
+    #[test]
+    fn test_solidity_importers_named_symbol() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "src/tokens/ERC20.sol",
+            "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract ERC20 {}\n",
+        );
+        write_at(
+            root,
+            "src/utils/SafeTransferLib.sol",
+            "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\nimport {ERC20} from \"../tokens/ERC20.sol\";\ncontract SafeTransferLib {}\n",
+        );
+
+        let report = find_importers(root, "ERC20", Language::Solidity).unwrap();
+        assert!(
+            report.total >= 1,
+            "named-symbol import of ERC20 not found: total={}",
+            report.total
+        );
+        assert!(
+            report
+                .importers
+                .iter()
+                .any(|i| i.file.ends_with("SafeTransferLib.sol")),
+            "expected SafeTransferLib.sol among importers: {:?}",
+            report.importers
+        );
+    }
+
+    /// lua-importers-require-symbol-v1: `tldr importers Type` over a Luau repo
+    /// whose files do `local Type = require(script.Parent.Type)` must find
+    /// those files (guards the require-path reconstruction path stays wired).
+    #[test]
+    fn test_luau_importers_require_module() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(root, "src/Type.luau", "local Type = {}\nreturn Type\n");
+        write_at(
+            root,
+            "src/createElement.luau",
+            "local Type = require(script.Parent.Type)\nreturn function() return Type end\n",
+        );
+
+        let report = find_importers(root, "Type", Language::Luau).unwrap();
+        assert!(
+            report.total >= 1,
+            "require(script.Parent.Type) importer not found: total={}",
+            report.total
+        );
     }
 }
