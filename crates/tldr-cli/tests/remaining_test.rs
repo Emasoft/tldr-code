@@ -406,6 +406,11 @@ mod remaining_types {
         Crypto,
         Concurrency,
         Security,
+        // fix-R7-apicheck-taxonomy-v1 (v0.5.0 CLOSEOUT): mirror the new
+        // `Correctness` variant added to the production enum so findings whose
+        // category serializes to "correctness" (JV001/JS001/TS001/LU001)
+        // deserialize in the integration tests.
+        Correctness,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

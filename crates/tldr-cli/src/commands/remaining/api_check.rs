@@ -195,7 +195,11 @@ const GO_RULE_SPECS: &[RegexRuleSpec] = &[
     RegexRuleSpec {
         id: "GO005",
         name: "sql-query-without-context",
-        category: MisuseCategory::CallOrder,
+        // fix-R7-apicheck-taxonomy-v1 (v0.5.0 CLOSEOUT): this rule is about
+        // context-driven cancellation/timeout propagation (QueryContext vs
+        // Query), not statement ordering. `Concurrency` is the closest
+        // existing bucket; `CallOrder` mis-bucketed it in summary.by_category.
+        category: MisuseCategory::Concurrency,
         severity: MisuseSeverity::Medium,
         description:
             "sql.DB.Query lacks cancellation and timeout propagation compared with QueryContext",
@@ -211,7 +215,9 @@ const JAVA_RULE_SPECS: &[RegexRuleSpec] = &[
     RegexRuleSpec {
         id: "JV001",
         name: "string-comparison-with-double-equals",
-        category: MisuseCategory::CallOrder,
+        // fix-R7-apicheck-taxonomy-v1 (v0.5.0 CLOSEOUT): value-vs-reference
+        // equality is a logic-correctness bug, not a call-ordering issue.
+        category: MisuseCategory::Correctness,
         severity: MisuseSeverity::Medium,
         description: "Using == on strings compares references instead of values",
         correct_usage: "Use value.equals(other) or Objects.equals(a, b)",
@@ -276,7 +282,9 @@ const JAVASCRIPT_RULE_SPECS: &[RegexRuleSpec] = &[
     RegexRuleSpec {
         id: "JS001",
         name: "loose-equality",
-        category: MisuseCategory::CallOrder,
+        // fix-R7-apicheck-taxonomy-v1 (v0.5.0 CLOSEOUT): coercing equality is
+        // a logic-correctness bug, not a call-ordering issue.
+        category: MisuseCategory::Correctness,
         severity: MisuseSeverity::Medium,
         description: "Loose equality allows coercions that frequently hide correctness bugs",
         correct_usage: "Use === / !== except in deliberately reviewed coercion cases",
@@ -339,7 +347,9 @@ const TYPESCRIPT_RULE_SPECS: &[RegexRuleSpec] = &[
     RegexRuleSpec {
         id: "TS001",
         name: "loose-equality",
-        category: MisuseCategory::CallOrder,
+        // fix-R7-apicheck-taxonomy-v1 (v0.5.0 CLOSEOUT): coercing equality is
+        // a logic-correctness bug, not a call-ordering issue.
+        category: MisuseCategory::Correctness,
         severity: MisuseSeverity::Medium,
         description: "Loose equality allows coercions that frequently hide correctness bugs",
         correct_usage: "Use === / !== except in deliberately reviewed coercion cases",
@@ -971,7 +981,10 @@ const LUA_RULE_SPECS: &[RegexRuleSpec] = &[
     RegexRuleSpec {
         id: "LU001",
         name: "implicit-global",
-        category: MisuseCategory::CallOrder,
+        // fix-R7-apicheck-taxonomy-v1 (v0.5.0 CLOSEOUT): leaking a global by
+        // omitting `local` is a logic-correctness/scope hazard, not a
+        // call-ordering issue.
+        category: MisuseCategory::Correctness,
         severity: MisuseSeverity::Low,
         description: "Assigning without local leaks mutable globals and creates hidden coupling",
         correct_usage: "Declare locals explicitly with local name = ...",
@@ -1617,6 +1630,19 @@ struct SolFunction {
 /// parsing each into a `SolFunction` (name + parameter element types +
 /// return arity). Constructors / fallback-receive are not ERC members and
 /// are skipped.
+///
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): ALSO synthesize a `SolFunction` for every
+/// `public` state-variable declaration. In Solidity, a `public` state var
+/// auto-generates an external getter with the SAME name: `T public x;` →
+/// `function x() returns (T)`; `mapping(K => V) public m;` →
+/// `function m(K) returns (V)`; nested mappings flatten their key types in
+/// order (`mapping(K1 => mapping(K2 => V)) public m;` → `function m(K1, K2)
+/// returns (V)`). Without this, ERC002 falsely reported `getApproved` /
+/// `isApprovedForAll` missing on contracts (e.g. solmate `ERC721.sol`) that
+/// expose them as public mappings — the AST walk only saw `function_definition`
+/// nodes. Returns the synthesized getters as ordinary members so
+/// `member_present` / `contract_claims_standard` treat them like real
+/// functions.
 fn solidity_contract_functions(contract: &tree_sitter::Node, source: &str) -> Vec<SolFunction> {
     let mut out = Vec::new();
     let Some(body) = solidity_contract_body(contract) else {
@@ -1624,18 +1650,82 @@ fn solidity_contract_functions(contract: &tree_sitter::Node, source: &str) -> Ve
     };
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
-        if child.kind() != "function_definition" {
-            continue;
+        match child.kind() {
+            "function_definition" => {
+                let Some(name_node) = child.child_by_field_name("name") else {
+                    continue;
+                };
+                let name = source[name_node.byte_range()].to_string();
+                let param_types = solidity_function_param_types(&child, source);
+                let return_count = solidity_function_return_count(&child, source);
+                out.push(SolFunction { name, param_types, return_count });
+            }
+            "state_variable_declaration" => {
+                if let Some(getter) = solidity_public_state_var_getter(&child, source) {
+                    out.push(getter);
+                }
+            }
+            _ => {}
         }
-        let Some(name_node) = child.child_by_field_name("name") else {
-            continue;
-        };
-        let name = source[name_node.byte_range()].to_string();
-        let param_types = solidity_function_param_types(&child, source);
-        let return_count = solidity_function_return_count(&child, source);
-        out.push(SolFunction { name, param_types, return_count });
     }
     out
+}
+
+/// Synthesize the auto-generated public getter for a `state_variable_declaration`
+/// node, or `None` if the variable is not `public`. The getter's name is the
+/// variable name, its parameter element types are the ordered KEY types of any
+/// nested mappings (empty for a scalar/array), and it returns at least one
+/// value (the mapping value type / element type), so `min_returns >= 1` ERC
+/// members match.
+fn solidity_public_state_var_getter(
+    decl: &tree_sitter::Node,
+    source: &str,
+) -> Option<SolFunction> {
+    // Require `public` visibility — private/internal vars have no getter.
+    let mut has_public = false;
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        if child.kind() == "visibility" && source[child.byte_range()].trim() == "public" {
+            has_public = true;
+            break;
+        }
+    }
+    if !has_public {
+        return None;
+    }
+    let name_node = decl.child_by_field_name("name")?;
+    let name = source[name_node.byte_range()].to_string();
+    let type_node = decl.child_by_field_name("type")?;
+    // Flatten nested mapping key types into the getter's parameter list.
+    let mut param_types = Vec::new();
+    solidity_collect_mapping_key_types(type_node, source, &mut param_types);
+    Some(SolFunction {
+        name,
+        param_types,
+        // A public getter always returns exactly one value (the value/element
+        // type). We model `>= 1` so ERC members with `min_returns: 1` match.
+        return_count: 1,
+    })
+}
+
+/// Recursively flatten the KEY types of a (possibly nested) `mapping_type`
+/// node into `out`, in declaration order. For a non-mapping type this is a
+/// no-op (a scalar/array public var getter takes no parameters). Mirrors the
+/// Solidity rule `mapping(K1 => mapping(K2 => V))` ⇒ getter `(K1, K2)`.
+fn solidity_collect_mapping_key_types(
+    type_node: tree_sitter::Node,
+    source: &str,
+    out: &mut Vec<String>,
+) {
+    // A mapping type_name has `[key_type]` and `[value_type]` fields.
+    let Some(key) = type_node.child_by_field_name("key_type") else {
+        return; // not a mapping → scalar/array getter, no params
+    };
+    out.push(normalize_solidity_type(&source[key.byte_range()]));
+    if let Some(value) = type_node.child_by_field_name("value_type") {
+        // Recurse into a nested mapping value to flatten further key types.
+        solidity_collect_mapping_key_types(value, source, out);
+    }
 }
 
 /// Ordered canonical element types of a function's parameters. Each parameter
@@ -2607,6 +2697,43 @@ pub(crate) fn analyze_file(
             JsApiCheckContext::default()
         };
 
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): per-file AST contexts for the JV001
+    // (Java type-aware `==`), CS001 (C# BinaryFormatter type-use), EX001
+    // (Elixir String.to_atom capture form), OC003/OC005 (OCaml call-site
+    // gating) and RS003/RS005 (Rust with_capacity / HashMap-iter) rules.
+    // Each is gated to its language; non-matching languages get an empty
+    // default whose `parsed`/sets are never consulted off-language.
+    let java_ctx: JavaApiCheckContext = if matches!(language, ApiLanguage::Java) {
+        compute_java_api_check_context(&content, language)
+    } else {
+        JavaApiCheckContext::default()
+    };
+    let csharp_ctx: CSharpApiCheckContext = if matches!(language, ApiLanguage::CSharp) {
+        compute_csharp_api_check_context(&content, language)
+    } else {
+        CSharpApiCheckContext::default()
+    };
+    let elixir_ctx: ElixirApiCheckContext = if matches!(language, ApiLanguage::Elixir) {
+        compute_elixir_api_check_context(&content, language)
+    } else {
+        ElixirApiCheckContext::default()
+    };
+    let ocaml_ctx: OcamlApiCheckContext = if matches!(language, ApiLanguage::Ocaml) {
+        let is_mli = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("mli"))
+            .unwrap_or(false);
+        compute_ocaml_api_check_context(&content, language, is_mli)
+    } else {
+        OcamlApiCheckContext::default()
+    };
+    let rust_api_ctx: RustApiCheckContext = if matches!(language, ApiLanguage::Rust) {
+        compute_rust_api_check_context(&content, language)
+    } else {
+        RustApiCheckContext::default()
+    };
+
     for (line_num, line) in content.lines().enumerate() {
         let line_number = (line_num + 1) as u32;
         let trimmed = line.trim();
@@ -2646,6 +2773,11 @@ pub(crate) fn analyze_file(
                 &lua_ctx,
                 &cpp_ctx,
                 &js_ctx,
+                &java_ctx,
+                &csharp_ctx,
+                &elixir_ctx,
+                &ocaml_ctx,
+                &rust_api_ctx,
                 &regex_specs,
             ) {
                 findings.push(finding);
@@ -3166,6 +3298,17 @@ pub(crate) struct JsApiCheckContext {
     /// set is a phantom (the text `eval(` appeared in a string literal or
     /// comment) and must be suppressed.
     pub eval_call_line_set: HashSet<u32>,
+    /// fix-R7-cl4 (v0.5.0 CLOSEOUT): line numbers (1-indexed) that overlap a
+    /// genuine `binary_expression` whose operator is `==` or `!=`. The
+    /// `JS001`/`TS001` `loose-equality` rules are regex-only (`\s==\s|\s!=\s`)
+    /// and match those tokens *inside string literals* (e.g. express.json's
+    /// `'should parse when content-length != char length'`). tree-sitter lexes
+    /// string interiors as `string`/`string_fragment`/`template_string` and
+    /// comments as `comment`, so an operator inside either never produces a
+    /// `binary_expression` and can never appear in this set. A JS001/TS001
+    /// regex match on a line NOT in this set is a phantom and must be
+    /// suppressed.
+    pub loose_equality_line_set: HashSet<u32>,
 }
 
 /// Build a [`JsApiCheckContext`] by parsing `content` as TypeScript/JavaScript
@@ -3186,6 +3329,7 @@ fn compute_js_api_check_context(content: &str, language: ApiLanguage) -> JsApiCh
     let mut ctx = JsApiCheckContext {
         parsed: true,
         eval_call_line_set: HashSet::new(),
+        loose_equality_line_set: HashSet::new(),
     };
     let bytes = content.as_bytes();
 
@@ -3207,6 +3351,20 @@ fn compute_js_api_check_context(content: &str, language: ApiLanguage) -> JsApiCh
     }
 
     fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut JsApiCheckContext) {
+        // fix-R7-cl4: record the line of every genuine `==` / `!=`
+        // binary_expression. The `[operator]` field carries the operator
+        // token; we mark the operator's line (where the JS001/TS001 regex
+        // `\s==\s|\s!=\s` matches). Operators inside string/template literals
+        // are never `binary_expression` operators, so they are excluded.
+        if node.kind() == "binary_expression" {
+            if let Some(op) = node.child_by_field_name("operator") {
+                let op_text = &source[op.byte_range()];
+                if op_text == b"==" || op_text == b"!=" {
+                    ctx.loose_equality_line_set
+                        .insert(op.start_position().row as u32 + 1);
+                }
+            }
+        }
         if node.kind() == "call_expression" {
             if let Some(func) = node.child_by_field_name("function") {
                 if callee_is_eval(func, source) {
@@ -3235,6 +3393,700 @@ fn compute_js_api_check_context(content: &str, language: ApiLanguage) -> JsApiCh
     ctx
 }
 
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): per-file AST context for the Java api-check
+/// scanner. The `JV001` `string-comparison-with-double-equals` rule is
+/// regex-only (`(?:".*"|\b\w+\b)\s*==\s*(?:".*"|\b\w+\b)`) and has ZERO
+/// type-awareness: `\b\w+\b` matches ANY identifier or number on either side
+/// of `==`, so it fires on Class-identity comparisons (`type ==
+/// ResponseBody.class`, the idiomatic Java Class-singleton check), primitive
+/// comparisons (`code == 204`), and array `.length == 0` checks — none of
+/// which are String reference-equality bugs. On okhttp/retrofit this inflated
+/// JV001 to 87 findings, 62 of them Class-identity comparisons.
+///
+/// We pre-compute one set per file by walking the tree-sitter-java parse:
+///
+///   - `string_eq_line_set`: the operator line of every `binary_expression`
+///     whose operator is `==` / `!=` AND that is a *plausible String
+///     comparison*. A comparison is plausible UNLESS an operand is provably
+///     NOT a String, i.e. one side is:
+///       * a class literal (`X.class` → `class_literal`),
+///       * a numeric / char / boolean literal
+///         (`decimal_integer_literal`, `hex_integer_literal`,
+///         `decimal_floating_point_literal`, `character_literal`,
+///         `true`/`false`),
+///       * a `.length` / `.size()` field/array access (collection size, an
+///         int), or
+///       * the `null` literal (already covered by `line_has_null_comparison`,
+///         kept here for AST completeness).
+///     When neither operand is provably non-String — e.g. `s == "x"` (a
+///     string literal IS a String) or `a == b` (two identifiers whose type we
+///     cannot resolve without a type checker) — the line IS included, so the
+///     genuine value-vs-reference heuristic is preserved (matches the
+///     long-standing `name == otherName` test expectation).
+///
+/// The context is consulted ONLY for JV001 inside [`check_regex_rule`]. Other
+/// Java rules and other languages are unaffected. A parse failure yields a
+/// context whose `parsed` flag is `false`; the gate then falls back to the
+/// regex-only behaviour rather than silently suppressing every finding (same
+/// contract as `CppApiCheckContext` / `JsApiCheckContext`).
+#[derive(Debug, Default)]
+pub(crate) struct JavaApiCheckContext {
+    /// Whether the file parsed successfully. When `false`, the JV001 gate
+    /// falls back to regex-only behaviour.
+    pub parsed: bool,
+    /// Operator line numbers (1-indexed) of `==` / `!=` comparisons that are
+    /// PLAUSIBLE String comparisons (neither operand provably non-String). A
+    /// JV001 regex match on a line NOT in this set is a provable non-String
+    /// comparison (Class identity, primitive, `.length`) and must be
+    /// suppressed.
+    pub string_eq_line_set: HashSet<u32>,
+}
+
+/// Whether a Java operand node is PROVABLY not a `String` (so a `==` against
+/// it is not a String reference-equality bug). Conservative: returns `true`
+/// only for shapes we can statically prove are non-String.
+fn java_operand_is_provably_non_string(node: tree_sitter::Node, source: &[u8]) -> bool {
+    match node.kind() {
+        // `X.class` — a java.lang.Class singleton; `==` is the correct idiom.
+        "class_literal" => true,
+        // Numeric / char / boolean literals are never String.
+        "decimal_integer_literal"
+        | "hex_integer_literal"
+        | "octal_integer_literal"
+        | "binary_integer_literal"
+        | "decimal_floating_point_literal"
+        | "hex_floating_point_literal"
+        | "character_literal"
+        | "true"
+        | "false" => true,
+        // `null` is handled by line_has_null_comparison too; include here so a
+        // `x == null` is not counted as a plausible String comparison.
+        "null_literal" => true,
+        // `arr.length` (field_access) / `coll.size()` (method_invocation) yield
+        // an int, not a String.
+        "field_access" => {
+            // The `[field]` child identifier is `length` for `arr.length`.
+            node.child_by_field_name("field")
+                .map(|f| &source[f.byte_range()] == b"length")
+                .unwrap_or(false)
+        }
+        "method_invocation" => {
+            // `x.size()` — the `[name]` child is `size`.
+            node.child_by_field_name("name")
+                .map(|n| &source[n.byte_range()] == b"size")
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// Build a [`JavaApiCheckContext`] by parsing `content` as Java and walking
+/// the parse, collecting the operator line of every plausible String `==` /
+/// `!=` comparison. Returns `parsed = false` on parse failure or non-Java.
+fn compute_java_api_check_context(content: &str, language: ApiLanguage) -> JavaApiCheckContext {
+    if !matches!(language, ApiLanguage::Java) {
+        return JavaApiCheckContext::default();
+    }
+    let tree = match tldr_core::ast::parser::parse(content, Language::Java) {
+        Ok(t) => t,
+        Err(_) => return JavaApiCheckContext::default(),
+    };
+    let mut ctx = JavaApiCheckContext {
+        parsed: true,
+        string_eq_line_set: HashSet::new(),
+    };
+    let bytes = content.as_bytes();
+
+    fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut JavaApiCheckContext) {
+        if node.kind() == "binary_expression" {
+            if let Some(op) = node.child_by_field_name("operator") {
+                let op_text = &source[op.byte_range()];
+                if op_text == b"==" || op_text == b"!=" {
+                    let left = node.child_by_field_name("left");
+                    let right = node.child_by_field_name("right");
+                    let provably_non_string = left
+                        .map(|n| java_operand_is_provably_non_string(n, source))
+                        .unwrap_or(false)
+                        || right
+                            .map(|n| java_operand_is_provably_non_string(n, source))
+                            .unwrap_or(false);
+                    if !provably_non_string {
+                        ctx.string_eq_line_set
+                            .insert(op.start_position().row as u32 + 1);
+                    }
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx);
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx);
+    ctx
+}
+
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): per-file AST context for the C# api-check
+/// scanner. The `CS001` `binaryformatter` rule is regex-only
+/// (`\bBinaryFormatter\b`) and matches the bare identifier anywhere — so a
+/// user METHOD declared `public byte[] BinaryFormatter() {...}` is flagged as
+/// use of the dangerous `System.Runtime.Serialization.BinaryFormatter` type
+/// (newtonsoft-json benchmark false positives).
+///
+/// We pre-compute one set per file by walking the tree-sitter-c-sharp parse:
+///
+///   - `binaryformatter_use_line_set`: every line carrying a genuine
+///     `BinaryFormatter` *type reference* — a `new BinaryFormatter()`
+///     (`object_creation_expression` whose `[type]` is `BinaryFormatter`), a
+///     variable/field declaration whose `[type]` is `BinaryFormatter`, or any
+///     other `identifier` that is NOT the `[name]` of a `method_declaration`.
+///     A `method_declaration` whose `[name]` is `BinaryFormatter` is a method
+///     definition, not a type use, and is excluded.
+///
+/// Consulted ONLY for CS001. A parse failure yields `parsed = false` and the
+/// CS001 gate falls back to regex-only behaviour.
+#[derive(Debug, Default)]
+pub(crate) struct CSharpApiCheckContext {
+    /// Whether the file parsed successfully.
+    pub parsed: bool,
+    /// Lines (1-indexed) carrying a genuine `BinaryFormatter` type reference.
+    /// A CS001 regex match on a line NOT in this set is a method-name
+    /// collision and must be suppressed.
+    pub binaryformatter_use_line_set: HashSet<u32>,
+}
+
+/// Build a [`CSharpApiCheckContext`]. Collects every line where the bare
+/// identifier `BinaryFormatter` is used as a TYPE (object creation, type of a
+/// declaration, or any identifier reference that is not a method name).
+fn compute_csharp_api_check_context(content: &str, language: ApiLanguage) -> CSharpApiCheckContext {
+    if !matches!(language, ApiLanguage::CSharp) {
+        return CSharpApiCheckContext::default();
+    }
+    let tree = match tldr_core::ast::parser::parse(content, Language::CSharp) {
+        Ok(t) => t,
+        Err(_) => return CSharpApiCheckContext::default(),
+    };
+    let mut ctx = CSharpApiCheckContext {
+        parsed: true,
+        binaryformatter_use_line_set: HashSet::new(),
+    };
+    let bytes = content.as_bytes();
+
+    fn is_binaryformatter(node: tree_sitter::Node, source: &[u8]) -> bool {
+        matches!(node.kind(), "identifier")
+            && &source[node.byte_range()] == b"BinaryFormatter"
+    }
+
+    fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut CSharpApiCheckContext) {
+        // The ONLY occurrence we must exclude is the method NAME of a method
+        // declaration (`public ... BinaryFormatter() {...}`). Every other
+        // `BinaryFormatter` identifier is a type use (object creation type,
+        // declaration type, base type, cast, etc.). So: when we reach a
+        // `method_declaration`, recurse into all children EXCEPT its `[name]`.
+        if node.kind() == "method_declaration" {
+            let name_id = node.child_by_field_name("name").map(|n| n.id());
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if Some(child.id()) == name_id {
+                    continue;
+                }
+                visit(child, source, ctx);
+            }
+            return;
+        }
+        if is_binaryformatter(node, source) {
+            ctx.binaryformatter_use_line_set
+                .insert(node.start_position().row as u32 + 1);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx);
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx);
+    ctx
+}
+
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): per-file AST context for the Elixir
+/// api-check scanner. The `EX001` `string-to-atom` rule is regex-only
+/// (`\bString\.to_atom\s*\(`) and REQUIRES an opening paren, so it MISSES the
+/// capture-operator form `&String.to_atom/1` (arity suffix, no paren) used in
+/// plug's `builder.ex:382`.
+///
+/// We pre-compute one set per file by walking the tree-sitter-elixir parse:
+///
+///   - `string_to_atom_line_set`: the line of every `dot` node whose left is
+///     the `alias` `String` and whose right is the `identifier` `to_atom`.
+///     This `dot` node is present in BOTH the regular call
+///     (`String.to_atom(p)` → `call`>`dot`) and the capture form
+///     (`&String.to_atom/1` → `unary_operator`>`binary_operator`>`call`>`dot`),
+///     so a single AST detector covers both syntaxes.
+///
+/// Consulted ONLY for EX001. A parse failure yields `parsed = false`; the
+/// EX001 gate then falls back to regex-only behaviour (so the regular call
+/// form is still caught even if the parse fails).
+#[derive(Debug, Default)]
+pub(crate) struct ElixirApiCheckContext {
+    /// Whether the file parsed successfully.
+    pub parsed: bool,
+    /// Lines (1-indexed) carrying a `String.to_atom` reference in any form
+    /// (call or capture). EX001 fires on a line if it is in this set OR (for
+    /// resilience when the parse failed) the regex matched.
+    pub string_to_atom_line_set: HashSet<u32>,
+}
+
+/// Build an [`ElixirApiCheckContext`]. Collects the line of every
+/// `String.to_atom` dot reference (call and capture forms).
+fn compute_elixir_api_check_context(content: &str, language: ApiLanguage) -> ElixirApiCheckContext {
+    if !matches!(language, ApiLanguage::Elixir) {
+        return ElixirApiCheckContext::default();
+    }
+    let tree = match tldr_core::ast::parser::parse(content, Language::Elixir) {
+        Ok(t) => t,
+        Err(_) => return ElixirApiCheckContext::default(),
+    };
+    let mut ctx = ElixirApiCheckContext {
+        parsed: true,
+        string_to_atom_line_set: HashSet::new(),
+    };
+    let bytes = content.as_bytes();
+
+    fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut ElixirApiCheckContext) {
+        if node.kind() == "dot" {
+            let left = node.child_by_field_name("left");
+            let right = node.child_by_field_name("right");
+            let left_is_string = left
+                .map(|n| n.kind() == "alias" && &source[n.byte_range()] == b"String")
+                .unwrap_or(false);
+            let right_is_to_atom = right
+                .map(|n| &source[n.byte_range()] == b"to_atom")
+                .unwrap_or(false);
+            if left_is_string && right_is_to_atom {
+                ctx.string_to_atom_line_set
+                    .insert(node.start_position().row as u32 + 1);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx);
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx);
+    ctx
+}
+
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): per-file AST context for the OCaml api-check
+/// scanner. `OC003` (`\bSys\.command\b`) and `OC005`
+/// (`\b(?:open_in|open_out)\b`) are regex word-boundary matches with no AST
+/// gate. `is_comment_line` only catches lines that START with `(*`, so the
+/// 2nd+ lines of a `(** ... *)` doc comment reach the matcher
+/// (`... [Sys.command]). *)`), and `.mli` `val open_in :` type signatures and
+/// disabling sentinels (`let open_in = `Use_Io`) are matched as if they were
+/// call sites.
+///
+/// We pre-compute one set per file by walking the tree-sitter-ocaml parse:
+///
+///   - `api_call_line_set`: the line of every `application_expression` whose
+///     `[function]` is a `value_path` resolving to `open_in`, `open_out`,
+///     `Sys.command`, `Marshal.from_string`, `Marshal.from_channel`, or whose
+///     callee is `Obj.magic`. Only genuine *call sites* are recorded, so
+///     `value_specification` (`.mli` val sigs), sentinel `let` bindings, and
+///     comment mentions are all excluded (none of them are
+///     `application_expression`s).
+///
+/// Consulted for all OCaml rules in [`check_regex_rule`]. A parse failure
+/// yields `parsed = false` and the OCaml rules fall back to regex-only
+/// behaviour (preserving recall when the parse fails).
+#[derive(Debug, Default)]
+pub(crate) struct OcamlApiCheckContext {
+    /// Whether the file parsed successfully (OCaml `.ml` or `.mli`).
+    pub parsed: bool,
+    /// Lines (1-indexed) carrying a genuine OCaml API *call site* (an
+    /// `application_expression`). An OCaml-rule regex match on a line NOT in
+    /// this set is a comment / val-signature / sentinel and must be
+    /// suppressed.
+    pub api_call_line_set: HashSet<u32>,
+}
+
+/// Textual `value_path` of an OCaml `application_expression`'s `[function]`
+/// node, normalized to the dotted form (`Sys.command`, `open_in`). Returns
+/// `None` when the callee is not a `value_path`.
+fn ocaml_callee_path(func: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if func.kind() != "value_path" {
+        return None;
+    }
+    std::str::from_utf8(&source[func.byte_range()])
+        .ok()
+        .map(|s| s.split_whitespace().collect::<String>())
+}
+
+/// Build an [`OcamlApiCheckContext`]. Collects the line of every OCaml API
+/// call site that one of the OC* rules cares about. `is_mli` selects the
+/// interface grammar (`.mli` files contain only `value_specification` val
+/// sigs — never call sites — so the interface parse yields an empty call-site
+/// set, exactly the desired suppression); `.ml` files use the implementation
+/// grammar. Either way, only `application_expression` call sites are recorded,
+/// so `val` signatures, sentinel `let` bindings, and comment mentions never
+/// enter the set.
+fn compute_ocaml_api_check_context(
+    content: &str,
+    language: ApiLanguage,
+    is_mli: bool,
+) -> OcamlApiCheckContext {
+    if !matches!(language, ApiLanguage::Ocaml) {
+        return OcamlApiCheckContext::default();
+    }
+    // `.mli` interface files are misparsed by the implementation grammar
+    // (`val open_in : ...` becomes an `application_expression` whose function
+    // is the keyword `val`), so use the dedicated interface grammar for them.
+    // `.ml` implementation files use the standard implementation grammar via
+    // tldr_core. In BOTH cases we record only genuine `application_expression`
+    // call sites, so a misparse can only ever DROP a finding (fail-open), not
+    // invent one.
+    let tree = if is_mli {
+        ocaml_interface_parse(content)
+    } else {
+        tldr_core::ast::parser::parse(content, Language::Ocaml).ok()
+    };
+    let Some(tree) = tree else {
+        return OcamlApiCheckContext::default();
+    };
+    let mut ctx = OcamlApiCheckContext {
+        parsed: true,
+        api_call_line_set: HashSet::new(),
+    };
+    let bytes = content.as_bytes();
+
+    // Callees the OCaml rules detect (dotted/normalized form).
+    const OCAML_API_CALLEES: &[&str] = &[
+        "open_in",
+        "open_out",
+        "Sys.command",
+        "Marshal.from_string",
+        "Marshal.from_channel",
+        "Obj.magic",
+    ];
+
+    fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut OcamlApiCheckContext) {
+        if node.kind() == "application_expression" {
+            if let Some(func) = node.child_by_field_name("function") {
+                if let Some(path) = ocaml_callee_path(func, source) {
+                    if OCAML_API_CALLEES.contains(&path.as_str()) {
+                        ctx.api_call_line_set
+                            .insert(func.start_position().row as u32 + 1);
+                    }
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx);
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx);
+    ctx
+}
+
+/// Parse OCaml interface (`.mli`) content via the dedicated
+/// `LANGUAGE_OCAML_INTERFACE` grammar. The implementation grammar misparses
+/// `val x : T` signatures (treating `val` as a function application), so `.mli`
+/// files must use the interface grammar. Returns `None` if the parse fails.
+/// Kept separate so the call-site detector stays grammar-agnostic.
+fn ocaml_interface_parse(content: &str) -> Option<tree_sitter::Tree> {
+    // `.mli` files contain only `value_specification` (val sigs), no call
+    // sites, so even an interface parse yields zero entries in
+    // `api_call_line_set` — which is exactly the desired suppression. We
+    // attempt the interface grammar directly via tree-sitter to avoid
+    // depending on a specific `Language` enum variant name.
+    let mut parser = tree_sitter::Parser::new();
+    let lang: tree_sitter::Language = tree_sitter_ocaml::LANGUAGE_OCAML_INTERFACE.into();
+    parser.set_language(&lang).ok()?;
+    parser.parse(content, None)
+}
+
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): per-file AST context for the Rust api-check
+/// scanner. Two regex/substring rules need type/shape awareness:
+///
+///   - `RS003 unbounded-with-capacity` flagged `Vec::with_capacity(...)`
+///     whenever the line text contained any of input/args/user/request/len/
+///     size — so `Vec::with_capacity(existing.len())` (safe pre-sizing from an
+///     already-allocated collection) was flagged as CWE-770 memory
+///     exhaustion. We record the line of every `with_capacity` call whose
+///     argument is SAFE (a `.len()` / `.capacity()` / `.size()` method call,
+///     or a literal/const) so the RS003 substring heuristic can be suppressed
+///     on those lines.
+///   - `RS005 hashmap-order-dependence` flagged ANY `for ... .iter()` line in
+///     a file that merely CONTAINED the substring `HashMap` anywhere. We
+///     record the line of every `for` loop whose iterated receiver resolves to
+///     a HashMap/HashSet binding, so RS005 only fires there (replacing the
+///     file-wide `file_has_hashmap` proxy).
+///
+/// Consulted ONLY for RS003 / RS005. A parse failure yields `parsed = false`
+/// and both rules fall back to their prior heuristic behaviour.
+#[derive(Debug, Default)]
+pub(crate) struct RustApiCheckContext {
+    /// Whether the file parsed successfully.
+    pub parsed: bool,
+    /// Lines (1-indexed) of a `with_capacity(...)` call whose capacity
+    /// argument is SAFE (derived from an existing collection's length, or a
+    /// constant). RS003 must be suppressed on these lines.
+    pub safe_with_capacity_line_set: HashSet<u32>,
+    /// Lines (1-indexed) of a `for` loop iterating a receiver whose type
+    /// resolves to `HashMap` / `HashSet`. RS005 fires ONLY on these lines.
+    pub hashmap_iter_line_set: HashSet<u32>,
+}
+
+/// Build a [`RustApiCheckContext`] by parsing `content` as Rust and walking
+/// the parse. Returns `parsed = false` on parse failure or non-Rust.
+fn compute_rust_api_check_context(content: &str, language: ApiLanguage) -> RustApiCheckContext {
+    if !matches!(language, ApiLanguage::Rust) {
+        return RustApiCheckContext::default();
+    }
+    let tree = match tldr_core::ast::parser::parse(content, Language::Rust) {
+        Ok(t) => t,
+        Err(_) => return RustApiCheckContext::default(),
+    };
+    let mut ctx = RustApiCheckContext {
+        parsed: true,
+        safe_with_capacity_line_set: HashSet::new(),
+        hashmap_iter_line_set: HashSet::new(),
+    };
+    let bytes = content.as_bytes();
+
+    // Pass 1: collect identifiers whose let-binding type or initializer is a
+    // HashMap / HashSet, so we can resolve the receiver of a `for` loop.
+    let mut hashmap_bindings: HashSet<String> = HashSet::new();
+    collect_rust_hashmap_bindings(tree.root_node(), bytes, &mut hashmap_bindings);
+
+    fn visit(
+        node: tree_sitter::Node,
+        source: &[u8],
+        ctx: &mut RustApiCheckContext,
+        hashmap_bindings: &HashSet<String>,
+    ) {
+        // RS003: a `call_expression` to `*::with_capacity(arg)` whose arg is
+        // safe (a `.len()`/`.capacity()`/`.size()` method call, an integer
+        // literal, or a path/const) → record the line for suppression.
+        if node.kind() == "call_expression" {
+            if rust_call_is_with_capacity(node, source) {
+                if let Some(arg) = rust_first_call_argument(node) {
+                    if rust_capacity_arg_is_safe(arg, source) {
+                        ctx.safe_with_capacity_line_set
+                            .insert(node.start_position().row as u32 + 1);
+                    }
+                }
+            }
+        }
+        // RS005: a `for_expression` whose iterated value resolves to a
+        // HashMap/HashSet → record the line(s) the loop's `.iter()` call sits
+        // on (the receiver's line, which is where the RS005 substring matches).
+        if node.kind() == "for_expression" {
+            if let Some(value) = node.child_by_field_name("value") {
+                if rust_iter_receiver_is_hashmap(value, source, hashmap_bindings) {
+                    // The `.iter()` text the RS005 heuristic matches lives on
+                    // the iterated-value expression's line(s).
+                    let start = value.start_position().row as u32 + 1;
+                    let end = value.end_position().row as u32 + 1;
+                    for ln in start..=end {
+                        ctx.hashmap_iter_line_set.insert(ln);
+                    }
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, ctx, hashmap_bindings);
+        }
+    }
+
+    visit(tree.root_node(), bytes, &mut ctx, &hashmap_bindings);
+    ctx
+}
+
+/// Collect every identifier bound (via `let`) to a HashMap/HashSet value —
+/// either by explicit type annotation (`let m: HashMap<..> = ..`) or by
+/// constructor (`let m = HashMap::new()` / `HashSet::with_capacity(..)` /
+/// `HashMap::from(..)`). Conservative cross-scope union (mirrors the Lua
+/// local-name approach): good enough to resolve the iterated receiver of a
+/// `for x in RECV.iter()` loop without full type inference.
+fn collect_rust_hashmap_bindings(
+    node: tree_sitter::Node,
+    source: &[u8],
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "let_declaration" {
+        let pat = node.child_by_field_name("pattern");
+        let ty = node.child_by_field_name("type");
+        let val = node.child_by_field_name("value");
+        let ty_is_hashmap = ty
+            .map(|t| rust_type_text_is_hashmap(t, source))
+            .unwrap_or(false);
+        let val_is_hashmap = val
+            .map(|v| rust_expr_constructs_hashmap(v, source))
+            .unwrap_or(false);
+        if ty_is_hashmap || val_is_hashmap {
+            if let Some(p) = pat {
+                // Simple `identifier` pattern (`let m = ...`). Tuple / struct
+                // patterns are out of scope (a `for` over them is rare).
+                if p.kind() == "identifier" {
+                    if let Ok(name) = std::str::from_utf8(&source[p.byte_range()]) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_hashmap_bindings(child, source, out);
+    }
+}
+
+/// Whether a Rust type node's text names `HashMap` or `HashSet` (allowing a
+/// path prefix like `std::collections::HashMap` and generic args).
+fn rust_type_text_is_hashmap(ty: tree_sitter::Node, source: &[u8]) -> bool {
+    let text = std::str::from_utf8(&source[ty.byte_range()]).unwrap_or("");
+    // Match the type CONSTRUCTOR name, not a substring of an unrelated ident:
+    // a generic_type's base is the last `::`-segment before `<`.
+    let head = text.split('<').next().unwrap_or(text);
+    let last_seg = head.rsplit("::").next().unwrap_or(head).trim();
+    last_seg == "HashMap" || last_seg == "HashSet"
+}
+
+/// Whether a Rust expression constructs a HashMap/HashSet
+/// (`HashMap::new()`, `HashSet::with_capacity(n)`, `HashMap::from(..)`,
+/// `HashMap::default()`).
+fn rust_expr_constructs_hashmap(expr: tree_sitter::Node, source: &[u8]) -> bool {
+    // Unwrap a call_expression to its function path.
+    let func = if expr.kind() == "call_expression" {
+        expr.child_by_field_name("function")
+    } else {
+        Some(expr)
+    };
+    let Some(func) = func else { return false };
+    let text = std::str::from_utf8(&source[func.byte_range()]).unwrap_or("");
+    // `HashMap::new` → base segment before the final `::method` is `HashMap`.
+    // Strip the final path segment (the method) then take the last remaining.
+    let base = text.rsplitn(2, "::").nth(1).unwrap_or("");
+    let last_seg = base.rsplit("::").next().unwrap_or(base).trim();
+    last_seg == "HashMap" || last_seg == "HashSet"
+}
+
+/// Whether a `call_expression` calls `*::with_capacity` (any receiver type:
+/// `Vec::with_capacity`, `String::with_capacity`, etc — RS003 currently only
+/// fires on `Vec::with_capacity(` but the gate is receiver-agnostic).
+fn rust_call_is_with_capacity(call: tree_sitter::Node, source: &[u8]) -> bool {
+    let Some(func) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let text = std::str::from_utf8(&source[func.byte_range()]).unwrap_or("");
+    text.rsplit("::").next().map(|s| s.trim()) == Some("with_capacity")
+}
+
+/// The first argument node of a `call_expression`, if any.
+fn rust_first_call_argument(call: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let args = call.child_by_field_name("arguments")?;
+    // Index named children directly to avoid returning a Node that borrows a
+    // local `TreeCursor` (which would not outlive this function).
+    let n = args.named_child_count();
+    for i in 0..n {
+        if let Some(child) = args.named_child(i) {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// Whether a `with_capacity` capacity argument is SAFE (not unbounded external
+/// input): a `.len()` / `.capacity()` / `.size()` method call, an integer
+/// literal, or a const path (UPPER_SNAKE). Conservative: anything else (a bare
+/// `request_size` param, an arithmetic expr on input) is treated as unsafe so
+/// genuine unbounded allocations are still flagged.
+fn rust_capacity_arg_is_safe(arg: tree_sitter::Node, source: &[u8]) -> bool {
+    match arg.kind() {
+        // `existing.len()` / `buf.capacity()` / `v.size()`.
+        "call_expression" => {
+            if let Some(func) = arg.child_by_field_name("function") {
+                if func.kind() == "field_expression" {
+                    let field = func
+                        .child_by_field_name("field")
+                        .map(|f| &source[f.byte_range()]);
+                    return matches!(
+                        field,
+                        Some(b"len") | Some(b"capacity") | Some(b"size")
+                    );
+                }
+            }
+            false
+        }
+        // Numeric literal capacity (`Vec::with_capacity(256)`).
+        "integer_literal" => true,
+        // A const reference (`Vec::with_capacity(MAX_LEN)`) — UPPER_SNAKE
+        // identifier/path is, by Rust convention, a compile-time constant.
+        "identifier" => {
+            let text = std::str::from_utf8(&source[arg.byte_range()]).unwrap_or("");
+            !text.is_empty()
+                && text
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        }
+        "scoped_identifier" => {
+            let text = std::str::from_utf8(&source[arg.byte_range()]).unwrap_or("");
+            text.rsplit("::").next().map(|seg| {
+                !seg.is_empty()
+                    && seg
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            }) == Some(true)
+        }
+        _ => false,
+    }
+}
+
+/// Whether the iterated value of a `for` loop resolves to a HashMap/HashSet.
+/// Handles `for x in map.iter()` / `for x in map.iter_mut()` /
+/// `for x in &map` / `for x in map` where `map` is a known HashMap binding,
+/// and `for x in HashMap::new().iter()` (direct construction).
+fn rust_iter_receiver_is_hashmap(
+    value: tree_sitter::Node,
+    source: &[u8],
+    hashmap_bindings: &HashSet<String>,
+) -> bool {
+    // Peel a reference_expression (`for x in &map`).
+    let value = if value.kind() == "reference_expression" {
+        value.named_child(0).unwrap_or(value)
+    } else {
+        value
+    };
+    match value.kind() {
+        // `map.iter()` / `map.iter_mut()` / `map.keys()` / `map.values()`.
+        "call_expression" => {
+            let Some(func) = value.child_by_field_name("function") else {
+                return false;
+            };
+            if func.kind() == "field_expression" {
+                // The receiver is the `[value]` child of the field_expression.
+                if let Some(recv) = func.child_by_field_name("value") {
+                    return rust_iter_receiver_is_hashmap(recv, source, hashmap_bindings);
+                }
+                // Or a direct construction `HashMap::new().iter()`.
+            }
+            // Direct construction `HashMap::new()`.
+            rust_expr_constructs_hashmap(value, source)
+        }
+        // Bare identifier `for x in map` — resolve via known bindings.
+        "identifier" => {
+            let name = std::str::from_utf8(&source[value.byte_range()]).unwrap_or("");
+            hashmap_bindings.contains(name)
+        }
+        _ => false,
+    }
+}
+
 /// lu001-ast-gate-v1: extract the LHS identifier from a line that the
 /// LU001 regex (`^[A-Za-z_][A-Za-z0-9_]*\s*=`) has just matched. Returns
 /// `None` if the regex shape isn't present (defensive — should never
@@ -3261,6 +4113,7 @@ fn extract_lu001_lhs_name(line_text: &str) -> Option<String> {
 }
 
 /// Check a single rule against a line of code
+#[allow(clippy::too_many_arguments)]
 fn check_rule(
     rule: &APIRule,
     file: &str,
@@ -3272,6 +4125,11 @@ fn check_rule(
     lua_ctx: &LuaApiCheckContext,
     cpp_ctx: &CppApiCheckContext,
     js_ctx: &JsApiCheckContext,
+    java_ctx: &JavaApiCheckContext,
+    csharp_ctx: &CSharpApiCheckContext,
+    elixir_ctx: &ElixirApiCheckContext,
+    ocaml_ctx: &OcamlApiCheckContext,
+    rust_api_ctx: &RustApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     let trimmed = line_text.trim();
@@ -3311,9 +4169,11 @@ fn check_rule(
         "PY006" => check_insecure_random(rule, file, line, trimmed),
         "RS001" => check_mutex_lock_unwrap(rule, file, line, trimmed),
         "RS002" => check_file_open_without_context(rule, file, line, trimmed),
-        "RS003" => check_unbounded_with_capacity(rule, file, line, trimmed),
+        "RS003" => check_unbounded_with_capacity(rule, file, line, trimmed, rust_api_ctx),
         "RS004" => check_detached_tokio_spawn(rule, file, line, trimmed),
-        "RS005" => check_hashmap_order_dependence(rule, file, line, trimmed, rust_ctx),
+        "RS005" => {
+            check_hashmap_order_dependence(rule, file, line, trimmed, rust_ctx, rust_api_ctx)
+        }
         "RS006" => check_clone_in_hot_loop(rule, file, line, trimmed, rust_ctx),
         _ => check_regex_rule(
             rule,
@@ -3324,6 +4184,10 @@ fn check_rule(
             lua_ctx,
             cpp_ctx,
             js_ctx,
+            java_ctx,
+            csharp_ctx,
+            elixir_ctx,
+            ocaml_ctx,
             regex_specs,
         ),
     }
@@ -3387,6 +4251,7 @@ fn is_comment_line(trimmed: &str, language: ApiLanguage) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_regex_rule(
     rule: &APIRule,
     file: &str,
@@ -3396,11 +4261,43 @@ fn check_regex_rule(
     lua_ctx: &LuaApiCheckContext,
     cpp_ctx: &CppApiCheckContext,
     js_ctx: &JsApiCheckContext,
+    java_ctx: &JavaApiCheckContext,
+    csharp_ctx: &CSharpApiCheckContext,
+    elixir_ctx: &ElixirApiCheckContext,
+    ocaml_ctx: &OcamlApiCheckContext,
     regex_specs: &[(&'static RegexRuleSpec, Regex)],
 ) -> Option<MisuseFinding> {
     // fastpath-extend-non-vuln-v1: lookup the pre-compiled regex by rule id
     // (compiled ONCE per file in `analyze_file`, not once per line).
     let (spec, regex) = regex_specs.iter().find(|(spec, _)| spec.id == rule.id)?;
+
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): EX001 `String.to_atom` has an AST
+    // detector that catches BOTH the call form `String.to_atom(p)` AND the
+    // capture form `&String.to_atom/1` (which the `\(`-anchored regex misses).
+    // When the Elixir file parsed, drive EX001 off the AST line-set instead of
+    // the regex so the capture form is caught. Fall back to the regex only
+    // when the parse failed (preserve recall). Handled BEFORE the generic
+    // regex match below so a capture-form line (no `(`) is not rejected.
+    if rule.id == "EX001" && matches!(language, ApiLanguage::Elixir) && elixir_ctx.parsed {
+        if !elixir_ctx.string_to_atom_line_set.contains(&line) {
+            return None;
+        }
+        let column = line_text
+            .find("String.to_atom")
+            .map(|c| (c as u32).saturating_add(1))
+            .unwrap_or(1);
+        return Some(MisuseFinding {
+            file: file.to_string(),
+            line,
+            column,
+            rule: (*rule).clone(),
+            api_call: spec.api_call.to_string(),
+            message: spec.message.to_string(),
+            fix_suggestion: spec.fix_suggestion.to_string(),
+            code_context: line_text.to_string(),
+        });
+    }
+
     if !regex.is_match(line_text) {
         return None;
     }
@@ -3453,10 +4350,74 @@ fn check_regex_rule(
     if rule.id == "JV001" {
         // Conservative substring check: any line whose `==` / `!=` has
         // `null` immediately on either side is a null-comparison
-        // idiom, not a string equality bug.
+        // idiom, not a string equality bug. (Kept as a cheap pre-gate; the
+        // AST gate below subsumes it but also runs on the no-parse fallback.)
         if line_has_null_comparison(line_text) {
             return None;
         }
+        // fix-R7-cl4 (v0.5.0 CLOSEOUT): type-aware AST gate. The JV001 regex
+        // `(?:".*"|\b\w+\b)\s*==\s*(?:".*"|\b\w+\b)` has zero type-awareness
+        // and fires on Class-identity comparisons (`type ==
+        // ResponseBody.class`), primitive comparisons (`code == 204`), and
+        // array `.length == 0` checks — none of which are String
+        // reference-equality bugs. The AST pre-pass recorded the operator
+        // line of every PLAUSIBLE String comparison (one where neither operand
+        // is provably non-String). Suppress a JV001 match on a line NOT in
+        // that set. When the file did not parse (`java_ctx.parsed == false`)
+        // we keep the regex-only behaviour (with the null guard above).
+        if matches!(language, ApiLanguage::Java)
+            && java_ctx.parsed
+            && !java_ctx.string_eq_line_set.contains(&line)
+        {
+            return None;
+        }
+    }
+
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): JS001/TS001 `loose-equality` regex
+    // (`\s==\s|\s!=\s`) matches `==`/`!=` tokens INSIDE string literals and
+    // comments. The AST pre-pass recorded the operator line of every genuine
+    // `==`/`!=` `binary_expression`; suppress a match on a line NOT in that
+    // set. Fail-open on parse failure. Only fires for JS/TS.
+    if matches!(rule.id.as_str(), "JS001" | "TS001")
+        && matches!(language, ApiLanguage::JavaScript | ApiLanguage::TypeScript)
+        && js_ctx.parsed
+        && !js_ctx.loose_equality_line_set.contains(&line)
+    {
+        return None;
+    }
+
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): CS001 `BinaryFormatter` regex
+    // (`\bBinaryFormatter\b`) matches the bare identifier — including a user
+    // method NAMED `BinaryFormatter()`. The AST pre-pass recorded the lines of
+    // genuine `BinaryFormatter` TYPE references (object creation / declaration
+    // type / other identifier use), excluding the method-declaration name.
+    // Suppress a CS001 match on a line NOT in that set. Fail-open on parse
+    // failure.
+    if rule.id == "CS001"
+        && matches!(language, ApiLanguage::CSharp)
+        && csharp_ctx.parsed
+        && !csharp_ctx.binaryformatter_use_line_set.contains(&line)
+    {
+        return None;
+    }
+
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): OCaml OC003/OC005 (and the sibling
+    // Marshal/Obj rules) are bare-word regexes that fire on `(* ... *)` doc
+    // comment interiors, `.mli` `val` signatures, and disabling sentinels
+    // (`let open_in = `Use_Io`). The AST pre-pass recorded the line of every
+    // genuine `application_expression` call site for the OCaml APIs these
+    // rules detect. Suppress an OCaml-rule match on a line NOT in that set.
+    // Fail-open on parse failure. Only the OCaml rules that have a call-site
+    // shape are gated (PH-style identifier rules don't apply to OCaml).
+    if matches!(language, ApiLanguage::Ocaml)
+        && ocaml_ctx.parsed
+        && matches!(
+            rule.id.as_str(),
+            "OC001" | "OC002" | "OC003" | "OC004" | "OC005"
+        )
+        && !ocaml_ctx.api_call_line_set.contains(&line)
+    {
+        return None;
     }
 
     // lu001-ast-gate-v1 (v0.4.1 bug-A): the LU001 `implicit-global` rule
@@ -3502,16 +4463,34 @@ fn check_regex_rule(
     // The `None` branch falls back to 1 (the start of the line) rather than 0
     // because no `m.start()` arm exists when the regex didn't match — and a
     // 0-column finding is meaningless for downstream tools.
-    let column = regex
-        .find(line_text)
+    let m = regex.find(line_text);
+    let column = m
         .map(|m| (m.start() as u32).saturating_add(1))
         .unwrap_or(1);
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): for the loose-equality rules (JV001 /
+    // JS001 / TS001) the spec hardcodes `api_call: "=="`, so a matched `!=`
+    // was mislabeled `==`. Derive the reported operator from the actual match
+    // text (`==` or `!=`) instead of the static spec value. Other rules keep
+    // their declarative `spec.api_call`.
+    let api_call = if matches!(rule.id.as_str(), "JV001" | "JS001" | "TS001") {
+        m.map(|mm| {
+            let matched = mm.as_str();
+            if matched.contains("!=") {
+                "!=".to_string()
+            } else {
+                "==".to_string()
+            }
+        })
+        .unwrap_or_else(|| spec.api_call.to_string())
+    } else {
+        spec.api_call.to_string()
+    };
     Some(MisuseFinding {
         file: file.to_string(),
         line,
         column,
         rule: (*rule).clone(),
-        api_call: spec.api_call.to_string(),
+        api_call,
         message: spec.message.to_string(),
         fix_suggestion: spec.fix_suggestion.to_string(),
         code_context: line_text.to_string(),
@@ -3853,15 +4832,35 @@ fn check_file_open_without_context(
 }
 
 /// Check for capacity allocations sourced from unbounded input.
+///
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): the substring heuristic (`input`/`args`/
+/// `user`/`request`/`len`/`size`) fired on `Vec::with_capacity(existing.len())`
+/// — safe pre-sizing from an already-allocated collection — because `.len()`
+/// contains the substring `len`. The AST pre-pass (`rust_api_ctx`) recorded
+/// the line of every `with_capacity` call whose argument is provably SAFE (a
+/// `.len()`/`.capacity()`/`.size()` method call, an integer literal, or a
+/// const). We suppress the heuristic on those lines. `len`/`size` are removed
+/// from the marker list so the heuristic no longer self-triggers on `.len()`
+/// even on the parse-failure fallback path.
 fn check_unbounded_with_capacity(
     rule: &APIRule,
     file: &str,
     line: u32,
     line_text: &str,
+    rust_api_ctx: &RustApiCheckContext,
 ) -> Option<MisuseFinding> {
     if line_text.contains("Vec::with_capacity(") {
+        // AST gate: a provably-safe capacity argument (e.g. `existing.len()`)
+        // is not unbounded external input. Skip it. Fail-open when the file
+        // did not parse (the tightened marker list below still applies).
+        if rust_api_ctx.parsed && rust_api_ctx.safe_with_capacity_line_set.contains(&line) {
+            return None;
+        }
         let line_lower = line_text.to_lowercase();
-        let user_input_markers = ["input", "args", "user", "request", "len", "size"];
+        // `len`/`size` removed (analysis root-cause #4): they matched `.len()`
+        // on safe pre-sizing. The remaining markers name unbounded external
+        // sources.
+        let user_input_markers = ["input", "args", "user", "request"];
         if user_input_markers.iter().any(|m| line_lower.contains(m)) {
             let column = line_text.find("Vec::with_capacity(").unwrap_or(0) as u32;
             return Some(MisuseFinding {
@@ -3908,16 +4907,34 @@ fn check_detached_tokio_spawn(
 }
 
 /// Check for map iteration order assumptions.
+///
+/// fix-R7-cl4 (v0.5.0 CLOSEOUT): the prior heuristic flagged ANY
+/// `for ... .iter()` line in a file that merely CONTAINED the substring
+/// `HashMap` anywhere (`rust_ctx.file_has_hashmap`), so iterating a slice/Vec
+/// (deterministic order) in a file that names HashMap once was a false
+/// positive (ripgrep: 10/10 FPs). The AST pre-pass (`rust_api_ctx`) resolved
+/// the iterated receiver's type and recorded only the lines whose `for` loop
+/// iterates a genuine HashMap/HashSet binding. We require the line to be in
+/// that set. When the file did not parse we fail-open to the old file-wide
+/// heuristic (preserving recall).
 fn check_hashmap_order_dependence(
     rule: &APIRule,
     file: &str,
     line: u32,
     line_text: &str,
     rust_ctx: &RustLineContext<'_>,
+    rust_api_ctx: &RustApiCheckContext,
 ) -> Option<MisuseFinding> {
-    let looks_like_hashmap_iteration = line_text.contains(".iter()")
-        && (line_text.contains("for ") || rust_ctx.previous_line.starts_with("for "))
-        && rust_ctx.file_has_hashmap;
+    let looks_like_iteration = line_text.contains(".iter()")
+        && (line_text.contains("for ") || rust_ctx.previous_line.starts_with("for "));
+    // AST-resolved receiver gate: fire only when the iterated receiver is a
+    // HashMap/HashSet. Fail-open (old file-wide proxy) when the parse failed.
+    let receiver_is_hashmap = if rust_api_ctx.parsed {
+        rust_api_ctx.hashmap_iter_line_set.contains(&line)
+    } else {
+        rust_ctx.file_has_hashmap
+    };
+    let looks_like_hashmap_iteration = looks_like_iteration && receiver_is_hashmap;
     if looks_like_hashmap_iteration {
         let column = line_text.find(".iter()").unwrap_or(0) as u32;
         return Some(MisuseFinding {
@@ -4011,6 +5028,7 @@ fn serialize_misuse_category(cat: &MisuseCategory) -> String {
         MisuseCategory::Crypto => "crypto".to_string(),
         MisuseCategory::Concurrency => "concurrency".to_string(),
         MisuseCategory::Security => "security".to_string(),
+        MisuseCategory::Correctness => "correctness".to_string(),
     }
 }
 
@@ -4369,12 +5387,27 @@ mod tests {
     #[test]
     fn test_check_unbounded_with_capacity() {
         let rule = &rust_rules()[2];
-        let finding =
-            check_unbounded_with_capacity(rule, "lib.rs", 12, "let v = Vec::with_capacity(len);");
+        // Parse-failure fallback context (parsed=false) → relies on the
+        // tightened marker list. `len` was removed from the markers, so a bare
+        // `len` identifier no longer self-triggers; use an `input`-named arg to
+        // exercise the unbounded-input path.
+        let ctx = RustApiCheckContext::default();
+        let finding = check_unbounded_with_capacity(
+            rule,
+            "lib.rs",
+            12,
+            "let v = Vec::with_capacity(input_len);",
+            &ctx,
+        );
         assert!(finding.is_some());
 
-        let bounded =
-            check_unbounded_with_capacity(rule, "lib.rs", 13, "let v = Vec::with_capacity(256);");
+        let bounded = check_unbounded_with_capacity(
+            rule,
+            "lib.rs",
+            13,
+            "let v = Vec::with_capacity(256);",
+            &ctx,
+        );
         assert!(bounded.is_none());
     }
 
@@ -4405,7 +5438,11 @@ mod tests {
             previous_line: "for (k, v) in map",
             previous_is_loop: true,
         };
-        let finding = check_hashmap_order_dependence(rule, "lib.rs", 12, "    .iter()", &ctx);
+        // Parse-failure fallback (parsed=false) → falls back to the file-wide
+        // `file_has_hashmap` proxy, preserving the original behaviour here.
+        let api_ctx = RustApiCheckContext::default();
+        let finding =
+            check_hashmap_order_dependence(rule, "lib.rs", 12, "    .iter()", &ctx, &api_ctx);
         assert!(finding.is_some());
     }
 
@@ -4786,6 +5823,450 @@ mod tests {
         assert!(
             !ctx.comment_line_set.contains(&4),
             "line 4 (local a = 1) is real code, not a comment"
+        );
+    }
+
+    // =====================================================================
+    // fix-R7-cl4 (v0.5.0 CLOSEOUT): api-check AST-driven precision fixes.
+    // Each rule below was a regex/substring heuristic that "sees text, not
+    // syntax/types". The fixes add a per-file tree-sitter context (mirroring
+    // the established js_ctx / cpp_ctx / lua_ctx pattern) and gate the rule
+    // through it. Tests pin BOTH the FP-suppression and the genuine-detection
+    // guard (RED→GREEN, no #[ignore], no weakened assertion).
+    // =====================================================================
+
+    fn ids_for(findings: &[MisuseFinding], id: &str) -> Vec<u32> {
+        findings
+            .iter()
+            .filter(|f| f.rule.id == id)
+            .map(|f| f.line)
+            .collect()
+    }
+
+    // ---- JV001: type-aware Java string `==` -----------------------------
+
+    /// JV001 must NOT fire on a Class-identity comparison (`type == Foo.class`),
+    /// a primitive-int comparison (`code == 204`), or an array `.length == 0`
+    /// check. These are the okhttp/retrofit false positives.
+    #[test]
+    fn test_jv001_class_and_primitive_comparisons_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "class C {\n  void m() {\n    if (type == ResponseBody.class) { }\n    if (code == 204 || code == 205) { }\n    if (arr.length == 0) { }\n  }\n}\n";
+        let path = write_tmp(&dir, "OkHttpCall.java", src);
+        let rules = rules_for_language(ApiLanguage::Java);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Java).unwrap();
+        assert!(
+            ids_for(&findings, "JV001").is_empty(),
+            "JV001 must not fire on Class-identity / primitive / .length comparisons, got lines {:?}",
+            ids_for(&findings, "JV001")
+        );
+    }
+
+    /// Guard: a comparison with a string literal operand is a genuine
+    /// reference-equality bug and MUST still be flagged.
+    #[test]
+    fn test_jv001_string_literal_comparison_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "class C {\n  void m(String s) {\n    if (s == \"hello\") { }\n  }\n}\n";
+        let path = write_tmp(&dir, "S.java", src);
+        let rules = rules_for_language(ApiLanguage::Java);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Java).unwrap();
+        assert_eq!(
+            ids_for(&findings, "JV001"),
+            vec![3],
+            "JV001 must still flag `s == \"hello\"`"
+        );
+    }
+
+    /// Guard: two bare identifiers compared with `==` remain flagged (the
+    /// existing high-recall heuristic — type cannot be resolved, but neither
+    /// operand is provably non-String). This preserves
+    /// `test_extended_language_rule_detection`'s `name == otherName` case.
+    #[test]
+    fn test_jv001_two_identifiers_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "class C {\n  void m() {\n    if (name == otherName) { }\n  }\n}\n";
+        let path = write_tmp(&dir, "I.java", src);
+        let rules = rules_for_language(ApiLanguage::Java);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Java).unwrap();
+        assert_eq!(
+            ids_for(&findings, "JV001"),
+            vec![3],
+            "JV001 must still flag two-identifier == comparison"
+        );
+    }
+
+    /// Direct unit test on the Java comparison context builder.
+    #[test]
+    fn test_java_string_eq_context_excludes_nonstring_operands() {
+        let src = "class C { void m() {\n  boolean a = type == ResponseBody.class;\n  boolean b = code == 204;\n  boolean c = s == \"x\";\n  boolean d = p == q;\n} }\n";
+        let ctx = compute_java_api_check_context(src, ApiLanguage::Java);
+        assert!(ctx.parsed, "expected successful parse");
+        assert!(!ctx.string_eq_line_set.contains(&2), "class-literal cmp excluded");
+        assert!(!ctx.string_eq_line_set.contains(&3), "primitive int cmp excluded");
+        assert!(ctx.string_eq_line_set.contains(&4), "string-literal cmp included");
+        assert!(ctx.string_eq_line_set.contains(&5), "two-identifier cmp included");
+    }
+
+    // ---- JS001/TS001: loose equality only inside real expressions -------
+
+    /// JS001 must NOT fire on `!=` / `==` that lives inside a string literal
+    /// (express.json's `'should parse when content-length != char length'`).
+    #[test]
+    fn test_js001_operator_in_string_literal_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "function f() {\n  var msg = 'should parse when content-length != char length';\n}\n";
+        let path = write_tmp(&dir, "express.json.js", src);
+        let rules = rules_for_language(ApiLanguage::JavaScript);
+        let findings = analyze_file(&path, &rules, ApiLanguage::JavaScript).unwrap();
+        assert!(
+            ids_for(&findings, "JS001").is_empty(),
+            "JS001 must not fire on != inside a string literal, got {:?}",
+            ids_for(&findings, "JS001")
+        );
+    }
+
+    /// Guard: a genuine loose-equality `==` MUST still be flagged, and the
+    /// emitted api_call must reflect the matched operator.
+    #[test]
+    fn test_js001_real_loose_equality_still_flagged_with_correct_api_call() {
+        let dir = TempDir::new().unwrap();
+        let src = "function f(a, b) {\n  if (a == b) {}\n  if (a != b) {}\n}\n";
+        let path = write_tmp(&dir, "eq.js", src);
+        let rules = rules_for_language(ApiLanguage::JavaScript);
+        let findings = analyze_file(&path, &rules, ApiLanguage::JavaScript).unwrap();
+        let js001: Vec<_> = findings.iter().filter(|f| f.rule.id == "JS001").collect();
+        assert_eq!(js001.len(), 2, "both loose-equality lines must be flagged");
+        // api_call must be derived from the matched operator, not hardcoded.
+        let eq = js001.iter().find(|f| f.line == 2).unwrap();
+        let neq = js001.iter().find(|f| f.line == 3).unwrap();
+        assert_eq!(eq.api_call, "==", "== line must report api_call ==");
+        assert_eq!(neq.api_call, "!=", "!= line must report api_call != (was mislabeled ==)");
+    }
+
+    /// TS001 shares the gate.
+    #[test]
+    fn test_ts001_operator_in_string_literal_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "const s: string = 'a == b is a string';\n";
+        let path = write_tmp(&dir, "x.ts", src);
+        let rules = rules_for_language(ApiLanguage::TypeScript);
+        let findings = analyze_file(&path, &rules, ApiLanguage::TypeScript).unwrap();
+        assert!(
+            ids_for(&findings, "TS001").is_empty(),
+            "TS001 must not fire on == inside a string literal"
+        );
+    }
+
+    /// Direct unit test on the JS loose-equality context: only real
+    /// binary_expression operator lines are in the set, not string interiors.
+    #[test]
+    fn test_js_loose_equality_context_only_real_operators() {
+        let src = "var s = 'x == y';\nif (a == b) {}\nif (c != d) {}\n";
+        let ctx = compute_js_api_check_context(src, ApiLanguage::JavaScript);
+        assert!(ctx.parsed, "expected successful parse");
+        assert!(!ctx.loose_equality_line_set.contains(&1), "string interior excluded");
+        assert!(ctx.loose_equality_line_set.contains(&2), "real == included");
+        assert!(ctx.loose_equality_line_set.contains(&3), "real != included");
+    }
+
+    // ---- taxonomy: correct category buckets ----------------------------
+
+    /// fix-R7-apicheck-taxonomy-v1: loose-equality / string-== / implicit-global
+    /// must NOT be bucketed under `call_order`.
+    #[test]
+    fn test_taxonomy_correctness_rules_not_call_order() {
+        // JV001
+        assert_eq!(
+            JAVA_RULE_SPECS.iter().find(|s| s.id == "JV001").unwrap().category,
+            MisuseCategory::Correctness
+        );
+        // JS001 / TS001
+        assert_eq!(
+            JAVASCRIPT_RULE_SPECS.iter().find(|s| s.id == "JS001").unwrap().category,
+            MisuseCategory::Correctness
+        );
+        assert_eq!(
+            TYPESCRIPT_RULE_SPECS.iter().find(|s| s.id == "TS001").unwrap().category,
+            MisuseCategory::Correctness
+        );
+        // LU001
+        assert_eq!(
+            LUA_RULE_SPECS.iter().find(|s| s.id == "LU001").unwrap().category,
+            MisuseCategory::Correctness
+        );
+        // GO005 → Concurrency (cancellation/context), not CallOrder
+        assert_eq!(
+            GO_RULE_SPECS.iter().find(|s| s.id == "GO005").unwrap().category,
+            MisuseCategory::Concurrency
+        );
+        // RS005 legitimately stays CallOrder.
+        assert_eq!(
+            rust_rules().iter().find(|r| r.id == "RS005").unwrap().category,
+            MisuseCategory::CallOrder
+        );
+    }
+
+    /// `correctness` must round-trip through the snake_case serializer used
+    /// for summary.by_category keys.
+    #[test]
+    fn test_correctness_category_serializes_snake_case() {
+        assert_eq!(serialize_misuse_category(&MisuseCategory::Correctness), "correctness");
+    }
+
+    // ---- RS003: with_capacity from an existing collection length -------
+
+    /// RS003 must NOT fire on `Vec::with_capacity(existing.len())` — safe
+    /// pre-sizing from an already-allocated in-memory collection.
+    #[test]
+    fn test_rs003_with_capacity_from_len_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "fn f(existing: &[u8]) {\n    let mut v = Vec::with_capacity(existing.len());\n    let _ = &mut v;\n}\n";
+        let path = write_tmp(&dir, "hiargs.rs", src);
+        let rules = rules_for_language(ApiLanguage::Rust);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Rust).unwrap();
+        assert!(
+            ids_for(&findings, "RS003").is_empty(),
+            "RS003 must not fire on with_capacity(x.len()), got {:?}",
+            ids_for(&findings, "RS003")
+        );
+    }
+
+    /// Guard: with_capacity sourced from a bare unbounded input identifier
+    /// (no `.len()`) MUST still be flagged.
+    #[test]
+    fn test_rs003_with_capacity_from_unbounded_input_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "fn f(request_size: usize) {\n    let v: Vec<u8> = Vec::with_capacity(request_size);\n    let _ = v;\n}\n";
+        let path = write_tmp(&dir, "alloc.rs", src);
+        let rules = rules_for_language(ApiLanguage::Rust);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Rust).unwrap();
+        assert_eq!(
+            ids_for(&findings, "RS003"),
+            vec![2],
+            "RS003 must still flag with_capacity(request_size)"
+        );
+    }
+
+    // ---- RS005: iterate a real HashMap, not any .iter() ----------------
+
+    /// RS005 must NOT fire on `for &x in slice.iter()` where the receiver is a
+    /// slice/Vec, even if the file mentions HashMap elsewhere (ripgrep FP).
+    #[test]
+    fn test_rs005_slice_iteration_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "use std::collections::HashMap;\nfn f(flags: &[u8]) {\n    let _m: HashMap<u8, u8> = HashMap::new();\n    for &flag in flags.iter() {\n        let _ = flag;\n    }\n}\n";
+        let path = write_tmp(&dir, "defs.rs", src);
+        let rules = rules_for_language(ApiLanguage::Rust);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Rust).unwrap();
+        assert!(
+            ids_for(&findings, "RS005").is_empty(),
+            "RS005 must not fire iterating a slice, got {:?}",
+            ids_for(&findings, "RS005")
+        );
+    }
+
+    /// Guard: iterating a genuine HashMap binding MUST still be flagged.
+    #[test]
+    fn test_rs005_real_hashmap_iteration_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "use std::collections::HashMap;\nfn f() {\n    let map: HashMap<u8, u8> = HashMap::new();\n    for (k, v) in map.iter() {\n        let _ = (k, v);\n    }\n}\n";
+        let path = write_tmp(&dir, "real_map.rs", src);
+        let rules = rules_for_language(ApiLanguage::Rust);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Rust).unwrap();
+        assert_eq!(
+            ids_for(&findings, "RS005"),
+            vec![4],
+            "RS005 must still flag iteration over a real HashMap"
+        );
+    }
+
+    // ---- CS001: BinaryFormatter type-use vs method name ----------------
+
+    /// CS001 must NOT fire on a user method *named* `BinaryFormatter()`.
+    #[test]
+    fn test_cs001_method_named_binaryformatter_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "class X {\n    public TestClass BinaryFormatter() { return null; }\n    public byte[] BinaryFormatter2() { return null; }\n}\n";
+        let path = write_tmp(&dir, "Bench.cs", src);
+        let rules = rules_for_language(ApiLanguage::CSharp);
+        let findings = analyze_file(&path, &rules, ApiLanguage::CSharp).unwrap();
+        assert!(
+            ids_for(&findings, "CS001").is_empty(),
+            "CS001 must not fire on a method named BinaryFormatter, got {:?}",
+            ids_for(&findings, "CS001")
+        );
+    }
+
+    /// Guard: a genuine `new BinaryFormatter()` instantiation MUST still fire.
+    #[test]
+    fn test_cs001_real_binaryformatter_use_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "class X {\n    void m() {\n        var f = new BinaryFormatter();\n        var _ = f;\n    }\n}\n";
+        let path = write_tmp(&dir, "Use.cs", src);
+        let rules = rules_for_language(ApiLanguage::CSharp);
+        let findings = analyze_file(&path, &rules, ApiLanguage::CSharp).unwrap();
+        assert_eq!(
+            ids_for(&findings, "CS001"),
+            vec![3],
+            "CS001 must still flag new BinaryFormatter()"
+        );
+    }
+
+    // ---- EX001: capture-operator form of String.to_atom ----------------
+
+    /// EX001 must ALSO catch the capture form `&String.to_atom/1` (no paren),
+    /// which the `\(`-anchored regex missed (plug builder.ex:382).
+    #[test]
+    fn test_ex001_capture_form_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "defmodule M do\n  def f(list) do\n    Enum.map(list, &String.to_atom/1)\n  end\nend\n";
+        let path = write_tmp(&dir, "builder.ex", src);
+        let rules = rules_for_language(ApiLanguage::Elixir);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Elixir).unwrap();
+        assert_eq!(
+            ids_for(&findings, "EX001"),
+            vec![3],
+            "EX001 must flag the &String.to_atom/1 capture form"
+        );
+    }
+
+    /// Guard: the normal call form still fires (no regression).
+    #[test]
+    fn test_ex001_call_form_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "defmodule M do\n  def f(p) do\n    String.to_atom(p)\n  end\nend\n";
+        let path = write_tmp(&dir, "call.ex", src);
+        let rules = rules_for_language(ApiLanguage::Elixir);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Elixir).unwrap();
+        assert_eq!(
+            ids_for(&findings, "EX001"),
+            vec![3],
+            "EX001 must still flag String.to_atom(p)"
+        );
+    }
+
+    // ---- OCaml OC003/OC005: real call sites only -----------------------
+
+    /// OC005 must NOT fire on `.mli` `val open_in :` signatures, nor on a
+    /// sentinel `let open_in = `Use_Io` binding, nor on a comment mention.
+    #[test]
+    fn test_oc005_val_sig_and_sentinel_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        // .mli val sigs:
+        let mli = "val open_in : string -> in_channel\nval open_out : string -> out_channel\n";
+        let mli_path = write_tmp(&dir, "io_intf.mli", mli);
+        let rules = rules_for_language(ApiLanguage::Ocaml);
+        let findings = analyze_file(&mli_path, &rules, ApiLanguage::Ocaml).unwrap();
+        assert!(
+            ids_for(&findings, "OC005").is_empty(),
+            "OC005 must not fire on .mli val signatures, got {:?}",
+            ids_for(&findings, "OC005")
+        );
+        // sentinel disabling binding:
+        let sentinel = "let open_in = `Use_Io\nlet open_out = `Use_Io\n";
+        let s_path = write_tmp(&dir, "no_io.ml", sentinel);
+        let findings = analyze_file(&s_path, &rules, ApiLanguage::Ocaml).unwrap();
+        assert!(
+            ids_for(&findings, "OC005").is_empty(),
+            "OC005 must not fire on a sentinel `let open_in = `Use_Io` binding, got {:?}",
+            ids_for(&findings, "OC005")
+        );
+    }
+
+    /// OC003 must NOT fire on a `[Sys.command]` mention inside a `(** ... *)`
+    /// doc comment (string.mli:123 — interior line of a multi-line comment).
+    #[test]
+    fn test_oc003_comment_mention_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "(** This calls the system shell\n    (eg by using [Sys.command]). *)\nlet x = 1\n";
+        let path = write_tmp(&dir, "string.ml", src);
+        let rules = rules_for_language(ApiLanguage::Ocaml);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Ocaml).unwrap();
+        assert!(
+            ids_for(&findings, "OC003").is_empty(),
+            "OC003 must not fire on [Sys.command] inside a doc comment, got {:?}",
+            ids_for(&findings, "OC003")
+        );
+    }
+
+    /// Guard: genuine `open_in`/`Sys.command` call sites MUST still fire.
+    #[test]
+    fn test_oc003_oc005_real_call_sites_still_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "let read () =\n  let ic = open_in \"f\" in\n  ignore (Sys.command \"ls\");\n  ic\n";
+        let path = write_tmp(&dir, "real.ml", src);
+        let rules = rules_for_language(ApiLanguage::Ocaml);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Ocaml).unwrap();
+        assert_eq!(
+            ids_for(&findings, "OC005"),
+            vec![2],
+            "OC005 must still flag a real open_in call"
+        );
+        assert_eq!(
+            ids_for(&findings, "OC003"),
+            vec![3],
+            "OC003 must still flag a real Sys.command call"
+        );
+    }
+
+    // ---- ERC002: Solidity public state-var auto-getters ----------------
+
+    /// ERC002 must NOT report `getApproved` / `isApprovedForAll` missing when
+    /// they are provided as `public` mapping auto-getters (solmate ERC721.sol).
+    #[test]
+    fn test_erc002_public_mapping_autogetters_satisfy_interface() {
+        let dir = TempDir::new().unwrap();
+        let src = "// SPDX-License-Identifier: MIT\ncontract ERC721 {\n    mapping(address => uint256) public balanceOf;\n    mapping(uint256 => address) public ownerOf;\n    mapping(uint256 => address) public getApproved;\n    mapping(address => mapping(address => bool)) public isApprovedForAll;\n    function transferFrom(address from, address to, uint256 id) public {}\n    function safeTransferFrom(address from, address to, uint256 id) public {}\n    function approve(address spender, uint256 id) public {}\n    function setApprovalForAll(address operator, bool approved) public {}\n    event Transfer(address indexed from, address indexed to, uint256 indexed id);\n    event Approval(address indexed owner, address indexed spender, uint256 indexed id);\n    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);\n}\n";
+        let path = write_tmp(&dir, "ERC721.sol", src);
+        let findings = analyze_solidity_erc(src, path.to_str().unwrap());
+        let missing_getapproved = findings.iter().any(|f| {
+            f.rule.id == "ERC002" && f.api_call.contains("getApproved")
+        });
+        let missing_isapproved = findings.iter().any(|f| {
+            f.rule.id == "ERC002" && f.api_call.contains("isApprovedForAll")
+        });
+        assert!(
+            !missing_getapproved,
+            "ERC002 must not report getApproved missing — it is a public mapping auto-getter"
+        );
+        assert!(
+            !missing_isapproved,
+            "ERC002 must not report isApprovedForAll missing — it is a public mapping auto-getter"
+        );
+    }
+
+    /// Direct unit test: a public mapping state variable is collected as a
+    /// synthesized getter SolFunction with the right param types / return.
+    #[test]
+    fn test_solidity_public_mapping_synthesizes_getter() {
+        let src = "contract C {\n    mapping(uint256 => address) public getApproved;\n    mapping(address => mapping(address => bool)) public isApprovedForAll;\n    uint256 public totalSupply;\n    uint256 private hidden;\n}\n";
+        let tree = tldr_core::ast::parser::parse(src, Language::Solidity).unwrap();
+        let mut contracts = Vec::new();
+        collect_solidity_contracts(tree.root_node(), &mut contracts);
+        let functions = solidity_contract_functions(&contracts[0], src);
+        let get_approved = functions.iter().find(|f| f.name == "getApproved");
+        assert!(get_approved.is_some(), "getApproved getter must be synthesized");
+        let ga = get_approved.unwrap();
+        assert_eq!(ga.param_types, vec!["uint256".to_string()], "getApproved(uint256)");
+        assert!(ga.return_count >= 1, "getApproved returns the value type");
+
+        let is_approved = functions.iter().find(|f| f.name == "isApprovedForAll").unwrap();
+        assert_eq!(
+            is_approved.param_types,
+            vec!["address".to_string(), "address".to_string()],
+            "nested mapping flattens to (address, address)"
+        );
+        assert!(is_approved.return_count >= 1);
+
+        let total = functions.iter().find(|f| f.name == "totalSupply").unwrap();
+        assert!(total.param_types.is_empty(), "scalar getter takes no params");
+        assert!(total.return_count >= 1);
+
+        // A `private` state var does NOT auto-generate a public getter.
+        assert!(
+            functions.iter().all(|f| f.name != "hidden"),
+            "private state var must not synthesize a getter"
         );
     }
 }

@@ -1406,6 +1406,14 @@ pub enum MisuseCategory {
     Crypto,
     Concurrency,
     Security,
+    /// Logic-correctness hazards that are neither resource, concurrency, nor
+    /// security issues: value-vs-reference comparison (`==` on objects),
+    /// loose/coercing equality, implicit-global leakage, and similar
+    /// "this is probably a bug" findings. Added by fix-R7-apicheck-taxonomy-v1
+    /// (v0.5.0 CLOSEOUT) so these rules stop being mis-bucketed as `CallOrder`
+    /// (which corrupted `summary.by_category`: e.g. typescript-nest reported
+    /// `call_order: 2` for two loose-equality findings).
+    Correctness,
 }
 
 /// Severity of API misuse.
