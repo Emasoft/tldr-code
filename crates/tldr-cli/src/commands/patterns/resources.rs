@@ -589,6 +589,7 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
         Language::Lua | Language::Luau => LangResourcePatterns {
             creators: &[
                 ("io.open", "file"),
+                ("io.lines", "file"),
                 ("io.popen", "process"),
                 ("io.tmpfile", "file"),
                 ("socket.tcp", "socket"),
@@ -2012,47 +2013,74 @@ impl ResourceDetector {
                 }
             }
             Language::Lua | Language::Luau => {
-                // Lua/Luau: local f = io.open(path, "r")
-                // assignment_statement has variable_list and expression_list
-                // variable_declaration has assignment with variable_list and expression_list
-                if let Some(right) = node
-                    .child_by_field_name("values")
-                    .or_else(|| node.child_by_field_name("right"))
-                {
-                    if let Some(left) = node
-                        .child_by_field_name("variables")
-                        .or_else(|| node.child_by_field_name("left"))
-                        .or_else(|| node.child_by_field_name("name"))
-                    {
-                        // left is usually a variable_list containing identifier(s)
-                        let var_name =
-                            if left.kind() == "variable_list" || left.kind() == "identifier_list" {
-                                left.child(0).map(|c| node_text(c, source).to_string())
-                            } else {
-                                Some(node_text(left, source).to_string())
-                            };
-                        if let Some(var_name) = var_name {
-                            // right is usually an expression_list
-                            let call_node = if right.kind() == "expression_list" {
-                                right.child(0)
-                            } else {
-                                Some(right)
-                            };
-                            if let Some(call_node) = call_node {
-                                if let Some(resource_type) = self
-                                    .get_resource_type_from_call_multilang(
-                                        call_node, source, patterns,
-                                    )
-                                {
-                                    self.resources.push(DetectedResource {
-                                        name: var_name,
-                                        resource_type,
-                                        line: node.start_position().row as u32 + 1,
-                                        in_context_manager: in_cleanup,
-                                    });
-                                }
-                            }
+                // fix-C5-2 (v0.5.0 AUDIT-FIX): tree-sitter-lua 0.2.0 does NOT
+                // expose `values`/`variables`/`right`/`left`/`name` fields on
+                // its assignment nodes (verified by debug-parse). The real
+                // shapes are:
+                //   local f = io.open(p)
+                //     variable_declaration
+                //       └ assignment_statement
+                //           ├ variable_list     (unnamed child, holds idents)
+                //           ├ "="
+                //           └ expression_list   (unnamed child, holds the call)
+                //   f = io.open(p)              (bare, no `local`)
+                //     assignment_statement      (same children as above)
+                //
+                // We act ONLY on `assignment_statement` here and treat
+                // `variable_declaration` as a pass-through (its sole
+                // meaningful child is the inner `assignment_statement`, which
+                // the recursion reaches). This avoids double-counting the
+                // `local` form, while still catching the bare form.
+                if node.kind() != "assignment_statement" {
+                    return;
+                }
+
+                // Locate the `variable_list` and `expression_list` children by
+                // kind (no field names available). Use indexed access so no
+                // TreeCursor borrow outlives the returned `Node`.
+                let mut var_list: Option<Node> = None;
+                let mut expr_list: Option<Node> = None;
+                for i in 0..node.child_count() {
+                    let Some(child) = node.child(i) else { continue };
+                    match child.kind() {
+                        "variable_list" | "identifier_list" if var_list.is_none() => {
+                            var_list = Some(child);
                         }
+                        "expression_list" if expr_list.is_none() => {
+                            expr_list = Some(child);
+                        }
+                        _ => {}
+                    }
+                }
+
+                // First identifier on the LHS is the resource variable name.
+                let var_name = var_list.and_then(|vl| {
+                    (0..vl.child_count())
+                        .filter_map(|i| vl.child(i))
+                        .find(|n| matches!(n.kind(), "identifier" | "dot_index_expression"))
+                        .map(|n| node_text(n, source).to_string())
+                });
+
+                // First expression on the RHS is the acquisition call,
+                // unwrapped through any `assert(...)` / `pcall(...)` wrapper.
+                let call_node = expr_list
+                    .and_then(|el| {
+                        (0..el.child_count())
+                            .filter_map(|i| el.child(i))
+                            .find(|n| !matches!(n.kind(), "," | "(" | ")"))
+                    })
+                    .map(|n| unwrap_lua_acquisition_call(n, source));
+
+                if let (Some(var_name), Some(call_node)) = (var_name, call_node) {
+                    if let Some(resource_type) =
+                        self.get_resource_type_from_call_multilang(call_node, source, patterns)
+                    {
+                        self.resources.push(DetectedResource {
+                            name: var_name,
+                            resource_type,
+                            line: node.start_position().row as u32 + 1,
+                            in_context_manager: in_cleanup,
+                        });
                     }
                 }
             }
@@ -2967,6 +2995,71 @@ fn node_text<'a>(node: Node, source: &'a [u8]) -> &'a str {
     std::str::from_utf8(&source[node.start_byte()..node.end_byte()]).unwrap_or("")
 }
 
+/// fix-C5-2 (v0.5.0 AUDIT-FIX): peel `assert(...)` / `pcall(...)` /
+/// parenthesised wrappers off a Lua RHS expression so the inner resource
+/// acquisition call (`io.open(...)`) is what the creator matcher sees.
+///
+/// Lua idiom `local f = assert(io.open(uri, "r"))` (lua-lsp analyze.lua:679)
+/// nests the real `io.open` `function_call` inside an `assert` `function_call`.
+/// tree-sitter-lua models `assert(io.open(...))` as:
+///   function_call
+///     ├ identifier "assert"
+///     └ arguments
+///         ├ "("
+///         ├ function_call         ← the io.open call we want
+///         └ ")"
+/// We descend while the node is a `function_call` whose callee is the bare
+/// identifier `assert` or `pcall` (and only when it wraps a single inner
+/// call), and through `parenthesized_expression` wrappers. Any other node is
+/// returned unchanged. The descent is bounded to avoid pathological nesting.
+fn unwrap_lua_acquisition_call<'a>(node: Node<'a>, source: &[u8]) -> Node<'a> {
+    let mut current = node;
+    for _ in 0..8 {
+        match current.kind() {
+            "parenthesized_expression" => {
+                // Unwrap `(expr)` to its single inner expression. Indexed
+                // access avoids a TreeCursor borrow outliving the node.
+                let inner = (0..current.child_count())
+                    .filter_map(|i| current.child(i))
+                    .find(|n| !matches!(n.kind(), "(" | ")"));
+                match inner {
+                    Some(n) => current = n,
+                    None => return current,
+                }
+            }
+            "function_call" => {
+                // Only unwrap the well-known guard wrappers `assert`/`pcall`.
+                let callee = current.child(0);
+                let is_guard = callee
+                    .map(|c| {
+                        c.kind() == "identifier"
+                            && matches!(node_text(c, source), "assert" | "pcall")
+                    })
+                    .unwrap_or(false);
+                if !is_guard {
+                    return current;
+                }
+                // Find the single inner call inside the `arguments` node.
+                let args = (0..current.child_count())
+                    .filter_map(|i| current.child(i))
+                    .find(|n| n.kind() == "arguments");
+                let Some(args) = args else { return current };
+                let inner_call = (0..args.child_count())
+                    .filter_map(|i| args.child(i))
+                    .find(|n| matches!(n.kind(), "function_call" | "parenthesized_expression"));
+                match inner_call {
+                    Some(n) => current = n,
+                    // assert wrapping a non-call (e.g. `assert(x)`) — leave as
+                    // is; the creator matcher will simply not match.
+                    None => return current,
+                }
+            }
+            _ => return current,
+        }
+    }
+    current
+}
+
 /// Extract the function/method name from a call expression node.
 /// Works across languages by checking various call node structures.
 fn extract_call_name(node: Node, source: &[u8]) -> Option<String> {
@@ -3006,6 +3099,22 @@ fn extract_call_name(node: Node, source: &[u8]) -> Option<String> {
         // Go: selector_expression.arguments
         "composite_literal" => {
             // Go: Type{} literal
+        }
+        // fix-C5-2 (v0.5.0 AUDIT-FIX): Lua/Luau `function_call`. tree-sitter-lua
+        // models a call as `function_call` whose FIRST child is the callee —
+        // either a bare `identifier` (`open(p)`) or a `dot_index_expression`
+        // (`io.open`) / `method_index_expression` (`obj:method`). Without this
+        // arm `extract_call_name` returned `None` for every Lua call, which
+        // short-circuited `get_resource_type_from_call_multilang` (via `?`)
+        // before its Lua `starts_with` matcher could run — so io.open was
+        // never detected. We return the FULL dotted callee text (e.g.
+        // `io.open`) so the qualified Lua creator entries (`io.open`,
+        // `io.lines`) match exactly via the standard creator loop.
+        "function_call" => {
+            if let Some(callee) = node.child(0) {
+                let text = node_text(callee, source);
+                return Some(text.to_string());
+            }
         }
         _ => {}
     }
@@ -5030,6 +5139,78 @@ def read(path):
 "#;
         let got = char_detect(src, "read", Language::Python);
         assert_eq!(got, vec![("f".to_string(), "file".to_string())]);
+    }
+
+    // =====================================================================
+    // fix-C5-2 (v0.5.0 AUDIT-FIX): Lua resource acquisition via io.open /
+    // io.lines. Mirrors the design-tail rust/ruby/ocaml/elixir work above.
+    // Reproduces lua-lsp `analyze.lua` (io.open at lines 527/679/701).
+    // =====================================================================
+
+    /// RED→GREEN: `local f = io.open(p)` must be detected as a `file`
+    /// resource named `f`. tree-sitter-lua models this as
+    /// `variable_declaration` → `assignment_statement` →
+    /// `variable_list`/`expression_list` (no `values`/`variables` fields), so
+    /// the old field-name lookup found nothing.
+    #[test]
+    fn char_lua_io_open_local_detected() {
+        let src = "function read(p)\n  local f = io.open(p)\n  return f:read(\"*a\")\nend\n";
+        let got = char_detect(src, "read", Language::Lua);
+        assert!(
+            got.iter().any(|(n, t)| n == "f" && t == "file"),
+            "Lua `local f = io.open(p)` must be detected as file `f`: got {got:?}"
+        );
+    }
+
+    /// RED→GREEN: `local f = assert(io.open(uri, "r"))` — io.open wrapped in
+    /// `assert(...)`. The acquisition call is nested inside the assert call,
+    /// so detection must descend through the wrapper. Mirrors
+    /// lua-lsp analyze.lua:679 `local f = assert(io.open(...))`.
+    #[test]
+    fn char_lua_io_open_wrapped_in_assert_detected() {
+        let src = "function read(uri)\n  local f = assert(io.open(uri, \"r\"))\n  return f:read(\"*a\")\nend\n";
+        let got = char_detect(src, "read", Language::Lua);
+        assert!(
+            got.iter().any(|(n, t)| n == "f" && t == "file"),
+            "Lua `local f = assert(io.open(...))` must be detected as file `f`: got {got:?}"
+        );
+    }
+
+    /// RED→GREEN: a bare (non-`local`) assignment `f = io.open(p)` produces a
+    /// top-level `assignment_statement` and must also be detected.
+    #[test]
+    fn char_lua_io_open_bare_assignment_detected() {
+        let src = "function read(p)\n  f = io.open(p, \"w\")\n  return f\nend\n";
+        let got = char_detect(src, "read", Language::Lua);
+        assert!(
+            got.iter().any(|(n, t)| n == "f" && t == "file"),
+            "Lua bare `f = io.open(p)` must be detected as file `f`: got {got:?}"
+        );
+    }
+
+    /// RED→GREEN: `io.lines` is also a file-resource acquisition.
+    #[test]
+    fn char_lua_io_lines_detected() {
+        let src = "function read(p)\n  local it = io.lines(p)\n  return it\nend\n";
+        let got = char_detect(src, "read", Language::Lua);
+        assert!(
+            got.iter().any(|(n, t)| n == "it" && t == "file"),
+            "Lua `local it = io.lines(p)` must be detected as file `it`: got {got:?}"
+        );
+    }
+
+    /// Guard: the single `local f = io.open(p)` must be detected EXACTLY once
+    /// (the dispatch fires on both `variable_declaration` and the nested
+    /// `assignment_statement`; we must not double-count).
+    #[test]
+    fn char_lua_io_open_no_double_count() {
+        let src = "function read(p)\n  local f = io.open(p)\n  return f\nend\n";
+        let got = char_detect(src, "read", Language::Lua);
+        let f_count = got.iter().filter(|(n, t)| n == "f" && t == "file").count();
+        assert_eq!(
+            f_count, 1,
+            "Lua `local f = io.open(p)` must be detected exactly once: got {got:?}"
+        );
     }
 
     #[test]
