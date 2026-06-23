@@ -839,14 +839,56 @@ fn canonical_taint_findings_with_index(
         Err(_) => return (Vec::new(), Vec::new()),
     };
 
-    let index: Vec<(u32, tldr_core::security::vuln::VulnType)> = report
-        .findings
+    // fix-R7-security-fp2-RC6 (v0.5.0 CLOSEOUT): collapse taint findings that
+    // share a `(vuln_type, file, sink.line, sink.expression)` semantic identity
+    // but differ only in their taint SOURCE — exactly the collapse the `vuln`
+    // CLI applies in its presentation layer (`vuln.rs` sort_by + dedup_by on
+    // `(vuln_type, file, line, sink_expr)`). Without it, `secure` reported one
+    // SecureFinding per source→sink PATH while `vuln` reported one per unique
+    // sink, so the two commands disagreed on the same corpus (js-express:
+    // vuln=1 OpenRedirect, secure=2; c-redis hiredis.c:518 7x; php
+    // DumpCompletionCommand 2x) and `vuln_secure_autodetect_parity_v1`'s
+    // `vuln.findings.len() == secure.summary.taint_count` invariant was violated
+    // on real corpora.
+    //
+    // This lives in the CLI consumer (NOT core `scan_file_vulns`) on purpose:
+    // core intentionally keeps source-distinct findings separate so per-source
+    // consumers (SARIF, the `test_taint_finding_dedupe_distinct_source_vars_kept`
+    // boundary contract) still see every tainted variable. The cross-source
+    // collapse is a dashboard/summary concern and must be applied identically by
+    // both CLI siblings — mirroring `vuln.rs::sink_expr` (the LAST taint_flow
+    // step's code_snippet == the sink expression == `f.sink.expression` here).
+    // Note: core `VulnType` derives only Eq/Hash (no Ord), so the sort key uses
+    // its `Debug` discriminant string to make same-(type,file,line,sink) records
+    // adjacent for the consecutive-only `dedup_by` below.
+    let mut collapsed: Vec<tldr_core::security::vuln::VulnFinding> = report.findings;
+    collapsed.sort_by(|a, b| {
+        (
+            &a.file,
+            a.sink.line,
+            format!("{:?}", a.vuln_type),
+            a.sink.expression.as_str(),
+        )
+            .cmp(&(
+                &b.file,
+                b.sink.line,
+                format!("{:?}", b.vuln_type),
+                b.sink.expression.as_str(),
+            ))
+    });
+    collapsed.dedup_by(|a, b| {
+        a.vuln_type == b.vuln_type
+            && a.file == b.file
+            && a.sink.line == b.sink.line
+            && a.sink.expression == b.sink.expression
+    });
+
+    let index: Vec<(u32, tldr_core::security::vuln::VulnType)> = collapsed
         .iter()
         .map(|f| (f.sink.line, f.vuln_type))
         .collect();
 
-    let findings = report
-        .findings
+    let findings = collapsed
         .into_iter()
         .map(|f| {
             let severity = match f.severity.to_uppercase().as_str() {
@@ -1869,6 +1911,118 @@ fn risky(user: &str) {
         assert!(
             SECURE_PER_FILE_TAINT_SIZE_BUDGET >= 64 * 1024,
             "taint size budget must be generous (>=64KB) to avoid dropping normal files"
+        );
+    }
+
+    // ========================================================================
+    // R7 security-fp2 RC6 (v0.5.0 CLOSEOUT): secure must collapse N
+    // source-distinct taint paths converging on ONE sink to a SINGLE finding,
+    // exactly as the `vuln` CLI does — so the two commands agree on counts.
+    // ========================================================================
+
+    /// RC6 (FP/over-count): when several distinct taint SOURCES converge on the
+    /// SAME sink expression at the same line, `secure`'s
+    /// `canonical_taint_findings_with_index` must emit ONE taint SecureFinding,
+    /// matching the `vuln` CLI's `(vuln_type, file, line, sink_expr)` collapse.
+    /// Reproduced live on js-express (vuln=1 OpenRedirect, secure WAS 2). Here a
+    /// single `res.redirect('/u/'+id)` sink is reachable from two sources
+    /// (route param `id` and request body), so the UNCOLLAPSED core scan yields
+    /// >1 finding on the same sink line while secure must report 1.
+    #[test]
+    fn r7_secure_collapses_multi_source_single_sink() {
+        let temp = TempDir::new().unwrap();
+        let source = r#"
+function handler(req, res, next) {
+  var id = req.params.id;
+  var body = req.body;
+  res.message('hi ' + body.name);
+  res.redirect('/u/' + id + body.tag);
+}
+"#;
+        let path = create_test_file(&temp, "redir.js", source);
+
+        // Uncollapsed core scan: count taint findings landing on the redirect line.
+        let core = tldr_core::security::vuln::scan_vulnerabilities(&path, None, None).unwrap();
+        let redirect_findings: Vec<_> = core
+            .findings
+            .iter()
+            .filter(|f| f.vuln_type == tldr_core::security::vuln::VulnType::OpenRedirect)
+            .collect();
+        // Sanity: the fixture must actually produce at least one OpenRedirect
+        // (otherwise the test is vacuous). If the engine produces exactly one
+        // even uncollapsed, the collapse is a no-op but the parity assertion
+        // below still must hold.
+        assert!(
+            !redirect_findings.is_empty(),
+            "fixture must produce >=1 OpenRedirect finding (got 0); core={:?}",
+            core.findings
+                .iter()
+                .map(|f| (f.vuln_type, f.sink.line))
+                .collect::<Vec<_>>()
+        );
+
+        // secure's projected taint findings (post-collapse).
+        let (secure_taint, _index) = canonical_taint_findings_with_index(&path);
+        let secure_redirect_lines: std::collections::HashSet<u32> = secure_taint
+            .iter()
+            .filter(|f| f.category == "taint")
+            .map(|f| f.line)
+            .collect();
+
+        // Per redirect sink line there must be exactly ONE secure taint finding,
+        // even if the uncollapsed core produced several source-distinct paths.
+        let redirect_line = redirect_findings[0].sink.line;
+        let secure_on_line = secure_taint
+            .iter()
+            .filter(|f| f.category == "taint" && f.line == redirect_line)
+            .count();
+        assert_eq!(
+            secure_on_line, 1,
+            "secure must collapse multi-source taint on one sink line to ONE \
+             finding (got {} on line {}); secure lines={:?}",
+            secure_on_line, redirect_line, secure_redirect_lines
+        );
+    }
+
+    /// RC6 (parity, real semantics): the secure taint count must equal the
+    /// COLLAPSED `vuln` CLI count, not the uncollapsed core count. We emulate
+    /// the vuln CLI collapse on the core findings and require secure to match.
+    #[test]
+    fn r7_secure_taint_count_equals_collapsed_vuln_count() {
+        let temp = TempDir::new().unwrap();
+        let source = r#"
+function handler(req, res) {
+  var id = req.params.id;
+  var body = req.body;
+  res.redirect('/u/' + id + body.tag);
+}
+"#;
+        let path = create_test_file(&temp, "redir2.js", source);
+
+        let core = tldr_core::security::vuln::scan_vulnerabilities(&path, None, None).unwrap();
+        // Emulate the vuln CLI / secure collapse key.
+        let mut keys: Vec<(String, u32, String, String)> = core
+            .findings
+            .iter()
+            .map(|f| {
+                (
+                    f.file.display().to_string(),
+                    f.sink.line,
+                    format!("{:?}", f.vuln_type),
+                    f.sink.expression.clone(),
+                )
+            })
+            .collect();
+        keys.sort();
+        keys.dedup();
+        let collapsed_count = keys.len();
+
+        let (secure_taint, _index) = canonical_taint_findings_with_index(&path);
+        let secure_count = secure_taint.iter().filter(|f| f.category == "taint").count();
+        assert_eq!(
+            secure_count, collapsed_count,
+            "secure taint count ({}) must equal the collapsed vuln count ({})",
+            secure_count, collapsed_count
         );
     }
 }

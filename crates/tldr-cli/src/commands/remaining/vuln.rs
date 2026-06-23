@@ -954,9 +954,20 @@ pub(super) fn analyze_rust_file(path: &Path, source: &str) -> Vec<VulnFinding> {
             ));
         }
 
-        if trimmed.contains("from_utf8_unchecked(")
-            || trimmed.contains(".as_bytes()[")
-            || trimmed.contains(".as_bytes().get_unchecked(")
+        // fix-R7-security-fp2-RC9 (v0.5.0 CLOSEOUT): the bare `.as_bytes()[` arm
+        // is dropped. `slice[i]` byte indexing on a `&[u8]` is SAFE — it is
+        // bounds-checked by the compiler and panics (does not invoke UB) on
+        // out-of-range access, exactly like any other slice index. It is NOT an
+        // "unchecked byte conversion" and grouping it with the genuinely-unsafe
+        // `from_utf8_unchecked(` / `.as_bytes().get_unchecked(` (which DO bypass
+        // checks and can cause UB) over-flagged safe code (rust-ripgrep
+        // glob.rs:190 `suffix.as_bytes()[1..]`, literal.rs, line_buffer.rs).
+        // Also gate on `!is_test_file` (matching the sibling `.unwrap()` Panic
+        // rule above) so memory-safety scaffolding inside `#[test]` code is not
+        // reported.
+        if !is_test_file
+            && (trimmed.contains("from_utf8_unchecked(")
+                || trimmed.contains(".as_bytes().get_unchecked("))
         {
             findings.push(rust_finding(
                 VulnType::MemorySafety,
@@ -971,8 +982,8 @@ pub(super) fn analyze_rust_file(path: &Path, source: &str) -> Vec<VulnFinding> {
                     file: &file_path,
                     line: line_number,
                     column: trimmed
-                        .find("as_bytes")
-                        .or_else(|| trimmed.find("from_utf8_unchecked"))
+                        .find("from_utf8_unchecked")
+                        .or_else(|| trimmed.find(".as_bytes().get_unchecked("))
                         .unwrap_or(0) as u32,
                 },
                 "Validate lengths/UTF-8 before conversion or use checked APIs",
@@ -1352,9 +1363,40 @@ fn rust_finding(
     }
 }
 
+/// Whether an `unsafe` block at `lines[index]` is preceded by a `// SAFETY:`
+/// justification.
+///
+/// fix-R7-security-fp2-RC9 (v0.5.0 CLOSEOUT): walks UPWARD over the contiguous
+/// run of comment / blank lines immediately above the `unsafe` block and
+/// returns true if ANY of them contains `SAFETY:`, stopping at the first line
+/// that is neither a comment nor blank. The previous implementation inspected a
+/// FIXED 2-line window (`index-2..index`), so a multi-line `// SAFETY: ...`
+/// block whose `SAFETY:` keyword landed 3+ lines above the `unsafe` token was
+/// missed and the block was falsely flagged "without SAFETY: justification"
+/// (rust-ripgrep hostname.rs:59 — `SAFETY:` 3-4 lines up; mmap.rs:81). A
+/// contiguous comment block of ANY length is now honored. The walk only treats
+/// `//`/`/*`/`*` line-comment shapes (and blank lines) as part of the lookback,
+/// so a real statement above the block correctly terminates the search.
 fn has_nearby_safety_comment(lines: &[&str], index: usize) -> bool {
-    let start = index.saturating_sub(2);
-    (start..index).any(|i| lines[i].contains("SAFETY:"))
+    let mut i = index;
+    while i > 0 {
+        i -= 1;
+        let trimmed = lines[i].trim();
+        let is_comment = trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed.ends_with("*/");
+        if trimmed.is_empty() || is_comment {
+            if trimmed.contains("SAFETY:") {
+                return true;
+            }
+            // Keep walking up through the contiguous comment/blank run.
+            continue;
+        }
+        // First non-comment, non-blank line above the block: stop.
+        break;
+    }
+    false
 }
 
 /// Narrowed SQL-keyword predicate for the `format!(...)` SqlInjection trigger
@@ -2476,6 +2518,186 @@ pub fn from_raw(bytes: &[u8]) -> &str {
              (SARIF 2.1.0 §3.30.5/§3.30.6); violations: {:?}\nSARIF: {}",
             violations,
             serde_json::to_string_pretty(&sarif).unwrap()
+        );
+    }
+
+    // ========================================================================
+    // R7 security-fp2 RC9 (v0.5.0 CLOSEOUT): Rust line-scanner FP guards.
+    // ========================================================================
+
+    /// RC9a (FP): an `unsafe` block preceded by a MULTI-LINE `// SAFETY:`
+    /// comment whose `SAFETY:` keyword is 3+ lines above the block must NOT be
+    /// flagged "without SAFETY: justification". Reproduced live on rust-ripgrep
+    /// hostname.rs:59 / mmap.rs:81 (SAFETY: 3-4 lines up).
+    #[test]
+    fn r7_unsafe_with_multiline_safety_comment_not_flagged() {
+        let source = r#"
+pub fn host() -> i32 {
+    let mut buf = vec![0u8; 16];
+    // SAFETY: The pointer we give is valid as it is derived directly from a
+    // Vec. Similarly, `maxlen` is the length of our Vec, and is thus valid
+    // to write to.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut i8, 16) };
+    rc
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/hostname.rs"), source);
+        assert!(
+            !findings.iter().any(|f| f.vuln_type == VulnType::UnsafeCode),
+            "unsafe block WITH a multi-line // SAFETY: comment above must NOT be \
+             flagged; got: {:?}",
+            findings
+                .iter()
+                .map(|f| (f.vuln_type, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// RC9a (TP preserved): a genuinely-uncommented `unsafe` block (no SAFETY:
+    /// anywhere above it) MUST still be flagged.
+    #[test]
+    fn r7_unsafe_without_any_safety_comment_still_flagged() {
+        let source = r#"
+pub fn raw(ptr: *mut u8) {
+    // just a normal comment, no justification keyword
+    unsafe { *ptr = 1; }
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            findings.iter().any(|f| f.vuln_type == VulnType::UnsafeCode),
+            "unsafe block with NO SAFETY: justification must still be flagged; got: {:?}",
+            findings
+                .iter()
+                .map(|f| (f.vuln_type, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// RC9b (FP): safe bounds-checked byte indexing `slice.as_bytes()[i]` is NOT
+    /// a memory-safety violation and must NOT be flagged. Reproduced live on
+    /// rust-ripgrep glob.rs:190 (`suffix.as_bytes()[1..]`), literal.rs,
+    /// line_buffer.rs.
+    #[test]
+    fn r7_as_bytes_indexing_not_flagged_memory_safety() {
+        let source = r#"
+pub fn f(s: &str, suffix: &str) -> bool {
+    s.as_bytes() == &suffix.as_bytes()[1..]
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/glob.rs"), source);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::MemorySafety),
+            "safe bounds-checked .as_bytes()[i] indexing must NOT be a MemorySafety \
+             finding; got: {:?}",
+            findings
+                .iter()
+                .map(|f| (f.vuln_type, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// RC9b (TP preserved): genuinely-unchecked `from_utf8_unchecked(` (which
+    /// bypasses validation and can cause UB) MUST still be flagged.
+    #[test]
+    fn r7_from_utf8_unchecked_still_flagged_memory_safety() {
+        let source = r#"
+pub fn f(bytes: &[u8]) -> &str {
+    unsafe { std::str::from_utf8_unchecked(bytes) }
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::MemorySafety),
+            "from_utf8_unchecked( must still be a MemorySafety finding; got: {:?}",
+            findings
+                .iter()
+                .map(|f| (f.vuln_type, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// RC9b (TP preserved): `.as_bytes().get_unchecked(` (unchecked indexing,
+    /// real UB risk) MUST still be flagged.
+    #[test]
+    fn r7_as_bytes_get_unchecked_still_flagged_memory_safety() {
+        let source = r#"
+pub fn f(s: &str) -> u8 {
+    unsafe { *s.as_bytes().get_unchecked(0) }
+}
+"#;
+        let findings = analyze_rust_file(Path::new("src/lib.rs"), source);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::MemorySafety),
+            ".as_bytes().get_unchecked( must still be a MemorySafety finding; got: {:?}",
+            findings
+                .iter()
+                .map(|f| (f.vuln_type, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// RC9b (TP suppression): a memory-safety smell inside a `#[test]` /
+    /// test-file is not production code and must NOT be flagged (matching the
+    /// sibling `.unwrap()` Panic rule's is_test_file gate).
+    #[test]
+    fn r7_unchecked_conversion_in_test_file_suppressed() {
+        let source = r#"
+pub fn f(bytes: &[u8]) -> &str {
+    unsafe { std::str::from_utf8_unchecked(bytes) }
+}
+"#;
+        // A path under tests/ (or *_test.rs / #[cfg(test)]) is treated as test code.
+        let findings = analyze_rust_file(Path::new("tests/foo_test.rs"), source);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.vuln_type == VulnType::MemorySafety),
+            "memory-safety smell in a test file must be suppressed; got: {:?}",
+            findings
+                .iter()
+                .map(|f| (f.vuln_type, f.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// RC9a unit test for the lookback walker itself: SAFETY: keyword anywhere
+    /// in the contiguous comment block above the index is honored, but a real
+    /// statement terminates the search.
+    #[test]
+    fn r7_has_nearby_safety_comment_walks_contiguous_block() {
+        // SAFETY 4 lines up, contiguous comment block -> true.
+        let lines = vec![
+            "// SAFETY: justification line 1",
+            "// continuation 2",
+            "// continuation 3",
+            "let x = unsafe { ... };",
+        ];
+        assert!(
+            has_nearby_safety_comment(&lines, 3),
+            "multi-line SAFETY: block must be honored"
+        );
+        // A real statement between the comment and the unsafe block -> false.
+        let lines2 = vec![
+            "// SAFETY: justification",
+            "let y = compute();",
+            "let x = unsafe { ... };",
+        ];
+        assert!(
+            !has_nearby_safety_comment(&lines2, 2),
+            "a non-comment statement must terminate the SAFETY lookback"
+        );
+        // No SAFETY: anywhere -> false.
+        let lines3 = vec!["// regular comment", "let x = unsafe { ... };"];
+        assert!(
+            !has_nearby_safety_comment(&lines3, 1),
+            "absence of SAFETY: must not be a false justification"
         );
     }
 }

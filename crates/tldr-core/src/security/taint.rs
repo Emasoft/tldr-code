@@ -1596,6 +1596,40 @@ fn is_taint_var_keyword(s: &str) -> bool {
     )
 }
 
+/// R7 security-fp2 IDX13 (v0.5.0 CLOSEOUT): Solidity-ONLY reserved words that
+/// must never be reported as a tainted variable name.
+///
+/// These are kept SEPARATE from the cross-language [`is_taint_var_keyword`]
+/// stoplist because several are legal identifiers in other supported languages
+/// (`type` binds in Python/JS, `now`/`wei`/`ether` bind anywhere outside
+/// Solidity). They are gated behind `language == Language::Solidity` at the
+/// source-emission site, so they only ever filter Solidity. The driving FP is
+/// `type(uint256).max`, where the textual var-extraction fallback grabbed the
+/// `type(` token; `type` is a strict Solidity keyword (you cannot name a
+/// variable `type` in Solidity), so rejecting it is sound.
+///
+/// `this`/`super` are object-reference keywords; the time/ether unit suffixes
+/// (`wei`/`gwei`/`ether`/`seconds`/`minutes`/`hours`/`days`/`weeks`) are
+/// contextual keywords that the textual fallback can likewise misattribute from
+/// a numeric-literal-with-unit expression.
+fn is_solidity_reserved_word(s: &str) -> bool {
+    matches!(
+        s,
+        "type"
+            | "this"
+            | "super"
+            | "now"
+            | "wei"
+            | "gwei"
+            | "ether"
+            | "seconds"
+            | "minutes"
+            | "hours"
+            | "days"
+            | "weeks"
+    )
+}
+
 /// Python-keyword predicate used by the W4-taint-core keyword-FP char test.
 /// Delegates to the cross-language reserved-word set [`is_taint_var_keyword`],
 /// which is a superset of the Python keywords that can leak through the textual
@@ -1955,6 +1989,48 @@ fn ident_leaf_in_subtree(
             if let Some(child) = n.child(i) {
                 if child.is_named() {
                     stack.push(child);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// R7 security-fp2 RC4 (v0.5.0 CLOSEOUT): whether a CALL node's argument
+/// subtree(s) contain ANY identifier-kind leaf — i.e. the call has at least one
+/// non-constant argument.
+///
+/// Used to suppress dangerous file/exec/SQL sinks whose argument is a
+/// compile-time CONSTANT (string/number literal, or a concatenation of
+/// literals): such a call has NO variable input and therefore CANNOT be a
+/// genuine taint target, regardless of what the block-granular reachability
+/// approximation (RC2) believes. `fopen("/dev/urandom", "r")`,
+/// `open("/etc/hosts")`, `System.cmd("ls", [])` all have only literal argument
+/// leaves and must not be flagged path-traversal / command-injection.
+///
+/// Returns `true` (has a variable argument → KEEP the sink) when ANY argument
+/// subtree contains an identifier leaf; `false` (all-literal args → SUPPRESS)
+/// otherwise. Only the ARGUMENT subtrees are scanned (via [`arg_subtrees`]), so
+/// the callee name / receiver is never mistaken for an argument. This is the
+/// structural, AST-driven replacement for the dead regex `is_constant_string`
+/// helper.
+fn call_args_have_identifier_leaf(
+    call: &tree_sitter::Node,
+    source: &[u8],
+    language: Language,
+) -> bool {
+    let ident_kinds = arg_ident_leaf_kinds(language);
+    for args in arg_subtrees(call, language) {
+        let mut stack: Vec<tree_sitter::Node> = vec![args];
+        while let Some(n) = stack.pop() {
+            if ident_kinds.contains(&n.kind()) {
+                return true;
+            }
+            for i in 0..n.child_count() {
+                if let Some(child) = n.child(i) {
+                    if child.is_named() {
+                        stack.push(child);
+                    }
                 }
             }
         }
@@ -3141,7 +3217,13 @@ static RUST_AST_SINKS: &[AstSinkPattern] = &[
             ("", "std::fs::read_to_string"),
             ("", "std::fs::write"),
             ("", "File::open"),
-            ("", "PathBuf::from"),
+            // R7 security-fp2 RC1 (v0.5.0 CLOSEOUT): `PathBuf::from` is a
+            // path-string CONSTRUCTOR, not a file open. It produced the
+            // rust-ripgrep config.rs:29 path_traversal FP (the real
+            // `File::open` is elsewhere). Constructing a path is not the
+            // dangerous operation — opening it is — so only the open/read/write
+            // calls above remain FileOpen sinks. Genuinely-tainted PathBuf
+            // chains are still flagged at their downstream File::open.
         ],
         sink_type: TaintSinkType::FileOpen,
     },
@@ -3264,16 +3346,17 @@ static C_AST_SINKS: &[AstSinkPattern] = &[
         member_patterns: &[],
         sink_type: TaintSinkType::ShellExec,
     },
-    AstSinkPattern {
-        call_names: &["sprintf", "vsprintf"],
-        member_patterns: &[],
-        sink_type: TaintSinkType::ShellExec,
-    },
-    AstSinkPattern {
-        call_names: &["strcpy", "strcat", "strncpy"],
-        member_patterns: &[],
-        sink_type: TaintSinkType::FileWrite,
-    },
+    // R7 security-fp2 RC1 (v0.5.0 CLOSEOUT): `sprintf`/`vsprintf` are
+    // buffer-format functions, NOT shell execution. They were bucketed under
+    // ShellExec (which projects to CommandInjection in vuln_type_from_sink),
+    // producing the c-redis hiredis.c:518/664/667 command_injection FP on plain
+    // `sprintf(cmd+pos, "%zu\r\n", ...)`. Format-string / buffer-overflow risk
+    // for sprintf is already covered correctly by `api-check` C003, so the vuln
+    // taint pipeline must NOT re-flag it. `strcpy`/`strcat`/`strncpy` are
+    // buffer-copy ops, NOT path/file writes; they were bucketed under FileWrite
+    // (=> PathTraversal) which is the wrong CWE. Both banks are removed here
+    // (no replacement bucket: there is no BufferOverflow TaintSinkType, and
+    // adding one is out of scope for an FP-removal closeout).
     // VULN-MIGRATION-V1 M2: FileOpen (PathTraversal) sinks per vuln.rs L547-L551.
     // Note: `open` is NOT C's typical `fopen` — it's the POSIX `open(fd, ...)`
     // syscall. Both `open` and `fopen` are bare calls.
@@ -3342,11 +3425,10 @@ static CPP_AST_SINKS: &[AstSinkPattern] = &[
         member_patterns: &[("", "std::system")],
         sink_type: TaintSinkType::ShellExec,
     },
-    AstSinkPattern {
-        call_names: &["sprintf"],
-        member_patterns: &[],
-        sink_type: TaintSinkType::ShellExec,
-    },
+    // R7 security-fp2 RC1 (v0.5.0 CLOSEOUT): C++ `sprintf` is a buffer-format
+    // op, NOT shell execution. Removed from the ShellExec bank for the same
+    // reason as the C bank above (it produced command_injection FPs and the
+    // overflow risk is api-check's concern, not the taint pipeline's).
     // VULN-MIGRATION-V1 M2: FileOpen (PathTraversal) sinks per vuln.rs L552-L556.
     // `std::ifstream(` / `std::ofstream(` are constructor calls (qualified
     // identifier) — raw fallback. `fopen(` is the C function (bare call).
@@ -4379,7 +4461,11 @@ static ELIXIR_AST_SINKS: &[AstSinkPattern] = &[
             ("File", "write!"),
             ("File", "open!"),
             ("File", "stream!"),
-            ("Path", "join"),
+            // R7 security-fp2 RC1 (v0.5.0 CLOSEOUT): `Path.join` joins path
+            // segments into a string; it does NOT open a file. It produced the
+            // elixir-plug supervisor.ex:20 path_traversal FP on
+            // `Path.join(File.cwd!(), "tmp")` (a literal "tmp"). Only the
+            // File.* read/write/open/stream calls above remain FileOpen sinks.
         ],
         sink_type: TaintSinkType::FileOpen,
     },
@@ -5766,12 +5852,35 @@ pub fn detect_sources_ast(
                     // never be emitted as a tainted source variable. The
                     // textual fallbacks above already skip keywords; this guard
                     // ensures no future extractor can re-introduce the FP.
-                    if !is_taint_var_keyword(&var) {
+                    //
+                    // R7 security-fp2 IDX13 (v0.5.0 CLOSEOUT): the cross-language
+                    // keyword stoplist deliberately excludes tokens that ARE
+                    // legal identifiers in some languages (e.g. `type` is a
+                    // bindable name in Python/JS). But in Solidity `type` is a
+                    // STRICT reserved keyword (the `type(X)` introspection
+                    // expression) and can never be a variable. On
+                    // `if (allowed != type(uint256).max) ...` the textual
+                    // var-extraction fallback grabbed the `type(` token from the
+                    // unrelated sub-expression and emitted it as a UserInput
+                    // source (solidity-solmate ERC20.sol:97). Reject Solidity
+                    // reserved words language-specifically so the global stoplist
+                    // invariant (never suppress a real var in ANY language) is
+                    // preserved.
+                    if !is_taint_var_keyword(&var)
+                        && !(language == Language::Solidity && is_solidity_reserved_word(&var))
+                    {
+                        // R7 security-fp2 RC3 (v0.5.0 CLOSEOUT): capture the full
+                        // logical statement (symmetric with the sink path) so a
+                        // multi-line source call's statement text is complete and
+                        // the vuln degenerate-flow `source.statement ==
+                        // sink.statement` equality stays consistent. Single-line
+                        // sources resolve to the trimmed physical line.
+                        let logical_stmt = full_statement_text(descendant, source);
                         sources.push(TaintSource {
                             var,
                             line,
                             source_type: pattern.source_type,
-                            statement: Some(line_text.to_string()),
+                            statement: Some(logical_stmt),
                         });
                         break; // Only one source per node
                     }
@@ -5931,6 +6040,55 @@ fn formal_parameter_identifier(param: &tree_sitter::Node, source: &[u8]) -> Opti
     last_ident
 }
 
+/// R7 security-fp2 RC3 (v0.5.0 CLOSEOUT): capture the FULL logical statement a
+/// source/sink node lives on — i.e. every PHYSICAL source line the node spans,
+/// joined and whitespace-collapsed — so statement-text FP-suppression
+/// heuristics (`is_parameterized_sql`, `is_safe_subprocess_call`) and the JSON
+/// `code_snippet` output see the WHOLE call, not just its first physical line.
+///
+/// Why physical-line span (not `node_text`): the legacy capture was
+/// `source.lines().nth(start_row)` — the *full first physical line* (including
+/// any assignment LHS / leading indentation). For a single-line statement this
+/// helper returns exactly that line (whitespace-trimmed), keeping source/sink
+/// statement capture symmetric and byte-stable for the overwhelmingly-common
+/// single-line case (so the vuln degenerate-flow `source.statement ==
+/// sink.statement` equality and existing snapshot strings are preserved). For a
+/// multi-line call like
+/// `db.execute(\n  "... (?, ?)",\n  (a, b),\n)` it returns
+/// `db.execute( "... (?, ?)", (a, b), )` — now containing both `?` and `, (`.
+fn full_statement_text(node: &tree_sitter::Node, source: &[u8]) -> String {
+    let start_row = node.start_position().row;
+    let end_row = node.end_position().row;
+    let text = std::str::from_utf8(source).unwrap_or("");
+    let mut joined = String::new();
+    for (i, line) in text.lines().enumerate() {
+        if i >= start_row && i <= end_row {
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(line);
+        }
+        if i > end_row {
+            break;
+        }
+    }
+    // Collapse runs of ASCII whitespace to a single space and trim.
+    let mut out = String::with_capacity(joined.len());
+    let mut prev_ws = false;
+    for ch in joined.chars() {
+        if ch.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+                prev_ws = true;
+            }
+        } else {
+            out.push(ch);
+            prev_ws = false;
+        }
+    }
+    out.trim().to_string()
+}
+
 /// Detect taint sinks using AST nodes from a parsed tree.
 ///
 /// Similar to `detect_sources_ast` but for dangerous operations (sinks).
@@ -6037,12 +6195,47 @@ pub fn detect_sinks_ast(
                     });
 
                 if let Some(var) = var {
+                    // R7 security-fp2 RC4 (v0.5.0 CLOSEOUT): constant-literal
+                    // argument suppression. A dangerous file/exec/SQL sink whose
+                    // argument list is entirely compile-time constant (string/
+                    // number literals — NO identifier leaves) has no variable
+                    // input and therefore cannot be a genuine taint target, even
+                    // though the block-granular reachability approximation (RC2)
+                    // might still promote it because an UNRELATED tainted var
+                    // lives in the same CFG block. This closes FPs like C
+                    // `fopen("/dev/urandom", "r")` and `open("/etc/hosts")` that
+                    // a tainted sibling argument would otherwise flag as
+                    // path-traversal. Scoped to call-shaped sinks of the
+                    // path/command/SQL families only (HttpRequest/Deserialize/
+                    // HtmlOutput/OpenRedirect keep their existing behavior); a
+                    // non-call sink (assignment / language construct) is not
+                    // gated because `arg_subtrees` does not model its operands.
+                    let is_literal_arg_dangerous_sink = matches!(
+                        pattern.sink_type,
+                        TaintSinkType::FileOpen
+                            | TaintSinkType::FileWrite
+                            | TaintSinkType::ShellExec
+                            | TaintSinkType::SqlQuery
+                    ) && call_node_kinds(language).contains(&descendant.kind())
+                        && !call_args_have_identifier_leaf(descendant, source, language);
+                    if is_literal_arg_dangerous_sink {
+                        continue;
+                    }
+                    // R7 security-fp2 RC3 (v0.5.0 CLOSEOUT): capture the FULL
+                    // logical statement (every physical line the sink node
+                    // spans, whitespace-collapsed) rather than just the first
+                    // physical line. For a multi-line `db.execute("... ?", (..))`
+                    // this makes the `?` placeholder and the `, (` params tuple
+                    // visible to `is_parameterized_sql` downstream — closing the
+                    // python-flask auth.py:66/92 parameterized-SQL FP. For a
+                    // single-line sink it equals the trimmed line.
+                    let logical_stmt = full_statement_text(descendant, source);
                     sinks.push(TaintSink {
                         var,
                         line,
                         sink_type: pattern.sink_type,
                         tainted: false,
-                        statement: Some(stmt_text.to_string()),
+                        statement: Some(logical_stmt),
                     });
                     // VULN-MIGRATION-V1 M3: do NOT break — a single descendant
                     // can match multiple AstSinkPattern entries with different
@@ -9351,6 +9544,244 @@ fn run(input: &str) {
                 .iter()
                 .any(|s| s.var == "cmd" && s.source_type == TaintSourceType::EnvVar),
             "real assignment `cmd = os.getenv(...)` must yield source var `cmd`; got: {:?}",
+            sources
+        );
+    }
+
+    // ========================================================================
+    // R7 security-fp2 closeout (v0.5.0): sink-classification + statement-text
+    // false-positive guards. RED->GREEN char-tests.
+    // ========================================================================
+
+    /// RC1 (FP): C `sprintf`/`vsprintf` are buffer-format ops, NOT shell
+    /// execution. They must NOT be classified as `ShellExec` (which projects to
+    /// CommandInjection). Reproduced live on c-redis hiredis.c:518/664/667.
+    #[test]
+    fn r7_c_sprintf_is_not_shellexec_sink() {
+        use crate::ast::ParserPool;
+        let code = "int f(char *cmd, int pos) {\n  pos += sprintf(cmd+pos, \"%d\", pos);\n  return pos;\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::C).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::C, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::ShellExec),
+            "C sprintf must NOT be a ShellExec sink (it is a buffer-format op); got: {:?}",
+            sinks
+        );
+        // Genuine shell exec must still be detected.
+        let code2 = "void g(char *c) {\n  system(c);\n}\n";
+        let tree2 = pool.parse(code2, Language::C).unwrap();
+        let sinks2 = detect_sinks_ast(&tree2.root_node(), code2.as_bytes(), Language::C, None);
+        assert!(
+            sinks2.iter().any(|s| s.sink_type == TaintSinkType::ShellExec),
+            "C system() must remain a ShellExec sink; got: {:?}",
+            sinks2
+        );
+    }
+
+    /// RC1 (FP): C++ `sprintf` must NOT be a `ShellExec` sink.
+    #[test]
+    fn r7_cpp_sprintf_is_not_shellexec_sink() {
+        use crate::ast::ParserPool;
+        let code = "int f(char *cmd) {\n  sprintf(cmd, \"%d\", 1);\n  return 0;\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Cpp).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::Cpp, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::ShellExec),
+            "C++ sprintf must NOT be a ShellExec sink; got: {:?}",
+            sinks
+        );
+    }
+
+    /// RC1 (FP): C `strcpy`/`strcat`/`strncpy` are buffer-copy ops, NOT file
+    /// writes. They must NOT be classified as `FileWrite` (which projects to
+    /// PathTraversal).
+    #[test]
+    fn r7_c_strcpy_family_is_not_filewrite_sink() {
+        use crate::ast::ParserPool;
+        let code =
+            "void f(char *dst, char *src) {\n  strcpy(dst, src);\n  strncpy(dst, src, 4);\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::C).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::C, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::FileWrite),
+            "C strcpy/strncpy must NOT be FileWrite sinks (they are buffer ops); got: {:?}",
+            sinks
+        );
+        // Genuine file-open must still be detected.
+        let code2 = "void g(char *p) {\n  FILE *f = fopen(p, \"w\");\n}\n";
+        let tree2 = pool.parse(code2, Language::C).unwrap();
+        let sinks2 = detect_sinks_ast(&tree2.root_node(), code2.as_bytes(), Language::C, None);
+        assert!(
+            sinks2.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "C fopen() must remain a FileOpen sink; got: {:?}",
+            sinks2
+        );
+    }
+
+    /// RC1 (FP): Rust `PathBuf::from` is a path-string *constructor*, not a
+    /// file open. It must NOT be a `FileOpen` sink. Reproduced live on
+    /// rust-ripgrep config.rs:29.
+    #[test]
+    fn r7_rust_pathbuf_from_is_not_fileopen_sink() {
+        use crate::ast::ParserPool;
+        let code = "fn f(p: String) -> std::path::PathBuf {\n  std::path::PathBuf::from(p)\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Rust).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::Rust, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "Rust PathBuf::from must NOT be a FileOpen sink (it constructs a path); got: {:?}",
+            sinks
+        );
+        // Genuine File::open must still be detected.
+        let code2 = "fn g(p: &str) {\n  let _f = std::fs::File::open(p);\n}\n";
+        let tree2 = pool.parse(code2, Language::Rust).unwrap();
+        let sinks2 = detect_sinks_ast(&tree2.root_node(), code2.as_bytes(), Language::Rust, None);
+        assert!(
+            sinks2.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "Rust File::open must remain a FileOpen sink; got: {:?}",
+            sinks2
+        );
+    }
+
+    /// RC1 (FP): Elixir `Path.join` constructs a path string; it is NOT a file
+    /// open. It must NOT be a `FileOpen` sink. Reproduced live on elixir-plug
+    /// supervisor.ex:20.
+    #[test]
+    fn r7_elixir_path_join_is_not_fileopen_sink() {
+        use crate::ast::ParserPool;
+        let code = "defmodule M do\n  def f(d) do\n    Path.join(d, \"tmp\")\n  end\nend\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Elixir).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::Elixir, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "Elixir Path.join must NOT be a FileOpen sink (it joins path segments); got: {:?}",
+            sinks
+        );
+        // Genuine File.read! must still be detected.
+        let code2 = "defmodule M do\n  def g(p) do\n    File.read!(p)\n  end\nend\n";
+        let tree2 = pool.parse(code2, Language::Elixir).unwrap();
+        let sinks2 = detect_sinks_ast(&tree2.root_node(), code2.as_bytes(), Language::Elixir, None);
+        assert!(
+            sinks2.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "Elixir File.read! must remain a FileOpen sink; got: {:?}",
+            sinks2
+        );
+    }
+
+    /// RC3 (FP): a multi-line SQL sink call's `statement` must capture the FULL
+    /// logical call text (not just the first physical line), so downstream
+    /// FP-suppression heuristics (`is_parameterized_sql`) can see the `?`
+    /// placeholder + params tuple that live on subsequent lines. Reproduced
+    /// live on python-flask auth.py:66/92.
+    #[test]
+    fn r7_multiline_sink_statement_captures_full_call() {
+        use crate::ast::ParserPool;
+        let code = "def f(db, username, password):\n    db.execute(\n        \"INSERT INTO user (username, password) VALUES (?, ?)\",\n        (username, password),\n    )\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Python).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::Python, None);
+        let sql_sink = sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::SqlQuery);
+        assert!(
+            sql_sink.is_some(),
+            "sanity: db.execute must be a SqlQuery sink; got: {:?}",
+            sinks
+        );
+        let stmt = sql_sink.unwrap().statement.as_deref().unwrap_or("");
+        assert!(
+            stmt.contains('?') && stmt.contains(", ("),
+            "multi-line SQL sink statement must capture the full call (placeholder + params \
+             tuple), so is_parameterized_sql can suppress it; got statement: {:?}",
+            stmt
+        );
+    }
+
+    /// RC4 (FP): a dangerous file/exec sink whose arguments are ENTIRELY
+    /// constant string literals (no variable input) must NOT be emitted as a
+    /// sink — it cannot be a taint target even when an unrelated tainted var
+    /// shares its CFG block (the RC2 over-approximation). C
+    /// `fopen("/dev/urandom", "r")` is the canonical case.
+    #[test]
+    fn r7_literal_arg_fileopen_sink_suppressed() {
+        use crate::ast::ParserPool;
+        let pool = ParserPool::new();
+        // All-literal fopen: must NOT be a FileOpen sink.
+        let code = "void f(void) {\n  FILE *fp = fopen(\"/dev/urandom\", \"r\");\n}\n";
+        let tree = pool.parse(code, Language::C).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::C, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "fopen with only string-literal args must NOT be a FileOpen sink; got: {:?}",
+            sinks
+        );
+        // Variable-arg fopen: MUST remain a FileOpen sink (TP preserved).
+        let code2 = "void g(char *p) {\n  FILE *fp = fopen(p, \"r\");\n}\n";
+        let tree2 = pool.parse(code2, Language::C).unwrap();
+        let sinks2 = detect_sinks_ast(&tree2.root_node(), code2.as_bytes(), Language::C, None);
+        assert!(
+            sinks2.iter().any(|s| s.sink_type == TaintSinkType::FileOpen),
+            "fopen with a variable path arg must remain a FileOpen sink; got: {:?}",
+            sinks2
+        );
+    }
+
+    /// RC4 (FP): a constant-literal `system("...")` must NOT be a ShellExec sink.
+    #[test]
+    fn r7_literal_arg_shellexec_sink_suppressed() {
+        use crate::ast::ParserPool;
+        let pool = ParserPool::new();
+        let code = "void f(void) {\n  system(\"ls -la\");\n}\n";
+        let tree = pool.parse(code, Language::C).unwrap();
+        let sinks = detect_sinks_ast(&tree.root_node(), code.as_bytes(), Language::C, None);
+        assert!(
+            !sinks.iter().any(|s| s.sink_type == TaintSinkType::ShellExec),
+            "system() with only a string-literal arg must NOT be a ShellExec sink; got: {:?}",
+            sinks
+        );
+        // Variable-arg system: MUST remain a ShellExec sink (TP preserved).
+        let code2 = "void g(char *c) {\n  system(c);\n}\n";
+        let tree2 = pool.parse(code2, Language::C).unwrap();
+        let sinks2 = detect_sinks_ast(&tree2.root_node(), code2.as_bytes(), Language::C, None);
+        assert!(
+            sinks2.iter().any(|s| s.sink_type == TaintSinkType::ShellExec),
+            "system() with a variable arg must remain a ShellExec sink; got: {:?}",
+            sinks2
+        );
+    }
+
+    /// RC IDX13 (FP): Solidity `type(uint256).max` is a built-in
+    /// type-introspection expression; `type` is a reserved keyword and must
+    /// NEVER be reported as a tainted source variable. Reproduced live on
+    /// solidity-solmate ERC20.sol:97.
+    #[test]
+    fn r7_solidity_type_keyword_not_a_source_var() {
+        use crate::ast::ParserPool;
+        let code = "contract T {\n    function f(address from, uint256 amount) public {\n        uint256 allowed = allowance[from][msg.sender];\n        if (allowed != type(uint256).max) allowance[from][msg.sender] = allowed - amount;\n    }\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Solidity).unwrap();
+        let root = tree.root_node();
+        let sources = detect_sources_ast(&root, code.as_bytes(), Language::Solidity, None);
+        assert!(
+            !sources.iter().any(|s| s.var == "type"),
+            "Solidity `type` (from type(uint256).max) must NOT be a tainted source var; got: {:?}",
+            sources
+        );
+        // The genuine `msg.sender` UserInput source on line 3 must still be
+        // detected. The engine attributes it to the assignment LHS (`allowed`,
+        // from `uint256 allowed = allowance[from][msg.sender]`) rather than the
+        // bare receiver `msg` — either is fine; the point is that suppressing
+        // the `type` keyword did NOT also suppress the real source on that line.
+        assert!(
+            sources
+                .iter()
+                .any(|s| s.line == 3 && s.source_type == TaintSourceType::UserInput),
+            "the genuine msg.sender UserInput source on line 3 must remain; got: {:?}",
             sources
         );
     }

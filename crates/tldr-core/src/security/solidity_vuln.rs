@@ -830,6 +830,14 @@ fn is_inside_require_or_assert(node: &Node, source: &str) -> bool {
 /// on the contract declaration line.
 fn detect_locked_ether(root: &Node, source: &str, path: &Path, findings: &mut Vec<VulnFinding>) {
     let contracts = find_contracts(root);
+    // fix-R7-security-fp2-RC8 (v0.5.0 CLOSEOUT): pre-compute the set of
+    // same-file LIBRARY function names whose body actually sends ether (literal
+    // `.transfer(`/`.send(`/`.call{`/`selfdestruct` OR an inline-assembly
+    // `call`/`callcode`). A contract dispatching to any of these (via `using`
+    // or `Lib.fn(...)`) therefore HAS a withdraw path even though the send
+    // happens one hop away. (When the library lives in another file we fall
+    // back to the method-NAME convention check in `contract_has_withdraw_path`.)
+    let ether_sending_lib_methods = collect_ether_sending_library_methods(root, source);
     for contract in &contracts {
         // Interfaces and libraries can't lock ether (interfaces don't
         // hold state, libraries don't receive ether). Skip them.
@@ -846,7 +854,7 @@ fn detect_locked_ether(root: &Node, source: &str, path: &Path, findings: &mut Ve
             Some(b) => b,
             None => continue,
         };
-        if has_withdraw_path(&body, source) {
+        if contract_has_withdraw_path(&body, source, &ether_sending_lib_methods) {
             continue;
         }
         let line = contract.start_position().row as u32 + 1;
@@ -871,15 +879,95 @@ fn is_payable_function(node: &Node, source: &str) -> bool {
     is_payable(node, source)
 }
 
-/// Walk the contract body for any text matching `.transfer(`, `.send(`,
-/// `.call{value`, or `selfdestruct(` / `suicide(`. We mix AST walk
-/// (call_expression node-kind filtering) with a fallback text-scan for
-/// `.call{value:...}` because the grammar emits the gas/value
-/// modification as a `call_options` node whose shape we don't want to
-/// hard-code.
-fn has_withdraw_path(body: &Node, source: &str) -> bool {
-    // Text-level scan over the body content. Solidity is small enough
-    // and AST-only would over-fit to a particular grammar fork.
+/// fix-R7-security-fp2-RC8 (v0.5.0 CLOSEOUT): whether a method NAME follows a
+/// value-transfer naming convention (`transfer` / `send` as a case-insensitive
+/// substring). Covers `transfer`, `send`, `safeTransferETH`, `sendValue`,
+/// `safeTransfer`, `forceTransfer`, `transferETH`, etc. — the universal Solidity
+/// idioms for moving value/tokens out of a contract, whether the implementation
+/// is a library helper (`Address.sendValue`, `msg.sender.safeTransferETH`) or a
+/// direct method. AST-driven: the caller passes the `member_expression`
+/// `[property]` text, never an arbitrary line.
+fn method_name_is_value_transfer(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("transfer") || lower.contains("send")
+}
+
+/// fix-R7-security-fp2-RC8: whether a node's subtree contains an inline-assembly
+/// value-sending EVM call — a `yul_function_call` whose `yul_evm_builtin` is
+/// `call` or `callcode` (both can forward ETH `value`). `delegatecall` and
+/// `staticcall` are EXCLUDED: delegatecall executes in the caller's context and
+/// staticcall is read-only, so neither moves the contract's own ether out.
+/// AST-driven: matches `yul_evm_builtin` node text, not source substrings.
+fn has_assembly_value_send(node: &Node, source: &str) -> bool {
+    let mut calls = Vec::new();
+    collect_by_kind(*node, &["yul_evm_builtin"], &mut calls);
+    calls
+        .iter()
+        .any(|c| matches!(node_text(c, source).trim(), "call" | "callcode"))
+}
+
+/// fix-R7-security-fp2-RC8: collect the names of same-file LIBRARY functions
+/// whose body actually sends ether, so a contract dispatching to one of them is
+/// recognised as having a withdraw path. A library function counts when its
+/// body contains a literal `.transfer(`/`.send(`/`.call{`/`selfdestruct`/
+/// `suicide` shape OR an inline-assembly `call`/`callcode` (the
+/// `SafeTransferLib.safeTransferETH` shape). Library bodies in OTHER files are
+/// unreachable here and are handled by the method-name convention fallback in
+/// `contract_has_withdraw_path`.
+fn collect_ether_sending_library_methods(root: &Node, source: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut libs = Vec::new();
+    collect_by_kind(*root, &["library_declaration"], &mut libs);
+    for lib in &libs {
+        for func in contract_functions(lib) {
+            let name = match func.child_by_field_name("name") {
+                Some(n) => node_text(&n, source).trim().to_string(),
+                None => continue,
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let body_text = node_text(&func, source);
+            let literal_send = body_text.contains(".transfer(")
+                || body_text.contains(".send(")
+                || body_text.contains(".call{")
+                || body_text.contains("selfdestruct(")
+                || body_text.contains("suicide(");
+            if literal_send || has_assembly_value_send(&func, source) {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
+/// fix-R7-security-fp2-RC8: AST-driven withdraw-path recogniser for a contract
+/// body. Returns true when the contract can move ether out via ANY of:
+///
+///  1. a literal low-level send shape — `.transfer(`, `.send(`, `.call{`,
+///     `selfdestruct(`, `suicide(` (the original lexical fast-path, kept as a
+///     superset so prior true positives are preserved);
+///  2. an inline-assembly `call`/`callcode` in the contract's OWN body;
+///  3. a member-call dispatched to a same-file library method known to send
+///     ether (`ether_sending_libs`), e.g. `msg.sender.safeTransferETH(amount)`
+///     or `Address.sendValue(...)` when the library is in-file;
+///  4. a member-call whose method name follows the value-transfer convention
+///     (`transfer`/`send` substring) — the cross-file fallback for the
+///     canonical `using SafeTransferLib for address;` /
+///     `import {Address}; Address.sendValue(...)` patterns where the library
+///     body is in another file and so cannot be resolved here.
+///
+/// Replaces the previous pure literal text-scan, which falsely flagged WETH
+/// (`msg.sender.safeTransferETH`) and OpenZeppelin VestingWallet
+/// (`Address.sendValue`) as LockedEther. Genuinely-locked contracts (e.g.
+/// `EtherReceiverMock`, whose only payable path is a reverting `receive()`)
+/// have NONE of these shapes and are still flagged.
+fn contract_has_withdraw_path(
+    body: &Node,
+    source: &str,
+    ether_sending_libs: &std::collections::HashSet<String>,
+) -> bool {
+    // (1) Literal low-level send fast-path (superset of the original scan).
     let body_text = node_text(body, source);
     if body_text.contains(".transfer(")
         || body_text.contains(".send(")
@@ -889,6 +977,24 @@ fn has_withdraw_path(body: &Node, source: &str) -> bool {
     {
         return true;
     }
+
+    // (2) Inline-assembly value send in the contract's own body.
+    if has_assembly_value_send(body, source) {
+        return true;
+    }
+
+    // (3) + (4) Library-dispatched / convention-named member calls. Walk every
+    // call_expression and inspect its method NAME via the AST property field.
+    let mut calls = Vec::new();
+    collect_by_kind(*body, &["call_expression"], &mut calls);
+    for call in &calls {
+        if let Some((_member, method)) = call_member_method(call, source) {
+            if ether_sending_libs.contains(&method) || method_name_is_value_transfer(&method) {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
