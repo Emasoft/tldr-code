@@ -48,6 +48,7 @@ pub mod go;
 pub mod java;
 pub mod kotlin;
 pub mod lua; // inheritance-walker-per-lang-v1 (M-039)
+pub mod ocaml; // inheritance-extends-vs-implements-ocaml-v1 (T3): OCaml class hierarchy
 pub mod patterns;
 pub mod php;
 pub mod python;
@@ -121,7 +122,30 @@ pub fn extract_inheritance(
     let start = Instant::now();
     let parser_pool = ParserPool::new();
 
-    // Collect files matching language filter
+    // inheritance-extends-vs-implements-ocaml-v1 (T3) — language selection.
+    //
+    // When the caller passes no explicit `--lang` and the target is a
+    // DIRECTORY, scope the scan to the project's PRIMARY language FAMILY
+    // instead of walking every file by per-file extension. Two failure modes
+    // motivate this:
+    //   * `ocaml-lwt` ships 129 vendored C interop stubs (`src/unix/unix_c/
+    //     *.c`) alongside 114 OCaml source files. Per-file dispatch produced a
+    //     hierarchy of 197 nodes ALL `language=c` — the OCaml class model was
+    //     entirely masked by vendored C.
+    //   * A genuinely balanced multi-language tree (1 Python + 1 Java + 1 TS)
+    //     must still analyse ALL THREE (the CL-15 polyglot contract that the
+    //     `test_multilang_inheritance_in_single_directory` test pins).
+    //
+    // `select_inheritance_languages` reconciles both — see its docs. An
+    // explicit `--lang`, a single-file target, or a tree with no detectable
+    // language all fall through to the prior (unfiltered) behaviour.
+    let kept_langs: Option<HashSet<Language>> = if lang.is_none() && path.is_dir() {
+        select_inheritance_languages(path)
+    } else {
+        None
+    };
+
+    // Collect files matching the explicit `--lang` filter (when given).
     let files = collect_source_files(path, lang);
     if files.is_empty() {
         return Ok(InheritanceReport::new(path.to_path_buf()));
@@ -140,9 +164,19 @@ pub fn extract_inheritance(
             .or_else(|| Language::from_path(file_path))
             .unwrap_or(Language::Python);
 
-        // Skip if language filter is specified and doesn't match
+        // Skip if an explicit `--lang` filter is set and doesn't match.
         if let Some(filter_lang) = lang {
             if file_lang != filter_lang {
+                continue;
+            }
+        }
+
+        // inheritance-extends-vs-implements-ocaml-v1 (T3): on a no-`--lang`
+        // directory scan, drop files outside the autodetected primary language
+        // family so vendored interop files (C stubs in an OCaml repo) don't
+        // stand in for the project's class model.
+        if let Some(ref kept) = kept_langs {
+            if !kept.contains(&file_lang) {
                 continue;
             }
         }
@@ -175,6 +209,9 @@ pub fn extract_inheritance(
             // inheritance-walker-per-lang-v1 (M-039)
             Language::Elixir => elixir::extract_classes(&source, file_path, &parser_pool)?,
             Language::Lua => lua::extract_classes(&source, file_path, &parser_pool)?,
+            // inheritance-extends-vs-implements-ocaml-v1 (T3): OCaml class /
+            // class-type hierarchy (`class … inherit …`).
+            Language::Ocaml => ocaml::extract_classes(&source, file_path, &parser_pool)?,
             // v0.5.0 SOL-005c (solidity-inheritance-v1): contract /
             // interface / library declarations with flattened
             // `is A, B` bases list. Declared order preserved; no C3
@@ -284,6 +321,108 @@ pub fn extract_inheritance(
     report.leaves = filtered_graph.find_leaves();
 
     Ok(report)
+}
+
+/// Share denominator for the primary-language-family gate: a detected
+/// language joins the family when its file count is at least
+/// `dominant_count / PRIMARY_FAMILY_SHARE_DEN` (≥ 20%). Mirrors the constant
+/// of the same purpose in `ast::extractor` (B3) so `inheritance` scopes a
+/// polyglot tree the same way `structure`/`health` do.
+const PRIMARY_FAMILY_SHARE_DEN: usize = 5;
+
+/// inheritance-extends-vs-implements-ocaml-v1 (T3): choose the set of
+/// languages to analyse on a no-`--lang` DIRECTORY scan.
+///
+/// Returns `Some(kept)` with the primary language family, or `None` when no
+/// language is detectable (caller then leaves the scan unfiltered).
+///
+/// # Reconciling two requirements
+///
+/// 1. **Drop vendored interop.** `ocaml-lwt` carries 129 vendored C stub files
+///    vs 114 OCaml source files: C wins a raw file-count vote, but the
+///    `dune-project` / `*.opam` manifests make this *authoritatively* an OCaml
+///    project. [`Language::from_directory`] (manifest-aware) returns `Ocaml`.
+/// 2. **Keep genuine polyglot trees.** A balanced 1-Python/1-Java/1-TS tree
+///    has no dominant language and no contradicting manifest; all three must
+///    be analysed (the CL-15 contract).
+///
+/// # Algorithm
+///
+/// * `dominant_by_count` = the language with the most files (the raw vote).
+/// * `manifest_primary` = [`Language::from_directory`] (manifest-aware vote).
+/// * When they DIFFER, a manifest has overridden a vendored majority — scope
+///   to `manifest_primary` ALONE (drops the vendored interloper). This is the
+///   `ocaml-lwt` case: `{Ocaml}`, C excluded.
+/// * When they AGREE (or no manifest distinction), use the B3 primary FAMILY:
+///   the dominant plus every language whose file count is ≥ 20% of the
+///   dominant's. A balanced tree has `dominant_count == 1`, threshold `0`, so
+///   every language is kept — full polyglot. A 306-Java/33-JS tree keeps only
+///   Java (the JS docs minority is below 20%).
+///
+/// The tree is walked once for the per-language file inventory (the same
+/// `walk_project` + `from_path` inventory the detectors use).
+fn select_inheritance_languages(path: &Path) -> Option<HashSet<Language>> {
+    let detected = crate::ast::detect_project_languages(path);
+    if detected.is_empty() {
+        return None;
+    }
+    if detected.len() == 1 {
+        return Some(detected.into_iter().collect());
+    }
+
+    // Per-language file counts (same walk the autodetectors use).
+    let mut counts: HashMap<Language, usize> = HashMap::new();
+    for entry in crate::walker::walk_project(path) {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        if let Some(l) = Language::from_path(p) {
+            *counts.entry(l).or_insert(0) += 1;
+        }
+    }
+
+    let dominant_by_count = counts
+        .iter()
+        .max_by(|a, b| {
+            a.1.cmp(b.1)
+                // Deterministic tie-break: lower Debug name wins, matching
+                // `from_directory`'s ranking so the two agree on ties.
+                .then_with(|| format!("{:?}", b.0).cmp(&format!("{:?}", a.0)))
+        })
+        .map(|(l, _)| *l);
+
+    let manifest_primary = Language::from_directory(path);
+
+    // Manifest override: the project's manifest names a primary language that
+    // is NOT the raw file-count winner -> a vendored majority of another
+    // language is masking it. Scope to the manifest language alone.
+    if let (Some(mp), Some(dom)) = (manifest_primary, dominant_by_count) {
+        if mp != dom && counts.get(&mp).copied().unwrap_or(0) > 0 {
+            let mut kept = HashSet::new();
+            kept.insert(mp);
+            return Some(kept);
+        }
+    }
+
+    // Otherwise keep the B3 primary family (dominant + >= 20% share).
+    let dominant_count = counts.values().copied().max().unwrap_or(0);
+    if dominant_count == 0 {
+        return Some(detected.into_iter().collect());
+    }
+    let threshold = dominant_count / PRIMARY_FAMILY_SHARE_DEN;
+
+    let kept: HashSet<Language> = detected
+        .into_iter()
+        .filter(|l| counts.get(l).copied().unwrap_or(0) >= threshold)
+        .collect();
+
+    // Never return empty (would regress to "no source found").
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept)
+    }
 }
 
 /// Collect source files matching the optional language filter
@@ -560,5 +699,118 @@ mod tests {
         assert!(report.nodes.is_empty());
         assert!(report.edges.is_empty());
         assert_eq!(report.count, 0);
+    }
+
+    /// inheritance-extends-vs-implements-ocaml-v1 (T3): on a no-`--lang`
+    /// directory scan of an OCaml project that ALSO carries vendored C interop
+    /// stubs (the `ocaml-lwt` shape), the hierarchy must be computed from the
+    /// OCaml sources — not from the C files. Before the language-selection fix
+    /// every node came out `language=c` and the OCaml classes were missing.
+    #[test]
+    fn test_ocaml_project_with_vendored_c_respects_target_language() {
+        let dir = TempDir::new().unwrap();
+        // Manifest marks the project as OCaml (dune/opam honoured by
+        // from_directory's close-call manifest tiebreak).
+        create_test_file(&dir, "dune-project", "(lang dune 3.0)\n");
+        create_test_file(&dir, "lib.opam", "opam-version: \"2.0\"\n");
+        // OCaml sources: one class hierarchy + filler modules. Faithful to
+        // ocaml-lwt where vendored C strictly OUTNUMBERS OCaml source files
+        // (here 5 .c vs 4 .ml, an 80% close call the manifest resolves to
+        // OCaml).
+        create_test_file(
+            &dir,
+            "src/engine.ml",
+            "class virtual abstract = object\n  method virtual iter : unit\nend\n\nclass libev = object\n  inherit abstract\n  method iter = ()\nend\n",
+        );
+        for i in 0..3 {
+            create_test_file(&dir, &format!("src/mod_{i}.ml"), "let x = 0\n");
+        }
+        // Vendored C interop stubs with C structs (would dominate by raw count).
+        for i in 0..5 {
+            create_test_file(
+                &dir,
+                &format!("src/unix_c/stub_{i}.c"),
+                "struct job { int fd; };\nstruct other { struct job j; };\n",
+            );
+        }
+
+        let options = InheritanceOptions::default();
+        // No explicit --lang: the directory scan must pick OCaml.
+        let report = extract_inheritance(dir.path(), None, &options).unwrap();
+
+        // OCaml classes present.
+        assert!(
+            report.nodes.iter().any(|n| n.name == "libev"),
+            "OCaml class `libev` must be present; got {:?}",
+            report.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+        // Not all nodes are C (the pre-fix symptom).
+        assert!(
+            report.nodes.iter().all(|n| n.language == Language::Ocaml),
+            "all nodes should be OCaml on an OCaml project, got languages {:?}",
+            report
+                .nodes
+                .iter()
+                .map(|n| n.language)
+                .collect::<Vec<_>>()
+        );
+        // The `libev` -> `abstract` inherit edge is Extends.
+        let edge = report
+            .edges
+            .iter()
+            .find(|e| e.child == "libev" && e.parent == "abstract")
+            .expect("libev should inherit abstract");
+        assert_eq!(edge.kind, InheritanceKind::Extends);
+    }
+
+    /// inheritance-extends-vs-implements (T3): a no-`--lang` directory scan of
+    /// a Java project must label `implements` edges `Implements` and `extends`
+    /// edges `Extends` end-to-end through `extract_inheritance` (the
+    /// petclinic/retrofit live shape).
+    #[test]
+    fn test_java_implements_vs_extends_end_to_end() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(&dir, "pom.xml", "<project></project>\n");
+        create_test_file(
+            &dir,
+            "src/Animal.java",
+            "public class Animal {}\n",
+        );
+        create_test_file(
+            &dir,
+            "src/Serializable.java",
+            "public interface Serializable {}\n",
+        );
+        create_test_file(
+            &dir,
+            "src/Dog.java",
+            "public class Dog extends Animal implements Serializable {}\n",
+        );
+
+        let options = InheritanceOptions::default();
+        let report = extract_inheritance(dir.path(), None, &options).unwrap();
+
+        let extends_edge = report
+            .edges
+            .iter()
+            .find(|e| e.child == "Dog" && e.parent == "Animal")
+            .expect("Dog extends Animal edge");
+        assert_eq!(
+            extends_edge.kind,
+            InheritanceKind::Extends,
+            "extends must be Extends"
+        );
+
+        let implements_edge = report
+            .edges
+            .iter()
+            .find(|e| e.child == "Dog" && e.parent == "Serializable")
+            .expect("Dog implements Serializable edge");
+        assert_eq!(
+            implements_edge.kind,
+            InheritanceKind::Implements,
+            "implements must be Implements, not {:?}",
+            implements_edge.kind
+        );
     }
 }

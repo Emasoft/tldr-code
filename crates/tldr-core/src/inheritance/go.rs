@@ -20,7 +20,7 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract struct definitions with embedded types from Go source code
@@ -85,9 +85,17 @@ fn extract_type_spec(node: &Node, source: &str, file_path: &Path) -> Option<Inhe
             let mut iface = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Go);
             iface.interface = Some(true);
 
-            // Extract embedded interfaces
+            // Extract embedded interfaces. inheritance-extends-vs-implements
+            // (T3): an interface embedding another interface is interface
+            // composition — an `extends`-style relationship (the embedded
+            // interface's method set becomes part of this one), NOT struct
+            // composition. Tag every embed `Extends`.
             let bases = extract_interface_embeds(&type_node, source);
+            let kinds = vec![InheritanceKind::Extends; bases.len()];
             iface.bases = bases;
+            if !kinds.is_empty() {
+                iface.base_kinds = Some(kinds);
+            }
 
             return Some(iface);
         }
@@ -96,9 +104,15 @@ fn extract_type_spec(node: &Node, source: &str, file_path: &Path) -> Option<Inhe
 
     let mut class_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Go);
 
-    // Extract embedded structs (anonymous fields)
+    // Extract embedded structs (anonymous fields). inheritance-extends-vs-
+    // implements (T3): Go struct embedding is COMPOSITION, not class
+    // inheritance (A14) — surface it as `Embeds`, not the default `Extends`.
     let bases = extract_struct_embeds(&type_node, source);
+    let kinds = vec![InheritanceKind::Embeds; bases.len()];
     class_node.bases = bases;
+    if !kinds.is_empty() {
+        class_node.base_kinds = Some(kinds);
+    }
 
     Some(class_node)
 }
@@ -182,48 +196,106 @@ fn extract_embed_from_field(field: &Node, source: &str) -> Option<String> {
     }
 }
 
-/// Extract embedded interfaces from interface type
+/// Extract embedded interfaces from an `interface_type` body.
+///
+/// inheritance-extends-vs-implements (T3): the previous implementation
+/// recursed into EVERY child of the interface body and harvested every
+/// `type_identifier` / `qualified_type` it saw. In the current
+/// tree-sitter-go grammar an interface body is a list of:
+///   - `type_elem`   — an EMBEDDED interface (`io.Reader`, `Reader`), and
+///   - `method_elem` — a METHOD signature (`Read(p []byte) (int, error)`).
+/// Recursing into `method_elem` grabbed the parameter/return types
+/// (`error`, `int`, `string`, `byte`, `any`, …) as if they were embedded
+/// interfaces, which is exactly the go-gin "46/90 edges wrong" bug:
+/// `Core -> error`, `Encoder -> bool`, `Decoder -> any` etc.
+///
+/// The fix is AST-driven: harvest types ONLY from `type_elem` children and
+/// NEVER descend into `method_elem`. A `type_elem` wraps a single type
+/// (`type_identifier`, `qualified_type`, or a generic `generic_type`).
 fn extract_interface_embeds(iface_node: &Node, source: &str) -> Vec<String> {
     let mut embeds = Vec::new();
 
-    // Walk all children recursively to find embedded types
-    visit_interface_children(iface_node, source, &mut embeds);
+    let mut cursor = iface_node.walk();
+    for child in iface_node.children(&mut cursor) {
+        match child.kind() {
+            // Embedded interface element — the ONLY place an embedded
+            // interface name lives in the current grammar.
+            "type_elem" => {
+                collect_type_elem_names(&child, source, &mut embeds);
+            }
+            // Older grammar shape (defensive): an embedded type can appear
+            // as a bare `type_identifier` / `qualified_type` directly under
+            // the interface body. Methods are `method_elem` / `method_spec`
+            // and are intentionally NOT matched here.
+            "type_identifier" => {
+                if let Ok(name) = child.utf8_text(source.as_bytes()) {
+                    embeds.push(name.to_string());
+                }
+            }
+            "qualified_type" => {
+                if let Some(name) = qualified_type_name(&child, source) {
+                    embeds.push(name);
+                }
+            }
+            // `method_elem` / `method_spec` / braces / comments: skip. Method
+            // signatures are NOT inheritance.
+            _ => {}
+        }
+    }
 
     embeds
 }
 
-fn visit_interface_children(node: &Node, source: &str, embeds: &mut Vec<String>) {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                // Embedded interface types directly
-                "type_identifier" => {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        embeds.push(name.to_string());
-                    }
-                }
-                "qualified_type" => {
-                    if let Some(name) = child.child_by_field_name("name") {
-                        if let Ok(n) = name.utf8_text(source.as_bytes()) {
-                            embeds.push(n.to_string());
-                        }
-                    }
-                }
-                // In tree-sitter-go, interface bodies may have embedded types
-                // that look like method_spec but without parameters
-                "method_spec" => {
-                    // Check if this is actually an embedded type (just a name, no signature)
-                    // In tree-sitter-go, embedded types in interfaces are not method_spec
-                    // They should be type_identifier directly. But let's handle variations.
-                    visit_interface_children(&child, source, embeds);
-                }
-                _ => {
-                    // Recurse into other nodes
-                    visit_interface_children(&child, source, embeds);
+/// Collect the embedded-type name(s) from a single `type_elem` node.
+///
+/// A `type_elem` normally wraps exactly one type. We accept the simple
+/// named forms (`type_identifier`, `qualified_type`, `generic_type`); type
+/// SETS / unions (`~int | ~string`, used in generic constraints) carry no
+/// embedded-interface semantics and are ignored.
+fn collect_type_elem_names(type_elem: &Node, source: &str, embeds: &mut Vec<String>) {
+    let mut cursor = type_elem.walk();
+    for child in type_elem.children(&mut cursor) {
+        match child.kind() {
+            "type_identifier" => {
+                if let Ok(name) = child.utf8_text(source.as_bytes()) {
+                    embeds.push(name.to_string());
                 }
             }
+            "qualified_type" => {
+                if let Some(name) = qualified_type_name(&child, source) {
+                    embeds.push(name);
+                }
+            }
+            "generic_type" => {
+                // `Constraint[T]` embedded — keep the base type name.
+                if let Some(inner) = child.child_by_field_name("type") {
+                    match inner.kind() {
+                        "type_identifier" => {
+                            if let Ok(name) = inner.utf8_text(source.as_bytes()) {
+                                embeds.push(name.to_string());
+                            }
+                        }
+                        "qualified_type" => {
+                            if let Some(name) = qualified_type_name(&inner, source) {
+                                embeds.push(name);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Type-set elements (`~int`, `int | string`) and punctuation are
+            // not embedded interfaces.
+            _ => {}
         }
     }
+}
+
+/// Extract the type name from a `qualified_type` (`pkg.Type` -> `Type`).
+fn qualified_type_name(node: &Node, source: &str) -> Option<String> {
+    node.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]
@@ -272,6 +344,33 @@ type Dog struct {
         assert!(dog.bases.contains(&"Animal".to_string()));
     }
 
+    /// inheritance-extends-vs-implements (T3): Go struct embedding is
+    /// COMPOSITION, so the edge kind must be `Embeds`, never the default
+    /// `Extends`. Guards the regression where every Go base defaulted to
+    /// `Extends`.
+    #[test]
+    fn test_struct_embed_kind_is_embeds() {
+        let source = r#"
+package main
+
+type Animal struct { Name string }
+
+type Dog struct {
+    Animal
+    Breed string
+}
+"#;
+        let classes = parse_and_extract(source);
+        let dog = classes.iter().find(|c| c.name == "Dog").unwrap();
+        let idx = dog.bases.iter().position(|b| b == "Animal").unwrap();
+        assert_eq!(
+            dog.base_kind_at(idx),
+            InheritanceKind::Embeds,
+            "Go struct embedding must be Embeds (composition), not {:?}",
+            dog.base_kind_at(idx)
+        );
+    }
+
     #[test]
     fn test_multiple_embedding() {
         let source = r#"
@@ -307,6 +406,42 @@ type Reader interface {
         assert_eq!(classes[0].interface, Some(true));
     }
 
+    /// inheritance-extends-vs-implements (T3) — go-gin root cause. A method
+    /// signature's parameter/return types (`error`, `int`, `string`, `byte`,
+    /// `any`) are NOT embedded interfaces and must never become inheritance
+    /// bases. Before the `type_elem`/`method_elem` distinction this interface
+    /// emitted `Reader -> error`, `Reader -> int`, etc.
+    #[test]
+    fn test_interface_method_signature_types_are_not_bases() {
+        let source = r#"
+package main
+
+type Render interface {
+    Render(http.ResponseWriter) error
+    WriteContentType(w http.ResponseWriter)
+    Status() int
+    WriteString(string) (int, error)
+}
+"#;
+        let classes = parse_and_extract(source);
+        let render = classes.iter().find(|c| c.name == "Render").unwrap();
+        assert_eq!(render.interface, Some(true));
+        for noise in ["error", "int", "string", "any", "byte", "bool"] {
+            assert!(
+                !render.bases.contains(&noise.to_string()),
+                "method-signature type {:?} must not be an inheritance base; bases={:?}",
+                noise,
+                render.bases
+            );
+        }
+        // A pure-method interface embeds nothing.
+        assert!(
+            render.bases.is_empty(),
+            "interface with only methods has no embeds, got {:?}",
+            render.bases
+        );
+    }
+
     #[test]
     fn test_interface_embedding() {
         let source = r#"
@@ -330,5 +465,57 @@ type ReadWriter interface {
         assert_eq!(rw.interface, Some(true));
         assert!(rw.bases.contains(&"Reader".to_string()));
         assert!(rw.bases.contains(&"Writer".to_string()));
+    }
+
+    /// inheritance-extends-vs-implements (T3): an interface that BOTH embeds
+    /// other interfaces AND declares methods must keep the embeds (tagged
+    /// `Extends`) and drop the method-signature types. Mirrors gin's
+    /// `ResponseWriter` (embeds `http.ResponseWriter` etc. + own methods).
+    #[test]
+    fn test_interface_embed_with_methods_keeps_only_embeds() {
+        let source = r#"
+package main
+
+type ResponseWriter interface {
+    http.ResponseWriter
+    http.Hijacker
+    Status() int
+    WriteString(string) (int, error)
+}
+"#;
+        let classes = parse_and_extract(source);
+        let rw = classes.iter().find(|c| c.name == "ResponseWriter").unwrap();
+        // Embedded interfaces present (qualified -> last segment).
+        assert!(rw.bases.contains(&"ResponseWriter".to_string()));
+        assert!(rw.bases.contains(&"Hijacker".to_string()));
+        // Method-signature noise absent.
+        assert!(!rw.bases.contains(&"int".to_string()));
+        assert!(!rw.bases.contains(&"error".to_string()));
+        assert!(!rw.bases.contains(&"string".to_string()));
+        // Every embed is Extends (interface composition), not Embeds.
+        for (i, _b) in rw.bases.iter().enumerate() {
+            assert_eq!(rw.base_kind_at(i), InheritanceKind::Extends);
+        }
+    }
+
+    /// inheritance-extends-vs-implements (T3): interface-to-interface
+    /// embedding is `Extends`, distinct from struct `Embeds`.
+    #[test]
+    fn test_interface_embed_kind_is_extends() {
+        let source = r#"
+package main
+
+type Reader interface { Read() }
+type Writer interface { Write() }
+
+type ReadWriter interface {
+    Reader
+    Writer
+}
+"#;
+        let classes = parse_and_extract(source);
+        let rw = classes.iter().find(|c| c.name == "ReadWriter").unwrap();
+        let idx = rw.bases.iter().position(|b| b == "Reader").unwrap();
+        assert_eq!(rw.base_kind_at(idx), InheritanceKind::Extends);
     }
 }

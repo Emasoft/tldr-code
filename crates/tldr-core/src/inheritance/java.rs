@@ -16,7 +16,7 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class, interface, enum, and record definitions from Java source code
@@ -90,18 +90,33 @@ fn extract_class(node: &Node, source: &str, file_path: &Path) -> Option<Inherita
     let mut class_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Java);
 
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
-    // Extract superclass (extends)
+    // Extract superclass (`extends X`) — class inheritance.
+    // inheritance-extends-vs-implements (T3): tag `Extends` so it stays
+    // distinct from the interfaces below.
     if let Some(superclass) = node.child_by_field_name("superclass") {
-        extract_types_from_node(&superclass, source, &mut bases);
+        extract_types_from_node(&superclass, source, &mut bases, &mut kinds, InheritanceKind::Extends);
     }
 
-    // Extract interfaces (implements)
+    // Extract interfaces (`implements I1, I2`) — interface realization.
+    // inheritance-extends-vs-implements (T3): the petclinic/retrofit bug was
+    // these landing as `Extends`. They are `Implements`.
     if let Some(interfaces) = node.child_by_field_name("interfaces") {
-        extract_type_list_from_node(&interfaces, source, &mut bases);
+        extract_type_list_from_node(
+            &interfaces,
+            source,
+            &mut bases,
+            &mut kinds,
+            InheritanceKind::Implements,
+        );
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     class_node.bases = bases;
+    if !kinds.is_empty() {
+        class_node.base_kinds = Some(kinds);
+    }
 
     // Check for abstract modifier
     if has_modifier(node, source, "abstract") {
@@ -125,17 +140,31 @@ fn extract_interface(node: &Node, source: &str, file_path: &Path) -> Option<Inhe
     iface_node.interface = Some(true);
 
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
-    // Interface extends are in a child node called "extends_interfaces"
+    // Interface extends are in a child node called "extends_interfaces".
+    // inheritance-extends-vs-implements (T3): an interface extending another
+    // interface is `extends` (Extends), NOT `implements` — Java has no
+    // `implements` clause on an interface declaration.
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "extends_interfaces" {
-                extract_type_list_from_node(&child, source, &mut bases);
+                extract_type_list_from_node(
+                    &child,
+                    source,
+                    &mut bases,
+                    &mut kinds,
+                    InheritanceKind::Extends,
+                );
             }
         }
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     iface_node.bases = bases;
+    if !kinds.is_empty() {
+        iface_node.base_kinds = Some(kinds);
+    }
 
     Some(iface_node)
 }
@@ -153,13 +182,24 @@ fn extract_enum(node: &Node, source: &str, file_path: &Path) -> Option<Inheritan
     let mut enum_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Java);
 
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
-    // Enums can implement interfaces
+    // Enums can implement interfaces (`implements`). T3: tag `Implements`.
     if let Some(interfaces) = node.child_by_field_name("interfaces") {
-        extract_type_list_from_node(&interfaces, source, &mut bases);
+        extract_type_list_from_node(
+            &interfaces,
+            source,
+            &mut bases,
+            &mut kinds,
+            InheritanceKind::Implements,
+        );
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     enum_node.bases = bases;
+    if !kinds.is_empty() {
+        enum_node.base_kinds = Some(kinds);
+    }
 
     Some(enum_node)
 }
@@ -177,29 +217,59 @@ fn extract_record(node: &Node, source: &str, file_path: &Path) -> Option<Inherit
     let mut record_node = InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Java);
 
     let mut bases = Vec::new();
+    let mut kinds = Vec::new();
 
-    // Records can implement interfaces
+    // Records can implement interfaces (`implements`). T3: tag `Implements`.
     if let Some(interfaces) = node.child_by_field_name("interfaces") {
-        extract_type_list_from_node(&interfaces, source, &mut bases);
+        extract_type_list_from_node(
+            &interfaces,
+            source,
+            &mut bases,
+            &mut kinds,
+            InheritanceKind::Implements,
+        );
     }
 
+    debug_assert_eq!(bases.len(), kinds.len());
     record_node.bases = bases;
+    if !kinds.is_empty() {
+        record_node.base_kinds = Some(kinds);
+    }
 
     Some(record_node)
 }
 
-/// Extract types directly from a node (e.g., superclass node contains a single type)
-fn extract_types_from_node(node: &Node, source: &str, bases: &mut Vec<String>) {
+/// Extract types directly from a node (e.g., superclass node contains a single type).
+///
+/// inheritance-extends-vs-implements (T3): every harvested base is tagged with
+/// `kind` into the parallel `kinds` vector so `extends` (Extends) and
+/// `implements` (Implements) stay distinct downstream.
+fn extract_types_from_node(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if let Some(name) = extract_type_name(&child, source) {
             bases.push(name);
+            kinds.push(kind);
         }
     }
 }
 
-/// Extract types from a node that contains a type_list child (e.g., super_interfaces, extends_interfaces)
-fn extract_type_list_from_node(node: &Node, source: &str, bases: &mut Vec<String>) {
+/// Extract types from a node that contains a type_list child (e.g., super_interfaces, extends_interfaces).
+///
+/// inheritance-extends-vs-implements (T3): tags each base with `kind`.
+fn extract_type_list_from_node(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "type_list" {
@@ -207,11 +277,13 @@ fn extract_type_list_from_node(node: &Node, source: &str, bases: &mut Vec<String
             for type_child in child.children(&mut inner_cursor) {
                 if let Some(name) = extract_type_name(&type_child, source) {
                     bases.push(name);
+                    kinds.push(kind);
                 }
             }
         } else if let Some(name) = extract_type_name(&child, source) {
             // Direct type child (fallback)
             bases.push(name);
+            kinds.push(kind);
         }
     }
 }
@@ -318,6 +390,9 @@ public class Dog extends Animal {
 
         let dog = classes.iter().find(|c| c.name == "Dog").unwrap();
         assert!(dog.bases.contains(&"Animal".to_string()));
+        // T3: `class X extends Y` is Extends.
+        let idx = dog.bases.iter().position(|b| b == "Animal").unwrap();
+        assert_eq!(dog.base_kind_at(idx), InheritanceKind::Extends);
     }
 
     #[test]
@@ -339,6 +414,15 @@ public class Dog implements Serializable {
 
         let dog = classes.iter().find(|c| c.name == "Dog").unwrap();
         assert!(dog.bases.contains(&"Serializable".to_string()));
+        // inheritance-extends-vs-implements (T3) — petclinic/retrofit root
+        // cause. `class X implements I` must be Implements, not Extends.
+        let idx = dog.bases.iter().position(|b| b == "Serializable").unwrap();
+        assert_eq!(
+            dog.base_kind_at(idx),
+            InheritanceKind::Implements,
+            "`implements` must be Implements, got {:?}",
+            dog.base_kind_at(idx)
+        );
     }
 
     #[test]
@@ -358,6 +442,14 @@ public class Dog extends Animal implements Serializable, Runnable {
         assert!(dog.bases.contains(&"Serializable".to_string()));
         assert!(dog.bases.contains(&"Runnable".to_string()));
         assert_eq!(dog.bases.len(), 3);
+        // T3: the superclass is Extends; both interfaces are Implements — the
+        // single class must carry BOTH kinds, positionally aligned.
+        let animal_i = dog.bases.iter().position(|b| b == "Animal").unwrap();
+        let ser_i = dog.bases.iter().position(|b| b == "Serializable").unwrap();
+        let run_i = dog.bases.iter().position(|b| b == "Runnable").unwrap();
+        assert_eq!(dog.base_kind_at(animal_i), InheritanceKind::Extends);
+        assert_eq!(dog.base_kind_at(ser_i), InheritanceKind::Implements);
+        assert_eq!(dog.base_kind_at(run_i), InheritanceKind::Implements);
     }
 
     #[test]
@@ -388,6 +480,10 @@ public interface Sortable extends Comparable<String> {
         let sortable = classes.iter().find(|c| c.name == "Sortable").unwrap();
         assert_eq!(sortable.interface, Some(true));
         assert!(sortable.bases.contains(&"Comparable".to_string()));
+        // T3: interface-extends-interface is Extends (Java interfaces have no
+        // `implements`), distinct from a class's `implements`.
+        let idx = sortable.bases.iter().position(|b| b == "Comparable").unwrap();
+        assert_eq!(sortable.base_kind_at(idx), InheritanceKind::Extends);
     }
 
     #[test]
@@ -405,6 +501,9 @@ public interface C extends A, B {
         assert!(c.bases.contains(&"A".to_string()));
         assert!(c.bases.contains(&"B".to_string()));
         assert_eq!(c.bases.len(), 2);
+        // T3: every base of an interface-extends-multiple is Extends.
+        assert_eq!(c.base_kind_at(0), InheritanceKind::Extends);
+        assert_eq!(c.base_kind_at(1), InheritanceKind::Extends);
     }
 
     #[test]
@@ -419,6 +518,9 @@ public enum Color implements Displayable {
         let classes = parse_and_extract(source);
         let color = classes.iter().find(|c| c.name == "Color").unwrap();
         assert!(color.bases.contains(&"Displayable".to_string()));
+        // T3: `enum X implements I` is Implements.
+        let idx = color.bases.iter().position(|b| b == "Displayable").unwrap();
+        assert_eq!(color.base_kind_at(idx), InheritanceKind::Implements);
     }
 
     #[test]
@@ -431,6 +533,13 @@ public class ArrayList<E> extends AbstractList<E> implements List<E> {
         assert_eq!(classes.len(), 1);
         assert!(classes[0].bases.contains(&"AbstractList".to_string()));
         assert!(classes[0].bases.contains(&"List".to_string()));
+        // T3: generic supertype `extends AbstractList<E>` is Extends; generic
+        // interface `implements List<E>` is Implements (kinds survive the
+        // generic-stripping path).
+        let ab = classes[0].bases.iter().position(|b| b == "AbstractList").unwrap();
+        let li = classes[0].bases.iter().position(|b| b == "List").unwrap();
+        assert_eq!(classes[0].base_kind_at(ab), InheritanceKind::Extends);
+        assert_eq!(classes[0].base_kind_at(li), InheritanceKind::Implements);
     }
 
     #[test]
@@ -457,6 +566,13 @@ public class Child extends com.example.Parent {
         let classes = parse_and_extract(source);
         assert_eq!(classes.len(), 1);
         assert!(classes[0].bases.contains(&"com.example.Parent".to_string()));
+        // T3: scoped supertype `extends com.example.Parent` is Extends.
+        let idx = classes[0]
+            .bases
+            .iter()
+            .position(|b| b == "com.example.Parent")
+            .unwrap();
+        assert_eq!(classes[0].base_kind_at(idx), InheritanceKind::Extends);
     }
 
     #[test]
@@ -470,6 +586,9 @@ public record Point(int x, int y) implements Printable {
         let classes = parse_and_extract(source);
         let point = classes.iter().find(|c| c.name == "Point").unwrap();
         assert!(point.bases.contains(&"Printable".to_string()));
+        // T3: `record X implements I` is Implements.
+        let idx = point.bases.iter().position(|b| b == "Printable").unwrap();
+        assert_eq!(point.base_kind_at(idx), InheritanceKind::Implements);
     }
 
     #[test]
