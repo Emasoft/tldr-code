@@ -23,7 +23,10 @@ use crate::ast::parser::{parse, parse_file};
 // cl4-cyclomatic-v1 (GH #75): reuse the catchall-arm detectors from the
 // canonical cognitive calculator so cyclomatic and cognitive agree on which
 // match/when arms are decision points (single source of truth).
-use crate::metrics::cognitive::{is_kotlin_else_when_entry, is_ocaml_wildcard_match_case};
+use crate::metrics::cognitive::{
+    is_default_case_statement, is_kotlin_else_when_entry, is_ocaml_wildcard_match_case,
+    is_swift_default_switch_entry,
+};
 use crate::error::TldrError;
 use crate::types::{ComplexityMetrics, Language};
 use crate::TldrResult;
@@ -356,7 +359,17 @@ impl<'a> ComplexityCalculator<'a> {
         // cascaded into broken output for `complexity`, `slice`, `available`,
         // `reaching-defs`, `dead-stores`, `taint`, `chop`, `context`,
         // `health`, `hotspots`, `debt`.
-        if matches!(self.language, Language::Ruby) {
+        // R7 RC3 (v0.5.0 CLOSEOUT): tree-sitter-ruby emits a NAMED construct
+        // node (kind `if`/`elsif`/`unless`/`when`/`while`/`until`/`for`/
+        // `rescue`) that CONTAINS an UNNAMED keyword-token child of the SAME
+        // kind. The recursive walker visits unnamed children, so without an
+        // `is_named()` guard each construct matched TWICE (once for the named
+        // construct, once for its bare keyword leaf) — every Ruby decision
+        // point was double-counted (interpret_unicode 1+2=3, a 3-`when` case
+        // 1+6=7). Verified via dumper that the construct is is_named()=true and
+        // the keyword leaf is is_named()=false; the `call` form (`loop do`) is
+        // also a named node. Gating on is_named() credits each construct once.
+        if matches!(self.language, Language::Ruby) && node.is_named() {
             match kind {
                 "if" | "elsif" | "unless" => {
                     self.cyclomatic += 1;
@@ -436,6 +449,46 @@ impl<'a> ComplexityCalculator<'a> {
                 self.cyclomatic += 1;
             }
             "case_clause" | "match_arm" | "switch_case" => {
+                self.cyclomatic += 1;
+            }
+            // R7 RC1 (v0.5.0 CLOSEOUT): C / C++ spell each `switch` case as a
+            // named `case_statement` node (the classic `case_clause`/
+            // `switch_case` arm above never matches C/C++). Each non-`default`
+            // case is a decision arm; the `default` arm is the catchall and is
+            // NOT a decision point. This mirrors, node-for-node, the canonical
+            // cognitive counter (cognitive.rs `count_cyclomatic_increment`,
+            // which already credits `case_statement`), so `tldr complexity`
+            // and `tldr cognitive --include-cyclomatic` agree, and matches the
+            // CFG's per-case branch convention. Fallthrough labels
+            // (`case 'a': case 'A':`) each parse as their own `case_statement`
+            // node and each count, per McCabe. hex_digit_to_int: 22 labels ->
+            // 23; was 1.
+            "case_statement"
+                if matches!(self.language, Language::C | Language::Cpp)
+                    && !is_default_case_statement(node) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // R7 RC1 (v0.5.0 CLOSEOUT): Swift spells each `switch` arm as a
+            // named `switch_entry`. A normal arm's first child is the `case`
+            // keyword; the catchall arm's first child is a `default_keyword`
+            // node and is NOT a decision point. A multi-pattern arm
+            // (`case 2, 3:`) is a SINGLE `switch_entry` -> one decision point
+            // (the switch is a single multi-way branch on those patterns),
+            // consistent with the C `case_statement` treatment of distinct
+            // exclusive arms. append (4 arms) -> 5; was 1.
+            "switch_entry"
+                if matches!(self.language, Language::Swift)
+                    && !is_swift_default_switch_entry(node) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // R7 RC1 (v0.5.0 CLOSEOUT): Swift `guard <cond> else { ... }` is a
+            // binary decision (the else branch is taken iff the condition
+            // fails), so it is a decision point exactly like an `if`. Node kind
+            // `guard_statement`, verified via dumper. popMax (guard + 2 ifs)
+            // -> 4; was 3 (guard contributed 0).
+            "guard_statement" if matches!(self.language, Language::Swift) => {
                 self.cyclomatic += 1;
             }
             "conditional_expression" | "ternary_expression" => {
@@ -594,19 +647,24 @@ impl<'a> ComplexityCalculator<'a> {
             }
         }
 
-        // Also check for && and || as direct node kinds.
-        // solidity-metrics-v1 (v0.5.0 SOL-008): tree-sitter-solidity exposes
-        // each `binary_expression` operator as a CHILD node whose KIND is the
-        // operator token itself (`&&` / `||`). Without gating, every Solidity
-        // `&&`/`||` would be credited TWICE — once via the field-name check
-        // above on `binary_expression`, and once again as the bare-token
-        // node. Skip the bare-token credit for Solidity so the field-name
-        // arm remains the single source of truth.
-        if (kind == "&&" || kind == "||" || kind == "and" || kind == "or")
-            && !matches!(self.language, Language::Solidity)
-        {
-            self.cyclomatic += 1;
-        }
+        // R7 RC2 (v0.5.0 CLOSEOUT): the redundant bare-token `&&`/`||`/`and`/
+        // `or` arm that used to live here has been REMOVED. In every supported
+        // grammar a short-circuit boolean operator is reachable via
+        // `child_by_field_name("operator")` on the enclosing
+        // `boolean_operator` (Python) / `binary_expression` (C/C++/Java/JS/TS/
+        // Go/Rust/PHP/C#/Solidity) / `infix_expression` (Scala, handled in its
+        // dedicated arm above), so the field-name arm at the top of this block
+        // is the single source of truth. The operator ALSO appears as a bare
+        // child node whose KIND is the operator token itself (`&&`/`||`), which
+        // the recursive walker visits — so the old bare-token arm credited the
+        // SAME operator a second time, doubling the count for every C-family
+        // language (is_hex_digit: 1+2*5=11 instead of 6). The campaign's
+        // SOL-008 fix had already excluded Solidity from the bare-token arm for
+        // exactly this reason; removing the arm generalises that fix to all
+        // grammars. Verified via a tree-sitter dumper (pinned to the workspace
+        // grammar versions) that C/C++/Java/JS/TS/Go/Rust/Python/PHP/C# all
+        // expose the operator on the `operator` field; Scala uses
+        // `operator_identifier` (its own arm) and is unaffected.
     }
 
     /// Count cognitive complexity increments
@@ -1252,6 +1310,442 @@ end
         assert_eq!(
             metrics.cyclomatic, 1,
             "Straight-line Elixir function must stay cyclomatic = 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    // =====================================================================
+    // R7 complexity-metrics (v0.5.0 CLOSEOUT) characterization tests.
+    //
+    // RC1: cyclomatic must count C/C++ `switch` cases and Swift
+    //      `switch`/`guard` as decision points (was ignored -> undercount).
+    // RC2: cyclomatic must NOT double-count `&&`/`||` in C-family grammars
+    //      (the operator was credited via both the operator-field arm and the
+    //      bare-token arm).
+    // RC3: cyclomatic must not double-match Ruby bare-keyword construct nodes
+    //      against their own unnamed keyword-token children.
+    //
+    // Node kinds verified via tree-sitter dumper pinned to the workspace
+    // grammar versions (tree-sitter-c/cpp 0.23.4, ruby 0.23.1, swift 0.7.1).
+    // Expected values are the McCabe decision counts, kept consistent with the
+    // canonical cognitive case/arm treatment and the CFG decision-point count.
+    // =====================================================================
+
+    // -- RC1: C/C++ switch ------------------------------------------------
+
+    #[test]
+    fn test_c_switch_counts_each_case() {
+        // 5 non-default cases + a default -> base 1 + 5 = 6. The default arm
+        // is the catchall and is NOT a decision point.
+        let source = r#"
+int classify(int x) {
+    switch (x) {
+    case 1: return 1;
+    case 2: return 2;
+    case 3: return 3;
+    case 4: return 4;
+    case 5: return 5;
+    default: return 0;
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "classify", Language::C).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 6,
+            "C switch: base 1 + 5 non-default cases = 6, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_c_switch_empty_fallthrough_labels_each_count() {
+        // McCabe / cognitive convention: each `case` label is its own
+        // `case_statement` node, including empty fallthrough labels.
+        // 3 non-default labels (`'a'`, `'A'`, `'b'`) -> base 1 + 3 = 4.
+        let source = r#"
+int f(char c) {
+    switch (c) {
+    case 'a': case 'A': return 10;
+    case 'b': return 11;
+    default: return 0;
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::C).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "C fallthrough labels each count: base 1 + 3 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_cpp_switch_counts_each_case() {
+        // if + for + 3 non-default cases -> base 1 + 1 + 1 + 3 = 6.
+        let source = r#"
+int convert(int n) {
+    if (n < 0) return -1;
+    for (int i = 0; i < n; ++i) {
+        switch (i) {
+        case 0: return 0;
+        case 1: return 1;
+        case 2: return 2;
+        default: return 9;
+        }
+    }
+    return 0;
+}
+"#;
+        let metrics = calculate_complexity(source, "convert", Language::Cpp).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 6,
+            "C++ if+for+3 cases: base 1 +1 +1 +3 = 6, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_c_switch_only_default_stays_one() {
+        // A switch with only a `default` arm has no decision point.
+        let source = r#"
+int f(int x) {
+    switch (x) {
+    default: return 0;
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::C).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 1,
+            "C switch with only default = base 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    // -- RC1: Swift switch + guard ---------------------------------------
+
+    #[test]
+    fn test_swift_switch_counts_each_entry() {
+        // 4 switch arms, no default -> base 1 + 4 = 5.
+        let source = r#"
+func append(a: Bool, b: Bool) -> Int {
+    switch (a, b) {
+    case (true, true): return 1
+    case (true, false): return 2
+    case (false, true): return 3
+    case (false, false): return 4
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "append", Language::Swift).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 5,
+            "Swift 4-arm switch: base 1 + 4 = 5, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_swift_switch_default_not_counted() {
+        // 2 real arms + default -> base 1 + 2 = 3.
+        let source = r#"
+func f(x: Int) -> Int {
+    switch x {
+    case 1: return 1
+    case 2: return 2
+    default: return 0
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::Swift).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 3,
+            "Swift 2-arm+default switch: base 1 + 2 = 3, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_swift_guard_counts() {
+        // guard + 2 ifs -> base 1 + 1 + 2 = 4. (else adds nothing.)
+        let source = r#"
+func popMax(c: Int, v: Int) -> Int {
+    guard c > 2 else { return 0 }
+    if c == 2 {
+        if v > 0 {
+            return 30
+        }
+    } else {
+        return 3
+    }
+    return c
+}
+"#;
+        let metrics = calculate_complexity(source, "popMax", Language::Swift).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Swift guard + 2 ifs: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    // -- RC2: C-family &&/|| single-count --------------------------------
+
+    #[test]
+    fn test_c_logical_operators_not_double_counted() {
+        // 3 `&&` + 2 `||` = 5 boolean ops -> base 1 + 5 = 6 (NOT 11).
+        let source = r#"
+int is_hex_digit(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+           (c >= 'A' && c <= 'F');
+}
+"#;
+        let metrics = calculate_complexity(source, "is_hex_digit", Language::C).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 6,
+            "C 5 boolean ops counted once: base 1 + 5 = 6, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_cpp_logical_operators_not_double_counted() {
+        let source = r#"
+bool g(bool a, bool b, bool c) {
+    if (a && b || c) return true;
+    return false;
+}
+"#;
+        // if + (1 && + 1 ||) -> base 1 + 1 + 2 = 4.
+        let metrics = calculate_complexity(source, "g", Language::Cpp).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "C++ if + 2 boolean ops once: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_java_logical_operators_not_double_counted() {
+        let source = r#"
+class M {
+    boolean f(boolean a, boolean b) {
+        if (a && b || a) return true;
+        return false;
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::Java).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Java if + 2 boolean ops once: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_javascript_logical_operators_not_double_counted() {
+        let source = r#"
+function f(a, b) {
+    if (a && b || a) return 1;
+    return 0;
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::JavaScript).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "JS if + 2 boolean ops once: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_python_logical_operators_still_counted_once() {
+        // Regression guard: Python `and`/`or` must STILL be credited (via the
+        // operator-field arm) after the bare-token arm is removed.
+        // 2 ifs + 2 ops -> base 1 + 2 + 2 = 5.
+        let source = r#"
+def with_logic(a, b, c):
+    if a and b:
+        return 1
+    if a or c:
+        return 2
+    return 0
+"#;
+        let metrics = calculate_complexity(source, "with_logic", Language::Python).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 5,
+            "Python 2 ifs + 2 boolean ops once: base 1 +2 +2 = 5, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_go_logical_operators_counted_once() {
+        let source = r#"
+package m
+func f(a, b bool) int {
+	if a && b || a {
+		return 1
+	}
+	return 0
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::Go).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Go if + 2 boolean ops once: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_scala_logical_operators_unaffected() {
+        // Scala uses `infix_expression` with its own dedicated arm; it must
+        // remain correct (1 if + 2 ops) = base 1 + 1 + 2 = 4.
+        let source = r#"
+object M { def f(a: Boolean, b: Boolean): Int = { if (a && b || a) 1 else 0 } }
+"#;
+        let metrics = calculate_complexity(source, "f", Language::Scala).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Scala if + 2 infix boolean ops: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    // -- RC3: Ruby keyword-token double-match (cyclomatic) ---------------
+
+    #[test]
+    fn test_ruby_case_when_not_double_counted() {
+        // case + 3 when -> base 1 + 3 = 4 (NOT 7). `case` itself adds 0;
+        // each non-default `when` arm adds 1.
+        let source = r#"
+def interpret(x)
+  case x
+  when 1 then 1
+  when 2 then 2
+  when 3 then 3
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "interpret", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Ruby case/3-when counted once: base 1 + 3 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_ruby_if_else_not_double_counted() {
+        // single if/else -> base 1 + 1 = 2 (NOT 3).
+        let source = r#"
+def interpret_unicode(x)
+  if x == 1
+    10
+  else
+    20
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "interpret_unicode", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Ruby single if/else counted once: base 1 + 1 = 2, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_ruby_if_modifier_not_double_counted() {
+        // single trailing if-modifier -> base 1 + 1 = 2 (NOT 3).
+        let source = r#"
+def reset
+  cleanup if dirty?
+  mkpath
+end
+"#;
+        let metrics = calculate_complexity(source, "reset", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Ruby if-modifier counted once: base 1 + 1 = 2, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_ruby_unless_modifier_not_double_counted() {
+        // single trailing unless-modifier -> base 1 + 1 = 2 (NOT 3).
+        let source = r#"
+def find_similar(target)
+  return [] unless defined?(SpellChecker)
+  target
+end
+"#;
+        let metrics = calculate_complexity(source, "find_similar", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Ruby unless-modifier counted once: base 1 + 1 = 2, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_ruby_elsif_chain_not_double_counted() {
+        // if + 2 elsif -> base 1 + 1 + 2 = 4 (NOT 7).
+        let source = r#"
+def grade(x)
+  if x > 90
+    "a"
+  elsif x > 80
+    "b"
+  elsif x > 70
+    "c"
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "grade", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Ruby if + 2 elsif counted once: base 1 +1 +2 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_ruby_while_not_double_counted() {
+        // single while -> base 1 + 1 = 2 (NOT 3).
+        let source = r#"
+def count_down(n)
+  while n > 0
+    n -= 1
+  end
+  n
+end
+"#;
+        let metrics = calculate_complexity(source, "count_down", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Ruby single while counted once: base 1 + 1 = 2, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_ruby_straight_line_stays_one() {
+        // Guard against over-correction: no branches -> cyclomatic 1.
+        let source = r#"
+def linear(x)
+  y = x + 1
+  z = y * 2
+  z
+end
+"#;
+        let metrics = calculate_complexity(source, "linear", Language::Ruby).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 1,
+            "Ruby straight-line stays cyclomatic 1, got {}",
             metrics.cyclomatic
         );
     }

@@ -515,15 +515,30 @@ fn augment_cognitive_with_extractor_functions(
     let existing: std::collections::HashSet<(String, u32)> =
         functions.iter().map(|f| (f.name.clone(), f.line)).collect();
 
+    // R7 BUG[7] (v0.5.0 CLOSEOUT): `extract_file` emits a JS *named function
+    // expression* (`var Foo = function Foo(){}` / `Obj.x = function Foo(){}`)
+    // TWICE in `module.functions` with identical (name, line_number) — once for
+    // the variable/property binding and once for the named-expression
+    // identifier (verified on firebug-lite-debug.js: FirebugConsoleHandler@23054,
+    // getMembers@30365, onListMouseMove@24771 each appear x2). Without a
+    // self-dedup the augment loop below pushed a byte-identical
+    // `FunctionCognitive` per copy (50 entries / 47 unique on that file). The
+    // deeper extract double-emit is a structure-cluster defect (extract.rs); we
+    // add a safe idempotent guard here keyed on (name, line) so the cognitive
+    // augment is duplicate-free regardless of extractor behavior. Keying on the
+    // LINE as well as the name preserves legitimate same-name overloads defined
+    // at different lines. `seen` is seeded with the AST-walker output
+    // (`existing`) so a candidate already produced there is never re-added.
+    let mut seen: std::collections::HashSet<(String, u32)> = existing.clone();
     let mut candidates: Vec<(String, u32)> = Vec::new();
     for f in &module.functions {
-        if !existing.contains(&(f.name.clone(), f.line_number)) {
+        if seen.insert((f.name.clone(), f.line_number)) {
             candidates.push((f.name.clone(), f.line_number));
         }
     }
     for class in &module.classes {
         for m in &class.methods {
-            if !existing.contains(&(m.name.clone(), m.line_number)) {
+            if seen.insert((m.name.clone(), m.line_number)) {
                 candidates.push((m.name.clone(), m.line_number));
             }
         }
@@ -897,6 +912,35 @@ impl<'a> CognitiveCalculator<'a> {
     /// (rather than just its kind), such as Elixir's case/cond/with
     /// dispatch calls.
     fn increases_nesting_node(&self, node: Node) -> bool {
+        // R7 RC4 (v0.5.0 CLOSEOUT): an `else if` rung is a flat sibling of the
+        // parent `if`, NOT a nested construct (SonarSource Cognitive
+        // Complexity v1.4). The penalty-suppression for the rung's OWN score
+        // already exists (`is_else_if` in count_cognitive_increment), but the
+        // nesting tracker still climbed for each rung, so a construct
+        // genuinely nested inside an else-if branch accumulated phantom depth
+        // (debugCommand: max_nesting=50 / nesting_penalty=1607 for real brace
+        // depth 4). Do not raise nesting for an else-if `if`. Verified via
+        // dumper: in C/C++/Java/JS/TS an `else if` parses as
+        // `else_clause -> if_statement`; in Rust as `else_clause ->
+        // if_expression`. (Python/Ruby use distinct flat `elif_clause`/`elsif`
+        // and never reach this branch.)
+        if matches!(node.kind(), "if_statement" | "if_expression") && self.node_is_else_if(node) {
+            return false;
+        }
+
+        // R7 RC3 (v0.5.0 CLOSEOUT): tree-sitter-ruby emits a NAMED construct
+        // node (`if`/`unless`/`while`/`case`/...) that CONTAINS an UNNAMED
+        // keyword-token child of the SAME kind. The recursive walker visits
+        // unnamed children, so the bare keyword token would ALSO match the
+        // Ruby arm in `increases_nesting` and inflate nesting (a flat
+        // `return [] unless x` reported max_nesting=2 instead of 1). Only the
+        // named construct node represents real nesting; suppress the climb for
+        // the unnamed keyword leaf. Verified via dumper: the construct is
+        // is_named()=true and the keyword leaf is_named()=false.
+        if matches!(self.language, Language::Ruby) && !node.is_named() {
+            return false;
+        }
+
         if self.increases_nesting(node.kind()) {
             return true;
         }
@@ -907,6 +951,19 @@ impl<'a> CognitiveCalculator<'a> {
             return true;
         }
         false
+    }
+
+    /// R7 RC4 (v0.5.0 CLOSEOUT): detect an `else if` rung — an `if` whose
+    /// direct parent is an `else_clause`. This is the same predicate the
+    /// cognitive scorer already uses to zero an else-if rung's nesting penalty
+    /// (`count_cognitive_increment`, the `is_else_if` local), lifted here so
+    /// the nesting *tracker* agrees with the score. Applies to the brace
+    /// languages whose `else if` nests structurally (C/C++/Java/JS/TS) and to
+    /// Rust's `else_clause -> if_expression`.
+    fn node_is_else_if(&self, node: Node) -> bool {
+        node.parent()
+            .map(|p| p.kind() == "else_clause")
+            .unwrap_or(false)
     }
 
     /// Detect Elixir `case`/`cond`/`with` dispatch construct.
@@ -939,6 +996,18 @@ impl<'a> CognitiveCalculator<'a> {
     /// - recursion: +1
     fn count_cognitive_increment(&mut self, node: Node, line: u32) {
         let kind = node.kind();
+
+        // R7 RC3 (v0.5.0 CLOSEOUT): tree-sitter-ruby emits a NAMED construct
+        // node (`if`/`unless`/`when`/...) that CONTAINS an UNNAMED keyword
+        // token of the SAME kind. The Ruby `base_increment` arms below match
+        // on `kind` only, so the bare keyword token double-counted every Ruby
+        // control structure (e.g. a flat `if/else` scored 3, not 1). Only the
+        // named construct node is a real control structure; skip the unnamed
+        // keyword leaf. The named operator nodes used by the `&&`/`||` and
+        // recursion logic below are unaffected (they are is_named()=true).
+        if matches!(self.language, Language::Ruby) && !node.is_named() {
+            return;
+        }
 
         // Per SonarSource Cognitive Complexity v1.4: `else if` adds +1, NOT
         // +2. We score the inner `if_statement` directly (which is exactly +1
@@ -1220,6 +1289,13 @@ impl<'a> CognitiveCalculator<'a> {
     fn count_cyclomatic_increment(&mut self, node: Node) {
         let kind = node.kind();
 
+        // R7 RC3 (v0.5.0 CLOSEOUT): skip Ruby's unnamed keyword-token children
+        // so the bare `if`/`unless`/`when`/... token does not double-count the
+        // construct (see count_cognitive_increment for the full rationale).
+        if matches!(self.language, Language::Ruby) && !node.is_named() {
+            return;
+        }
+
         match kind {
             "if_statement" | "if_expression" | "elif_clause" => self.cyclomatic += 1,
             "for_statement" | "for_in_statement" | "while_statement" => self.cyclomatic += 1,
@@ -1236,6 +1312,21 @@ impl<'a> CognitiveCalculator<'a> {
                 if matches!(self.language, Language::C | Language::Cpp)
                     && !is_default_case_statement(node) =>
             {
+                self.cyclomatic += 1
+            }
+            // R7 RC1 (v0.5.0 CLOSEOUT): keep this module's `--include-cyclomatic`
+            // counter byte-for-byte in step with the canonical `complexity.rs`
+            // cyclomatic arms added in R7 — each non-`default` Swift
+            // `switch_entry` is a decision arm and each `guard_statement` is a
+            // binary decision. (cognitive SCORING of Swift switch/guard is
+            // intentionally unchanged — only cyclomatic was the audited defect.)
+            "switch_entry"
+                if matches!(self.language, Language::Swift)
+                    && !is_swift_default_switch_entry(node) =>
+            {
+                self.cyclomatic += 1
+            }
+            "guard_statement" if matches!(self.language, Language::Swift) => {
                 self.cyclomatic += 1
             }
             "when_entry"
@@ -1359,12 +1450,53 @@ fn is_statement(kind: &str) -> bool {
 
 /// C / C++: a `case_statement` whose first child is the `default` keyword
 /// is the catchall arm and is NOT credited.
-fn is_default_case_statement(node: Node) -> bool {
+///
+/// Exposed `pub(crate)` so the canonical cyclomatic counter in
+/// `complexity.rs` (R7 RC1) can reuse the exact same catchall predicate when
+/// crediting C/C++ `case_statement` decision points — keeping cyclomatic and
+/// cognitive in agreement on which switch arms are decision points.
+pub(crate) fn is_default_case_statement(node: Node) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;
     }
     cursor.node().kind() == "default"
+}
+
+/// R7 RC1 (v0.5.0 CLOSEOUT): Swift — a `switch_entry` whose leading child is a
+/// `default_keyword` node is the catchall arm and is NOT a decision point
+/// (mirrors the C/C++ and C# `default` conventions).
+///
+/// Grammar shape (verified via tree-sitter-swift 0.7.1 dumper):
+/// ```text
+/// switch_entry            ← `case 1: ...`
+///   case                  (unnamed keyword token)
+///   switch_pattern ...
+/// switch_entry            ← `default: ...`
+///   default_keyword       (named)
+///   ...
+/// ```
+/// A normal arm leads with the unnamed `case` token; the catchall leads with
+/// the named `default_keyword`. Exposed `pub(crate)` so both the canonical
+/// cyclomatic counter (`complexity.rs`) and this module's
+/// `--include-cyclomatic` counter credit the same Swift switch arms.
+pub(crate) fn is_swift_default_switch_entry(node: Node) -> bool {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return false;
+    }
+    loop {
+        match cursor.node().kind() {
+            "default_keyword" => return true,
+            // Stop at the pattern/body so we only inspect the leading marker.
+            "switch_pattern" | "statements" => return false,
+            _ => {}
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+    false
 }
 
 /// C#: a `switch_section` whose first child is the `default` keyword is the
@@ -2083,5 +2215,293 @@ int test(int x) {
             merged.summary.total_functions, 0,
             "Empty merge should have 0 total_functions"
         );
+    }
+
+    // =====================================================================
+    // R7 complexity-metrics (v0.5.0 CLOSEOUT) characterization tests.
+    //
+    // RC4: `else if` ladders must NOT inflate max_nesting or the cognitive
+    //      nesting penalty. Each else-if rung is a flat sibling of the parent
+    //      `if` (SonarSource v1.4), so a construct genuinely nested inside an
+    //      else-if branch must see only its TRUE depth.
+    // RC3: Ruby control constructs (and their nesting) must not be
+    //      double-counted against their own unnamed keyword-token children.
+    //
+    // Cross-language reference (verified live): a single flat guard `if` in
+    // Python and C reports max_nesting=1; a genuinely nested if reports
+    // max_nesting=2. Ruby must match (it was reporting 2 for a flat guard).
+    // =====================================================================
+
+    /// RC4: a genuinely-nested `if` inside an else-if ladder must reflect only
+    /// its true depth, not the phantom depth of the else-if rungs above it.
+    #[test]
+    fn test_else_if_ladder_does_not_inflate_nesting() {
+        let c_code = r#"
+int classify(int x) {
+    if (x == 1) {
+        return 1;
+    } else if (x == 2) {
+        return 2;
+    } else if (x == 3) {
+        if (x > 0) {       // genuinely nested: true depth 2
+            return 30;
+        }
+        return 3;
+    } else {
+        return 0;
+    }
+}
+"#;
+        let options = CognitiveOptions::new();
+        let report = analyze_cognitive_source(c_code, Language::C, "test.c", &options).unwrap();
+        let func = report
+            .functions
+            .iter()
+            .find(|f| f.name == "classify")
+            .unwrap();
+        // 4 if-rungs (base +1 each) + the nested if gains +1 nesting penalty
+        // (true depth 2) => 4 + 1 = 5. Was 7 (3 phantom rungs added).
+        assert_eq!(
+            func.cognitive, 5,
+            "else-if ladder cognitive should be 5 (4 base + 1 real nesting), got {}",
+            func.cognitive
+        );
+        // Deepest TRUE nesting: outer ladder at level 1, nested if at level 2.
+        assert_eq!(
+            func.max_nesting, 2,
+            "else-if ladder max_nesting should be the real depth 2, got {}",
+            func.max_nesting
+        );
+        // Only the genuinely-nested if contributes a nesting penalty.
+        assert_eq!(
+            func.nesting_penalty, 1,
+            "else-if ladder nesting_penalty should be 1, got {}",
+            func.nesting_penalty
+        );
+    }
+
+    /// RC4: flat else-if chains (no genuinely-nested constructs) keep their
+    /// existing correct score AND now report a flat max_nesting of 1.
+    #[test]
+    fn test_flat_else_if_chain_nesting_is_one() {
+        let js_code = r#"
+function classify(x) {
+    if (x > 100) {
+        return "high";
+    } else if (x > 50) {
+        return "medium";
+    } else if (x > 0) {
+        return "low";
+    } else {
+        return "negative";
+    }
+}
+"#;
+        let options = CognitiveOptions::new();
+        let report =
+            analyze_cognitive_source(js_code, Language::JavaScript, "test.js", &options).unwrap();
+        let func = report
+            .functions
+            .iter()
+            .find(|f| f.name == "classify")
+            .unwrap();
+        // Score unchanged: 3 (if + 2 else-if, each +1).
+        assert_eq!(func.cognitive, 3, "flat else-if score stays 3");
+        // All rungs are flat siblings -> max nesting depth 1.
+        assert_eq!(
+            func.max_nesting, 1,
+            "flat else-if max_nesting should be 1, got {}",
+            func.max_nesting
+        );
+        assert_eq!(
+            func.nesting_penalty, 0,
+            "flat else-if has no nesting penalty, got {}",
+            func.nesting_penalty
+        );
+    }
+
+    /// RC4: a loop nested two levels deep inside else-if branches earns the
+    /// penalty for its TRUE depth, not the inflated rung depth.
+    #[test]
+    fn test_nested_loop_inside_else_if_true_depth() {
+        let c_code = r#"
+int f(int x, int n) {
+    if (x == 1) {
+        return 1;
+    } else if (x == 2) {
+        for (int i = 0; i < n; i++) {   // true depth 2
+            if (i > 5) {                 // true depth 3
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+"#;
+        let options = CognitiveOptions::new();
+        let report = analyze_cognitive_source(c_code, Language::C, "test.c", &options).unwrap();
+        let func = report.functions.iter().find(|f| f.name == "f").unwrap();
+        // With the else-if rung NOT bumping nesting (RC4): the for body sits at
+        // true depth 2 and the inner if at true depth 3.
+        //   if(x==1)      : base 1, nesting 0          -> 1
+        //   else if(x==2) : base 1 (flat sibling)      -> 1
+        //   for  (depth 2): base 1 + nesting 1         -> 2
+        //   if(i>5)(depth3): base 1 + nesting 2        -> 3
+        // total = 1 + 1 + 2 + 3 = 7. (Pre-fix the phantom else-if rung pushed
+        // these deeper, inflating the score.)
+        assert_eq!(
+            func.cognitive, 7,
+            "nested loop inside else-if cognitive should be 7, got {}",
+            func.cognitive
+        );
+        assert_eq!(
+            func.max_nesting, 3,
+            "nested loop inside else-if max_nesting should be 3, got {}",
+            func.max_nesting
+        );
+    }
+
+    /// RC3: a flat Ruby guard (`return ... unless cond`) must report
+    /// max_nesting=1 (matching Python/C flat guards), not 2.
+    #[test]
+    fn test_ruby_flat_unless_modifier_nesting_not_doubled() {
+        let rb_code = r#"
+def find_similar(target)
+  return [] unless defined?(SpellChecker)
+  target
+end
+"#;
+        let options = CognitiveOptions::new();
+        let report = analyze_cognitive_source(rb_code, Language::Ruby, "t.rb", &options).unwrap();
+        let func = report
+            .functions
+            .iter()
+            .find(|f| f.name == "find_similar")
+            .unwrap();
+        assert_eq!(
+            func.max_nesting, 1,
+            "Ruby flat unless-modifier max_nesting should be 1 (like Python/C), got {}",
+            func.max_nesting
+        );
+        // Cognitive: the guard is one control structure -> +1.
+        assert_eq!(
+            func.cognitive, 1,
+            "Ruby flat unless-modifier cognitive should be 1, got {}",
+            func.cognitive
+        );
+    }
+
+    /// RC3: a flat Ruby `if/else` must report max_nesting=1, not 2.
+    #[test]
+    fn test_ruby_flat_if_else_nesting_not_doubled() {
+        let rb_code = r#"
+def interpret(x)
+  if x == 1
+    10
+  else
+    20
+  end
+end
+"#;
+        let options = CognitiveOptions::new();
+        let report = analyze_cognitive_source(rb_code, Language::Ruby, "t.rb", &options).unwrap();
+        let func = report.functions.iter().find(|f| f.name == "interpret").unwrap();
+        assert_eq!(
+            func.max_nesting, 1,
+            "Ruby flat if/else max_nesting should be 1, got {}",
+            func.max_nesting
+        );
+    }
+
+    /// RC3: a genuinely nested Ruby if (if inside if) reports max_nesting=2.
+    #[test]
+    fn test_ruby_nested_if_true_depth_two() {
+        let rb_code = r#"
+def nested(x, y)
+  if x
+    if y
+      return 1
+    end
+  end
+  0
+end
+"#;
+        let options = CognitiveOptions::new();
+        let report = analyze_cognitive_source(rb_code, Language::Ruby, "t.rb", &options).unwrap();
+        let func = report.functions.iter().find(|f| f.name == "nested").unwrap();
+        assert_eq!(
+            func.max_nesting, 2,
+            "Ruby genuinely-nested if max_nesting should be 2, got {}",
+            func.max_nesting
+        );
+    }
+
+    /// Cross-language anchor: Python flat guard reports max_nesting=1.
+    /// Locks the reference value the Ruby fix is calibrated against.
+    #[test]
+    fn test_python_flat_guard_nesting_reference() {
+        let py_code = r#"
+def guard(x):
+    if not x:
+        return []
+    return x
+"#;
+        let options = CognitiveOptions::new();
+        let report =
+            analyze_cognitive_source(py_code, Language::Python, "t.py", &options).unwrap();
+        let func = report.functions.iter().find(|f| f.name == "guard").unwrap();
+        assert_eq!(func.max_nesting, 1, "Python flat guard max_nesting is 1");
+    }
+
+    /// R7 BUG[7] (v0.5.0 CLOSEOUT): the file-based cognitive report (which runs
+    /// `augment_cognitive_with_extractor_functions`) must never contain
+    /// duplicate `(name, line)` entries — `extract_file` can emit a JS named
+    /// function expression twice, and the augment loop must self-dedup.
+    ///
+    /// The extract double-emit is an interaction effect that only surfaces on
+    /// large files (it is NOT minimally reproducible — see the audit), so this
+    /// test cannot force the dup. It instead pins the structural invariant on a
+    /// JS file rich in named function expressions: the augment dedup guarantees
+    /// the report is duplicate-free regardless of extractor behavior.
+    #[test]
+    fn test_js_cognitive_no_duplicate_name_line_entries() {
+        use std::io::Write;
+        let js = r#"
+var Foo = function Foo(a, b) {
+    if (a && b) { return 1; }
+    return 0;
+};
+var obj = {};
+obj.handler = function handler(e) {
+    if (e) { return e; }
+    return null;
+};
+Lib.Mod.onMove = function onMove(x) {
+    try { return x; } catch (err) { return 0; }
+};
+function plain(z) {
+    return z > 0 ? 1 : 0;
+}
+"#;
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("r7_bug7_dedup_{}.js", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(js.as_bytes()).unwrap();
+        }
+        let options = CognitiveOptions::new();
+        let report = analyze_cognitive(&path, &options).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        let mut seen: std::collections::HashSet<(String, u32)> =
+            std::collections::HashSet::new();
+        for f in &report.functions {
+            assert!(
+                seen.insert((f.name.clone(), f.line)),
+                "duplicate (name,line) in cognitive report: {} @ {}",
+                f.name,
+                f.line
+            );
+        }
     }
 }
