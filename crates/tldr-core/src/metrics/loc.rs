@@ -613,6 +613,10 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
     let mut by_directory: HashMap<PathBuf, LocInfo> = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut files_processed = 0;
+    // fix-C5-6: per-parent-directory memo of "does this directory hold C++
+    // siblings?" so `.h` headers are attributed to C++ without re-reading the
+    // directory for every header. Keyed by parent dir, value = is-cpp.
+    let mut h_is_cpp_cache: HashMap<PathBuf, bool> = HashMap::new();
 
     // cross-cutting-and-clear-fix-bugs-v1 (P18.X4): when no language filter
     // is supplied, detect the dominant language by scanning extensions
@@ -740,8 +744,18 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
             continue; // Don't fall through to Language-based analysis.
         }
 
-        // Detect language
-        let lang = match Language::from_path(entry_path) {
+        // Detect language.
+        //
+        // fix-C5-6 (v0.5.0 AUDIT-FIX): `Language::from_path` maps `.h`
+        // unconditionally to C, so C++ projects that keep their public
+        // headers as `.h` next to `.cpp`/`.cc` translation units (the common
+        // case — e.g. cpp-fmt `include/fmt/*.h`) had every header
+        // mis-bucketed under "c". Use sibling-aware detection for `.h`: if a
+        // C++ source/header sibling exists in the same directory, attribute
+        // the header to C++. The per-directory decision is memoised in
+        // `h_is_cpp_cache` so we read each parent directory at most once
+        // during the walk. Non-`.h` files defer to the canonical classifier.
+        let lang = match resolve_loc_language(entry_path, &mut h_is_cpp_cache) {
             Some(l) => l,
             None => continue, // Skip unsupported files
         };
@@ -878,6 +892,61 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         by_directory: by_directory_vec,
         warnings,
     })
+}
+
+/// C++ source / richer-header extensions whose presence next to a `.h` file
+/// is positive evidence that the `.h` is a C++ header. fix-C5-6.
+const CPP_SIBLING_EXTS: &[&str] = &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"];
+
+/// fix-C5-6 (v0.5.0 AUDIT-FIX): resolve the language for a single file during
+/// the LOC directory walk, attributing ambiguous `.h` headers to C++ when the
+/// containing directory holds C++ siblings.
+///
+/// For every extension other than `.h` this is exactly `Language::from_path`.
+/// For `.h` we check (and memoise per parent directory) whether the directory
+/// contains any `.cpp/.cc/.cxx/.c++` source or `.hpp/.hh/.hxx/.h++` header; if
+/// so the header is C++, otherwise it stays C. This mirrors
+/// [`crate::types::Language::from_path_with_siblings`] but caches the
+/// per-directory decision so a project with N headers reads each directory
+/// once rather than N times.
+fn resolve_loc_language(path: &Path, cache: &mut HashMap<PathBuf, bool>) -> Option<Language> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    // Only `.h` is ambiguous; everything else uses the canonical classifier.
+    if ext.as_deref() != Some("h") {
+        return Language::from_path(path);
+    }
+
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        // No usable parent → fall back to canonical (C).
+        _ => return Language::from_path(path),
+    };
+
+    let is_cpp = *cache.entry(parent.clone()).or_insert_with(|| {
+        let read_dir = match std::fs::read_dir(&parent) {
+            Ok(rd) => rd,
+            Err(_) => return false,
+        };
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            if let Some(sib_ext) = p.extension().and_then(|e| e.to_str()) {
+                if CPP_SIBLING_EXTS.contains(&sib_ext.to_ascii_lowercase().as_str()) {
+                    return true;
+                }
+            }
+        }
+        false
+    });
+
+    if is_cpp {
+        Some(Language::Cpp)
+    } else {
+        Language::from_path(path)
+    }
 }
 
 /// Analyze a path (file or directory).
@@ -1129,5 +1198,73 @@ def foo():
     fn test_classify_code_line() {
         let (line_type, _) = classify_line("let x = 5;", Language::Rust, ParseState::Normal);
         assert_eq!(line_type, LineType::Code);
+    }
+
+    // -------------------------------------------------------------------------
+    // fix-C5-6 (v0.5.0 AUDIT-FIX): `.h` headers in a C++ project must be
+    // attributed to the C++ language family, not C. `Language::from_path`
+    // alone maps `.h` → C unconditionally; the directory walk must use
+    // sibling-aware detection so a `.h` next to `.cpp`/`.cc` counts as C++.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_loc_h_header_attributed_to_cpp_when_cpp_siblings() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        // A C++ project: a `.cc` translation unit + a `.h` public header.
+        std::fs::write(
+            dir.path().join("widget.cc"),
+            "#include \"widget.h\"\nint Widget::area() { return w * h; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("widget.h"),
+            "// widget header\nclass Widget {\n public:\n  int area();\n  int w, h;\n};\n",
+        )
+        .unwrap();
+
+        let report = analyze_directory(dir.path(), &LocOptions::new()).unwrap();
+        let langs: Vec<&str> = report.by_language.keys().map(|s| s.as_str()).collect();
+
+        assert!(
+            !report.by_language.contains_key("c"),
+            "no file should be bucketed as C in a C++ project, got languages {:?}",
+            langs
+        );
+        let cpp = report
+            .by_language
+            .get("cpp")
+            .expect("cpp bucket must exist");
+        assert_eq!(
+            cpp.files, 2,
+            "both widget.cc and widget.h must be counted as C++, got {:?}",
+            langs
+        );
+    }
+
+    /// Guard: a `.h` header in a pure-C project (no C++ siblings) must STILL
+    /// be attributed to C — the widening only fires on positive C++ evidence.
+    #[test]
+    fn test_loc_h_header_stays_c_in_pure_c_project() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("util.c"),
+            "#include \"util.h\"\nint add(int a, int b) { return a + b; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("util.h"),
+            "/* util header */\nint add(int a, int b);\n",
+        )
+        .unwrap();
+
+        let report = analyze_directory(dir.path(), &LocOptions::new()).unwrap();
+        assert!(
+            !report.by_language.contains_key("cpp"),
+            "a pure-C project must not produce a cpp bucket"
+        );
+        let c = report.by_language.get("c").expect("c bucket must exist");
+        assert_eq!(c.files, 2, "both util.c and util.h must be counted as C");
     }
 }
