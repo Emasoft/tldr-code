@@ -229,12 +229,20 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
             (lower.ends_with(".exs") || lower.ends_with(".ex"))
                 && (stem.ends_with("_test") || file_name.starts_with("test_"))
         }
-        // Lua / Luau: busted convention — `*_spec.lua`/`*_test.lua`.
+        // Lua / Luau: busted `*_spec.lua`/`*_test.lua`, TestEz `*.spec.lua`
+        // (Roblox/Roact convention — the marker is the `.spec` stem suffix,
+        // NOT `_spec`), and busted's hyphenated `test-*.lua` (luvit's
+        // `tests/test-fs.lua` style). T2 (v0.5.0 AUDIT-FIX): the previous gate
+        // only matched `_spec`/`_test`/`test_`, dropping every `*.spec.lua`
+        // TestEz suite and every `test-*.lua` busted file at the file stage.
         Language::Lua | Language::Luau => {
             (lower.ends_with(".lua") || lower.ends_with(".luau"))
                 && (stem.ends_with("_spec")
                     || stem.ends_with("_test")
-                    || file_name.starts_with("test_"))
+                    || stem.ends_with(".spec")
+                    || stem.ends_with(".test")
+                    || file_name.starts_with("test_")
+                    || file_name.starts_with("test-"))
         }
         // Rust: built-in `#[test]` framework — files under `tests/` are
         // integration tests, and any source file may contain `#[cfg(test)]`
@@ -353,7 +361,10 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         // `let%test`, `let%test_unit`, `let%expect_test` extension-point
         // bindings, plus Alcotest `test_case "..."` registrations.
         Language::Ocaml => ocaml_is_test_binding(node, source),
-        Language::C | Language::Cpp => false,
+        // C / C++: GoogleTest (`TEST`/`TEST_F`/`TEST_P`/`TYPED_TEST`/
+        // `TYPED_TEST_P`) and Catch2 (`TEST_CASE`/`SCENARIO`) macro
+        // invocations. See `cpp_is_test_macro` for the two parse shapes.
+        Language::C | Language::Cpp => cpp_is_test_macro(node, source),
         // solidity-test-recognizer-v1 (v0.5.0 SOL-009): Foundry/Forge test
         // convention. A function is a test if it is a `function_definition`
         // whose name starts with `test`, `fuzz`, or `invariant_`. The
@@ -832,7 +843,15 @@ fn elixir_is_test_macro(node: &Node, source: &[u8]) -> bool {
     node_text(target, source) == "test"
 }
 
-// -- Lua/Luau: `it(...)` / `describe(...)` (busted) ---------------------------
+// -- Lua/Luau: `it(...)` / `test(...)` (busted / TestEz) ----------------------
+//
+// We count LEAF test cases — `it(...)` (busted/TestEz/Jest-Lua) and `test(...)`
+// (busted) — but deliberately NOT `describe(...)` blocks, which merely GROUP
+// nested `it`s (counting both would double-count). T2 (v0.5.0 AUDIT-FIX): the
+// TestEz family also ships focus/skip variants (`itFOCUS` / `itSKIP` /
+// `itFIXME`, and the bare `FOCUS`/`SKIP`/`FIXME` modifiers are block-level,
+// not cases) — recognise the `it*` case variants so Roact-style `*.spec.lua`
+// suites count their cases.
 fn lua_is_test_call(node: &Node, source: &[u8]) -> bool {
     // tree-sitter-lua / -luau represent calls as `function_call`. The
     // function name lives in the `name` field (an `identifier`).
@@ -842,7 +861,10 @@ fn lua_is_test_call(node: &Node, source: &[u8]) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "identifier" {
-            return matches!(node_text(child, source).as_str(), "it" | "test");
+            return matches!(
+                node_text(child, source).as_str(),
+                "it" | "test" | "itFOCUS" | "itSKIP" | "itFIXME"
+            );
         }
     }
     false
@@ -880,6 +902,87 @@ fn solidity_is_forge_test_function(node: &Node, source: &[u8]) -> bool {
     //   - `invariant_*`   → invariant test (stateful fuzzing).
     // Hooks like `setUp` / `setUpAll` / `afterInvariant` do NOT match.
     name.starts_with("test") || name.starts_with("fuzz") || name.starts_with("invariant_")
+}
+
+// -- C / C++: GoogleTest & Catch2 macro invocations ---------------------------
+//
+// T2 (v0.5.0 AUDIT-FIX): the C/C++ test recogniser previously returned `false`
+// unconditionally, so every GoogleTest/Catch2 suite reported
+// `test_functions_scanned = 0` despite hundreds of `TEST(...)` macros.
+//
+// The two frameworks parse into TWO distinct AST shapes (verified by
+// debug-parse against tree-sitter-cpp / tree-sitter-c 0.23.4):
+//
+//   * GoogleTest in C++ — `TEST(Suite, Name) { ... }` looks like a K&R
+//     function definition (the two macro args parse as `parameter_declaration`
+//     "types"), so tree-sitter-cpp emits a `function_definition` whose
+//     `declarator` is a `function_declarator` whose INNER `declarator` is an
+//     `identifier` naming the macro (`TEST` / `TEST_F` / `TYPED_TEST` / …).
+//
+//   * GoogleTest in C, and Catch2 in BOTH C/C++ — `TEST(Suite, Name)` (C) and
+//     `TEST_CASE("name", "[tag]")` (the string first arg blocks the K&R
+//     reading) parse as an `expression_statement`'s `call_expression` whose
+//     `function` child is the macro `identifier`; the trailing `{ ... }` is a
+//     SEPARATE sibling `compound_statement`.
+//
+// We recognise BOTH shapes by matching the macro head identifier against the
+// known test-macro set. The set contains only registration macros
+// (`TEST`/`TEST_CASE`/…) and never assertion macros (`EXPECT_*`/`ASSERT_*`/
+// `REQUIRE`/`CHECK`), so nested assertion calls inside a test body never
+// false-match. `walk_count` stops recursing once a `function_definition`
+// matches; for the call-shape (where the body is a sibling, not a child) the
+// nested `EXPECT_*` calls are visited but excluded by the name set.
+const CPP_TEST_MACROS: &[&str] = &[
+    // GoogleTest.
+    "TEST",
+    "TEST_F",
+    "TEST_P",
+    "TYPED_TEST",
+    "TYPED_TEST_P",
+    // Catch2 / doctest.
+    "TEST_CASE",
+    "SCENARIO",
+    "TEST_CASE_METHOD",
+];
+
+fn cpp_is_test_macro(node: &Node, source: &[u8]) -> bool {
+    match node.kind() {
+        // C++ GoogleTest K&R-style: function_definition -> function_declarator
+        // -> identifier head.
+        "function_definition" => {
+            let mut decl = node.child_by_field_name("declarator");
+            // Descend through nested declarators (e.g. pointer/reference
+            // wrappers never appear for the macro shape, but be defensive)
+            // until we reach the function_declarator's inner identifier.
+            while let Some(d) = decl {
+                match d.kind() {
+                    "function_declarator" => {
+                        decl = d.child_by_field_name("declarator");
+                    }
+                    "identifier" => {
+                        let name = node_text(d, source);
+                        return CPP_TEST_MACROS.contains(&name.as_str());
+                    }
+                    _ => break,
+                }
+            }
+            false
+        }
+        // C GoogleTest + Catch2 call-shape: call_expression with an identifier
+        // callee.
+        "call_expression" => {
+            let func = match node.child_by_field_name("function") {
+                Some(f) => f,
+                None => return false,
+            };
+            if func.kind() != "identifier" {
+                return false;
+            }
+            let name = node_text(func, source);
+            CPP_TEST_MACROS.contains(&name.as_str())
+        }
+        _ => false,
+    }
 }
 
 // -- Helpers ------------------------------------------------------------------
@@ -1079,5 +1182,131 @@ mod tests {
             info.test_function_count, 3,
             "cats-effect real/ticked + munit test all count"
         );
+    }
+
+    // ====================================================================
+    // FEATURE TESTS — T2 (v0.5.0 AUDIT-FIX): C/C++ GoogleTest + Catch2,
+    // Lua/Luau TestEz (.spec.lua) recognition.
+    // ====================================================================
+
+    /// C++ GoogleTest: `TEST(Suite, Name) { ... }` and `TEST_F(...)` parse
+    /// (tree-sitter-cpp) as `function_definition` nodes whose declarator
+    /// identifier is the macro head. Recognise the GoogleTest macro family so
+    /// `tldr specs --from-tests` reports `test_functions_scanned > 0` for
+    /// GoogleTest suites (e.g. fmt's `test/*.cc`).
+    #[test]
+    fn cpp_googletest_test_macros_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "string-test.cc",
+            "#include <gtest/gtest.h>\n\
+             TEST(StringViewTest, Length) {\n  EXPECT_EQ(string_view(\"foo\").size(), 3u);\n}\n\
+             TEST(StringViewTest, Compare) {\n  EXPECT_TRUE(true);\n}\n\
+             TEST_F(AllocatorTest, Allocate) {\n  EXPECT_EQ(1, 1);\n}\n\
+             TYPED_TEST(NumericTest, Works) {\n  EXPECT_TRUE(true);\n}\n\
+             int helper() { return 0; }\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Cpp);
+        assert!(info.is_test_file);
+        assert_eq!(
+            info.test_function_count, 4,
+            "TEST/TEST_F/TYPED_TEST macros count; plain `helper` excluded"
+        );
+    }
+
+    /// C++ Catch2: `TEST_CASE("name", "[tag]") { ... }` parses as a
+    /// `call_expression` (the string first-arg prevents the K&R
+    /// function-definition reading). Recognise the Catch2 macro family too.
+    #[test]
+    fn cpp_catch2_test_case_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "vec-test.cpp",
+            "#include <catch2/catch.hpp>\n\
+             TEST_CASE(\"vectors can be sized\", \"[vector]\") {\n  REQUIRE(1 == 1);\n}\n\
+             SCENARIO(\"widgets\") {\n  REQUIRE(true);\n}\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Cpp);
+        assert!(info.is_test_file);
+        assert_eq!(
+            info.test_function_count, 2,
+            "Catch2 TEST_CASE + SCENARIO count (REQUIRE excluded)"
+        );
+    }
+
+    /// C GoogleTest: in the C grammar `TEST(Suite, Name) { ... }` parses as a
+    /// `call_expression` (callee identifier = `TEST`) followed by a separate
+    /// `compound_statement`. The recogniser must count the call-shape too so
+    /// GoogleTest `*.c` suites are not silently zero.
+    #[test]
+    fn c_googletest_call_shape_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "c-test.c",
+            "#include <gtest/gtest.h>\n\
+             TEST(CTest, Adds) {\n  EXPECT_EQ(1, 1);\n}\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::C);
+        assert!(info.is_test_file);
+        assert_eq!(
+            info.test_function_count, 1,
+            "C GoogleTest call-shape TEST() counted (EXPECT_EQ excluded)"
+        );
+    }
+
+    /// Lua/Luau TestEz: real-world suites are named `*.spec.lua` and register
+    /// cases with `it(...)` / `itFOCUS(...)` / `itSKIP(...)` (typically inside
+    /// `return function() ... end`). The `.spec.lua` filename and the TestEz
+    /// `it` family must both be recognised (e.g. Roact's `src/*.spec.lua`).
+    #[test]
+    fn lua_testez_spec_dot_lua_it_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "assign.spec.lua",
+            "return function()\n\
+             \tit(\"does a\", function()\n\t\texpect(1).to.equal(1)\n\tend)\n\
+             \tit(\"does b\", function()\n\t\texpect(2).to.equal(2)\n\tend)\n\
+             \titSKIP(\"skipped\", function() end)\n\
+             \tdescribe(\"group\", function()\n\t\tit(\"nested\", function() end)\n\tend)\n\
+             end\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Lua);
+        assert!(
+            info.is_test_file,
+            "`*.spec.lua` must be recognised as a test file"
+        );
+        assert_eq!(
+            info.test_function_count, 4,
+            "3 top-level it/itSKIP + 1 nested it; `describe` itself not counted"
+        );
+    }
+
+    /// Lua busted: hyphenated `test-*.lua` files (e.g. luvit's
+    /// `tests/test-fs.lua`) use `test(...)` registrations. Both the `test-`
+    /// filename prefix and the `test` call must be recognised.
+    #[test]
+    fn lua_busted_hyphen_test_file_counted() {
+        let tmp = tempdir().unwrap();
+        let p = write(
+            tmp.path(),
+            "test-fs.lua",
+            "test(\"reads\", function()\n  assert(true)\nend)\n\
+             test(\"writes\", function()\n  assert(true)\nend)\n",
+        );
+        let src = fs::read_to_string(&p).unwrap();
+        let info = recognize(&p, &src, Language::Lua);
+        assert!(
+            info.is_test_file,
+            "`test-*.lua` must be recognised as a test file"
+        );
+        assert_eq!(info.test_function_count, 2, "two `test(...)` registrations");
     }
 }

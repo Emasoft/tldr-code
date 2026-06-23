@@ -1774,6 +1774,82 @@ const GO_VOCAB: AssertionVocab = AssertionVocab {
     matcher_heads: &["DeepEqual", "Equal", "Is"],
 };
 
+/// T2 (v0.5.0 AUDIT-FIX): the C / C++ GoogleTest + Catch2 assertion
+/// vocabulary.
+///
+/// GoogleTest assertion MACROS (`EXPECT_EQ`/`ASSERT_EQ`/…) are the dominant
+/// shape in C/C++ test suites; the previous shared `FLAT_VOCAB` carried none of
+/// them, so a GoogleTest file reported `total_specs = 0` even with hundreds of
+/// recognised `TEST(...)` functions. The macro names are SCREAMING_CASE C
+/// preprocessor symbols that never collide with another language's method
+/// names, so isolating them in a C/C++-only vocabulary keeps every other
+/// language untouched.
+///
+/// GoogleTest orders equality args as `EXPECT_EQ(actual, expected)` (actual
+/// first) — the OPPOSITE of JUnit's `assertEquals(expected, actual)`. The
+/// shared `classify_assertion_call` equality branch already picks "the
+/// call-shaped side" as the function-under-test regardless of position, so
+/// `EXPECT_EQ(add(2,3), 5)` correctly attributes `add` and records `5` as the
+/// output without any position-specific handling here.
+const CPP_VOCAB: AssertionVocab = AssertionVocab {
+    equality: &[
+        // GoogleTest.
+        "EXPECT_EQ",
+        "ASSERT_EQ",
+        "EXPECT_STREQ",
+        "ASSERT_STREQ",
+        // Inherit the shared cross-language helpers too (Unity `TEST_ASSERT_*`
+        // style suites and any testify-shaped C++ helpers).
+        "assertEquals",
+        "assertEqual",
+    ],
+    inequality: &["EXPECT_NE", "ASSERT_NE", "EXPECT_STRNE", "ASSERT_STRNE"],
+    truthy: &[
+        // GoogleTest.
+        "EXPECT_TRUE",
+        "ASSERT_TRUE",
+        // Catch2 / doctest.
+        "REQUIRE",
+        "CHECK",
+    ],
+    falsy: &["EXPECT_FALSE", "ASSERT_FALSE", "REQUIRE_FALSE", "CHECK_FALSE"],
+    not_null: &["EXPECT_NE_NULL", "ASSERT_NE_NULL"],
+    null: &["EXPECT_EQ_NULL", "ASSERT_EQ_NULL"],
+    throws: &[
+        // GoogleTest.
+        "EXPECT_THROW",
+        "ASSERT_THROW",
+        "EXPECT_ANY_THROW",
+        "ASSERT_ANY_THROW",
+        // Catch2.
+        "REQUIRE_THROWS",
+        "REQUIRE_THROWS_AS",
+        "CHECK_THROWS",
+    ],
+    matcher_heads: &[],
+};
+
+/// C / C++: GoogleTest + Catch2 assertion macros (flat call shape) + shared
+/// flat helpers. No dedicated framework SHAPE beyond the flat-callee classifier
+/// (the macros parse as `call_expression` / `macro_invocation` whose callee is
+/// the macro identifier), so this adapter only swaps in [`CPP_VOCAB`].
+struct CppAdapter;
+impl AssertionAdapter for CppAdapter {
+    fn extract(
+        &self,
+        node: &Node,
+        source: &[u8],
+        test_func_name: &str,
+        specs: &mut HashMap<String, FunctionSpecs>,
+    ) {
+        classify_flat_call_node(node, source, Language::Cpp, self.vocab(), test_func_name, specs);
+    }
+
+    fn vocab(&self) -> &'static AssertionVocab {
+        &CPP_VOCAB
+    }
+}
+
 /// Go: `if <call> != want { t.Errorf(...) }` idiom + flat helpers.
 struct GoAdapter;
 impl AssertionAdapter for GoAdapter {
@@ -2036,6 +2112,9 @@ fn adapter_for(language: Language) -> Box<dyn AssertionAdapter> {
         Language::Ruby => Box::new(RubyAdapter),
         Language::Ocaml => Box::new(OcamlAdapter),
         Language::Scala => Box::new(ScalaAdapter),
+        // T2 (v0.5.0 AUDIT-FIX): C / C++ get the GoogleTest + Catch2 assertion
+        // macro vocabulary (CPP_VOCAB) instead of the shared FLAT_VOCAB.
+        Language::C | Language::Cpp => Box::new(CppAdapter),
         // Every remaining language uses only the shared flat-callee path
         // (Python's pytest extraction runs on a separate code path entirely;
         // it never reaches the walker, but a flat adapter is harmless).
@@ -4115,6 +4194,18 @@ fn is_rust_macro_call_token(n: Node, source: &[u8]) -> bool {
     if preceded_by_dot(n, source) || is_inside_rust_macro_closure(n, source) {
         return false;
     }
+    // T2 (v0.5.0 AUDIT-FIX): Rust enum constructors (`Some` / `Ok` / `Err` /
+    // `None`) are value WRAPPERS, never the function-under-test. In
+    // `assert_eq!(arg.get_long(), Some("bar"))` both sides are call-shaped
+    // tokens; without this guard the RHS `Some(...)` was picked as the FUT
+    // (clap regressed reporting `Some`/`None` as the only functions-under-test).
+    // Excluding constructors here lets the FUT-selection fall through to the
+    // real LHS accessor (`get_long`), treating `Some("bar")` as the expected
+    // output value. The name set is the std `Option`/`Result` variant set; a
+    // `scoped_identifier` (`Option::Some`) is matched on its tail too.
+    if is_rust_enum_ctor_token(n, source) {
+        return false;
+    }
     let end = n.end_byte();
     // Walk forward over whitespace looking for `(`.
     let mut i = end;
@@ -4127,6 +4218,19 @@ fn is_rust_macro_call_token(n: Node, source: &[u8]) -> bool {
         return b == b'(';
     }
     false
+}
+
+/// T2 (v0.5.0 AUDIT-FIX): true when a Rust macro-arg token is a std
+/// `Option`/`Result` constructor (`Some` / `None` / `Ok` / `Err`). These are
+/// value wrappers around an EXPECTED value in an equality assertion, never the
+/// function-under-test. Matches the tail identifier so both the bare form
+/// (`Some(x)`) and the path-qualified form (`Option::Some(x)`) are caught.
+fn is_rust_enum_ctor_token(n: Node, source: &[u8]) -> bool {
+    let text = std::str::from_utf8(&source[n.start_byte()..n.end_byte()])
+        .unwrap_or("")
+        .trim();
+    let tail = text.rsplit("::").next().unwrap_or(text);
+    matches!(tail, "Some" | "None" | "Ok" | "Err")
 }
 
 /// language-specific-bugs-v1 (P14.AGG14-9): wrapper around
@@ -6049,6 +6153,96 @@ class OldTests: XCTestCase {
         assert!(
             report.functions.iter().any(|f| f.function_name == "add"),
             "harvest still reaches the XCTest func testLegacy"
+        );
+    }
+
+    // ====================================================================
+    // FEATURE TESTS — T2 (v0.5.0 AUDIT-FIX): C++ GoogleTest specs end-to-end
+    // + Rust enum-constructor FUT suppression.
+    // ====================================================================
+
+    /// C++ GoogleTest: a file of `TEST(Suite, Name) { EXPECT_EQ(call(), v) }`
+    /// must report `test_functions_scanned > 0` AND surface specs from the
+    /// `EXPECT_EQ` assertions. (fmt's `test/*.cc` regressed with
+    /// `test_functions_scanned = 0` / `total_specs = 0`.)
+    #[test]
+    fn specs_cpp_googletest_end_to_end() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("calc-test.cc");
+        let src = "#include <gtest/gtest.h>\n\
+            TEST(CalcTest, Adds) {\n  EXPECT_EQ(add(2, 3), 5);\n}\n\
+            TEST(CalcTest, Subs) {\n  EXPECT_EQ(sub(5, 2), 3);\n}\n";
+        fs::write(&test_path, src).unwrap();
+
+        let report = run_specs(&test_path, None).unwrap();
+        assert!(
+            report.summary.test_functions_scanned >= 2,
+            "GoogleTest TEST() macros must be counted; got {}",
+            report.summary.test_functions_scanned
+        );
+        // EXPECT_EQ(add(2,3), 5) => `add` is the FUT.
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "add"),
+            "EXPECT_EQ(add(2,3), 5) must surface `add` as a FUT; got {:?}",
+            report
+                .functions
+                .iter()
+                .map(|f| &f.function_name)
+                .collect::<Vec<_>>()
+        );
+        // The TEST macro head must never be a FUT.
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "TEST" || f.function_name == "EXPECT_EQ"),
+            "TEST/EXPECT_EQ must not be functions-under-test"
+        );
+    }
+
+    /// Rust enum constructors (`Some`/`Ok`/`Err`/`None`) are value wrappers,
+    /// never the function-under-test. In `assert_eq!(get_id(), Ok(7))` the
+    /// constructor side (`Ok`) must be REJECTED as the FUT so the FUT-selection
+    /// falls through to the real call (`get_id`); the constructor's payload is
+    /// the expected value. (clap regressed reporting `Some`/`None`/`Ok` as the
+    /// only functions-under-test.)
+    #[test]
+    fn specs_rust_enum_ctor_not_fut() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("arg_test.rs");
+        let src = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_long() {
+        assert_eq!(get_id(), Ok(7));
+        assert_eq!(lookup(), None);
+        assert_eq!(get_long(), Some("bar"));
+    }
+}
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let names: Vec<String> = report
+            .functions
+            .iter()
+            .map(|f| f.function_name.clone())
+            .collect();
+        // Constructors are never FUTs (this is the regression being fixed).
+        assert!(
+            !names.iter().any(|n| n == "Some" || n == "Ok" || n == "Err" || n == "None"),
+            "enum constructors must not be FUTs; got {names:?}"
+        );
+        // The real call on the OTHER side is attributed instead — proving the
+        // FUT-selection fell through past the constructor.
+        assert!(
+            names.iter().any(|n| n == "get_id"),
+            "`get_id` (the real call opposite `Ok(7)`) must be the FUT; got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "lookup"),
+            "`lookup` (the real call opposite `None`) must be the FUT; got {names:?}"
         );
     }
 }

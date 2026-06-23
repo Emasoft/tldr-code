@@ -219,6 +219,226 @@ impl ObservedValue {
             _ => None,
         }
     }
+
+    /// Language-aware display type name for a `Type` invariant.
+    ///
+    /// T2 (v0.5.0 AUDIT-FIX): `type_name()` returns the *category* key used for
+    /// "all values share a type" comparison (and stays Python-flavoured because
+    /// the comparison is internal). For the user-facing invariant EXPRESSION we
+    /// render the type in the SOURCE language's own vocabulary, so a Kotlin /
+    /// Java / TypeScript / OCaml invariant never shows Python's `str` / `int` /
+    /// `NoneType`.
+    ///
+    /// Returns `None` when the observed value has no reportable type:
+    ///   * `Other` (unparseable) — for ALL languages (matches the existing
+    ///     `first_type != "unknown"` guard).
+    ///   * `None` (the null sentinel) — declined for every NON-Python language
+    ///     (an all-`None` column is a nullability fact, not a type fact, and
+    ///     Python's `NoneType` spelling is exactly what we must not leak). For
+    ///     Python we PRESERVE the historical `result: NoneType` emission
+    ///     byte-for-byte.
+    fn lang_type_name(&self, lang: Language) -> Option<&'static str> {
+        // The `Other` element is "unparseable" — never report a type for it
+        // (matches the existing `first_type != "unknown"` guard).
+        if matches!(self, ObservedValue::Other(_)) {
+            return None;
+        }
+        // The null sentinel: keep Python's historical `NoneType`; decline for
+        // every other language so no Python idiom leaks.
+        if matches!(self, ObservedValue::None) {
+            return if matches!(lang, Language::Python) {
+                Some("NoneType")
+            } else {
+                None
+            };
+        }
+        Some(lang_type_word(lang, self))
+    }
+}
+
+/// T2 (v0.5.0 AUDIT-FIX): map a concrete `ObservedValue` to the SOURCE
+/// language's spelling of its type. Python is preserved EXACTLY
+/// (`int`/`float`/`str`/`bool`/`list`) so the existing Python invariant tests
+/// and output stay byte-identical. Every other language uses its own canonical
+/// type names rather than leaking Python idioms.
+fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
+    use ObservedValue as V;
+    match lang {
+        // Preserve Python's exact vocabulary.
+        Language::Python => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "float",
+            V::String(_) => "str",
+            V::Bool(_) => "bool",
+            V::List(_) => "list",
+            V::None | V::Other(_) => "unknown",
+        },
+        // C-family / JVM: Int/Double/String/Boolean/List.
+        Language::Kotlin => match v {
+            V::Int(_) => "Int",
+            V::Float(_) => "Double",
+            V::String(_) => "String",
+            V::Bool(_) => "Boolean",
+            V::List(_) => "List",
+            V::None | V::Other(_) => "Any",
+        },
+        Language::Java => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "double",
+            V::String(_) => "String",
+            V::Bool(_) => "boolean",
+            V::List(_) => "List",
+            V::None | V::Other(_) => "Object",
+        },
+        Language::Scala => match v {
+            V::Int(_) => "Int",
+            V::Float(_) => "Double",
+            V::String(_) => "String",
+            V::Bool(_) => "Boolean",
+            V::List(_) => "List",
+            V::None | V::Other(_) => "Any",
+        },
+        Language::CSharp => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "double",
+            V::String(_) => "string",
+            V::Bool(_) => "bool",
+            V::List(_) => "List",
+            V::None | V::Other(_) => "object",
+        },
+        Language::Swift => match v {
+            V::Int(_) => "Int",
+            V::Float(_) => "Double",
+            V::String(_) => "String",
+            V::Bool(_) => "Bool",
+            V::List(_) => "Array",
+            V::None | V::Other(_) => "Any",
+        },
+        // TypeScript / JavaScript: number/string/boolean (TS structural names).
+        Language::TypeScript | Language::JavaScript => match v {
+            V::Int(_) | V::Float(_) => "number",
+            V::String(_) => "string",
+            V::Bool(_) => "boolean",
+            V::List(_) => "Array",
+            V::None | V::Other(_) => "unknown",
+        },
+        // Go: int/float64/string/bool/slice.
+        Language::Go => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "float64",
+            V::String(_) => "string",
+            V::Bool(_) => "bool",
+            V::List(_) => "slice",
+            V::None | V::Other(_) => "any",
+        },
+        // Rust: i64/f64/&str/bool/Vec.
+        Language::Rust => match v {
+            V::Int(_) => "i64",
+            V::Float(_) => "f64",
+            V::String(_) => "&str",
+            V::Bool(_) => "bool",
+            V::List(_) => "Vec",
+            V::None | V::Other(_) => "_",
+        },
+        // OCaml: int/float/string/bool/list.
+        Language::Ocaml => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "float",
+            V::String(_) => "string",
+            V::Bool(_) => "bool",
+            V::List(_) => "list",
+            V::None | V::Other(_) => "_",
+        },
+        // Ruby: Integer/Float/String/bool/Array.
+        Language::Ruby => match v {
+            V::Int(_) => "Integer",
+            V::Float(_) => "Float",
+            V::String(_) => "String",
+            V::Bool(_) => "Boolean",
+            V::List(_) => "Array",
+            V::None | V::Other(_) => "Object",
+        },
+        // PHP: int/float/string/bool/array.
+        Language::Php => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "float",
+            V::String(_) => "string",
+            V::Bool(_) => "bool",
+            V::List(_) => "array",
+            V::None | V::Other(_) => "mixed",
+        },
+        // Lua / Luau: number/string/boolean/table.
+        Language::Lua | Language::Luau => match v {
+            V::Int(_) | V::Float(_) => "number",
+            V::String(_) => "string",
+            V::Bool(_) => "boolean",
+            V::List(_) => "table",
+            V::None | V::Other(_) => "any",
+        },
+        // Elixir: integer/float/binary/boolean/list.
+        Language::Elixir => match v {
+            V::Int(_) => "integer",
+            V::Float(_) => "float",
+            V::String(_) => "binary",
+            V::Bool(_) => "boolean",
+            V::List(_) => "list",
+            V::None | V::Other(_) => "any",
+        },
+        // Solidity: uint256/string/bool/array (no float type in Solidity).
+        Language::Solidity => match v {
+            V::Int(_) => "uint256",
+            V::Float(_) => "uint256",
+            V::String(_) => "string",
+            V::Bool(_) => "bool",
+            V::List(_) => "array",
+            V::None | V::Other(_) => "bytes",
+        },
+        // C / C++: int/double/string/bool (best-effort; std types).
+        Language::C | Language::Cpp => match v {
+            V::Int(_) => "int",
+            V::Float(_) => "double",
+            V::String(_) => "string",
+            V::Bool(_) => "bool",
+            V::List(_) => "vector",
+            V::None | V::Other(_) => "auto",
+        },
+    }
+}
+
+/// T2 (v0.5.0 AUDIT-FIX): the SOURCE language's "this value is present / not
+/// null" expression for a NonNull invariant. Python keeps `x is not None`
+/// EXACTLY (regression-preserving). Null-bearing languages use `x != null`;
+/// Option/Maybe languages (Rust / OCaml / Swift) express presence in their own
+/// idiom; languages where a recorded literal can never be a null sentinel
+/// still report presence in their own words. Returns `Some(expression)` for
+/// every language — the NonNull FACT is language-neutral, only its SPELLING
+/// differs.
+fn non_null_expression(lang: Language, variable: &str) -> String {
+    match lang {
+        Language::Python => format!("{variable} is not None"),
+        // `null`-bearing languages.
+        Language::Java
+        | Language::Kotlin
+        | Language::Scala
+        | Language::CSharp
+        | Language::TypeScript
+        | Language::JavaScript
+        | Language::Lua
+        | Language::Luau
+        | Language::Php
+        | Language::C
+        | Language::Cpp
+        | Language::Go
+        | Language::Solidity => format!("{variable} != null"),
+        // Option / Maybe languages: presence is "is Some" / "is not None"
+        // expressed structurally. Swift uses `!= nil`.
+        Language::Swift => format!("{variable} != nil"),
+        Language::Rust | Language::Ocaml => format!("{variable} is Some"),
+        // Elixir: absence is `nil`.
+        Language::Elixir => format!("{variable} != nil"),
+        // Ruby: absence is `nil`.
+        Language::Ruby => format!("{variable} != nil"),
+    }
 }
 
 /// Run invariant inference on source file using test observations.
@@ -226,11 +446,19 @@ impl ObservedValue {
 /// Note: `_source_path` is currently unused in this simplified static analysis
 /// implementation. It is kept in the API for future runtime tracing support.
 pub fn run_invariants(
-    _source_path: &Path,
+    source_path: &Path,
     test_path: &Path,
     function_filter: Option<&str>,
     min_obs: u32,
 ) -> ContractsResult<InvariantsReport> {
+    // T2 (v0.5.0 AUDIT-FIX): the invariant type/optionality vocabulary is
+    // rendered in the SOURCE language's own idiom. Detect it from the analyzed
+    // source file; fall back to Python so the historical default (and the
+    // pytest-only test corpus) keeps its exact `int`/`str`/`is not None`
+    // spelling when detection is unavailable.
+    let source_lang =
+        super::test_recognizer::detect_language(source_path).unwrap_or(Language::Python);
+
     // Collect observations from test files (Python only — observations
     // are extracted via the existing pytest-aware AST walker).
     let observations = collect_observations(test_path, function_filter)?;
@@ -264,7 +492,8 @@ pub fn run_invariants(
             continue;
         }
 
-        let (preconditions, postconditions) = infer_invariants_for_function(obs_list);
+        let (preconditions, postconditions) =
+            infer_invariants_for_function(obs_list, source_lang);
 
         // Filter by min_obs
         let preconditions: Vec<_> = preconditions
@@ -775,7 +1004,14 @@ fn node_text(node: Node, source: &str) -> String {
 // =============================================================================
 
 /// Infer invariants from a list of observations for a function.
-fn infer_invariants_for_function(observations: &[Observation]) -> (Vec<Invariant>, Vec<Invariant>) {
+///
+/// `lang` is the SOURCE language of the function under analysis; it drives the
+/// language-aware type / optionality vocabulary so non-Python functions never
+/// emit Python idioms (`str` / `NoneType` / `is not None`).
+fn infer_invariants_for_function(
+    observations: &[Observation],
+    lang: Language,
+) -> (Vec<Invariant>, Vec<Invariant>) {
     let n = observations.len() as u32;
     if n == 0 {
         return (Vec::new(), Vec::new());
@@ -802,12 +1038,12 @@ fn infer_invariants_for_function(observations: &[Observation]) -> (Vec<Invariant
         let param_name = format!("arg{}", arg_idx);
 
         // Type invariant
-        if let Some(inv) = infer_type_invariant(&param_name, &values, n, confidence) {
+        if let Some(inv) = infer_type_invariant(&param_name, &values, n, confidence, lang) {
             preconditions.push(inv);
         }
 
         // Non-null invariant
-        if let Some(inv) = infer_non_null_invariant(&param_name, &values, n, confidence) {
+        if let Some(inv) = infer_non_null_invariant(&param_name, &values, n, confidence, lang) {
             preconditions.push(inv);
         }
 
@@ -851,12 +1087,12 @@ fn infer_invariants_for_function(observations: &[Observation]) -> (Vec<Invariant
 
     if !return_values.is_empty() {
         // Type invariant for result
-        if let Some(inv) = infer_type_invariant("result", &return_values, n, confidence) {
+        if let Some(inv) = infer_type_invariant("result", &return_values, n, confidence, lang) {
             postconditions.push(inv);
         }
 
         // Non-null invariant for result
-        if let Some(inv) = infer_non_null_invariant("result", &return_values, n, confidence) {
+        if let Some(inv) = infer_non_null_invariant("result", &return_values, n, confidence, lang) {
             postconditions.push(inv);
         }
 
@@ -892,37 +1128,53 @@ fn confidence_from_observations(n: u32) -> Confidence {
 }
 
 /// Infer type invariant if all values have the same type.
+///
+/// `lang` renders the type name in the SOURCE language's vocabulary
+/// (T2 v0.5.0 AUDIT-FIX): Python keeps `int`/`str`/… ; Kotlin uses
+/// `Int`/`String`/… ; etc. The internal "all values share a type" comparison
+/// still uses the language-neutral category key (`type_name`), so the
+/// detection logic is unchanged — only the displayed expression is localized.
 fn infer_type_invariant(
     variable: &str,
     values: &[&ObservedValue],
     obs_count: u32,
     confidence: Confidence,
+    lang: Language,
 ) -> Option<Invariant> {
     if values.is_empty() {
         return None;
     }
 
+    // Category equality is language-neutral (unchanged detection logic).
     let first_type = values[0].type_name();
-    if values.iter().all(|v| v.type_name() == first_type) && first_type != "unknown" {
-        Some(Invariant {
-            variable: variable.to_string(),
-            kind: InvariantKind::Type,
-            expression: format!("{}: {}", variable, first_type),
-            confidence,
-            observations: obs_count,
-            counterexample_count: 0,
-        })
-    } else {
-        None
+    if !(values.iter().all(|v| v.type_name() == first_type) && first_type != "unknown") {
+        return None;
     }
+
+    // Localize the displayed type to the source language. If the lattice
+    // element has no reportable type in this language, decline.
+    let type_word = values[0].lang_type_name(lang)?;
+    Some(Invariant {
+        variable: variable.to_string(),
+        kind: InvariantKind::Type,
+        expression: format!("{}: {}", variable, type_word),
+        confidence,
+        observations: obs_count,
+        counterexample_count: 0,
+    })
 }
 
 /// Infer non-null invariant if no values are None.
+///
+/// `lang` renders the optionality expression in the SOURCE language's idiom
+/// (T2 v0.5.0 AUDIT-FIX): Python `x is not None`; null-bearing languages
+/// `x != null`; Swift/Ruby/Elixir `x != nil`; Rust/OCaml `x is Some`.
 fn infer_non_null_invariant(
     variable: &str,
     values: &[&ObservedValue],
     obs_count: u32,
     confidence: Confidence,
+    lang: Language,
 ) -> Option<Invariant> {
     if values.is_empty() {
         return None;
@@ -932,7 +1184,7 @@ fn infer_non_null_invariant(
         Some(Invariant {
             variable: variable.to_string(),
             kind: InvariantKind::NonNull,
-            expression: format!("{} is not None", variable),
+            expression: non_null_expression(lang, variable),
             confidence,
             observations: obs_count,
             counterexample_count: 0,
@@ -1420,5 +1672,97 @@ def test_add():
 
         assert!(text.contains("Function:"));
         assert!(text.contains("observations"));
+    }
+
+    // ====================================================================
+    // FEATURE TESTS — T2 (v0.5.0 AUDIT-FIX): language-aware invariant
+    // type/optionality vocabulary. Non-Python source functions must NOT
+    // emit Python idioms (`is not None`, `NoneType`, `: str`).
+    // ====================================================================
+
+    /// Kotlin source: invariants inferred from a Kotlin test must use Kotlin
+    /// type/optionality vocabulary, never Python's `is not None` / `NoneType`
+    /// / `str`. (kotlin-datetime regressed with `arg0: str` / `arg0 is not
+    /// None` / `result: str`.)
+    #[test]
+    fn kotlin_invariants_no_python_idioms() {
+        let temp = TempDir::new().unwrap();
+        let src_path = temp.path().join("Calc.kt");
+        let test_path = temp.path().join("CalcTest.kt");
+        fs::write(
+            &src_path,
+            "class Calc {\n  fun describe(x: Int): String = x.toString()\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            "import kotlin.test.Test\nimport kotlin.test.assertEquals\n\
+             class CalcTest {\n\
+             \t@Test fun a() { assertEquals(\"1\", describe(1)) }\n\
+             \t@Test fun b() { assertEquals(\"2\", describe(2)) }\n\
+             }\n",
+        )
+        .unwrap();
+
+        let report = run_invariants(&src_path, &test_path, None, 1).unwrap();
+
+        let exprs: Vec<String> = report
+            .functions
+            .iter()
+            .flat_map(|f| f.preconditions.iter().chain(f.postconditions.iter()))
+            .map(|i| i.expression.clone())
+            .collect();
+
+        for e in &exprs {
+            assert!(
+                !e.contains("is not None"),
+                "Kotlin invariant must not emit Python `is not None`: {e:?}"
+            );
+            assert!(
+                !e.contains("NoneType"),
+                "Kotlin invariant must not emit Python `NoneType`: {e:?}"
+            );
+            assert!(
+                !(e.contains(": str") || e.contains(": int") || e.contains(": float")),
+                "Kotlin invariant must not emit Python type names: {e:?}"
+            );
+        }
+    }
+
+    /// Direct unit on the vocabulary: a non-Python (Kotlin) language emits its
+    /// own type name for a string observation and its own optionality
+    /// expression — never the Python idioms.
+    #[test]
+    fn non_python_type_vocab_is_language_aware() {
+        let vals = [ObservedValue::String("x".to_string())];
+        let refs: Vec<&ObservedValue> = vals.iter().collect();
+
+        // Python keeps `str` (regression guard: do not change Python).
+        let py = infer_type_invariant("arg0", &refs, 1, Confidence::Low, Language::Python)
+            .expect("python type inv");
+        assert_eq!(py.expression, "arg0: str");
+
+        // Kotlin uses its own type name, not `str`.
+        let kt = infer_type_invariant("arg0", &refs, 1, Confidence::Low, Language::Kotlin)
+            .expect("kotlin type inv");
+        assert!(
+            !kt.expression.contains(": str"),
+            "kotlin type vocab must not be Python `str`: {:?}",
+            kt.expression
+        );
+        assert_eq!(kt.expression, "arg0: String");
+
+        // Non-null: Python `is not None`; Kotlin `!= null`.
+        let py_nn = infer_non_null_invariant("arg0", &refs, 1, Confidence::Low, Language::Python)
+            .expect("python nn");
+        assert_eq!(py_nn.expression, "arg0 is not None");
+        let kt_nn = infer_non_null_invariant("arg0", &refs, 1, Confidence::Low, Language::Kotlin)
+            .expect("kotlin nn");
+        assert!(
+            !kt_nn.expression.contains("is not None"),
+            "kotlin non-null must not be Python idiom: {:?}",
+            kt_nn.expression
+        );
+        assert_eq!(kt_nn.expression, "arg0 != null");
     }
 }
