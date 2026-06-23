@@ -2203,6 +2203,24 @@ fn extract_ts_functions_detailed(
                     functions.push(info);
                 }
             }
+            "function_signature" => {
+                // Ambient / declaration-only top-level functions in `.d.ts`
+                // files: `export function f(): T;` (and bare
+                // `declare function g(): U;`) parse as `function_signature`
+                // (bodyless) rather than `function_declaration`. Previously
+                // only `function_declaration` was handled at the top level, so
+                // every ambient exported function was dropped (e.g. axios's
+                // `index.d.ts` getAdapter/create/etc.). Emit them as top-level
+                // functions; the node carries the same `name` field as a
+                // `function_declaration`, so `extract_ts_function_info` resolves
+                // the name and (empty) body correctly.
+                if !is_method {
+                    let info = extract_ts_function_info(&child, source, false);
+                    if !info.name.is_empty() {
+                        functions.push(info);
+                    }
+                }
+            }
             "method_definition" | "method_signature" => {
                 if is_method {
                     // (fix-T3-G4-overload-v1) TypeScript overload signatures.
@@ -4870,11 +4888,35 @@ fn extract_lua_params(node: &Node, source: &str) -> Vec<String> {
 fn extract_lua_docstring_before(node: &Node, source: &str) -> Option<String> {
     let mut doc_lines = Vec::new();
     let mut prev = node.prev_sibling();
+    // Track the row each collected comment starts on so we can reject a
+    // comment that is separated from the function by a blank line (a blank
+    // line is not an AST node, so adjacency must be checked via row numbers).
+    let mut nearest_attached_row = node.start_position().row;
 
     // Walk backwards through consecutive comment siblings
     while let Some(sibling) = prev {
         if sibling.kind() == "comment" {
             let text = get_node_text(&sibling, source);
+
+            // Luau mode pragmas (`--!nocheck`, `--!strict`, `--!nonstrict`,
+            // `--!native`, `--!optimize`) are FILE-scope directives, not doc
+            // comments. They sit at the top of the file, typically separated
+            // from the first function by a blank line. Never treat them as a
+            // docstring.
+            let trimmed = text.trim_start();
+            if trimmed.starts_with("--!") {
+                break;
+            }
+
+            // Reject a comment that is not directly adjacent to the run of
+            // comments already attached to the function (a blank-line gap means
+            // a detached file-header / section comment, not this fn's doc).
+            let comment_end_row = sibling.end_position().row;
+            if comment_end_row + 1 < nearest_attached_row {
+                break;
+            }
+            nearest_attached_row = sibling.start_position().row;
+
             doc_lines.push(text);
             prev = sibling.prev_sibling();
         } else {
@@ -5434,7 +5476,10 @@ fn extract_swift_class_info(node: &Node, source: &str) -> ClassInfo {
     }
 }
 
-fn extract_swift_bases(node: &Node, source: &str) -> Vec<String> {
+/// Extract base types (inheritance clause) from a Swift class/struct/enum/
+/// protocol/extension declaration. Shared with `tldr interface` so both the
+/// schema extractor and the interface command resolve the same bases.
+pub fn extract_swift_bases(node: &Node, source: &str) -> Vec<String> {
     let mut bases = Vec::new();
     let mut cursor = node.walk();
 
@@ -5512,13 +5557,26 @@ fn extract_ocaml_functions_detailed(node: &Node, source: &str, functions: &mut V
     }
 }
 
-/// Check if an OCaml let_binding has parameters (i.e., is a function definition).
-/// A let_binding with just `pattern = body` and no `parameter` children is a value binding.
+/// Check whether an OCaml `let_binding` defines a FUNCTION (as opposed to a
+/// plain value binding like `let all = [1; 2]`).
+///
+/// Two function shapes exist:
+///   * Parameterised: `let f x y = ...` — has `parameter` children.
+///   * Point-free: `let code = function | ... -> ...` (or `= fun x -> ...`) —
+///     has NO `parameter` node, but its bound expression is a
+///     `function_expression` / `fun_expression`. The previous params-only check
+///     dropped these (e.g. dune's `exit_code.ml` `let code`/`let doc`).
+///
+/// Mirrors `ocaml_let_binding_is_function` in `extractor.rs` so the `extract`
+/// and `structure` pipelines agree on what counts as an OCaml function.
 fn ocaml_binding_has_params(node: &Node) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "parameter" {
-            return true;
+        match child.kind() {
+            "parameter" => return true,
+            // Point-free function bound directly to the name.
+            "function_expression" | "fun_expression" => return true,
+            _ => {}
         }
     }
     false
@@ -5739,6 +5797,17 @@ fn build_intra_file_call_graph(
                 }
             }
         }
+    }
+
+    // For class-based languages (Java, Kotlin-via-flatten, …) the SAME method
+    // appears in BOTH `functions[]` and `classes[].methods[]`, so the two loops
+    // above push each caller into `called_by` twice. Forward `calls` uses
+    // `.insert()` so it overwrites and stays clean, but `called_by` accumulates
+    // — duplicating every caller. Dedup each list while PRESERVING first-seen
+    // order so the reverse call graph reports each caller exactly once.
+    for callers in called_by.values_mut() {
+        let mut seen = std::collections::HashSet::new();
+        callers.retain(|c| seen.insert(c.clone()));
     }
 
     IntraFileCallGraph { calls, called_by }
@@ -6173,7 +6242,17 @@ fn extract_c_param_name(decl: &Node, source: &str) -> String {
     match decl.kind() {
         "identifier" => get_node_text(decl, source),
         "pointer_declarator" => {
-            // *name -> find the identifier inside
+            // *name / **name / ***name. A double/triple pointer parses as
+            // nested pointer_declarators: pointer_declarator > pointer_declarator
+            // > identifier. Recurse through the `declarator` field (mirroring the
+            // array_declarator arm) so the inner name is reached for any pointer
+            // depth, instead of only finding a DIRECT identifier child (which
+            // dropped `char **argv` while keeping single `char *sep`).
+            if let Some(inner) = decl.child_by_field_name("declarator") {
+                return extract_c_param_name(&inner, source);
+            }
+            // Fallback: scan for a direct identifier child if the grammar did
+            // not expose the `declarator` field.
             let mut cursor = decl.walk();
             for child in decl.children(&mut cursor) {
                 if child.kind() == "identifier" {
@@ -7113,7 +7192,8 @@ fn extract_php_trait_info(node: &Node, source: &str) -> ClassInfo {
 
 /// Extract base classes from PHP class_declaration.
 /// Looks for base_clause (extends) and class_interface_clause (implements).
-fn extract_php_bases(node: &Node, source: &str) -> Vec<String> {
+/// Shared with `tldr interface` so both pipelines resolve the same bases.
+pub fn extract_php_bases(node: &Node, source: &str) -> Vec<String> {
     let mut bases = Vec::new();
     let mut cursor = node.walk();
 
@@ -7421,7 +7501,9 @@ fn extract_csharp_class_info(node: &Node, source: &str) -> ClassInfo {
     }
 }
 
-fn extract_csharp_bases(node: &Node, source: &str) -> Vec<String> {
+/// Extract base types from a C# type declaration's `base_list`. Shared with
+/// `tldr interface` so both pipelines resolve the same bases.
+pub fn extract_csharp_bases(node: &Node, source: &str) -> Vec<String> {
     let mut bases = Vec::new();
 
     if let Some(base_list) = node.child_by_field_name("bases") {
@@ -7873,7 +7955,10 @@ fn extract_kotlin_object_info(node: &Node, source: &str) -> ClassInfo {
     }
 }
 
-fn extract_kotlin_bases(node: &Node, source: &str) -> Vec<String> {
+/// Extract base types from a Kotlin class/object declaration's
+/// `delegation_specifiers`. Shared with `tldr interface` so both pipelines
+/// resolve the same bases.
+pub fn extract_kotlin_bases(node: &Node, source: &str) -> Vec<String> {
     let mut bases = Vec::new();
 
     let mut cursor = node.walk();
@@ -8444,9 +8529,52 @@ fn extract_elixir_params(node: &Node, source: &str) -> Vec<String> {
                 params.push(get_node_text(&child, source));
             }
             "binary_operator" => {
-                // Default value: param \\ default
-                // Take the left side (identifier)
-                if let Some(left) = child.child(0) {
+                // Two distinct Elixir param shapes share the `binary_operator`
+                // node kind and must be told apart by the OPERATOR token:
+                //   * `opt \\ default` (default value) — the bound name is the
+                //     LEFT identifier.
+                //   * `%Struct{} = var` / `[h | t] = list` (a match pattern) —
+                //     the bound name is on the RIGHT (the left is a map/list/
+                //     tuple pattern, not an identifier), so taking the left side
+                //     dropped the param entirely and undercounted arity.
+                // Inspect the operator child; for `=` take the right identifier,
+                // otherwise (default `\\`) keep the historic left-identifier
+                // behaviour. As a final fallback, grab the lone identifier among
+                // the children so other binder shapes still yield a name.
+                let op_is_match = {
+                    let mut oc = child.walk();
+                    let mut found = false;
+                    for c in child.children(&mut oc) {
+                        if c.kind() == "=" && get_node_text(&c, source) == "=" {
+                            found = true;
+                            break;
+                        }
+                    }
+                    found
+                };
+                if op_is_match {
+                    // `pattern = var` — the bound variable is the right side.
+                    if let Some(right) = child.child_by_field_name("right") {
+                        if right.kind() == "identifier" {
+                            params.push(get_node_text(&right, source));
+                        } else if let Some(id) = elixir_first_identifier(&right, source) {
+                            params.push(id);
+                        }
+                    } else {
+                        // Fallback: last identifier child is the bound var.
+                        let mut last_id = None;
+                        let mut rc = child.walk();
+                        for c in child.children(&mut rc) {
+                            if c.kind() == "identifier" {
+                                last_id = Some(get_node_text(&c, source));
+                            }
+                        }
+                        if let Some(id) = last_id {
+                            params.push(id);
+                        }
+                    }
+                } else if let Some(left) = child.child(0) {
+                    // Default value `opt \\ default`: name on the left.
                     if left.kind() == "identifier" {
                         params.push(get_node_text(&left, source));
                     }
@@ -8473,6 +8601,24 @@ fn extract_elixir_params(node: &Node, source: &str) -> Vec<String> {
     }
 
     params
+}
+
+/// Find the first `identifier` leaf inside an Elixir pattern node (used to
+/// recover the bound variable on the right of a `pattern = var` match param,
+/// e.g. the `t` in `[h | t] = var` is not the target — the right side `var`
+/// is — but for shapes where the bound name is nested we descend to the first
+/// identifier). Returns None if no identifier leaf exists.
+fn elixir_first_identifier(node: &Node, source: &str) -> Option<String> {
+    if node.kind() == "identifier" {
+        return Some(get_node_text(node, source));
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = elixir_first_identifier(&child, source) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn extract_elixir_docstring(node: &Node, source: &str) -> Option<String> {
@@ -11612,6 +11758,282 @@ class Second {{
             "the surviving `build` must be the multi-line `method_definition` impl, got lines {}-{}",
             kept.line_number,
             kept.line_end
+        );
+    }
+
+    /// (fix-R7-cl2-c-doubleptr-v1) C/C++ double-pointer params `char **argv`
+    /// parse as pointer_declarator > pointer_declarator > identifier. The
+    /// pointer_declarator arm of extract_c_param_name only scanned for a DIRECT
+    /// identifier child, so the nested case dropped the param entirely while
+    /// single `*sep` (direct identifier child) worked. Guards the recursive
+    /// descent through nested pointer_declarators.
+    #[test]
+    fn test_extract_c_double_pointer_param_kept() {
+        let mut file = NamedTempFile::with_suffix(".c").unwrap();
+        write!(
+            file,
+            "char *sdsjoin(char **argv, int argc, char *sep) {{ return 0; }}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "sdsjoin")
+            .expect("sdsjoin function");
+        // The double-pointer param `argv` must be present (was dropped before fix),
+        // alongside the single-pointer `sep` and plain `argc`.
+        assert!(
+            f.params.iter().any(|p| p == "argv"),
+            "double-pointer param `char **argv` must be captured, got {:?}",
+            f.params
+        );
+        assert!(
+            f.params.iter().any(|p| p == "sep"),
+            "single-pointer param `char *sep` must be captured, got {:?}",
+            f.params
+        );
+        assert!(
+            f.params.iter().any(|p| p == "argc"),
+            "plain param `int argc` must be captured, got {:?}",
+            f.params
+        );
+        // Arity is exactly 3 — no phantom/empty entries from the recursion.
+        assert_eq!(
+            f.params.len(),
+            3,
+            "sdsjoin must have exactly 3 params, got {:?}",
+            f.params
+        );
+    }
+
+    /// (fix-R7-cl2-c-doubleptr-v1) Triple-pointer and pointer-to-array params
+    /// must also resolve through the recursive descent.
+    #[test]
+    fn test_extract_c_triple_pointer_param_kept() {
+        let mut file = NamedTempFile::with_suffix(".c").unwrap();
+        write!(file, "void f(char ***matrix, int n) {{ }}\n").unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "f")
+            .expect("f function");
+        assert!(
+            f.params.iter().any(|p| p == "matrix"),
+            "triple-pointer param `char ***matrix` must be captured, got {:?}",
+            f.params
+        );
+        assert_eq!(f.params.len(), 2, "got {:?}", f.params);
+    }
+
+    /// (fix-R7-cl2-elixir-structparam-v1) An Elixir parameter that is a match
+    /// pattern `%Struct{} = var` binds `var` on the RIGHT of the `=`. The
+    /// binary_operator arm previously assumed `\\ default` semantics (name on
+    /// the LEFT) and, since the left is a map/struct, dropped the param —
+    /// undercounting arity. The bound variable must be captured.
+    #[test]
+    fn test_extract_elixir_struct_pattern_param_kept() {
+        let mut file = NamedTempFile::with_suffix(".ex").unwrap();
+        write!(
+            file,
+            "defmodule M do\n  def basic_auth(%Plug.Conn{{}} = conn, options) do\n    conn\n  end\nend\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "basic_auth")
+            .expect("basic_auth function");
+        assert!(
+            f.params.iter().any(|p| p == "conn"),
+            "struct-pattern param `%Plug.Conn{{}} = conn` must bind `conn`, got {:?}",
+            f.params
+        );
+        assert!(
+            f.params.iter().any(|p| p == "options"),
+            "plain param `options` must be captured, got {:?}",
+            f.params
+        );
+        assert_eq!(
+            f.params.len(),
+            2,
+            "basic_auth arity must be 2, got {:?}",
+            f.params
+        );
+    }
+
+    /// (fix-R7-cl2-elixir-structparam-v1) The `=` match-vs-`\\` default split
+    /// must not regress default-value params: `opts \\ []` still binds `opts`.
+    #[test]
+    fn test_extract_elixir_default_param_still_left() {
+        let mut file = NamedTempFile::with_suffix(".ex").unwrap();
+        write!(
+            file,
+            "defmodule M do\n  def run(opts \\\\ []) do\n    opts\n  end\nend\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "run")
+            .expect("run function");
+        assert!(
+            f.params.iter().any(|p| p == "opts"),
+            "default-value param `opts \\\\ []` must bind `opts`, got {:?}",
+            f.params
+        );
+    }
+
+    /// (fix-R7-cl2-ocaml-pointfree-v1) A point-free OCaml function
+    /// `let code = function | ... -> ...` has no `parameter` node but its body
+    /// is a `function_expression`. The params-only `ocaml_binding_has_params`
+    /// check dropped it; broadening to count function-expression bodies keeps
+    /// it. A genuine value binding (`let all = [...]`) must STILL be excluded.
+    #[test]
+    fn test_extract_ocaml_pointfree_function_kept() {
+        let mut file = NamedTempFile::with_suffix(".ml").unwrap();
+        write!(
+            file,
+            "let all = [ 1; 2 ]\nlet code = function\n  | 0 -> 1\n  | _ -> 2\nlet info e = code e\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"code"),
+            "point-free `let code = function ...` must be a function, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"info"),
+            "parameterised `let info e = ...` must be a function, got {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"all"),
+            "value binding `let all = [..]` must NOT be a function, got {:?}",
+            names
+        );
+    }
+
+    /// (fix-R7-cl2-java-calledby-v1) In class-based languages a method appears
+    /// in BOTH functions[] and classes[].methods[], so called_by accumulated
+    /// each caller twice. Every called_by list must contain each caller exactly
+    /// once.
+    #[test]
+    fn test_java_called_by_not_doubled() {
+        let mut file = NamedTempFile::with_suffix(".java").unwrap();
+        write!(
+            file,
+            r#"
+class C {{
+    void caller() {{
+        callee();
+    }}
+    void callee() {{
+    }}
+}}
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let callers = info
+            .call_graph
+            .called_by
+            .get("callee")
+            .expect("callee should have callers");
+        let caller_count = callers.iter().filter(|c| *c == "caller").count();
+        assert_eq!(
+            caller_count, 1,
+            "caller `caller` must appear exactly once in callee's called_by, got {:?}",
+            callers
+        );
+    }
+
+    /// (fix-R7-cl2-luau-pragma-v1) A Luau `--!nocheck` mode pragma at file scope
+    /// (separated from the first function by a blank line) must NOT be captured
+    /// as that function's docstring.
+    #[test]
+    fn test_luau_mode_pragma_not_docstring() {
+        let mut file = NamedTempFile::with_suffix(".luau").unwrap();
+        write!(
+            file,
+            "--!nocheck\n\nlocal function expectpass(s, f)\n  f()\nend\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "expectpass")
+            .expect("expectpass function");
+        assert!(
+            f.docstring.is_none(),
+            "Luau `--!nocheck` pragma must not be a docstring, got {:?}",
+            f.docstring
+        );
+    }
+
+    /// (fix-R7-cl2-luau-pragma-v1) A genuine doc comment directly above a
+    /// function (no blank-line gap) must STILL be captured — the pragma fix
+    /// must not suppress real docstrings.
+    #[test]
+    fn test_lua_real_docstring_still_captured() {
+        let mut file = NamedTempFile::with_suffix(".lua").unwrap();
+        write!(
+            file,
+            "-- Adds two numbers\nlocal function add(a, b)\n  return a + b\nend\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "add")
+            .expect("add function");
+        assert_eq!(
+            f.docstring.as_deref(),
+            Some("Adds two numbers"),
+            "adjacent doc comment must be captured, got {:?}",
+            f.docstring
+        );
+    }
+
+    /// (fix-R7-cl2-ts-ambient-fn-v1) Ambient `export function f(): T;` in a
+    /// `.d.ts` file parses as `function_signature` (bodyless), not
+    /// `function_declaration`. These were dropped from the top-level functions
+    /// list (axios index.d.ts reported functions=0). They must be captured.
+    #[test]
+    fn test_ts_ambient_export_function_captured() {
+        let mut file = NamedTempFile::with_suffix(".d.ts").unwrap();
+        write!(
+            file,
+            "export function getAdapter(a: string): object;\nexport function create(c?: number): any;\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"getAdapter"),
+            "ambient `export function getAdapter` must be captured, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"create"),
+            "ambient `export function create` must be captured, got {:?}",
+            names
         );
     }
 }

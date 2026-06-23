@@ -75,7 +75,13 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::C | Language::Cpp => &["function_definition", "declaration"],
         Language::Ruby => &["method", "singleton_method"],
         Language::CSharp => &["method_declaration", "constructor_declaration"],
-        Language::Scala => &["function_definition", "def_definition"],
+        // tree-sitter-scala emits `function_declaration` for bodyless/abstract
+        // `def f(): T` (trait & abstract-class contracts) and
+        // `function_definition` for defs WITH a body. Both must be collected or
+        // the entire abstract surface of a trait is dropped (#207: zio Clock
+        // listed only the one concrete `unsafe`). Matches the precedent in
+        // function_finder.rs / clones / the scala callgraph.
+        Language::Scala => &["function_definition", "function_declaration", "def_definition"],
         Language::Php => &["function_definition", "method_declaration"],
         Language::Lua | Language::Luau => {
             &["function_declaration", "function_definition_statement"]
@@ -180,7 +186,10 @@ fn method_node_kinds(lang: Language) -> &'static [&'static str] {
         }
         Language::Ruby => &["method", "singleton_method"],
         Language::CSharp => &["method_declaration", "constructor_declaration"],
-        Language::Scala => &["function_definition", "def_definition"],
+        // Include `function_declaration` (bodyless/abstract `def f(): T`) so
+        // trait/abstract-class method contracts surface as methods, not just
+        // defs with bodies (#207). See function_node_kinds(Scala) above.
+        Language::Scala => &["function_definition", "function_declaration", "def_definition"],
         Language::Php => &["method_declaration"],
         Language::Elixir => &["call"],
         Language::Ocaml => &["let_binding", "value_definition"],
@@ -868,8 +877,52 @@ pub fn extract_function_signature(func_node: Node, source: &[u8], lang: Language
         Language::Scala => extract_scala_signature(func_node, source),
         Language::Ocaml => extract_ocaml_signature(func_node, source),
         Language::Elixir => extract_elixir_signature(func_node, source),
+        Language::Swift => extract_swift_signature(func_node, source),
         _ => extract_generic_signature(func_node, source),
     }
+}
+
+/// Swift signature: the parameter clause plus any `async`/`throws` effects and
+/// the `-> ReturnType`. tree-sitter-swift does NOT expose a `parameters` field
+/// (params are loose `parameter` children between `(` and `)`), so the generic
+/// `child_by_field_name("parameters")` extractor returned an empty string for
+/// EVERY Swift method (#239). Reconstruct AST-driven by slicing the source from
+/// the opening `(` up to (but excluding) the `function_body` — this captures
+/// `(using e: Encoder) throws -> URLRequest` verbatim while dropping the body.
+/// For `init`/bodyless/protocol requirements the same span logic applies.
+fn extract_swift_signature(func_node: Node, source: &[u8]) -> String {
+    // Find the opening `(` of the parameter clause and the body (if any).
+    let mut open_paren: Option<Node> = None;
+    let mut body: Option<Node> = None;
+    let mut cursor = func_node.walk();
+    for child in func_node.children(&mut cursor) {
+        if child.kind() == "(" && open_paren.is_none() {
+            open_paren = Some(child);
+        }
+        if child.kind() == "function_body" {
+            body = Some(child);
+        }
+    }
+
+    let Some(open) = open_paren else {
+        // No parameter clause found — fall back to the generic extractor.
+        return extract_generic_signature(func_node, source);
+    };
+
+    let start = open.start_byte();
+    // End at the body's start (dropping `{ ... }`), else at the node end
+    // (bodyless protocol/abstract requirement).
+    let end = match body {
+        Some(b) => b.start_byte(),
+        None => func_node.end_byte(),
+    };
+    if start >= end || end > source.len() {
+        return extract_generic_signature(func_node, source);
+    }
+    std::str::from_utf8(&source[start..end])
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// OCaml signature: walk the `let_binding` parameters and optional return type.
@@ -1949,8 +2002,9 @@ fn extract_base_classes(class_node: Node, source: &[u8], lang: Language) -> Vec<
                 }
             }
         }
-        Language::Java | Language::CSharp => {
-            // Check for "superclass" and "interfaces" fields
+        Language::Java => {
+            // Java exposes the parent via the `superclass` field and the
+            // implemented interfaces via the `interfaces` field.
             if let Some(super_node) = class_node.child_by_field_name("superclass") {
                 bases.push(node_text(super_node, source).to_string());
             }
@@ -1962,10 +2016,46 @@ fn extract_base_classes(class_node: Node, source: &[u8], lang: Language) -> Vec<
                     }
                 }
             }
-            // Also check super_interfaces for Java interface declarations
-            if let Some(extends) = class_node.child_by_field_name("type_parameters") {
-                // type parameters are not bases, skip
-                let _ = extends;
+        }
+        Language::CSharp => {
+            // tree-sitter-c-sharp does NOT use Java's `superclass`/`interfaces`
+            // fields — it groups the base type + interfaces under a `base_list`
+            // node. Using the Java field names left C# bases ALWAYS empty (#38:
+            // newtonsoft-bson 0/61 classes had bases though `inheritance` found
+            // 28 edges). Delegate to the shared extractor used by the
+            // `inheritance` command so both agree.
+            if let Ok(src) = std::str::from_utf8(source) {
+                bases.extend(tldr_core::ast::extract::extract_csharp_bases(
+                    &class_node,
+                    src,
+                ));
+            }
+        }
+        // #153: PHP previously had NO arm here (fell through to `_ => {}`), so
+        // `extends`/`implements` were never captured (guzzle ServerException
+        // reported bases=[] though it extends BadResponseException). Delegate to
+        // the shared PHP base extractor (reads base_clause + class_interface_clause).
+        Language::Php => {
+            if let Ok(src) = std::str::from_utf8(source) {
+                bases.extend(tldr_core::ast::extract::extract_php_bases(&class_node, src));
+            }
+        }
+        // Kotlin/Swift also lacked arms (no bases at all). Delegate to the
+        // shared extractors (delegation_specifiers / inheritance clause).
+        Language::Kotlin => {
+            if let Ok(src) = std::str::from_utf8(source) {
+                bases.extend(tldr_core::ast::extract::extract_kotlin_bases(
+                    &class_node,
+                    src,
+                ));
+            }
+        }
+        Language::Swift => {
+            if let Ok(src) = std::str::from_utf8(source) {
+                bases.extend(tldr_core::ast::extract::extract_swift_bases(
+                    &class_node,
+                    src,
+                ));
             }
         }
         Language::Rust => {
@@ -3017,11 +3107,24 @@ fn deep_collect(
     for child in node.children(&mut cursor) {
         let kind = child.kind();
         if class_kinds.contains(&kind) {
+            // C/C++ `struct_specifier` / `class_specifier` with NO `body` field
+            // is a TYPE REFERENCE, not a definition: `sizeof(struct sdshdr5)`,
+            // a cast `(struct list*)x`, a param `struct Bar *p`, `extern struct
+            // T v`, or a forward decl `class Foo;`. Emitting these listed
+            // phantom "classes" named by the referenced type (c-sds reported
+            // sdshdr5/8/16/32/64 as classes from `sizeof`; c-redis reported a
+            // bogus `list` from a cast). `structure`'s extract_c_structs already
+            // requires a body; mirror that here so the two pipelines agree.
+            let is_bodyless_c_type_ref = matches!(lang, Language::C | Language::Cpp)
+                && matches!(kind, "struct_specifier" | "class_specifier")
+                && child.child_by_field_name("body").is_none();
+
             // Avoid double-counting nested classes when an enclosing class
             // already collected its inner methods/types via extract_class_info.
             // Top-level rule: a class node is "top-level" iff it isn't itself
             // contained in another class-kind ancestor.
-            if !is_inside_class_ancestor(child, class_kinds)
+            if !is_bodyless_c_type_ref
+                && !is_inside_class_ancestor(child, class_kinds)
                 && is_node_public(child, source, lang)
             {
                 let info = extract_class_info(child, source, lang);
@@ -4205,5 +4308,171 @@ end
         assert!(is_supported_source_file(Path::new("test.cs")));
         assert!(!is_supported_source_file(Path::new("test.txt")));
         assert!(!is_supported_source_file(Path::new("test.md")));
+    }
+
+    /// (fix-R7-cl2-c-structref-v1) A C `struct_specifier` used only as a TYPE
+    /// REFERENCE — `sizeof(struct sdshdr5)`, a cast, a param type — has no body
+    /// and must NOT be reported as a class/export. Only the struct WITH a body
+    /// is a definition.
+    #[test]
+    fn test_interface_c_struct_type_reference_not_class() {
+        let source = r#"
+struct sdshdr5 {
+    unsigned char flags;
+    char buf[];
+};
+
+int sdslen(void) {
+    return sizeof(struct sdshdr8) + sizeof(struct sdshdr16);
+}
+"#;
+        let info = extract_interface(Path::new("test.c"), source).unwrap();
+        let class_names: Vec<&str> = info.classes.iter().map(|c| c.name.as_str()).collect();
+        // The bodyless type references must NOT appear as classes.
+        assert!(
+            !class_names.contains(&"sdshdr8"),
+            "`sizeof(struct sdshdr8)` (no body) must not be a class, got {:?}",
+            class_names
+        );
+        assert!(
+            !class_names.contains(&"sdshdr16"),
+            "`sizeof(struct sdshdr16)` (no body) must not be a class, got {:?}",
+            class_names
+        );
+        assert!(
+            !info.all_exports.iter().any(|e| e == "sdshdr8"),
+            "type-reference `sdshdr8` must not be an export, got {:?}",
+            info.all_exports
+        );
+        // The real definition (with body) IS a class.
+        assert!(
+            class_names.contains(&"sdshdr5"),
+            "the defined `struct sdshdr5` (with body) must be a class, got {:?}",
+            class_names
+        );
+    }
+
+    /// (fix-R7-cl2-csharp-bases-v1) C# bases live under a `base_list` node, not
+    /// Java's `superclass`/`interfaces` fields. The C# arm must capture the base
+    /// type (was always empty: #38).
+    #[test]
+    fn test_interface_csharp_bases_captured() {
+        let source = r#"
+public class JsonException : Exception
+{
+    public void Throw() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.cs"), source).unwrap();
+        let cls = info
+            .classes
+            .iter()
+            .find(|c| c.name == "JsonException")
+            .expect("JsonException class");
+        assert!(
+            cls.bases.iter().any(|b| b == "Exception"),
+            "C# base `Exception` must be captured, got {:?}",
+            cls.bases
+        );
+    }
+
+    /// (fix-R7-cl2-php-bases-v1) PHP had no base arm (#153). `extends` must be
+    /// captured.
+    #[test]
+    fn test_interface_php_bases_captured() {
+        let source = r#"<?php
+class ServerException extends BadResponseException
+{
+    public function getResponse() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.php"), source).unwrap();
+        let cls = info
+            .classes
+            .iter()
+            .find(|c| c.name == "ServerException")
+            .expect("ServerException class");
+        assert!(
+            cls.bases.iter().any(|b| b == "BadResponseException"),
+            "PHP base `BadResponseException` must be captured, got {:?}",
+            cls.bases
+        );
+    }
+
+    /// (fix-R7-cl2-swift-signature-v1) Swift method signatures were always
+    /// empty in `interface` (#239) because the generic signature builder used a
+    /// `parameters` field that tree-sitter-swift does not expose. The Swift arm
+    /// must reconstruct `(params) throws -> ReturnType` from the AST.
+    #[test]
+    fn test_interface_swift_method_signature_not_empty() {
+        let source = r#"
+public class Api {
+    public func asURLRequest(using e: Encoder) throws -> URLRequest {
+        return r
+    }
+}
+"#;
+        let info = extract_interface(Path::new("test.swift"), source).unwrap();
+        let cls = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Api")
+            .expect("Api class");
+        let m = cls
+            .methods
+            .iter()
+            .find(|m| m.name == "asURLRequest")
+            .expect("asURLRequest method");
+        assert!(
+            !m.signature.trim().is_empty(),
+            "Swift method signature must not be empty"
+        );
+        // The signature must carry the parameter and the return type.
+        assert!(
+            m.signature.contains("Encoder"),
+            "signature must include the param type `Encoder`, got {:?}",
+            m.signature
+        );
+        assert!(
+            m.signature.contains("URLRequest"),
+            "signature must include return type `URLRequest`, got {:?}",
+            m.signature
+        );
+        // Body braces must NOT appear in the signature.
+        assert!(
+            !m.signature.contains('{'),
+            "signature must drop the body, got {:?}",
+            m.signature
+        );
+    }
+
+    /// (fix-R7-cl2-scala-abstract-v1) A Scala trait's abstract (bodyless) `def`s
+    /// parse as `function_declaration` and must surface as methods — the whole
+    /// point of `interface` for a trait contract (#207 dropped all but the one
+    /// concrete def).
+    #[test]
+    fn test_interface_scala_abstract_trait_methods() {
+        let source = r#"
+trait Clock {
+  def currentTime(unit: TimeUnit): Long
+  def nanoTime: Long
+  def instant: Instant
+}
+"#;
+        let info = extract_interface(Path::new("test.scala"), source).unwrap();
+        let cls = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Clock")
+            .expect("Clock trait");
+        let method_names: Vec<&str> = cls.methods.iter().map(|m| m.name.as_str()).collect();
+        for expected in ["currentTime", "nanoTime", "instant"] {
+            assert!(
+                method_names.contains(&expected),
+                "abstract trait method `{}` must surface, got {:?}",
+                expected,
+                method_names
+            );
+        }
     }
 }

@@ -1353,16 +1353,23 @@ fn extract_cpp_classes(node: &Node, source: &str, classes: &mut Vec<String>) {
             // `extract_c_structs` (which is also used for cpp file-level
             // structs/enums). Only emit real classes/structs here.
             "class_specifier" | "struct_specifier" => {
-                // Prefer the grammar's `name` field; fall back to the first
-                // `type_identifier` child (tree-sitter-cpp does NOT always
-                // expose `name` as a field on `class_specifier`).
-                if let Some(name) = extract_cpp_class_name(&child, source) {
-                    classes.push(name);
-                    // Recurse INTO the body to pick up nested classes.
-                    if let Some(body) = child.child_by_field_name("body") {
-                        extract_cpp_classes(&body, source, classes);
+                // Require a `body` field before emitting the class. A forward
+                // declaration `class XMLDocument;` parses as a `class_specifier`
+                // WITH a name but NO body; emitting it duplicated every class
+                // that also has a real definition later in the header (tinyxml2
+                // reported 27 entries / 19 unique — the 8 forward decls doubled).
+                // C's `extract_c_structs` already gates on body; mirror it here.
+                // (A type reference like `friend class Foo;` / `class Foo* p;`
+                // is likewise bodyless and correctly skipped.)
+                if child.child_by_field_name("body").is_some() {
+                    if let Some(name) = extract_cpp_class_name(&child, source) {
+                        classes.push(name);
+                        // Recurse INTO the body to pick up nested classes.
+                        if let Some(body) = child.child_by_field_name("body") {
+                            extract_cpp_classes(&body, source, classes);
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
             // p19-secondary-fixes-v1 (BUG-P19-05 + BUG-P19-08): tree-sitter-cpp
@@ -2044,6 +2051,29 @@ fn ocaml_binding_has_params_simple(node: &Node) -> bool {
     false
 }
 
+/// Return true when an OCaml `value_definition` node binds a FUNCTION (either a
+/// parameterised `let f x = ...` or a point-free `let f = function | ...` /
+/// `let f = fun x -> ...`). A `value_definition` may wrap several `let_binding`
+/// children (`let a = .. and b = ..`); it counts as a function if ANY binding
+/// is function-shaped. Mirrors `ocaml_binding_has_params` in `extract.rs` so the
+/// `structure` and `extract` pipelines agree on OCaml function classification.
+fn ocaml_value_definition_is_function(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "let_binding" {
+            let mut inner = child.walk();
+            for binding_child in child.children(&mut inner) {
+                match binding_child.kind() {
+                    "parameter" => return true,
+                    "function_expression" | "fun_expression" => return true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
+}
+
 // =============================================================================
 // PHP extraction
 // =============================================================================
@@ -2276,32 +2306,25 @@ fn extract_elixir_functions(node: &Node, source: &str, functions: &mut Vec<Strin
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "call" {
-            // def/defp in Elixir are calls
+            // def/defp/defmacro/defmacrop in Elixir are all `call` nodes.
             let mut inner_cursor = child.walk();
             for inner in child.children(&mut inner_cursor) {
                 if inner.kind() == "identifier" {
                     let text = get_node_text(&inner, source);
-                    if text == "def" || text == "defp" {
-                        // Next sibling should be the function call with name
+                    if text == "def"
+                        || text == "defp"
+                        || text == "defmacro"
+                        || text == "defmacrop"
+                    {
+                        // Next sibling holds the name; it may be an `arguments`
+                        // wrapper, a bare `call`, OR a `binary_operator` for a
+                        // guarded clause (`def f(x) when guard`).
                         if let Some(args) = inner.next_sibling() {
-                            if args.kind() == "arguments" || args.kind() == "call" {
-                                if let Some(name_node) = args.child(0) {
-                                    if name_node.kind() == "identifier"
-                                        || name_node.kind() == "call"
-                                    {
-                                        let fname = if name_node.kind() == "call" {
-                                            if let Some(n) = name_node.child(0) {
-                                                get_node_text(&n, source)
-                                            } else {
-                                                get_node_text(&name_node, source)
-                                            }
-                                        } else {
-                                            get_node_text(&name_node, source)
-                                        };
-                                        if !functions.contains(&fname) {
-                                            functions.push(fname);
-                                        }
-                                    }
+                            if let Some(fname) =
+                                elixir_def_name_from_args(&args, source)
+                            {
+                                if !fname.is_empty() && !functions.contains(&fname) {
+                                    functions.push(fname);
                                 }
                             }
                         }
@@ -2310,6 +2333,46 @@ fn extract_elixir_functions(node: &Node, source: &str, functions: &mut Vec<Strin
             }
         }
         extract_elixir_functions(&child, source, functions);
+    }
+}
+
+/// Resolve the function/macro name from the argument node following an Elixir
+/// `def`/`defp`/`defmacro`/`defmacrop` keyword. Handles the three first-arg
+/// shapes the tree-sitter-elixir grammar produces:
+///   * `arguments` wrapper or bare `call` — `def f(x)` (name = inner call's
+///     first child, or the bare identifier).
+///   * `binary_operator` — a guarded clause `def f(x) when guard`; descend to
+///     the inner `call` (LHS of `when`) and take its name.
+fn elixir_def_name_from_args(args: &Node, source: &str) -> Option<String> {
+    // A guarded head: `f(x) when guard` is a binary_operator whose left side
+    // is the real `call`.
+    if args.kind() == "binary_operator" {
+        let mut c = args.walk();
+        for child in args.children(&mut c) {
+            if child.kind() == "call" {
+                if let Some(name_node) = child.child(0) {
+                    return Some(get_node_text(&name_node, source));
+                }
+            }
+        }
+        return None;
+    }
+
+    // `arguments` wrapper or a bare `call`.
+    let name_node = args.child(0)?;
+    match name_node.kind() {
+        "call" => {
+            // `f(x)` — name is the call's first child.
+            if let Some(n) = name_node.child(0) {
+                Some(get_node_text(&n, source))
+            } else {
+                Some(get_node_text(&name_node, source))
+            }
+        }
+        "identifier" => Some(get_node_text(&name_node, source)),
+        // Guarded head nested directly under `arguments`.
+        "binary_operator" => elixir_def_name_from_args(&name_node, source),
+        _ => None,
     }
 }
 
@@ -2692,7 +2755,25 @@ fn collect_definitions(
         && matches!(kind, "struct_specifier" | "enum_specifier")
         && node.child_by_field_name("body").is_none();
 
-    if (is_func || is_class) && !is_bodyless_c_specifier {
+    // OCaml `value_definition` is classified is_func unconditionally, but the
+    // generic walk also descends into `let ... in body` expressions whose inner
+    // bindings are ALSO `value_definition` nodes parented by `let_expression`.
+    // Without a guard those let-in locals leaked into `definitions[]` /
+    // `method_infos[]` as if they were top-level functions (dune's util.ml
+    // surfaced `contexts`/`internal_path`/`context_exn`/`prog`/`scheduler`),
+    // and plain value bindings (`let all = [...]`) were emitted as functions
+    // too. Mirror the dedicated `extract_ocaml_functions` predicate: skip a
+    // `value_definition` that is let-in-parented OR whose binding is not
+    // function-shaped. OCaml-gated so no other grammar is affected.
+    let is_non_function_ocaml_value = matches!(language, Language::Ocaml)
+        && kind == "value_definition"
+        && (node
+            .parent()
+            .map(|p| p.kind() == "let_expression")
+            .unwrap_or(false)
+            || !ocaml_value_definition_is_function(&node));
+
+    if (is_func || is_class) && !is_bodyless_c_specifier && !is_non_function_ocaml_value {
         if let Some(name) = get_definition_node_name(node, source) {
             // m002-java-cross-pipeline-drift-v1 (v0.4.2 M-109): For Java
             // function/class/method/constructor/interface/enum/record
@@ -3542,22 +3623,42 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
         let args = child.next_sibling()?;
 
         match keyword {
-            "def" | "defp" => {
+            "def" | "defp" | "defmacro" | "defmacrop" => {
                 let first_arg = args.child(0)?;
+                // Resolve the defined name across the three first-arg shapes:
+                //   * `call` — `def process(data)` (name = call.child(0)).
+                //   * `binary_operator` — `def fn(x) when guard` (the first arg
+                //     is the `when` operator; descend to its inner `call` and
+                //     take that call's name). Without this the whole
+                //     `fn(x) when guard` text was used as the name (#51).
+                //   * bare identifier — `def f` with no args.
                 let name = if first_arg.kind() == "call" {
-                    // def process(data) → call node wrapping name + args
                     first_arg.child(0)?.utf8_text(source.as_bytes()).ok()?
+                } else if first_arg.kind() == "binary_operator" {
+                    // Guarded clause: find the inner `call` (the LHS of `when`).
+                    let mut gc = first_arg.walk();
+                    let inner_call = first_arg
+                        .children(&mut gc)
+                        .find(|c| c.kind() == "call");
+                    if let Some(call) = inner_call {
+                        call.child(0)?.utf8_text(source.as_bytes()).ok()?
+                    } else {
+                        first_arg.utf8_text(source.as_bytes()).ok()?
+                    }
                 } else {
                     first_arg.utf8_text(source.as_bytes()).ok()?
                 };
                 let line_start = node.start_position().row as u32 + 1;
                 let line_end = node.end_position().row as u32 + 1;
                 let signature = extract_def_signature(node, source);
-                // elixir-method-infos-v1: def/defp inside a `defmodule … do … end`
-                // block are emitted with kind="method" so the `method_infos` view
-                // (filtered by kind=="method") is populated for Elixir, mirroring
-                // how Ruby methods inside `module`/`class` blocks are classified.
-                // Top-level def/defp (rare but legal in scripts) remain "function".
+                // elixir-method-infos-v1: def/defp/defmacro/defmacrop inside a
+                // `defmodule … do … end` block are emitted with kind="method" so
+                // the `method_infos` view (filtered by kind=="method") is
+                // populated for Elixir, mirroring how Ruby methods inside
+                // `module`/`class` blocks are classified. Top-level
+                // def/defmacro (rare but legal in scripts) remain "function".
+                // defmacro/defmacrop were previously dropped entirely (#57),
+                // hiding the whole DSL surface of Phoenix/Plug routers.
                 let kind_str = if is_inside_elixir_defmodule(&node, source) {
                     "method"
                 } else {
@@ -3687,6 +3788,23 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
     //     the shared list, so they were dropped from `definitions[]` entirely.
     //     Add them here (Scala-gated) so they surface with their own kinds.
     match language {
+        Language::Swift => {
+            // A Swift `function_type` node is a CLOSURE TYPE ANNOTATION
+            // (`(Int) -> Void`), never a function DEFINITION. It appears inside
+            // closure-typed property/parameter type annotations (e.g.
+            // Alamofire's `var httpResponseHandler: (...) -> Void`). Because the
+            // grammar exposes the return type under a `[name]` field
+            // (`-> Void` => name="Void"), the generic collector emitted a
+            // phantom `Void` "method" for every closure type (#238: 16 phantoms
+            // in DataRequest.swift). `function_type` stays in the base is_func
+            // list for other grammars (Go etc.) where it is unreported; here it
+            // is gated OFF so Swift closure types are not mistaken for methods.
+            // Real Swift methods are `function_declaration` and init is
+            // `init_declaration` — both unaffected.
+            if kind == "function_type" {
+                is_func = false;
+            }
+        }
         Language::Ocaml => {
             if kind == "type_definition" {
                 is_class = true;
@@ -5385,5 +5503,230 @@ interface IFace {
                 methods
             );
         }
+    }
+
+    /// (fix-R7-cl2-cpp-forward-dup-v1) A C++ forward declaration `class X;`
+    /// (no body) must NOT be emitted as a class. With the real definition
+    /// present too, the previous no-body-check pushed BOTH, duplicating the
+    /// class (tinyxml2: 27 entries / 19 unique). Each defined class must appear
+    /// exactly once and the forward-only decl must not double it.
+    #[test]
+    fn test_cpp_forward_declaration_not_duplicated() {
+        let source = r#"
+class XMLDocument;
+class XMLElement;
+
+class XMLDocument {
+public:
+    void parse();
+};
+
+class XMLElement {
+public:
+    void name();
+};
+"#;
+        let tree = parse(source, Language::Cpp).unwrap();
+        let classes = extract_classes(&tree, source, Language::Cpp);
+        let doc_count = classes.iter().filter(|c| *c == "XMLDocument").count();
+        let elem_count = classes.iter().filter(|c| *c == "XMLElement").count();
+        assert_eq!(
+            doc_count, 1,
+            "XMLDocument must appear exactly once (forward decl must not double it), got {:?}",
+            classes
+        );
+        assert_eq!(
+            elem_count, 1,
+            "XMLElement must appear exactly once, got {:?}",
+            classes
+        );
+    }
+
+    /// (fix-R7-cl2-cpp-forward-dup-v1) A pure forward declaration with NO real
+    /// definition in the same TU must not surface as a class at all.
+    #[test]
+    fn test_cpp_pure_forward_declaration_excluded() {
+        let source = "class OnlyForward;\nstruct AlsoForward;\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let classes = extract_classes(&tree, source, Language::Cpp);
+        assert!(
+            !classes.contains(&"OnlyForward".to_string()),
+            "pure forward decl `class OnlyForward;` must be excluded, got {:?}",
+            classes
+        );
+        assert!(
+            !classes.contains(&"AlsoForward".to_string()),
+            "pure forward decl `struct AlsoForward;` must be excluded, got {:?}",
+            classes
+        );
+    }
+
+    /// (fix-R7-cl2-elixir-macro-v1) Elixir `defmacro`/`defmacrop` were dropped
+    /// (only def/defp handled) — hiding the entire DSL surface of Phoenix/Plug
+    /// routers. They must surface as definitions, AND a `when`-guarded clause
+    /// must resolve to the bare function name (not the full `f(x) when g` text).
+    #[test]
+    fn test_elixir_defmacro_and_guard_definitions() {
+        let source = r#"
+defmodule Router do
+  defmacro resources(path, controller) do
+    path
+  end
+
+  defmacrop helper(x) do
+    x
+  end
+
+  def match(conn) when is_map(conn) do
+    conn
+  end
+end
+"#;
+        let tree = parse(source, Language::Elixir).unwrap();
+        let defs = extract_definitions(&tree, source, Language::Elixir);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            names.contains(&"resources"),
+            "defmacro `resources` must be a definition, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"helper"),
+            "defmacrop `helper` must be a definition, got {:?}",
+            names
+        );
+        // The guarded clause name must be the bare `match`, never the guard text.
+        assert!(
+            names.contains(&"match"),
+            "guarded `def match(conn) when ...` must resolve to `match`, got {:?}",
+            names
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("when")),
+            "no definition name may contain the guard text `when`, got {:?}",
+            names
+        );
+
+        // extract_functions (the Vec<String> path) must agree.
+        let funcs = extract_functions(&tree, source, Language::Elixir);
+        assert!(
+            funcs.contains(&"resources".to_string()),
+            "extract_functions must include defmacro `resources`, got {:?}",
+            funcs
+        );
+        assert!(
+            funcs.contains(&"match".to_string()),
+            "extract_functions must include guarded `match`, got {:?}",
+            funcs
+        );
+    }
+
+    /// (fix-R7-cl2-ocaml-nested-letin-v1) The generic definition collector
+    /// marked every OCaml `value_definition` as a function, including inner
+    /// `let ... in` bindings, so nested let-in helpers leaked as top-level
+    /// functions (dune util.ml). Only true top-level functions must surface.
+    #[test]
+    fn test_ocaml_nested_let_in_not_top_level() {
+        let source = r#"
+let check_path contexts =
+  let contexts =
+    let internal_path () = 1 in
+    internal_path ()
+  in
+  contexts
+
+let setup () =
+  let scheduler = 5 in
+  scheduler
+"#;
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let defs = extract_definitions(&tree, source, Language::Ocaml);
+        let func_names: Vec<&str> = defs
+            .iter()
+            .filter(|d| d.kind == "function")
+            .map(|d| d.name.as_str())
+            .collect();
+        // Top-level functions present.
+        assert!(
+            func_names.contains(&"check_path"),
+            "top-level `check_path` must be a function, got {:?}",
+            func_names
+        );
+        assert!(
+            func_names.contains(&"setup"),
+            "top-level `setup` must be a function, got {:?}",
+            func_names
+        );
+        // Nested let-in bindings must NOT leak as top-level functions.
+        for leaked in ["contexts", "internal_path", "scheduler"] {
+            assert!(
+                !func_names.contains(&leaked),
+                "nested let-in `{}` must NOT be a top-level function, got {:?}",
+                leaked,
+                func_names
+            );
+        }
+    }
+
+    /// (fix-R7-cl2-ocaml-nested-letin-v1) A point-free top-level function
+    /// `let code = function | ...` must still surface in the generic collector
+    /// (was at risk from the function-shape gate added for the nested fix).
+    #[test]
+    fn test_ocaml_pointfree_top_level_function_kept() {
+        let source = "let all = [ 1; 2 ]\nlet code = function\n  | 0 -> 1\n  | _ -> 2\n";
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let defs = extract_definitions(&tree, source, Language::Ocaml);
+        let func_names: Vec<&str> = defs
+            .iter()
+            .filter(|d| d.kind == "function")
+            .map(|d| d.name.as_str())
+            .collect();
+        assert!(
+            func_names.contains(&"code"),
+            "point-free top-level `let code = function` must be a function, got {:?}",
+            func_names
+        );
+    }
+
+    /// (fix-R7-cl2-swift-void-phantom-v1) A Swift closure-typed property
+    /// `var h: (Int) -> Void` contains a `function_type` annotation whose return
+    /// type is exposed under a `name` field — the generic collector emitted a
+    /// phantom `Void` method for each. No definition named `Void` may appear,
+    /// and real methods/init must remain.
+    #[test]
+    fn test_swift_closure_property_no_void_phantom() {
+        let source = r#"
+final class DataRequest {
+    var httpResponseHandler: (queue: DispatchQueue, handler: (HTTPURLResponse) -> Void) -> Void)?
+
+    var didComplete: (@Sendable () -> Void)?
+
+    init(id: Int) {
+    }
+
+    func realMethod(x: Int) -> String {
+        return "x"
+    }
+}
+"#;
+        let tree = parse(source, Language::Swift).unwrap();
+        let defs = extract_definitions(&tree, source, Language::Swift);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(
+            !names.contains(&"Void"),
+            "closure-type return `-> Void` must NOT emit a phantom `Void` definition, got {:?}",
+            names
+        );
+        // Real method and init must still be present.
+        assert!(
+            names.contains(&"realMethod"),
+            "real method `realMethod` must remain, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"init"),
+            "`init` must remain, got {:?}",
+            names
+        );
     }
 }
