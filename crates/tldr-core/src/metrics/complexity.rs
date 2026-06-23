@@ -213,6 +213,20 @@ impl<'a> ComplexityCalculator<'a> {
         self.end_line = func_node.end_position().row as u32 + 1;
         self.lines_of_code = self.end_line - self.start_line + 1;
 
+        // C1 GAP-1 (v0.5.0 AUDIT-FIX): an Elixir clause-head `when` guard is a
+        // decision point, but it lives in the `def NAME(...) when <guard>`
+        // HEAD — outside the `do_block` body that `analyze_node` walks below.
+        // Credit it here from the function node so a guarded clause (even one
+        // with a straight-line body) reflects the guard branch. Multi-clause
+        // dispatch itself is modelled by the CLI's per-clause iteration, which
+        // analyses each clause's body in isolation; this only credits the
+        // guard attached to the clause head being analysed.
+        if matches!(self.language, Language::Elixir)
+            && elixir_head_has_when_guard(func_node, self.source)
+        {
+            self.cyclomatic += 1;
+        }
+
         // Get function body
         let body = get_function_body(func_node, self.language);
 
@@ -512,6 +526,44 @@ impl<'a> ComplexityCalculator<'a> {
             "foreach_statement" if matches!(self.language, Language::CSharp) => {
                 self.cyclomatic += 1;
             }
+
+            // ---------------------------------------------------------------
+            // C1 GAP-1 (v0.5.0 AUDIT-FIX): Elixir decision points. Before this
+            // arm `tldr complexity` reported a near-constant cyclomatic=1 for
+            // every Elixir function regardless of branching, because
+            // tree-sitter-elixir spells case/cond/with/if/unless as `call`
+            // nodes (target=identifier) and their arms as `stab_clause`
+            // children of a `do_block` — none of the generic `*_statement` /
+            // `*_clause` / `*_expression` arms above ever matched. The
+            // canonical cognitive cyclomatic counter
+            // (`cognitive::count_cyclomatic_increment`) already credits the
+            // same non-catchall `stab_clause` arms, so `tldr complexity` and
+            // `tldr cognitive --include-cyclomatic` had drifted; this arm
+            // closes that drift and additionally credits the `if`/`unless`
+            // constructs (which carry no `stab_clause`). The `when` guard on a
+            // clause head is credited separately in `analyze_function` (the
+            // head is not part of the walked body). Node shapes verified by
+            // debug-parse against tree-sitter-elixir.
+            // ---------------------------------------------------------------
+
+            // Each non-catchall `case`/`cond`/`with`-else arm is a decision
+            // point. Catchall arms (`_ ->`, `cond`'s `true ->`) are excluded so
+            // the McCabe count matches the canonical cognitive counter exactly.
+            "stab_clause"
+                if matches!(self.language, Language::Elixir)
+                    && !is_elixir_catchall_stab_clause(node, self.source) =>
+            {
+                self.cyclomatic += 1;
+            }
+            // Elixir `if`/`unless` are `call` nodes (`target` identifier
+            // `if`/`unless`), not `if_statement`. They carry no `stab_clause`,
+            // so they must be credited as decision points here.
+            "call"
+                if matches!(self.language, Language::Elixir)
+                    && is_elixir_if_unless_call(node, self.source) =>
+            {
+                self.cyclomatic += 1;
+            }
             _ => {}
         }
 
@@ -702,6 +754,120 @@ fn is_csharp_default_switch_section(node: tree_sitter::Node) -> bool {
         return false;
     }
     cursor.node().kind() == "default"
+}
+
+/// C1 GAP-1 (v0.5.0 AUDIT-FIX): Elixir — a `stab_clause` whose `arguments`
+/// child is a single identifier `_` (or the boolean `true`, the conventional
+/// `cond` catchall) is the catchall arm and is NOT a decision point.
+///
+/// This replicates, node-for-node, the catchall detector that backs the
+/// canonical cognitive cyclomatic counter (`cognitive.rs`) so the two
+/// commands credit exactly the same arms. Grammar shape (verified by
+/// debug-parse against tree-sitter-elixir):
+/// ```text
+/// stab_clause
+///   [left] arguments { <pattern> }
+///   [operator] ->
+///   [right] body { ... }
+/// ```
+fn is_elixir_catchall_stab_clause(node: tree_sitter::Node, source: &str) -> bool {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return false;
+    }
+    loop {
+        let child = cursor.node();
+        if child.kind() == "arguments" {
+            // A single `identifier` child with text `_` is the catchall.
+            let mut acursor = child.walk();
+            if acursor.goto_first_child() {
+                let inner = acursor.node();
+                let text = inner.utf8_text(source.as_bytes()).unwrap_or("");
+                if inner.kind() == "identifier" && text == "_" {
+                    return true;
+                }
+                if inner.kind() == "boolean" && text == "true" {
+                    // `cond` catchall is conventionally `true ->`.
+                    return true;
+                }
+            }
+            return false;
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+    false
+}
+
+/// C1 GAP-1 (v0.5.0 AUDIT-FIX): Elixir — detect whether a `call` node is an
+/// `if`/`unless` construct. tree-sitter-elixir models `if cond do ... end`
+/// (and `unless`) as a `call` whose first child is an `identifier` token
+/// carrying the keyword (verified by debug-parse):
+/// ```text
+/// call
+///   [target] identifier 'if'
+///   arguments { <cond> }
+///   do_block { ... }
+/// ```
+/// `case`/`cond`/`with` are intentionally NOT matched here — their arms are
+/// counted via the `stab_clause` arm, mirroring the canonical cognitive
+/// counter (crediting the dispatch construct too would double-count).
+fn is_elixir_if_unless_call(node: tree_sitter::Node, source: &str) -> bool {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return false;
+    }
+    let head = cursor.node();
+    if head.kind() != "identifier" {
+        return false;
+    }
+    matches!(
+        head.utf8_text(source.as_bytes()).unwrap_or(""),
+        "if" | "unless"
+    )
+}
+
+/// C1 GAP-1 (v0.5.0 AUDIT-FIX): Elixir — detect a `when` guard on a clause
+/// head. The `def NAME(args) when <guard>` form parses as a `binary_operator`
+/// whose `operator` field is the `when` token, sitting inside the `def` call's
+/// `arguments` (verified by debug-parse):
+/// ```text
+/// call                         ← the `def`/`defp`
+///   [target] identifier 'def'
+///   arguments
+///     binary_operator          ← `classify(n) when n > 0`
+///       [left] call            ← the clause signature
+///       [operator] when 'when'
+///       [right] <guard expr>
+/// ```
+/// The guard lives in the clause HEAD, not the `do_block` body the complexity
+/// walker descends into, so it must be detected directly from the function
+/// node. Scans descendants (bounded) for a `binary_operator` with a `when`
+/// operator child.
+fn elixir_head_has_when_guard(func_node: tree_sitter::Node, source: &str) -> bool {
+    // The guard, if present, is in the `arguments` child of the `def` call.
+    // Walk the immediate children to find `arguments`, then look for a
+    // `binary_operator` whose `operator` field is `when`.
+    let mut cursor = func_node.walk();
+    for child in func_node.children(&mut cursor) {
+        if child.kind() != "arguments" {
+            continue;
+        }
+        let mut arg_cursor = child.walk();
+        for arg in child.children(&mut arg_cursor) {
+            if arg.kind() == "binary_operator" {
+                if let Some(op) = arg.child_by_field_name("operator") {
+                    if op.kind() == "when"
+                        || op.utf8_text(source.as_bytes()).unwrap_or("") == "when"
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -908,5 +1074,185 @@ class MyClass:
 
         // Clean up
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // =========================================================================
+    // C1 GAP-1 (v0.5.0 AUDIT-FIX): Elixir cyclomatic decision-point counting.
+    //
+    // tree-sitter-elixir spells `case`/`cond`/`with`/`if`/`unless` as `call`
+    // nodes (target `identifier`), NOT the `*_statement`/`*_expression`
+    // cognates the generic arms in `count_cyclomatic_increment` match. The
+    // dispatch arms live in a `do_block` as `stab_clause` children. Before
+    // this fix `tldr complexity` reported a near-constant cyclomatic=1 for
+    // every Elixir function regardless of branching, while the canonical
+    // `tldr cognitive --include-cyclomatic` (cognitive.rs) already credited
+    // the same `stab_clause` arms — a cross-command drift. These tests pin
+    // the corrected counting on the SAME `calculate_complexity` walker that
+    // backs `tldr complexity` (and, via delegation, `tldr explain`).
+    // =========================================================================
+
+    #[test]
+    fn test_elixir_case_cyclomatic_gt_one() {
+        // A `case` with two non-catchall arms (`1`, `2`) + a `_` catchall.
+        // Each non-catchall `stab_clause` is a decision point ⇒ cyclomatic
+        // must be > 1 (base 1 + 2 arms = 3). Pre-fix this was a flat 1.
+        let source = r#"
+defmodule M do
+  def classify(x) do
+    case x do
+      1 -> :one
+      2 -> :two
+      _ -> :other
+    end
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "classify", Language::Elixir).unwrap();
+        assert!(
+            metrics.cyclomatic > 1,
+            "Elixir `case` with branching must yield cyclomatic > 1, got {}",
+            metrics.cyclomatic
+        );
+        // Exact McCabe count: base + 2 non-catchall arms (catchall `_` excluded).
+        assert_eq!(
+            metrics.cyclomatic, 3,
+            "Elixir `case` [1, 2, _]: base 1 + 2 non-catchall arms = 3, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_elixir_cond_cyclomatic_gt_one() {
+        // A `cond` with two real guards + the conventional `true ->` catchall.
+        let source = r#"
+defmodule M do
+  def pick(x) do
+    cond do
+      x < 0 -> :neg
+      x == 0 -> :zero
+      true -> :pos
+    end
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "pick", Language::Elixir).unwrap();
+        assert!(
+            metrics.cyclomatic > 1,
+            "Elixir `cond` with branching must yield cyclomatic > 1, got {}",
+            metrics.cyclomatic
+        );
+        // base + 2 non-catchall clauses (`true ->` is the catchall, excluded).
+        assert_eq!(
+            metrics.cyclomatic, 3,
+            "Elixir `cond` [x<0, x==0, true]: base 1 + 2 non-catchall = 3, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_elixir_with_else_cyclomatic_gt_one() {
+        // `with` else-arms are also `stab_clause` children (of an `else_block`).
+        let source = r#"
+defmodule M do
+  def run(x) do
+    with {:ok, a} <- fetch(x),
+         {:ok, b} <- fetch(a) do
+      {:ok, b}
+    else
+      :error -> :failed
+      other -> {:unexpected, other}
+    end
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "run", Language::Elixir).unwrap();
+        assert!(
+            metrics.cyclomatic > 1,
+            "Elixir `with` else-arms must yield cyclomatic > 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_elixir_if_cyclomatic_gt_one() {
+        // Elixir `if` is a `call` node (no `if_statement`/`stab_clause`); the
+        // generic arms never matched it, so it must be credited explicitly.
+        let source = r#"
+defmodule M do
+  def check(x) do
+    if x > 10 do
+      :big
+    else
+      :small
+    end
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "check", Language::Elixir).unwrap();
+        assert!(
+            metrics.cyclomatic > 1,
+            "Elixir `if` must yield cyclomatic > 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_elixir_unless_cyclomatic_gt_one() {
+        let source = r#"
+defmodule M do
+  def maybe(x) do
+    unless x == 0 do
+      :nonzero
+    end
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "maybe", Language::Elixir).unwrap();
+        assert!(
+            metrics.cyclomatic > 1,
+            "Elixir `unless` must yield cyclomatic > 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_elixir_when_guard_cyclomatic_gt_one() {
+        // A guarded single-clause function head: the `when` guard is a
+        // decision point even though the body has no branches. The guard
+        // lives in the `def` head (the function node), not the `do_block`.
+        let source = r#"
+defmodule M do
+  def positive(x) when x > 0 do
+    x * 2
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "positive", Language::Elixir).unwrap();
+        assert!(
+            metrics.cyclomatic > 1,
+            "Elixir `when` guard must yield cyclomatic > 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_elixir_no_branch_stays_one() {
+        // Guard against over-counting: a straight-line Elixir function with
+        // no branching must stay at cyclomatic = 1.
+        let source = r#"
+defmodule M do
+  def linear(x) do
+    y = x + 1
+    z = y * 2
+    z
+  end
+end
+"#;
+        let metrics = calculate_complexity(source, "linear", Language::Elixir).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 1,
+            "Straight-line Elixir function must stay cyclomatic = 1, got {}",
+            metrics.cyclomatic
+        );
     }
 }
