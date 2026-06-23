@@ -109,6 +109,14 @@ pub fn dead_code_analysis(
             continue;
         }
 
+        // fix-C5-4 (v0.5.0 AUDIT-FIX): Lua/Luau metamethods (__index, __add,
+        // __tostring, …) are invoked implicitly by the VM and are never dead.
+        // They start with `__` but do not end with `__`, so the dunder guard
+        // below misses them. Whitelist the exact metamethod set.
+        if is_lua_metamethod(bare_name) {
+            continue;
+        }
+
         if bare_name.starts_with("__") && bare_name.ends_with("__") {
             continue;
         }
@@ -263,6 +271,12 @@ pub fn dead_code_analysis_refcount(
             continue;
         }
 
+        // fix-C5-4 (v0.5.0 AUDIT-FIX): Lua/Luau metamethods are invoked
+        // implicitly by the VM and are never dead (see `is_lua_metamethod`).
+        if is_lua_metamethod(bare_name) {
+            continue;
+        }
+
         if bare_name.starts_with("__") && bare_name.ends_with("__") {
             continue;
         }
@@ -342,6 +356,66 @@ pub fn dead_code_analysis_refcount(
         total_functions,
         dead_percentage,
     })
+}
+
+/// fix-C5-4 (v0.5.0 AUDIT-FIX): the exhaustive set of Lua / Luau metamethod
+/// (metatable event) names. The Lua VM invokes these implicitly when the
+/// corresponding operator / table event fires (`a + b` → `__add`, `t[k]` on a
+/// missing key → `__index`, `tostring(o)` → `__tostring`, etc.). A metamethod
+/// is therefore *never* dead just because no explicit call site names it.
+///
+/// These names start with `__` but do NOT end with `__`, so the Python-dunder
+/// guard (`name.starts_with("__") && name.ends_with("__")`) does not cover
+/// them. We match against this exact, finite list rather than a broad
+/// `starts_with("__")` so that genuinely-dead `__`-prefixed private helpers in
+/// other languages are still reported. The list is the union across Lua 5.1
+/// – 5.4 and Luau (see the Lua reference manual §2.4 / §8.1):
+///   - arithmetic: `__add __sub __mul __div __mod __pow __unm __idiv`
+///   - bitwise (5.3+): `__band __bor __bxor __bnot __shl __shr`
+///   - relational: `__eq __lt __le`
+///   - other operators: `__concat __len __call`
+///   - table access: `__index __newindex`
+///   - lifecycle / misc: `__gc __mode __close __tostring __metatable
+///     __pairs __ipairs __name`
+const LUA_METAMETHODS: &[&str] = &[
+    "__add",
+    "__sub",
+    "__mul",
+    "__div",
+    "__mod",
+    "__pow",
+    "__unm",
+    "__idiv",
+    "__band",
+    "__bor",
+    "__bxor",
+    "__bnot",
+    "__shl",
+    "__shr",
+    "__eq",
+    "__lt",
+    "__le",
+    "__concat",
+    "__len",
+    "__call",
+    "__index",
+    "__newindex",
+    "__gc",
+    "__mode",
+    "__close",
+    "__tostring",
+    "__metatable",
+    "__pairs",
+    "__ipairs",
+    "__name",
+];
+
+/// fix-C5-4: whether `bare_name` is a Lua/Luau metamethod (see
+/// [`LUA_METAMETHODS`]). `bare_name` should already be stripped of any
+/// `Table.` / `mt:` qualifier (the caller does this), so we compare the
+/// terminal segment exactly.
+fn is_lua_metamethod(bare_name: &str) -> bool {
+    LUA_METAMETHODS.contains(&bare_name)
 }
 
 /// Check if a function name matches entry point patterns
@@ -2711,5 +2785,107 @@ mod tests {
                 .any(|f| f.name == "_privateHelper"),
             "_privateHelper should be in dead_functions"
         );
+    }
+
+    // =====================================================================
+    // fix-C5-4 (v0.5.0 AUDIT-FIX): Lua metamethods (__index / __add / etc.)
+    // are invoked implicitly by the VM and must never be reported as dead.
+    // They start with `__` but do NOT end with `__`, so the Python-dunder
+    // guard (`starts_with("__") && ends_with("__")`) does not catch them.
+    // =====================================================================
+
+    /// RED→GREEN: a Lua metamethod that is uncalled by any explicit caller
+    /// must not appear in dead_functions (call-graph path).
+    #[test]
+    fn test_dead_excludes_lua_metamethods_callgraph() {
+        let graph = ProjectCallGraph::new(); // Empty graph: nothing is "called".
+        let functions = vec![
+            FunctionRef::new("vec.lua".into(), "Vec.__index"),
+            FunctionRef::new("vec.lua".into(), "Vec.__add"),
+            FunctionRef::new("vec.lua".into(), "Vec.__newindex"),
+            FunctionRef::new("vec.lua".into(), "mt:__tostring"),
+            FunctionRef::new("vec.lua".into(), "__eq"),
+            // Control: a genuinely-private, uncalled helper SHOULD be dead.
+            FunctionRef::new("vec.lua".into(), "_internal_helper"),
+        ];
+
+        let result = dead_code_analysis(&graph, &functions, None).unwrap();
+
+        for mm in ["__index", "__add", "__newindex", "__tostring", "__eq"] {
+            assert!(
+                !result
+                    .dead_functions
+                    .iter()
+                    .chain(result.possibly_dead.iter())
+                    .any(|f| f.name.ends_with(mm)),
+                "Lua metamethod {mm} must not be reported as dead/possibly-dead, got dead={:?} possibly={:?}",
+                result.dead_functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
+                result.possibly_dead.iter().map(|f| &f.name).collect::<Vec<_>>(),
+            );
+        }
+        // Control still flagged.
+        assert!(
+            result
+                .dead_functions
+                .iter()
+                .any(|f| f.name == "_internal_helper"),
+            "a real private uncalled helper must still be flagged dead"
+        );
+    }
+
+    /// RED→GREEN: same exclusion must hold on the refcount path. Use
+    /// `ref_count = 1` (definition only) so refcount rescue does not apply.
+    #[test]
+    fn test_dead_excludes_lua_metamethods_refcount() {
+        let functions = vec![
+            FunctionRef::new("vec.lua".into(), "Vec.__index"),
+            FunctionRef::new("vec.lua".into(), "Vec.__add"),
+            FunctionRef::new("mt:__call".into(), "mt:__call"),
+            FunctionRef::new("vec.lua".into(), "_internal_helper"),
+        ];
+        // Every name has refcount 1 (definition only) — no rescue.
+        let mut ref_counts: HashMap<String, usize> = HashMap::new();
+        ref_counts.insert("__index".to_string(), 1);
+        ref_counts.insert("__add".to_string(), 1);
+        ref_counts.insert("__call".to_string(), 1);
+        ref_counts.insert("_internal_helper".to_string(), 1);
+
+        let result = dead_code_analysis_refcount(&functions, &ref_counts, None).unwrap();
+
+        for mm in ["__index", "__add", "__call"] {
+            assert!(
+                !result
+                    .dead_functions
+                    .iter()
+                    .chain(result.possibly_dead.iter())
+                    .any(|f| f.name.ends_with(mm)),
+                "Lua metamethod {mm} must not be reported as dead on the refcount path"
+            );
+        }
+        assert!(
+            result
+                .dead_functions
+                .iter()
+                .any(|f| f.name == "_internal_helper"),
+            "a real private uncalled helper must still be flagged dead (refcount path)"
+        );
+    }
+
+    /// The metamethod predicate must reject lookalikes that are NOT real
+    /// metamethods (e.g. a user function `__myhelper`), so we don't silently
+    /// rescue arbitrary `__`-prefixed private functions.
+    #[test]
+    fn test_is_lua_metamethod_precise() {
+        assert!(is_lua_metamethod("__index"));
+        assert!(is_lua_metamethod("__newindex"));
+        assert!(is_lua_metamethod("__add"));
+        assert!(is_lua_metamethod("__concat"));
+        assert!(is_lua_metamethod("__tostring"));
+        assert!(is_lua_metamethod("__close")); // Lua 5.4 to-be-closed
+        // Not metamethods:
+        assert!(!is_lua_metamethod("__myhelper"));
+        assert!(!is_lua_metamethod("__init__")); // Python dunder, handled elsewhere
+        assert!(!is_lua_metamethod("helper"));
+        assert!(!is_lua_metamethod("_private"));
     }
 }
