@@ -772,4 +772,127 @@ mod tests {
         assert!(text.contains("SSA-based: 1"));
         assert!(text.contains("Live-vars: 1"));
     }
+
+    // =========================================================================
+    // C1 GAP-2 (v0.5.0 AUDIT-FIX): a store inside a `try` body must NOT be
+    // flagged dead when it is overwritten only on the `except` path and the
+    // value is used after the try/except.
+    //
+    // Repro: requests `should_bypass_proxies` —
+    //   with set_environ("no_proxy", arg):
+    //       try:
+    //           bypass = proxy_bypass(hostname)   # NOT dead
+    //       except (...):
+    //           bypass = False
+    //   if bypass: ...                            # used here
+    //
+    // The try-store reaches the post-try use on the no-exception path, so it is
+    // live. The pre-fix CFG collapsed the `with`-wrapped try/except into one
+    // block, so the SSA dead-store decision saw the except-store as an
+    // "overwrite in the same block before use" and flagged the try-store.
+    // =========================================================================
+
+    /// Run dead-stores against an in-memory source written to a temp file.
+    fn run_on_source(source: &str, function: &str, language: Language) -> DeadStoresReport {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        tmp.write_all(source.as_bytes()).expect("write temp source");
+        tmp.flush().expect("flush temp source");
+        run_dead_stores(tmp.path(), function, language, false).expect("dead-stores run")
+    }
+
+    #[test]
+    fn test_try_except_store_not_dead_with_wrapper() {
+        // Mirrors requests `should_bypass_proxies`: try-store wrapped in a
+        // `with`, overwritten only on the except path, used after.
+        let source = r#"
+def should_bypass(hostname, arg):
+    with set_environ("no_proxy", arg):
+        try:
+            bypass = proxy_bypass(hostname)
+        except (TypeError, ValueError):
+            bypass = False
+
+    if bypass:
+        return True
+    return False
+"#;
+        let report = run_on_source(source, "should_bypass", Language::Python);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"bypass"),
+            "`bypass` must NOT be flagged dead (try-store reaches the post-try \
+             use on the no-exception path); flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    #[test]
+    fn test_try_except_store_not_dead_bare() {
+        // Bare try/except (no `with` wrapper) — guards the existing-correct
+        // path so the fix doesn't regress it.
+        let source = r#"
+def g(hostname):
+    try:
+        bypass = proxy_bypass(hostname)
+    except (TypeError, ValueError):
+        bypass = False
+
+    if bypass:
+        return True
+    return False
+"#;
+        let report = run_on_source(source, "g", Language::Python);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"bypass"),
+            "bare try/except `bypass` must NOT be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    #[test]
+    fn test_genuine_dead_store_still_flagged() {
+        // Over-suppression guard: the canonical dead-store fixture must STILL
+        // be flagged after the `with_statement` CFG fix. `a = 10` is reassigned
+        // (`a = x + 5`) before any use, and `c = 30` is never used — both are
+        // genuine dead stores the SSA detection reliably reports. This pins
+        // that the fix (which only adds CFG descent into `with` bodies — no
+        // change to the dead-store decision) does not blanket-suppress real
+        // dead stores. (Matches the `PYTHON_DEAD_STORES` fixture in
+        // contracts_test.rs.)
+        let source = r#"
+def example_with_dead_stores(x):
+    a = 10
+    b = 20
+    a = x + 5
+    c = 30
+    return a + b
+"#;
+        let report = run_on_source(source, "example_with_dead_stores", Language::Python);
+        let flagged: Vec<(&str, u32)> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| (d.variable.as_str(), d.line))
+            .collect();
+        assert!(
+            flagged.contains(&("a", 3)),
+            "`a = 10` (reassigned before use) must still be flagged dead; \
+             flagged={:?}",
+            report.dead_stores_ssa
+        );
+        assert!(
+            flagged.contains(&("c", 6)),
+            "`c = 30` (never used) must still be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
 }

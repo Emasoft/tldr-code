@@ -872,6 +872,22 @@ impl<'a> CfgBuilder<'a> {
                 self.process_block(node, depth)?;
             }
 
+            // C1 GAP-2 (v0.5.0 AUDIT-FIX): Python `with` statement. The
+            // context-manager header is a linear-flow prelude (no branch), but
+            // the `with` BODY may contain control flow — most importantly a
+            // `try/except` whose two arms must each get their own CFG block.
+            // Pre-fix `with_statement` fell into the catch-all `_` arm below,
+            // which (a) stretched the current block over the WHOLE `with`
+            // range and (b) NEVER descended into the body — so a nested
+            // try/except collapsed into one coarse block and the SSA
+            // dead-store decision wrongly flagged the try-store as
+            // overwritten-before-use (requests `should_bypass_proxies`:
+            // `bypass`). Mirror the DFG counterpart
+            // (`dfg::extractor::process_with_statement`) and the
+            // `compound_statement` precedent above: record the header on the
+            // current block, then descend into the body.
+            "with_statement" => self.process_with_statement(node, depth)?,
+
             // Other statements - just update current block
             _ => {
                 self.update_current_block_lines(start_line, end_line);
@@ -1547,6 +1563,54 @@ impl<'a> CfgBuilder<'a> {
         }
 
         self.current_block_id = exit_block;
+        Ok(())
+    }
+
+    /// Process a Python `with_statement`.
+    ///
+    /// C1 GAP-2 (v0.5.0 AUDIT-FIX): a `with` is linear flow — entering the
+    /// context manager does not branch — but its BODY frequently contains
+    /// control flow (`try/except`, `if/else`, loops) that must be split into
+    /// distinct CFG blocks. The grammar (verified by debug-parse against
+    /// tree-sitter-python) is:
+    /// ```text
+    /// with_statement
+    ///   'with'
+    ///   with_clause { with_item { [value] <ctx-expr> } ... }
+    ///   ':'
+    ///   [body] block { <statements> }
+    /// ```
+    /// We attribute the `with` header line (and any context-manager calls) to
+    /// the CURRENT block, then descend into the `body` block via
+    /// `process_block` so nested control flow is lowered normally. This mirrors
+    /// the DFG counterpart `dfg::extractor::process_with_statement`, which
+    /// already records the context-expression reads and walks the body — the
+    /// CFG never had the matching descent, so the two graphs disagreed on block
+    /// boundaries and the SSA dead-store decision saw a try-store and its
+    /// except-path overwrite in ONE block.
+    fn process_with_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let header_line = node.start_position().row as u32 + 1;
+
+        // Attribute the `with` header line to the current block and harvest
+        // any calls in the context-manager expressions (`with f(x):`). The
+        // body is handled separately below so its statements/control flow are
+        // NOT swallowed into this block.
+        self.update_current_block_lines(header_line, header_line);
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "with_clause" | "with_item" => self.extract_calls_from_node(child),
+                _ => {}
+            }
+        }
+
+        // Descend into the body so nested control flow (try/except, if, loops)
+        // gets its own blocks. `process_block` dispatches each body statement
+        // through `process_statement` exactly as a normal block would.
+        if let Some(body) = node.child_by_field_name("body") {
+            self.process_block(body, depth + 1)?;
+        }
+
         Ok(())
     }
 
@@ -3357,6 +3421,112 @@ def caller():
         assert!(all_calls.contains(&&"foo".to_string()));
         assert!(all_calls.contains(&&"bar".to_string()));
         assert!(all_calls.contains(&&"baz".to_string()));
+    }
+
+    // =========================================================================
+    // C1 GAP-2 (v0.5.0 AUDIT-FIX): Python `with`-wrapped try/except must NOT
+    // collapse into one CFG block.
+    //
+    // A bare `try:` already splits into separate try/except blocks (handled by
+    // `process_try_statement`). But when the `try` is nested inside a
+    // `with_statement` — `with cm(): try: x = a() except: x = b()` — the
+    // `with_statement` had no CFG handler, so it fell into the catch-all `_`
+    // arm: that arm stretched the CURRENT block over the WHOLE `with` range and
+    // never descended into the `with` body, so the inner try/except never got
+    // its own blocks. Both the try-store line and the except-store line then
+    // mapped to the SAME block, making the SSA dead-store decision flag the
+    // try-store as overwritten-before-use. This test pins the structural fix:
+    // the try-store line and except-store line must resolve to DIFFERENT blocks.
+    // =========================================================================
+
+    /// Map a 1-indexed source line to the id of the (last) CFG block whose
+    /// inclusive line range covers it — mirrors the `line_to_block` build in
+    /// `find_dead_stores_dfg`.
+    fn block_id_for_line(cfg: &CfgInfo, line: u32) -> Option<usize> {
+        let mut found = None;
+        for block in &cfg.blocks {
+            if line >= block.lines.0 && line <= block.lines.1 {
+                found = Some(block.id);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn test_python_with_wrapped_try_except_splits_blocks() {
+        // try-store on line 4, except-store on line 6, use on line 8.
+        let source = r#"
+def f(hostname, arg):
+    with set_environ("no_proxy", arg):
+        try:
+            bypass = proxy_bypass(hostname)
+        except (TypeError, ValueError):
+            bypass = False
+
+    if bypass:
+        return True
+    return False
+"#;
+        let cfg = get_cfg_context(source, "f", Language::Python).unwrap();
+
+        let try_store_block = block_id_for_line(&cfg, 5);
+        let except_store_block = block_id_for_line(&cfg, 7);
+
+        assert!(
+            try_store_block.is_some(),
+            "try-store line 5 must map to a CFG block; blocks={:?}",
+            cfg.blocks
+                .iter()
+                .map(|b| (b.id, b.lines))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            except_store_block.is_some(),
+            "except-store line 7 must map to a CFG block; blocks={:?}",
+            cfg.blocks
+                .iter()
+                .map(|b| (b.id, b.lines))
+                .collect::<Vec<_>>()
+        );
+        assert_ne!(
+            try_store_block, except_store_block,
+            "`with`-wrapped try/except must split into separate CFG blocks \
+             (try-store line 5 and except-store line 7 collapsed into the same \
+             block {:?}); blocks={:?}",
+            try_store_block,
+            cfg.blocks
+                .iter()
+                .map(|b| (b.id, b.lines))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_python_with_body_descends_for_nested_if() {
+        // A plain `if` nested directly inside a `with` body must also be split
+        // out (the catch-all arm previously swallowed the whole `with`).
+        let source = r#"
+def g(x):
+    with open("f") as fh:
+        if x > 0:
+            y = 1
+        else:
+            y = 2
+    return y
+"#;
+        let cfg = get_cfg_context(source, "g", Language::Python).unwrap();
+        // then-branch line 5 and else-branch line 7 must be in different blocks.
+        let then_block = block_id_for_line(&cfg, 5);
+        let else_block = block_id_for_line(&cfg, 7);
+        assert_ne!(
+            then_block, else_block,
+            "if/else nested in a `with` body must split into separate blocks; \
+             blocks={:?}",
+            cfg.blocks
+                .iter()
+                .map(|b| (b.id, b.lines))
+                .collect::<Vec<_>>()
+        );
     }
 
     // =========================================================================
