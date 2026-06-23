@@ -3115,9 +3115,27 @@ fn deep_collect(
             // sdshdr5/8/16/32/64 as classes from `sizeof`; c-redis reported a
             // bogus `list` from a cast). `structure`'s extract_c_structs already
             // requires a body; mirror that here so the two pipelines agree.
+            //
+            // EXCEPTION (cpp-interface-macro-filter-v1 regression fix): the
+            // export-macro misparse `class TINYXML2_LIB Foo { ... };` ALSO has
+            // no `body` field on its `class_specifier` — tree-sitter-cpp hangs
+            // the real `compound_statement` body off the wrapping
+            // `function_definition` instead (verified by AST dump:
+            // function_definition -> [class_specifier(name=MACRO, no body),
+            // identifier(Foo), compound_statement{...}]). That node IS a real
+            // class definition, so it must NOT be filtered as a type-ref.
+            // `extract_cpp_macro_misparsed_class_body` returns `Some` exactly
+            // for this shape (and `None` for genuine bodyless type-refs /
+            // forward-decls), so it cleanly distinguishes the two. The same
+            // helper feeds `get_node_name` (real name) and `find_body_node`
+            // (real methods), so once admitted the entry resolves correctly.
+            let is_cpp_macro_misparsed_class = matches!(lang, Language::Cpp)
+                && kind == "class_specifier"
+                && extract_cpp_macro_misparsed_class_body(child).is_some();
             let is_bodyless_c_type_ref = matches!(lang, Language::C | Language::Cpp)
                 && matches!(kind, "struct_specifier" | "class_specifier")
-                && child.child_by_field_name("body").is_none();
+                && child.child_by_field_name("body").is_none()
+                && !is_cpp_macro_misparsed_class;
 
             // Avoid double-counting nested classes when an enclosing class
             // already collected its inner methods/types via extract_class_info.
