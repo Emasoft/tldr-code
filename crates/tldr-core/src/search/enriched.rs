@@ -1546,7 +1546,72 @@ fn get_definition_name(
         return Some("Companion".to_string());
     }
 
+    // C / C++: `function_definition` has NO `name` field — the function name
+    // lives under a `declarator` field that is a `function_declarator` (or a
+    // `pointer_declarator` wrapping one for pointer-return functions like
+    // `char *foo()`). Without this branch, `get_definition_name` returned
+    // None for every C/C++ function, so the search symbol-name boost's
+    // Pass-2 promotion (which scans `extract_structure_entries`) could never
+    // surface a C function by name — `tldr search sdsMakeRoomFor c-redis`
+    // returned only token-overlap structs. Mirrors the canonical
+    // `ast::extractor::extract_c_function_name` navigation (C4 AUDIT-FIX).
+    if node.kind() == "function_definition" {
+        if let Some(declarator) = node.child_by_field_name("declarator") {
+            if let Some(name) = c_declarator_name(declarator, source) {
+                return Some(name);
+            }
+        }
+    }
+
     None
+}
+
+/// Resolve a C/C++ function name from a declarator subtree.
+///
+/// Handles the declarator shapes tree-sitter-c / tree-sitter-cpp produce for
+/// function definitions: `function_declarator` (direct), `pointer_declarator`
+/// (pointer return type), `parenthesized_declarator` (`(*fp)(args)`), and the
+/// terminal `identifier` / `field_identifier` (C++ qualified members). Mirrors
+/// `ast::extractor::extract_c_function_name` so search and structure agree.
+fn c_declarator_name(node: tree_sitter::Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "type_identifier" => {
+            Some(node.utf8_text(source.as_bytes()).ok()?.to_string())
+        }
+        // `qualified_identifier` (C++ `Class::method`): take the tail name.
+        "qualified_identifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                return c_declarator_name(name_node, source);
+            }
+            // Fall back to the last identifier-ish child.
+            let mut cursor = node.walk();
+            let mut last = None;
+            for child in node.children(&mut cursor) {
+                if matches!(
+                    child.kind(),
+                    "identifier" | "field_identifier" | "qualified_identifier"
+                ) {
+                    last = Some(child);
+                }
+            }
+            last.and_then(|n| c_declarator_name(n, source))
+        }
+        "function_declarator" | "pointer_declarator" | "parenthesized_declarator"
+        | "reference_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                return c_declarator_name(inner, source);
+            }
+            // No `declarator` field (parenthesized) — recurse into children.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(name) = c_declarator_name(child, source) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Extract the function name from an Elixir `def`/`defp`/`defmacro` call node.
@@ -2772,6 +2837,98 @@ def other():
             "Top result should be in foo.py, got {:?}",
             top.file
         );
+    }
+
+    /// C4 (v0.5.0 AUDIT-FIX): a query equal to a C function name must rank
+    /// that function at the top. Repro: `tldr search sdsMakeRoomFor
+    /// /tmp/tldr_corpora_b/c-redis` returned 10 results NONE named
+    /// `sdsMakeRoomFor`, because the symbol-name boost's Pass-2 promotion
+    /// relies on `extract_structure_entries`, whose `get_definition_name`
+    /// had NO handler for C/C++ `function_definition` nodes (the name lives
+    /// under a `declarator`/`function_declarator`, not a `name` field). So
+    /// C functions were never surfaced as named entries and could not be
+    /// boosted — a struct that merely contained the subword tokens
+    /// (`sds`/`make`/`room`) won instead.
+    #[test]
+    fn test_search_c_function_exact_name_top_ranked() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project");
+        fs::create_dir(&project).unwrap();
+
+        // Canonical definition: C function `sdsMakeRoomFor` in sds.c.
+        fs::write(
+            project.join("sds.c"),
+            "#include <stdlib.h>\n\
+             typedef char *sds;\n\
+             /* Enlarge the free space at the end of the sds string. */\n\
+             sds sdsMakeRoomFor(sds s, size_t addlen) {\n\
+             \x20   return s;\n\
+             }\n\
+             sds sdsempty(void) {\n\
+             \x20   return NULL;\n\
+             }\n",
+        )
+        .unwrap();
+
+        // Decoy files: a struct whose NAME does not match but whose body
+        // mentions the camel-subword tokens (sds / make / room) many times.
+        // Plain BM25 ranks this struct above the real function.
+        for i in 0..6 {
+            fs::write(
+                project.join(format!("decoy{}.c", i)),
+                "/* sds make room sds make room sds make room for the sds. */\n\
+                 struct commandDocs {\n\
+                 \x20   /* sds make room sds make room sds make room sds. */\n\
+                 \x20   int sds_make_room_for_count;\n\
+                 };\n",
+            )
+            .unwrap();
+        }
+
+        let report =
+            enriched_search("sdsMakeRoomFor", &project, Language::C, opts(10)).unwrap();
+        assert!(
+            !report.results.is_empty(),
+            "Search for 'sdsMakeRoomFor' must return at least one result"
+        );
+        let top = &report.results[0];
+        assert_eq!(
+            top.name, "sdsMakeRoomFor",
+            "Top result must be the C function 'sdsMakeRoomFor' (got '{}' kind='{}' in {:?}); \
+             pre-C4 no result was named sdsMakeRoomFor at all",
+            top.name, top.kind, top.file
+        );
+    }
+
+    /// C4 (v0.5.0 AUDIT-FIX): the same C-name promotion must surface the
+    /// function as a named entry even when the file only appears in BM25 as
+    /// a `module` hit. This is the direct unit-level guard on
+    /// `extract_structure_entries` recognising C function names.
+    #[test]
+    fn test_extract_structure_entries_c_function_name() {
+        let dir = TempDir::new().unwrap();
+        let f = dir.path().join("x.c");
+        fs::write(
+            &f,
+            "int add(int a, int b) { return a + b; }\n\
+             static char *make_buf(size_t n) { return 0; }\n\
+             struct Point { int x; int y; };\n",
+        )
+        .unwrap();
+
+        let entries = extract_structure_entries(&f, Language::C).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"add"),
+            "C function `add` must be extracted (got {names:?})"
+        );
+        assert!(
+            names.contains(&"make_buf"),
+            "C function `make_buf` (pointer return) must be extracted (got {names:?})"
+        );
+        // The two functions must carry kind == "function".
+        let add_kind = entries.iter().find(|e| e.name == "add").map(|e| e.kind.as_str());
+        assert_eq!(add_kind, Some("function"), "add must be kind=function");
     }
 
     /// search-symbol-name-boost-v1: a substring match in the symbol name
