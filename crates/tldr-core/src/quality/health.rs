@@ -1196,35 +1196,31 @@ fn canonicalize_counters_from_structure(
     // sum(files[].functions.len())` continues to hold across the kotlin /
     // swift / typescript / cpp / java / go / javascript corpora pinned by
     // `health_dashboard_v1.rs`.
+    // C4 (v0.5.0 AUDIT-FIX): the "function-axis" count is functions PLUS
+    // class/struct/interface/module MEMBER methods, for EVERY language — not
+    // free `kind=="function"` definitions alone. The pre-C4 code applied the
+    // function+method rule ONLY to Solidity, so every class-oriented language
+    // (Java/Kotlin/C#/Scala) and every method-oriented language whose
+    // extractor emits members as `kind=="method"` (Ruby/Elixir/Python
+    // methods) grossly under-counted: java-petclinic reported 0 (vs 174
+    // methods), elixir-plug 10 (vs ~944), ruby-rubocop 77 (vs 7000+). The
+    // complexity sub-analyzer already computed cyclomatic metrics for those
+    // methods; only this headline counter ignored them.
+    //
+    // This is the SAME inclusion policy as `ast::count::count_functions_canonical`
+    // (`info.functions.len() + sum(class.methods.len())`) and as `structure`'s
+    // method-inclusive `definitions` projection, so health / structure / dead
+    // now agree on the function-axis count across all languages. The
+    // per-file owning-language resolution is no longer needed for the function
+    // count (the rule is language-independent), but classes still come from
+    // the polyglot `classes_total` above.
     let functions_total: usize = structure
         .files
         .iter()
         .map(|f| {
-            let file_lang = if path.is_dir() {
-                // `f.path` is relative to the scan root; resolve against the
-                // absolute path so header sibling-detection matches what the
-                // polyglot structure merge used.
-                let abs = if f.path.is_absolute() {
-                    f.path.clone()
-                } else {
-                    path.join(&f.path)
-                };
-                Language::from_path_with_siblings(&abs).unwrap_or(language)
-            } else {
-                language
-            };
             f.definitions
                 .iter()
-                .filter(|d| {
-                    if matches!(file_lang, Language::Solidity) {
-                        // Contract members appear as `method` and free
-                        // functions as `function`. Both contribute to
-                        // the function-axis count.
-                        d.kind == "function" || d.kind == "method"
-                    } else {
-                        d.kind == "function"
-                    }
-                })
+                .filter(|d| d.kind == "function" || d.kind == "method")
                 .count()
         })
         .sum();
@@ -1719,6 +1715,110 @@ mod tests {
                 "coupling",
                 "similar"
             ]
+        );
+    }
+
+    /// C4 (v0.5.0 AUDIT-FIX): `health.summary.functions_analyzed` must count
+    /// class/struct/interface MEMBER methods, not only free `kind=="function"`
+    /// definitions. In class-oriented languages (Java, Kotlin, C#, Scala) and
+    /// in method-oriented languages whose extractor emits members as
+    /// `kind=="method"` (Ruby, Elixir), EVERY callable lives inside a class /
+    /// module, so the pre-fix `d.kind == "function"`-only filter in
+    /// `canonicalize_counters_from_structure` reported 0 even though the
+    /// complexity sub-analyzer computed cyclomatic metrics for each method.
+    ///
+    /// Repro mirrors the audit: java-petclinic reported `functions_analyzed: 0`
+    /// vs `structure`'s 174 methods. A single Java class with N methods and no
+    /// free functions must report `functions_analyzed == N`.
+    #[test]
+    fn test_health_functions_analyzed_counts_class_methods_java() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+        let p = temp.path();
+        // Three methods, ZERO top-level functions (Java has no free functions).
+        fs::write(
+            p.join("Owner.java"),
+            "package com.example;\n\
+             public class Owner {\n\
+             \x20   public String getName() { return name; }\n\
+             \x20   public void setName(String n) { this.name = n; }\n\
+             \x20   public boolean isNew() { return id == null; }\n\
+             }\n",
+        )
+        .unwrap();
+
+        let opts = HealthOptions {
+            quick: true,
+            ..HealthOptions::default()
+        };
+        let report = run_health(p, Some(Language::Java), opts).unwrap();
+        assert_eq!(
+            report.summary.functions_analyzed, 3,
+            "expected 3 class methods counted as functions_analyzed, got {} \
+             (classes={}); pre-C4 this was 0 because only kind==\"function\" \
+             was counted and Java methods are kind==\"method\"",
+            report.summary.functions_analyzed, report.summary.classes_analyzed,
+        );
+    }
+
+    /// C4 (v0.5.0 AUDIT-FIX): the same function-axis count must hold for
+    /// Ruby, whose extractor emits instance methods as `kind=="method"` inside
+    /// a `class`. ruby-rubocop reported `functions_analyzed: 77` (only the rare
+    /// top-level `def`s) while `structure` saw 7000+ methods. A class with two
+    /// methods plus one top-level `def` must report 3.
+    #[test]
+    fn test_health_functions_analyzed_counts_methods_ruby() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+        let p = temp.path();
+        fs::write(
+            p.join("cop.rb"),
+            "def top_level_helper\n  1\nend\n\n\
+             class Cop\n  def on_send(node)\n    node\n  end\n\n  \
+             def relevant?(node)\n    true\n  end\nend\n",
+        )
+        .unwrap();
+
+        let opts = HealthOptions {
+            quick: true,
+            ..HealthOptions::default()
+        };
+        let report = run_health(p, Some(Language::Ruby), opts).unwrap();
+        assert_eq!(
+            report.summary.functions_analyzed, 3,
+            "expected 1 top-level def + 2 instance methods = 3, got {} \
+             (classes={})",
+            report.summary.functions_analyzed, report.summary.classes_analyzed,
+        );
+    }
+
+    /// C4 (v0.5.0 AUDIT-FIX): canonicalisation must NOT regress free-function
+    /// languages. A Python file with 2 top-level functions and a class with
+    /// 2 methods must report 4 (2 functions + 2 methods) — the methods now
+    /// count too, matching `structure`'s method-inclusive projection used by
+    /// `count_functions_canonical`.
+    #[test]
+    fn test_health_functions_analyzed_python_functions_plus_methods() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+        let p = temp.path();
+        fs::write(
+            p.join("m.py"),
+            "def a():\n    return 1\n\ndef b():\n    return 2\n\n\
+             class C:\n    def m1(self):\n        return 3\n    \
+             def m2(self):\n        return 4\n",
+        )
+        .unwrap();
+
+        let opts = HealthOptions {
+            quick: true,
+            ..HealthOptions::default()
+        };
+        let report = run_health(p, Some(Language::Python), opts).unwrap();
+        assert_eq!(
+            report.summary.functions_analyzed, 4,
+            "expected 2 functions + 2 methods = 4, got {} (classes={})",
+            report.summary.functions_analyzed, report.summary.classes_analyzed,
         );
     }
 }
