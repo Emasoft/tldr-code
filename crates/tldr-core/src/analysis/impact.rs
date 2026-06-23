@@ -680,7 +680,15 @@ pub fn enrich_impact_with_references(
         // `json.decode(...)` (receiver `json`) from `rpc.decode()` (receiver
         // `rpc`) and `self.decode()` inside `impl Codec` (receiver type
         // `Codec`) from the same expression inside `impl Parser`.
-        let receiver = extract_call_receiver(&caller_file, r.line, r.column, bare_target, language);
+        //
+        // c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): the receiver
+        // extractor now type-resolves an instance receiver (`endTag.GetStr()`
+        // where `StrPair endTag;` is a local, or a member field of an inline
+        // class body in the same file) to its declared TYPE, so the CL-2
+        // compatibility check matches the target's type qualifier instead of
+        // wrongly rejecting the variable name.
+        let receiver =
+            extract_call_receiver(&caller_file, r.line, r.column, bare_target, language);
 
         let key_pair = (enclosing.clone(), caller_file.clone());
         if additions
@@ -975,7 +983,124 @@ fn extract_call_receiver(
         }
     }
 
-    receiver_for_call_name(&node, src, language)
+    let receiver = receiver_for_call_name(&node, src, language);
+
+    // c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): cross-file member
+    // upgrade. `receiver_for_call_name` / `receiver_from_expr` resolved the
+    // receiver using only THIS file's AST. A C++ instance method called via a
+    // member field inside an OUT-OF-LINE definition (`const char*
+    // XMLElement::GetText() { return _value.GetStr(); }` where the inline-bodied
+    // class lives in the SAME translation unit) is already handled in-file. When
+    // the receiver is still a bare variable name AND the enclosing definition is
+    // an out-of-line `Class::method`, look up `Class`'s field of that name
+    // within THIS file's class bodies (bounded, no project-wide rescan) and, if
+    // found, upgrade the receiver to its declared type so `receiver_compatible`
+    // can match the target's type qualifier.
+    if let CallReceiver::Named(var) = &receiver {
+        if let Some(class_name) = enclosing_out_of_line_class(&node, src) {
+            if let Some(ty) = find_class_field_type(&root, src, &class_name, var) {
+                return CallReceiver::Named(ty);
+            }
+        }
+    }
+
+    receiver
+}
+
+/// c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): if the call leaf
+/// `node` sits inside an OUT-OF-LINE method definition whose declarator is a
+/// qualified `Class::method` (the C++ shape `RetType Class::method(...) {...}`),
+/// return `Class`. Returns `None` for free functions and in-class (inline)
+/// definitions (those resolve their members in-file already).
+fn enclosing_out_of_line_class(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if n.kind() == "function_definition" {
+            // The declarator carries the (possibly qualified) function name.
+            if let Some(decl) = n.child_by_field_name("declarator") {
+                if let Some(cls) = qualified_declarator_class(&decl, src) {
+                    return Some(cls);
+                }
+            }
+            return None;
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+/// Walk a C++ declarator subtree looking for a `qualified_identifier` whose
+/// `scope` names the owning class (`XMLNode::Value` -> `XMLNode`). Returns the
+/// innermost scope segment.
+fn qualified_declarator_class(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    if node.kind() == "qualified_identifier" {
+        if let Some(scope) = node.child_by_field_name("scope") {
+            if let Ok(t) = scope.utf8_text(src) {
+                let leaf = t.trim().rsplit("::").next().unwrap_or(t).trim();
+                if !leaf.is_empty() {
+                    return Some(leaf.to_string());
+                }
+            }
+        }
+    }
+    if let Some(inner) = node.child_by_field_name("declarator") {
+        if let Some(found) = qualified_declarator_class(&inner, src) {
+            return Some(found);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = qualified_declarator_class(&child, src) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Recursively locate a `class_specifier`/`struct_specifier` named `class_name`
+/// within `node`'s subtree and return the declared type of its `field`.
+/// Bounded to the passed tree (the call site's own file), so no project-wide
+/// rescan occurs. Handles the tree-sitter-cpp quirk of not always exposing the
+/// class `name` field by falling back to the first `type_identifier` child.
+fn find_class_field_type(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    class_name: &str,
+    field: &str,
+) -> Option<String> {
+    if matches!(node.kind(), "class_specifier" | "struct_specifier") {
+        let name = node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(src).ok())
+            .map(|t| t.trim().to_string())
+            .or_else(|| {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "type_identifier" {
+                        if let Ok(t) = child.utf8_text(src) {
+                            if !t.is_empty() {
+                                return Some(t.to_string());
+                            }
+                        }
+                    }
+                }
+                None
+            });
+        if name.as_deref() == Some(class_name) {
+            if let Some(body) = node.child_by_field_name("body") {
+                if let Some(ty) = find_field_decl_type_in_subtree(&body, src, field) {
+                    return Some(ty);
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = find_class_field_type(&child, src, class_name, field) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Find a descendant identifier-ish leaf whose text equals `name`.
@@ -1120,20 +1245,250 @@ fn receiver_for_call_name(
 /// `self` / `this` / `Self` is reported as a self-reference (with the
 /// enclosing type resolved from the AST when possible); anything else with a
 /// recoverable leading identifier becomes a `Named` receiver.
+///
+/// c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): for an INSTANCE
+/// receiver (`_value.GetStr()`, `endTag.GetStr()`) the leading identifier is a
+/// *variable*, not a type. The CL-2 receiver-compatibility check compares the
+/// receiver against the target's *type* qualifier (`StrPair`), so a raw
+/// `Named("_value")` is wrongly rejected even though `_value`'s declared type
+/// IS `StrPair`. Before falling back to the bare variable name, we attempt to
+/// resolve that variable's declared type from the AST (a local declaration in
+/// the enclosing function or a field declaration in the enclosing class). When
+/// resolved, we emit the *type* as the `Named` receiver so the downstream
+/// `receiver_compatible(Named(type), Some(qualifier))` check matches. When it
+/// cannot be resolved we keep the historic bare-name behaviour, so the
+/// json/rpc and Parser/Codec discrimination (cl2-receiver-resolution-v1) is
+/// unchanged: an unresolved `json` stays `Named("json")` and is still rejected
+/// against the `rpc` qualifier.
 fn receiver_from_expr(expr: &tree_sitter::Node, src: &[u8]) -> CallReceiver {
     // For nested qualifiers (`a.b`, `Mod::Sub`), take the *innermost* leading
     // identifier — that is the variable/type whose `.method` is being called.
     if let Ok(text) = expr.utf8_text(src) {
-        let base = match receiver_base_node(expr) {
+        let base_node = receiver_base_node(expr);
+        let base = match base_node {
             Some(n) => n.utf8_text(src).unwrap_or(text),
             None => text,
         };
         if is_self_token(base) {
             return CallReceiver::SelfRef(resolve_enclosing_type(expr, src));
         }
+        // c3-cpp-method-caller-v1: try to upgrade the bare variable receiver to
+        // its declared TYPE. Only attempt when `base` looks like an instance
+        // variable (i.e. not already a Type-cased token that the qualifier
+        // match would handle directly). Resolution is AST-driven and bounded
+        // to the receiver's own translation unit; a miss returns the variable
+        // name unchanged.
+        if let Some(resolved_ty) = resolve_receiver_var_type(expr, src, base) {
+            return CallReceiver::Named(resolved_ty);
+        }
         return classify_receiver_text(base);
     }
     CallReceiver::Unknown
+}
+
+/// c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): resolve the declared
+/// type of the receiver variable `var` named at the call site `node`, walking
+/// the AST upward from the call expression.
+///
+/// Resolution strategy (AST-only, no string/regex heuristics on whole files):
+///   1. Walk up to the enclosing function/method body. Inside it, look for a
+///      declaration of `var` that carries a type — covering
+///        - C/C++ `StrPair endTag;` / `StrPair endTag( ... )`
+///          (`declaration` with a `type` field + an identifier declarator), and
+///        - the `Type var = ...;` shape across C-family grammars.
+///   2. If no local declaration is found, walk up to the enclosing class /
+///      struct body and look for a *field* declaration named `var` with a
+///      type (covers C++ member fields like `StrPair _value;`).
+///
+/// Returns the bare type name (generics / pointers / references stripped to the
+/// leading type identifier) on success, or `None` when the variable's type
+/// cannot be determined — in which case the caller keeps the bare variable
+/// name so existing receiver discrimination is preserved.
+fn resolve_receiver_var_type(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    var: &str,
+) -> Option<String> {
+    if var.is_empty() || is_self_token(var) {
+        return None;
+    }
+
+    // 1. Search the enclosing function/method body for a local declaration.
+    let mut cur = node.parent();
+    let mut enclosing_callable: Option<tree_sitter::Node> = None;
+    while let Some(n) = cur {
+        match n.kind() {
+            "function_definition"
+            | "function_declaration"
+            | "method_definition"
+            | "function_item"
+            | "method_declaration"
+            | "constructor_declaration" => {
+                enclosing_callable = Some(n);
+                break;
+            }
+            _ => {}
+        }
+        cur = n.parent();
+    }
+    if let Some(body) = enclosing_callable {
+        if let Some(ty) = find_var_decl_type_in_subtree(&body, src, var) {
+            return Some(ty);
+        }
+    }
+
+    // 2. Search the enclosing class/struct body for a field declaration.
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        match n.kind() {
+            "class_specifier"
+            | "struct_specifier"
+            | "class_declaration"
+            | "class_definition"
+            | "struct_item"
+            | "impl_item" => {
+                if let Some(ty) = find_field_decl_type_in_subtree(&n, src, var) {
+                    return Some(ty);
+                }
+            }
+            _ => {}
+        }
+        cur = n.parent();
+    }
+
+    None
+}
+
+/// Strip a C-family type expression down to its leading type *identifier*
+/// (`const StrPair&` -> `StrPair`, `std::string` -> keep last segment `string`,
+/// `Foo<Bar>` -> `Foo`). Returns `None` for primitive/empty results that could
+/// never name a project type.
+fn type_leaf_name(raw: &str) -> Option<String> {
+    let mut t = raw.trim();
+    // Drop a trailing reference/pointer/qualifier cluster.
+    t = t.trim_end_matches(['&', '*', ' ']);
+    // Take the part before any generic argument list.
+    if let Some(idx) = t.find('<') {
+        t = &t[..idx];
+    }
+    // Drop leading qualifiers like `const`, `struct`, `class`, `volatile`.
+    let cleaned: Vec<&str> = t
+        .split_whitespace()
+        .filter(|w| !matches!(*w, "const" | "struct" | "class" | "volatile" | "mutable" | "static"))
+        .collect();
+    let last = cleaned.last().copied().unwrap_or(t).trim();
+    // Keep only the trailing `::` segment so `tinyxml2::StrPair` -> `StrPair`.
+    let leaf = last.rsplit("::").next().unwrap_or(last).trim();
+    if leaf.is_empty() {
+        return None;
+    }
+    Some(leaf.to_string())
+}
+
+/// Recursively search `root` for a *local variable declaration* that introduces
+/// a binding named `var` with a recoverable type. Handles the C-family
+/// `declaration` node shape (a `type` field plus a declarator that ultimately
+/// names `var`).
+fn find_var_decl_type_in_subtree(
+    root: &tree_sitter::Node,
+    src: &[u8],
+    var: &str,
+) -> Option<String> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if matches!(child.kind(), "declaration" | "field_declaration") {
+            if let Some(ty_node) = child.child_by_field_name("type") {
+                if declarator_binds_name(&child, src, var) {
+                    if let Ok(raw) = ty_node.utf8_text(src) {
+                        if let Some(leaf) = type_leaf_name(raw) {
+                            return Some(leaf);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(found) = find_var_decl_type_in_subtree(&child, src, var) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Recursively search a class/struct `root` for a *field* declaration named
+/// `var` with a recoverable type. C++ member fields parse as `field_declaration`
+/// nodes; the C-family `declaration` shape is accepted too for robustness.
+fn find_field_decl_type_in_subtree(
+    root: &tree_sitter::Node,
+    src: &[u8],
+    var: &str,
+) -> Option<String> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if matches!(child.kind(), "field_declaration" | "declaration") {
+            if let Some(ty_node) = child.child_by_field_name("type") {
+                if declarator_binds_name(&child, src, var) {
+                    if let Ok(raw) = ty_node.utf8_text(src) {
+                        if let Some(leaf) = type_leaf_name(raw) {
+                            return Some(leaf);
+                        }
+                    }
+                }
+            }
+        }
+        // Recurse into nested scopes (access-specifier groups, nested types).
+        if let Some(found) = find_field_decl_type_in_subtree(&child, src, var) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Whether a C-family `declaration` / `field_declaration` node's declarator
+/// ultimately binds an identifier equal to `var`. Walks the declarator subtree
+/// (skipping the `type` field) collecting the bound identifier leaves —
+/// covering `StrPair endTag;`, `StrPair* p;`, `StrPair endTag(...)` and the
+/// `init_declarator` (`StrPair x = ...;`) shape.
+fn declarator_binds_name(decl: &tree_sitter::Node, src: &[u8], var: &str) -> bool {
+    let type_field = decl.child_by_field_name("type");
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        // Skip the type half so a type identifier that happens to equal `var`
+        // is not mistaken for the bound name.
+        if let Some(tf) = type_field {
+            if child.id() == tf.id() {
+                continue;
+            }
+        }
+        if declarator_names_identifier(&child, src, var) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively check whether a declarator subtree binds the identifier `var`.
+/// The bound name is the `declarator`-field identifier (or, lacking field
+/// access, the first plain `identifier`/`field_identifier` leaf encountered).
+fn declarator_names_identifier(node: &tree_sitter::Node, src: &[u8], var: &str) -> bool {
+    match node.kind() {
+        "identifier" | "field_identifier" | "type_identifier" => {
+            return node.utf8_text(src).map(|t| t == var).unwrap_or(false);
+        }
+        _ => {}
+    }
+    // Prefer the canonical `declarator` field when present.
+    if let Some(inner) = node.child_by_field_name("declarator") {
+        if declarator_names_identifier(&inner, src, var) {
+            return true;
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if declarator_names_identifier(&child, src, var) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Descend a qualifier expression to its leading base identifier (the
