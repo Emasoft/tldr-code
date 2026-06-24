@@ -1419,19 +1419,14 @@ fn cohesion_from_method_fields(
                 fields: vec![],
             })
             .collect();
-        let verdict = if lcom4 > options.low_cohesion_threshold {
-            CohesionVerdict::SplitCandidate
-        } else {
-            CohesionVerdict::Cohesive
-        };
-        let split_suggestion = if verdict == CohesionVerdict::SplitCandidate {
-            Some(format!(
-                "Class has {} disconnected methods with no shared state",
-                method_count
-            ))
-        } else {
-            None
-        };
+        // fix-R7 (cluster[11] cohesion fork, Option A): LCOM4 is UNDEFINED
+        // without fields — with zero fields every method is its own component,
+        // so `lcom4 == method_count` and any method-only type (idiomatic Rust
+        // unit struct / trait impl, Java/Go utility "namespace" type) would be
+        // mechanically and wrongly flagged "split into N classes". Report
+        // `Cohesive` with no split suggestion for fieldless types; the numeric
+        // `lcom4`/`method_count` are still surfaced for transparency. See
+        // decisions/r7-cl11-cohesion-fieldless-lcom4.md.
         return ClassCohesion {
             name: name.to_string(),
             file: file_path.to_path_buf(),
@@ -1440,8 +1435,8 @@ fn cohesion_from_method_fields(
             field_count: 0,
             lcom4,
             components,
-            verdict,
-            split_suggestion,
+            verdict: CohesionVerdict::Cohesive,
+            split_suggestion: None,
         };
     }
 
@@ -5324,7 +5319,7 @@ fn compute_class_cohesion(
     let all_fields: HashSet<String> = method_fields.iter().flatten().cloned().collect();
     let field_count = all_fields.len();
 
-    // If no methods access any fields, each method is its own component
+    // If no methods access any fields, each method is its own component.
     if all_fields.is_empty() {
         let lcom4 = method_count;
         let components: Vec<ComponentInfo> = methods
@@ -5335,21 +5330,12 @@ fn compute_class_cohesion(
             })
             .collect();
 
-        let verdict = if lcom4 > options.low_cohesion_threshold {
-            CohesionVerdict::SplitCandidate
-        } else {
-            CohesionVerdict::Cohesive
-        };
-
-        let split_suggestion = if verdict == CohesionVerdict::SplitCandidate {
-            Some(format!(
-                "Class has {} disconnected methods with no shared state",
-                method_count
-            ))
-        } else {
-            None
-        };
-
+        // fix-R7 (cluster[11] cohesion fork, Option A): a fieldless type has no
+        // defined LCOM4 — `lcom4 == method_count` here is an artifact, not low
+        // cohesion. Report `Cohesive`/no-suggestion rather than mechanically
+        // flagging idiomatic fieldless method-only types (Rust unit struct /
+        // trait impl, utility/static classes). Numbers preserved for
+        // transparency. See decisions/r7-cl11-cohesion-fieldless-lcom4.md.
         return ClassCohesion {
             name: class_info.name.clone(),
             file: file_path.to_path_buf(),
@@ -5358,8 +5344,8 @@ fn compute_class_cohesion(
             field_count: 0,
             lcom4,
             components,
-            verdict,
-            split_suggestion,
+            verdict: CohesionVerdict::Cohesive,
+            split_suggestion: None,
         };
     }
 
@@ -7672,6 +7658,89 @@ class Mixed {
             !fields.contains("counter"),
             "@@counter should not match as instance var, got {:?}",
             fields
+        );
+    }
+
+    /// fix-R7 (cluster[11] cohesion fork, Option A): a FIELDLESS Rust type
+    /// (unit struct / method-only impl) must NOT be reported as a
+    /// split_candidate. LCOM4 is undefined without fields — with zero fields
+    /// every method is its own component, so `lcom4 == method_count` and the
+    /// type is mechanically (and wrongly) flagged "split into N classes".
+    /// See decisions/r7-cl11-cohesion-fieldless-lcom4.md.
+    #[test]
+    fn test_cohesion_fieldless_type_not_split_candidate() {
+        let source = "\
+struct Calculator;
+
+impl Calculator {
+    fn add(&self, a: i32, b: i32) -> i32 { a + b }
+    fn sub(&self, a: i32, b: i32) -> i32 { a - b }
+    fn mul(&self, a: i32, b: i32) -> i32 { a * b }
+}
+";
+        let test_dir = tempfile::tempdir().unwrap();
+        let file_path = test_dir.path().join("calc.rs");
+        std::fs::write(&file_path, source).unwrap();
+
+        let options = CohesionOptions::default();
+        let results = analyze_file_cohesion(&file_path, &options).unwrap();
+        let calc = results
+            .iter()
+            .find(|c| c.name == "Calculator")
+            .expect("Calculator class must be analyzed");
+        assert_eq!(calc.field_count, 0, "Calculator has no fields");
+        assert_eq!(
+            calc.verdict,
+            CohesionVerdict::Cohesive,
+            "a fieldless method-only type must be Cohesive, not a split_candidate \
+             (LCOM4 inapplicable without fields); got {:?}",
+            calc.verdict
+        );
+        assert!(
+            calc.split_suggestion.is_none(),
+            "no split suggestion for a fieldless type, got {:?}",
+            calc.split_suggestion
+        );
+    }
+
+    /// Regression guard: a field-bearing type with genuinely disconnected
+    /// method groups MUST still be flagged (the fieldless suppression must not
+    /// leak into the normal LCOM4 path). Default threshold is 2, so we need
+    /// lcom4 > 2 -> three disconnected (field, method) groups.
+    #[test]
+    fn test_cohesion_fielded_disconnected_still_split_candidate() {
+        let source = "\
+struct Mixed {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+impl Mixed {
+    fn uses_a(&self) -> i32 { self.a }
+    fn uses_b(&self) -> i32 { self.b }
+    fn uses_c(&self) -> i32 { self.c }
+}
+";
+        let test_dir = tempfile::tempdir().unwrap();
+        let file_path = test_dir.path().join("mixed.rs");
+        std::fs::write(&file_path, source).unwrap();
+
+        let options = CohesionOptions::default();
+        let results = analyze_file_cohesion(&file_path, &options).unwrap();
+        let mixed = results
+            .iter()
+            .find(|c| c.name == "Mixed")
+            .expect("Mixed class must be analyzed");
+        assert!(mixed.field_count >= 3, "Mixed has 3 fields");
+        // Three disconnected groups -> lcom4 == 3 > threshold(2) -> split.
+        assert_eq!(
+            mixed.verdict,
+            CohesionVerdict::SplitCandidate,
+            "field-bearing type with 3 disconnected method groups must still be \
+             a split_candidate, got {:?} (lcom4={})",
+            mixed.verdict,
+            mixed.lcom4
         );
     }
 }
