@@ -147,6 +147,10 @@ pub(crate) fn extract_dfg_from_tree_with_cfg(
     // T5 (v0.5.0 AUDIT-FIX): pre-collect language-local binding names so
     // is_use_context never suppresses a genuine local read.
     builder.collect_t5_local_names(func_node);
+    // fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): pre-collect this Go
+    // function's named result identifiers so a naked `return` can synthesize
+    // their implicit reads (no-op for non-Go / unnamed results).
+    builder.collect_go_named_results(func_node);
     if let Some(body) = body_node {
         builder.extract_refs_from_node(body, 0)?;
     }
@@ -185,6 +189,10 @@ fn build_dfg_for_function(
     // T5 (v0.5.0 AUDIT-FIX): pre-collect language-local binding names so
     // is_use_context never suppresses a genuine local read.
     builder.collect_t5_local_names(func_node);
+    // fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): pre-collect this Go
+    // function's named result identifiers so a naked `return` can synthesize
+    // their implicit reads (no-op for non-Go / unnamed results).
+    builder.collect_go_named_results(func_node);
     if let Some(body) = body_node {
         builder.extract_refs_from_node(body, 0)?;
     }
@@ -266,6 +274,16 @@ struct DfgBuilder<'a> {
     /// name keeps its genuine reads (its store never looks dead). Empty for
     /// other languages. Mirrors the `ts_js_local_names` precedent.
     generic_local_names: HashSet<String>,
+    /// fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): the identifiers declared as
+    /// NAMED result parameters of the analyzed Go function
+    /// (`func f() (handle Handle, ps *Params, tsr bool)`). A *naked* `return`
+    /// (no operands) inside such a function implicitly reads every named result,
+    /// so a store `tsr = …` followed by a bare `return` is NOT dead. The DFG
+    /// emits no `Use` for a naked return, so those stores were flagged dead
+    /// (go-httprouter `getValue`: tsr×7, handle×1). At each operand-less Go
+    /// `return_statement` we synthesize a `Use` of each name here. Empty for
+    /// non-Go functions and for Go functions with unnamed results.
+    go_named_results: Vec<String>,
 }
 
 impl<'a> DfgBuilder<'a> {
@@ -282,6 +300,7 @@ impl<'a> DfgBuilder<'a> {
             ts_js_local_names: HashSet::new(),
             ocaml_local_names: HashSet::new(),
             generic_local_names: HashSet::new(),
+            go_named_results: Vec::new(),
         }
     }
 
@@ -1514,6 +1533,27 @@ impl<'a> DfgBuilder<'a> {
         });
     }
 
+    /// fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): record a `Use` of `name`
+    /// at `line` that has no backing AST node — used to model the IMPLICIT read
+    /// of a Go function's named results at a naked `return`. Column 0 is a
+    /// sentinel (the read is not at a specific token). Only emitted for names
+    /// the caller has already validated (the function's own named results), so
+    /// this never invents a use of an unrelated identifier.
+    fn add_synthetic_use(&mut self, name: &str, line: usize) {
+        if name.is_empty() {
+            return;
+        }
+        self.variables.insert(name.to_string());
+        self.refs.push(VarRef {
+            name: name.to_string(),
+            ref_type: RefType::Use,
+            line: line as u32,
+            column: 0,
+            context: None,
+            group_id: None,
+        });
+    }
+
     /// Extract all variable references from an AST node
     ///
     /// This is the core multi-language dispatch. Each language has different
@@ -1664,6 +1704,16 @@ impl<'a> DfgBuilder<'a> {
                     self.process_go_assignment(node, depth)?;
                 }
             },
+
+            // fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): a Go `return_statement`
+            // needs special handling — a NAKED return implicitly reads the
+            // function's named results. Other languages fall through to the
+            // generic recursion below (their `return_statement` operands are
+            // ordinary `identifier`/expression children already picked up as
+            // uses), so this arm is Go-only and preserves all other behavior.
+            "return_statement" if matches!(self.language, Language::Go) => {
+                self.process_go_return(node, depth)?;
+            }
 
             // cl4r-csharp-cognitive-v1 (v0.5.0 CL-4R): Luau (and Lua, which
             // shares the Luau compound-assignment extension) spells op-assigns
@@ -3196,6 +3246,76 @@ impl<'a> DfgBuilder<'a> {
     }
 
     /// Process Go assignment statement: x = ...; x += ...
+    /// fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): populate
+    /// [`Self::go_named_results`] from the `result` `parameter_list` of a Go
+    /// `function_declaration` / `method_declaration`. Each named result is a
+    /// `parameter_declaration` with a `name` field (`(handle Handle, ps
+    /// *Params, tsr bool)`); a result list of bare types (`(int, error)`) has
+    /// no `name` fields and yields an empty set, so the naked-return synthesis
+    /// stays inert for unnamed-result functions. AST-driven (field names verified
+    /// via tree-sitter-go: `result` → `parameter_list` → `parameter_declaration`
+    /// → `name`).
+    fn collect_go_named_results(&mut self, func_node: Node) {
+        if !matches!(self.language, Language::Go) {
+            return;
+        }
+        let Some(result) = func_node.child_by_field_name("result") else {
+            return;
+        };
+        // A single named result is still wrapped in a parameter_list; a bare
+        // single type (`func f() error`) is a plain `type_identifier` and has
+        // no parameter_declaration children, so the walk below yields nothing.
+        if result.kind() != "parameter_list" {
+            return;
+        }
+        let mut cursor = result.walk();
+        for child in result.children(&mut cursor) {
+            if child.kind() == "parameter_declaration" {
+                // A `parameter_declaration` may declare multiple names sharing
+                // one type (`(a, b int)`), each exposed under the `name` field.
+                let mut pc = child.walk();
+                for (i, sub) in child.children(&mut pc).enumerate() {
+                    if sub.kind() == "identifier"
+                        && child.field_name_for_child(i as u32) == Some("name")
+                    {
+                        if let Ok(t) = sub.utf8_text(self.source.as_bytes()) {
+                            if t != "_" && !self.go_named_results.iter().any(|n| n == t) {
+                                self.go_named_results.push(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): handle a Go
+    /// `return_statement`. A return WITH operands (`return a, b`) reads those
+    /// expressions (default recursion handles it). A *naked* `return` (no
+    /// `expression_list` child) implicitly reads every named result of the
+    /// enclosing function, so synthesize a `Use` of each at the return's line —
+    /// otherwise a store into a named result followed by a bare return looks
+    /// dead.
+    fn process_go_return(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let mut has_operands = false;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "expression_list" {
+                // Normal return: recurse so each returned expression's reads count.
+                has_operands = true;
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        if !has_operands {
+            // Naked return: implicitly reads all named results at this line.
+            let line = node.start_position().row + 1;
+            for name in self.go_named_results.clone() {
+                self.add_synthetic_use(&name, line);
+            }
+        }
+        Ok(())
+    }
+
     fn process_go_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
             // Check for operator: if it's += etc, it's an update
@@ -3704,19 +3824,50 @@ impl<'a> DfgBuilder<'a> {
                 // Extract all identifiers as definitions
                 let mut inner = child.walk();
                 for inner_child in child.children(&mut inner) {
-                    if inner_child.kind() == "identifier" {
-                        self.add_ref_from_node(inner_child, RefType::Definition);
-                    } else if inner_child.kind() == "dot_index_expression"
-                        || inner_child.kind() == "bracket_index_expression"
-                    {
-                        // x.field = ... or x[i] = ... -> update
-                        let mut deep = inner_child.walk();
-                        for deep_child in inner_child.children(&mut deep) {
-                            if deep_child.kind() == "identifier" {
-                                self.add_ref_from_node(deep_child, RefType::Update);
-                                break;
+                    match inner_child.kind() {
+                        "identifier" => {
+                            self.add_ref_from_node(inner_child, RefType::Definition);
+                        }
+                        // fix-R7-cl6-lua-index-use (v0.5.0 CLOSEOUT): a
+                        // table-element write reads the container (Update) and,
+                        // for a BRACKET index, ALSO reads every variable inside
+                        // the index expression. The pre-fix code walked to the
+                        // FIRST identifier (`args` in `args[nargs+1] = …`),
+                        // marked it Update and `break`-ed — so `nargs` was never
+                        // recorded as a Use and got flagged as a dead store
+                        // (lua-luvit `adapt`). This is the same gap
+                        // fix-B4-dfg-coverage-v1 closed for Py/Go/TS/C/C++/
+                        // Java/Solidity via the subscript helper; migrate Lua
+                        // too. tree-sitter-lua field names (verified via
+                        // dump_lua_t): both index forms carry `table`
+                        // (container) + `field`, but for `dot_index_expression`
+                        // `field` is the STATIC member name (an `identifier`
+                        // that is NOT a variable use — `t.field`), whereas for
+                        // `bracket_index_expression` `field` is the index
+                        // EXPRESSION (`t[k]`, `args[nargs+1]`) whose variables
+                        // ARE uses. Handle the two distinctly.
+                        "bracket_index_expression" => {
+                            self.record_subscript_container_and_index(
+                                inner_child,
+                                "table",
+                                "field",
+                            )?;
+                        }
+                        "dot_index_expression" => {
+                            // Container is read-modified (Update); the `field`
+                            // segment is a static member name, never a use.
+                            if let Some(table) = inner_child.child_by_field_name("table") {
+                                if table.kind() == "identifier" {
+                                    self.add_ref_from_node(table, RefType::Update);
+                                } else {
+                                    // Nested base (`a.b.c = …`): recurse so the
+                                    // outermost identifier and any bracket
+                                    // indices inside register.
+                                    self.extract_assignment_targets(table)?;
+                                }
                             }
                         }
+                        _ => {}
                     }
                 }
             } else if child.kind() == "expression_list" {
@@ -3760,15 +3911,34 @@ impl<'a> DfgBuilder<'a> {
                             self.add_ref_from_node(inner_child, RefType::Use);
                             self.add_ref_from_node(inner_child, RefType::Update);
                         }
-                        "dot_index_expression" | "bracket_index_expression" => {
-                            // `t.field += …` / `t[i] += …`: the base object is
-                            // read and updated.
-                            let mut deep = inner_child.walk();
-                            for deep_child in inner_child.children(&mut deep) {
-                                if deep_child.kind() == "identifier" {
-                                    self.add_ref_from_node(deep_child, RefType::Use);
-                                    self.add_ref_from_node(deep_child, RefType::Update);
-                                    break;
+                        "bracket_index_expression" => {
+                            // `t[i] += …`: the base object is read+updated AND
+                            // the index expression's variables are uses.
+                            // fix-R7-cl6-lua-index-use (v0.5.0 CLOSEOUT): mirror
+                            // the plain-assignment fix so `i` in `t[i] += …` is
+                            // not lost (it was dropped by the find-first-then-
+                            // break walk).
+                            if let Some(table) = inner_child.child_by_field_name("table") {
+                                if table.kind() == "identifier" {
+                                    self.add_ref_from_node(table, RefType::Use);
+                                    self.add_ref_from_node(table, RefType::Update);
+                                } else {
+                                    self.extract_refs_from_node(table, 1)?;
+                                }
+                            }
+                            if let Some(index) = inner_child.child_by_field_name("field") {
+                                self.extract_refs_from_node(index, 1)?;
+                            }
+                        }
+                        "dot_index_expression" => {
+                            // `t.field += …`: the base object is read+updated;
+                            // the `field` segment is a static member name.
+                            if let Some(table) = inner_child.child_by_field_name("table") {
+                                if table.kind() == "identifier" {
+                                    self.add_ref_from_node(table, RefType::Use);
+                                    self.add_ref_from_node(table, RefType::Update);
+                                } else {
+                                    self.extract_refs_from_node(table, 1)?;
                                 }
                             }
                         }

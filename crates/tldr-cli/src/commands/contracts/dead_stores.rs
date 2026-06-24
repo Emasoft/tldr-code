@@ -318,7 +318,7 @@ pub fn find_dead_stores_dfg(
         // op-assign (`x += 1`), an increment, or a partial aggregate write
         // (`x.field = ...`, `arr[i] = ...`, Solidity `_roles[r].x = true`).
         let mut definitions: Vec<(u32, u32, u32, bool)> = Vec::new();
-        let uses: Vec<u32> = var_refs
+        let mut uses: Vec<u32> = var_refs
             .iter()
             .filter(|r| matches!(r.ref_type, RefType::Use))
             .map(|r| r.line)
@@ -339,6 +339,28 @@ pub fn find_dead_stores_dfg(
             }
         }
 
+        // fix-R7-cl6-deadstore-update-kill (v0.5.0 CLOSEOUT): a read-modify-write
+        // `Update` (`x += 1`, `obj.f = …`, `arr[i] = …`, `t[k] = …`) READS the
+        // prior value of the container before writing the partial result back.
+        // For liveness it is therefore both a (partial) write AND a read of the
+        // earlier full store. The DFG does not always emit a separate
+        // `RefType::Use` of the container on an element/field write (e.g.
+        // `record_subscript_container_and_index` emits Update-only), so the read
+        // was invisible: a full store `args = Array(len)` followed by
+        // `args[len] = …` in the SAME (often degenerate single-) block had
+        // `uses == []` and was wrongly flagged dead (js-lodash flatSpread;
+        // lua-lsp `Globals`/`a`). Treat every `Update` line as an additional
+        // read point so a prior full Definition stays live. (Updates are still
+        // never themselves flagged — see the `is_update` guards below.)
+        let update_lines: Vec<u32> = definitions
+            .iter()
+            .filter(|(_, _, _, is_update)| *is_update)
+            .map(|(line, _, _, _)| *line)
+            .collect();
+        if !update_lines.is_empty() {
+            uses.extend(&update_lines);
+        }
+
         // If there are no uses of this variable at all, all non-parameter
         // definitions are dead — EXCEPT read-modify-write `Update` stores.
         //
@@ -350,7 +372,9 @@ pub fn find_dead_stores_dfg(
         // container intra-procedurally. Flagging `_roles@185` in
         // OpenZeppelin's `_grantRole` (the only effect of an access-control
         // primitive) was a false positive. Updates are excluded from
-        // dead-store reporting here and below.
+        // dead-store reporting here and below. (`uses` now also includes the
+        // Update lines per the read-modify-write fix above, so a full store
+        // consumed by a later element/field write is no longer "unused".)
         if uses.is_empty() && !definitions.is_empty() && !is_parameter {
             for (def_line, block_id, version, is_update) in &definitions {
                 if *is_update {
@@ -892,6 +916,144 @@ def example_with_dead_stores(x):
         assert!(
             flagged.contains(&("c", 6)),
             "`c = 30` (never used) must still be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    // =====================================================================
+    // fix-R7-cl6 (v0.5.0 CLOSEOUT) dead-stores characterization tests
+    // =====================================================================
+
+    /// Update-kill: a full store consumed only by a later element/field write
+    /// (a read-modify-write `Update`) in the same block must NOT be flagged
+    /// dead. Mirrors js-lodash `flatSpread` (`args = Array(n); args[n] = fn`).
+    #[test]
+    fn test_update_does_not_kill_prior_full_store_js() {
+        let source = r#"
+function flatSpread(fn, n) {
+  var args = Array(n);
+  args[n] = fn;
+  return args;
+}
+"#;
+        let report = run_on_source(source, "flatSpread", Language::JavaScript);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"args"),
+            "`args` is read-modified by `args[n] = fn`; must not be a dead store; \
+             flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Update-kill, Lua flavor: a table base assigned then written via element
+    /// index must stay live. Mirrors lua-lsp `gen_scopes`
+    /// (`Globals = {}; Globals._G = ...`).
+    #[test]
+    fn test_update_does_not_kill_prior_full_store_lua() {
+        let source = r#"
+local function gen()
+    local Globals = {}
+    Globals._G = 1
+    return Globals
+end
+"#;
+        let report = run_on_source(source, "gen", Language::Lua);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"Globals"),
+            "`Globals` is read-modified by `Globals._G = 1`; must not be dead; \
+             flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Lua bracket-index use: a variable used ONLY inside an element-write index
+    /// (`args[nargs + 1] = ...`) is a genuine use and must not be a dead store.
+    /// Mirrors lua-luvit `adapt`.
+    #[test]
+    fn test_lua_index_variable_in_element_write_is_a_use() {
+        let source = r#"
+local function adapt(...)
+    local args = {...}
+    local nargs = select('#', ...)
+    args[nargs + 1] = "x"
+    return args
+end
+"#;
+        let report = run_on_source(source, "adapt", Language::Lua);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"nargs"),
+            "`nargs` is read inside the index `args[nargs + 1]`; must not be dead; \
+             flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Go naked return reads all named results: a store into a named result
+    /// followed by a bare `return` is live. Mirrors go-httprouter `getValue`.
+    #[test]
+    fn test_go_named_result_store_before_naked_return_not_dead() {
+        let source = r#"
+package main
+
+func getValue(path string) (handle int, ps string, tsr bool) {
+    tsr = true
+    return
+}
+"#;
+        let report = run_on_source(source, "getValue", Language::Go);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"tsr"),
+            "`tsr` (a named result) is read by the naked `return`; must not be \
+             dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Non-regression for the Update-kill fix: a genuine FULL re-assignment
+    /// (NOT a read-modify-write `Update`) that discards the prior value must
+    /// STILL be flagged dead. The fix spares only stores consumed by an
+    /// element/field `Update`; `x = 1` overwritten by a plain `x = 2` (no read
+    /// of `x` between) is still dead. This pins that adding Update lines to the
+    /// liveness set did not blanket-suppress real full-overwrite dead stores.
+    #[test]
+    fn test_full_overwrite_without_update_still_dead_js() {
+        let source = r#"
+function f(p) {
+  var x = 1;
+  x = 2;
+  return x;
+}
+"#;
+        let report = run_on_source(source, "f", Language::JavaScript);
+        let flagged: Vec<(&str, u32)> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| (d.variable.as_str(), d.line))
+            .collect();
+        assert!(
+            flagged.iter().any(|(v, _)| *v == "x"),
+            "`var x = 1` (fully overwritten by `x = 2` before use) must STILL be \
+             flagged dead after the Update-kill fix; flagged={:?}",
             report.dead_stores_ssa
         );
     }

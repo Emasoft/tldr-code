@@ -69,6 +69,15 @@ pub fn dead_code_analysis(
             continue;
         }
 
+        // fix-R7-cl6-blank-name (v0.5.0 CLOSEOUT): never report a nameless
+        // entity (unresolved C++ lambda / trailing-return ghost) as dead. See
+        // the matching guard in `dead_code_analysis_refcount`.
+        if func_ref.name.is_empty()
+            || func_ref.name.rsplit('.').next().unwrap_or("").is_empty()
+        {
+            continue;
+        }
+
         // Skip if matches entry point patterns
         if is_entry_point_name(&func_ref.name, entry_points) {
             continue;
@@ -231,6 +240,23 @@ pub fn dead_code_analysis_refcount(
     let mut by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
     for func_ref in all_functions {
+        // fix-R7-cl6-blank-name (v0.5.0 CLOSEOUT): a nameless entity can never
+        // be a *named* dead function. The C++ extractor synthesizes
+        // `FunctionInfo` with `name == ""` (and a malformed `() -> <fragment>`
+        // signature) for declarators it cannot resolve — variable-bound lambdas
+        // (`auto pop_one = [](...){...}`) and trailing-return-type templates
+        // (`template<...> auto narrow(T*) -> char*`). These ghosts are
+        // non-underscore so they were classified public → possibly_dead
+        // (cpp-fmt: 72/180). Skip blank-named refs outright; they have no call
+        // site to be "dead" relative to. (The root extractor name-resolution is
+        // hardened separately, but this guard is the authoritative backstop so
+        // no nameless ghost ever reaches a dead report.)
+        if func_ref.name.is_empty()
+            || func_ref.name.rsplit('.').next().unwrap_or("").is_empty()
+        {
+            continue;
+        }
+
         // Skip if matches entry point patterns (C4)
         if is_entry_point_name(&func_ref.name, entry_points) {
             continue;
@@ -562,6 +588,69 @@ fn build_signature(name: &str, params: &[String], return_type: Option<&str>) -> 
     }
 }
 
+/// Structural method-kind / visibility markers that the per-language AST
+/// extractors synthesize onto `FunctionInfo.decorators` to record *how* a
+/// member is declared (instance vs static method, access level) — NOT a
+/// framework/runtime-invocation annotation.
+///
+/// fix-R7-cl6-lua-dead (v0.5.0 CLOSEOUT): the dead-code "skip decorated
+/// functions" guard (C8) exists because a genuine decorator/annotation
+/// (`@app.route`, `@Override`, `@pytest.fixture`, a Rust attribute) signals the
+/// function is invoked by a framework/runtime outside the call graph. But
+/// several extractors also push *structural* tags that say nothing about
+/// invocation:
+///   - Lua/Luau table methods: `"method"` (colon form) / `"static"` (dot form)
+///     — added by `lua_build_method_info` (extract.rs).
+///   - Ruby singleton methods: `"self"`.
+///   - PHP/C++ members: `"static"`, `"public"`, `"private"`, `"protected"`.
+/// Counting these as decorators made every Lua table method (`function M.foo()`)
+/// look "decorated" → skipped → `tldr dead` reported zero dead/possibly-dead for
+/// idiomatic Lua modules (regression introduced by 48316dd's table-class
+/// extraction). These markers must be ignored when deciding `has_decorator` for
+/// dead-code analysis. Genuine annotations (anything else, e.g. `@Override`,
+/// `route`, `cfg(test)`, `module`/`interface`/`trait` type tags) still count.
+///
+/// IMPORTANT — what is deliberately NOT in this list:
+///   - `"virtual"` / `"abstract"`: these DO carry invocation semantics — a
+///     C++ `virtual` method (or an abstract one) is dispatched polymorphically
+///     through a base-class pointer / vtable and frequently has no direct named
+///     caller, so it must stay rescued (see `cluster_misc_v1::
+///     test_cpp_virtual_method_not_in_possibly_dead`). Only purely structural
+///     instance/static/visibility tags belong here.
+const STRUCTURAL_MODIFIER_MARKERS: &[&str] =
+    &["method", "static", "self", "public", "private", "protected"];
+
+/// Whether `decorators` contains a *genuine* invocation-implying
+/// decorator/annotation, ignoring the purely structural method-kind /
+/// visibility markers in [`STRUCTURAL_MODIFIER_MARKERS`]. Used to drive the
+/// dead-code C8 "skip decorated functions" guard without spuriously rescuing
+/// Lua/Ruby/PHP/C++ methods that merely carry a `static`/`method`/`self`/access
+/// tag.
+fn has_invocation_decorator(decorators: &[String]) -> bool {
+    decorators
+        .iter()
+        .any(|d| !STRUCTURAL_MODIFIER_MARKERS.contains(&d.as_str()))
+}
+
+/// fix-R7-cl6-solidity-evm-entry (v0.5.0 CLOSEOUT): the two reserved Solidity
+/// special functions invoked directly by the EVM and therefore never named at a
+/// call site:
+///   - `receive()`  — runs on a plain-ether transfer with empty calldata.
+///   - `fallback()` — runs when no other function selector matches.
+/// Both are emitted from the dedicated `fallback_receive_definition` AST node
+/// (`extract_solidity_fallback_info`) with `name == "receive" | "fallback"`.
+/// They are `external` (caller-visible) so the visibility fix routes them to
+/// *possibly* dead, but they are genuine runtime entry points and must be
+/// excluded entirely — exactly like the existing dunder / PHP-magic /
+/// Lua-metamethod / C++-destructor entry-point exclusions. Gated on
+/// `Language::Solidity` so a same-named method in another language (e.g. a
+/// Python `receive`) is unaffected; `receive`/`fallback` are reserved keywords
+/// in Solidity so there is no in-language collision.
+fn is_solidity_evm_entry_point(name: &str, language: crate::types::Language) -> bool {
+    matches!(language, crate::types::Language::Solidity)
+        && matches!(name, "receive" | "fallback")
+}
+
 /// Extract all functions from a project for dead code analysis.
 ///
 /// This is a helper function that can be used to gather all functions
@@ -625,7 +714,9 @@ pub fn collect_all_functions(
                 !func.decorators.is_empty(),
                 &func.decorators,
             );
-            let has_decorator = !func.decorators.is_empty() || (is_framework_entry && is_public);
+            let has_decorator = has_invocation_decorator(&func.decorators)
+                || (is_framework_entry && is_public)
+                || is_solidity_evm_entry_point(&func.name, language);
             let is_test = is_test_file
                 || is_test_function_name(&func.name)
                 || has_test_decorator(&func.decorators);
@@ -660,8 +751,9 @@ pub fn collect_all_functions(
                     !method.decorators.is_empty(),
                     &method.decorators,
                 );
-                let has_decorator =
-                    !method.decorators.is_empty() || (is_framework_entry && is_public);
+                let has_decorator = has_invocation_decorator(&method.decorators)
+                    || (is_framework_entry && is_public)
+                    || is_solidity_evm_entry_point(&method.name, language);
                 let is_test = is_test_file
                     || is_test_function_name(&method.name)
                     || has_test_decorator(&method.decorators);
@@ -768,7 +860,16 @@ fn explicit_or_inferred_visibility(
     decorators: &[String],
 ) -> bool {
     if let Some(kw) = explicit {
-        return matches!(kw, "public" | "open" | "internal");
+        // fix-R7-cl6-solidity-external (v0.5.0 CLOSEOUT): `external` is a
+        // first-class, caller-visible Solidity visibility — it is the entire
+        // public ABI surface of a contract/interface (an `external` function
+        // can be invoked by other contracts and off-chain callers; it simply
+        // cannot be called internally without `this.`). Treating it as
+        // non-public routed every `external` function into the *definitive*
+        // dead bucket (e.g. openzeppelin reported 45 dead, including the whole
+        // IERC777 / IERC1820Registry interface surface). An external function
+        // with no in-repo caller is at most *possibly* dead, never definitive.
+        return matches!(kw, "public" | "open" | "internal" | "external");
     }
     infer_visibility_from_name(name, language, has_decorator, decorators)
 }
@@ -894,6 +995,21 @@ fn is_trait_or_interface(
     });
 
     if has_type_decorator {
+        return true;
+    }
+
+    // fix-R7-cl6-solidity-interface (v0.5.0 CLOSEOUT): the Solidity extractor
+    // records the class flavor on `ClassInfo.kind` (`"contract"` | `"interface"`
+    // | `"library"`), NOT as a decorator (see `build_solidity_class_info`). An
+    // `interface` is a pure ABI declaration — its members are external function
+    // *signatures* with no body, invoked polymorphically through implementing
+    // contracts, so they are never "dead" by absence of a direct caller (the
+    // openzeppelin IERC777 / IERC1820Registry surfaces were all flagged). Only
+    // `"interface"` is excluded here; `"contract"`/`"library"` methods remain
+    // subject to normal dead analysis. `kind` is `None` for every non-Solidity
+    // language (and `Some("table")` only for Lua), so this never matches
+    // unintended classes.
+    if class.kind.as_deref() == Some("interface") {
         return true;
     }
 
@@ -2887,5 +3003,288 @@ mod tests {
         assert!(!is_lua_metamethod("__init__")); // Python dunder, handled elsewhere
         assert!(!is_lua_metamethod("helper"));
         assert!(!is_lua_metamethod("_private"));
+    }
+
+    // =====================================================================
+    // fix-R7-cl6 (v0.5.0 CLOSEOUT) characterization tests
+    // =====================================================================
+
+    /// Build a single-file `ModuleInfo` whose one class carries the given
+    /// methods, for `collect_all_functions` + dead-analysis round-trips.
+    fn module_with_class(
+        file: &str,
+        language: crate::types::Language,
+        class_name: &str,
+        class_kind: Option<&str>,
+        methods: Vec<crate::types::FunctionInfo>,
+    ) -> Vec<(PathBuf, crate::types::ModuleInfo)> {
+        use crate::types::{ClassInfo, IntraFileCallGraph, ModuleInfo};
+        let class = ClassInfo {
+            name: class_name.to_string(),
+            bases: vec![],
+            docstring: None,
+            methods,
+            fields: vec![],
+            decorators: vec![],
+            line_number: 1,
+            line_end: 1,
+            kind: class_kind.map(|s| s.to_string()),
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
+        };
+        vec![(
+            PathBuf::from(file),
+            ModuleInfo {
+                file_path: PathBuf::from(file),
+                language,
+                docstring: None,
+                imports: vec![],
+                functions: vec![],
+                classes: vec![class],
+                constants: vec![],
+                call_graph: IntraFileCallGraph::default(),
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
+            },
+        )]
+    }
+
+    fn method(name: &str, visibility: Option<&str>, decorators: Vec<&str>) -> crate::types::FunctionInfo {
+        crate::types::FunctionInfo {
+            name: name.to_string(),
+            params: vec![],
+            return_type: None,
+            docstring: None,
+            is_method: true,
+            is_async: false,
+            decorators: decorators.into_iter().map(|s| s.to_string()).collect(),
+            visibility: visibility.map(|s| s.to_string()),
+            line_number: 2,
+            line_end: 3,
+            state_mutability: None,
+        }
+    }
+
+    /// `has_invocation_decorator` ignores purely structural method-kind /
+    /// visibility markers but still reports genuine annotations.
+    #[test]
+    fn test_has_invocation_decorator_ignores_structural_markers() {
+        // Structural kind/visibility tags → NOT an invocation decorator.
+        assert!(!has_invocation_decorator(&["static".to_string()]));
+        assert!(!has_invocation_decorator(&["method".to_string()]));
+        assert!(!has_invocation_decorator(&["self".to_string()]));
+        assert!(!has_invocation_decorator(&[
+            "public".to_string(),
+            "static".to_string()
+        ]));
+        // Genuine annotations / polymorphic markers → IS an invocation decorator.
+        assert!(has_invocation_decorator(&["Override".to_string()]));
+        assert!(has_invocation_decorator(&["route".to_string()]));
+        assert!(has_invocation_decorator(&["virtual".to_string()])); // vtable dispatch
+        assert!(has_invocation_decorator(&["abstract".to_string()]));
+        // Mixed: a real annotation alongside a structural tag still counts.
+        assert!(has_invocation_decorator(&[
+            "static".to_string(),
+            "pytest.fixture".to_string()
+        ]));
+    }
+
+    /// REGRESSION (48316dd): Lua table methods (`function M.foo()`) are
+    /// extracted as class methods tagged with a structural `static`/`method`
+    /// decorator. Those must NOT rescue them from dead analysis — an uncalled
+    /// `M.deadOne` must surface as possibly_dead.
+    #[test]
+    fn test_lua_table_method_with_structural_decorator_not_rescued() {
+        use crate::types::Language;
+        let modules = module_with_class(
+            "lib.lua",
+            Language::Lua,
+            "M",
+            None,
+            vec![
+                method("deadOne", None, vec!["static"]),
+                method("deadTwo", None, vec!["static"]),
+            ],
+        );
+        let funcs = collect_all_functions(&modules);
+        // The structural `static` marker must not have set has_decorator.
+        assert!(
+            funcs.iter().all(|f| !f.has_decorator),
+            "Lua table methods carry only a structural `static`/`method` tag; \
+             has_decorator must be false so they are analyzed"
+        );
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        let flagged: Vec<&str> = report
+            .possibly_dead
+            .iter()
+            .chain(report.dead_functions.iter())
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            flagged.contains(&"M.deadOne") && flagged.contains(&"M.deadTwo"),
+            "uncalled Lua table methods must be flagged; got {:?}",
+            flagged
+        );
+    }
+
+    /// Solidity `external` functions are caller-visible API → at most
+    /// possibly_dead, never the definitive `dead_functions` bucket.
+    #[test]
+    fn test_solidity_external_is_public_not_definitive_dead() {
+        use crate::types::Language;
+        assert!(
+            explicit_or_inferred_visibility(Some("external"), "transfer", Language::Solidity, false, &[]),
+            "Solidity `external` must be treated as public"
+        );
+        let modules = module_with_class(
+            "T.sol",
+            Language::Solidity,
+            "Token",
+            Some("contract"),
+            vec![method("orphanExternal", Some("external"), vec![])],
+        );
+        let funcs = collect_all_functions(&modules);
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        assert!(
+            report.dead_functions.is_empty(),
+            "an uncalled external fn must not be in the DEFINITIVE dead bucket; got {:?}",
+            report.dead_functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            report.possibly_dead.iter().any(|f| f.name == "Token.orphanExternal"),
+            "an uncalled external fn must be possibly_dead; got {:?}",
+            report.possibly_dead.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Solidity interface members (ABI signatures) are never dead — excluded via
+    /// `ClassInfo.kind == Some("interface")` (the extractor sets `kind`, not a
+    /// decorator).
+    #[test]
+    fn test_solidity_interface_methods_excluded() {
+        use crate::types::Language;
+        let iface = make_class("IERC20", vec![], vec![]);
+        let mut iface = iface;
+        iface.kind = Some("interface".to_string());
+        assert!(
+            is_trait_or_interface(&iface, Language::Solidity),
+            "Solidity interface (kind=interface) must be treated as interface"
+        );
+        // contract/library kinds are NOT auto-excluded.
+        let mut contract = make_class("Token", vec![], vec![]);
+        contract.kind = Some("contract".to_string());
+        assert!(!is_trait_or_interface(&contract, Language::Solidity));
+
+        let modules = module_with_class(
+            "I.sol",
+            Language::Solidity,
+            "IERC20",
+            Some("interface"),
+            vec![method("send", Some("external"), vec![])],
+        );
+        let funcs = collect_all_functions(&modules);
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        let flagged: Vec<&str> = report
+            .possibly_dead
+            .iter()
+            .chain(report.dead_functions.iter())
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"IERC20.send"),
+            "interface member must not be flagged dead; got {:?}",
+            flagged
+        );
+    }
+
+    /// Solidity `receive`/`fallback` are EVM entry points → excluded entirely.
+    #[test]
+    fn test_solidity_receive_fallback_excluded() {
+        use crate::types::Language;
+        assert!(is_solidity_evm_entry_point("receive", Language::Solidity));
+        assert!(is_solidity_evm_entry_point("fallback", Language::Solidity));
+        // Same names in another language are NOT EVM entry points.
+        assert!(!is_solidity_evm_entry_point("receive", Language::Python));
+
+        let modules = module_with_class(
+            "W.sol",
+            Language::Solidity,
+            "WETH",
+            Some("contract"),
+            vec![
+                method("receive", Some("external"), vec![]),
+                method("fallback", Some("external"), vec![]),
+            ],
+        );
+        let funcs = collect_all_functions(&modules);
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        let flagged: Vec<&str> = report
+            .possibly_dead
+            .iter()
+            .chain(report.dead_functions.iter())
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"WETH.receive") && !flagged.contains(&"WETH.fallback"),
+            "EVM entry points must be excluded entirely; got {:?}",
+            flagged
+        );
+    }
+
+    /// A Python method literally named `receive` must STILL be dead-checkable
+    /// (the EVM guard is Solidity-gated, no cross-language collision).
+    #[test]
+    fn test_non_solidity_receive_still_analyzed() {
+        use crate::types::Language;
+        let modules = module_with_class(
+            "sock.py",
+            Language::Python,
+            "Socket",
+            None,
+            vec![method("receive", None, vec![])],
+        );
+        let funcs = collect_all_functions(&modules);
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        assert!(
+            report
+                .possibly_dead
+                .iter()
+                .any(|f| f.name == "Socket.receive"),
+            "a non-Solidity `receive` must remain dead-checkable"
+        );
+    }
+
+    /// Blank-named ghosts (unresolved C++ lambdas / trailing-return decls) are
+    /// never reported as dead.
+    #[test]
+    fn test_blank_named_functions_skipped() {
+        use crate::types::Language;
+        let modules = module_with_class(
+            "g.cpp",
+            Language::Cpp,
+            "Fmt",
+            None,
+            vec![
+                method("", None, vec![]),         // nameless lambda ghost
+                method("realMethod", None, vec![]),
+            ],
+        );
+        let funcs = collect_all_functions(&modules);
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        let flagged: Vec<String> = report
+            .possibly_dead
+            .iter()
+            .chain(report.dead_functions.iter())
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(
+            !flagged.iter().any(|n| n.rsplit('.').next().unwrap_or("").is_empty()),
+            "no blank-named entity may be flagged dead; got {:?}",
+            flagged
+        );
+        // The real method is still analyzed.
+        assert!(flagged.contains(&"Fmt.realMethod".to_string()));
     }
 }
