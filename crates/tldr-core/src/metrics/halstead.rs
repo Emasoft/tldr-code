@@ -28,12 +28,12 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
-use crate::ast::extract::extract_file;
+use crate::ast::extract::extract_file_with_lang;
 use crate::ast::function_finder::{
     find_function_node, find_function_node_by_name_and_line, get_function_name,
     get_function_node_kinds,
 };
-use crate::ast::parser::{parse, parse_file};
+use crate::ast::parser::{parse, parse_file_with_lang};
 use crate::metrics::types::HalsteadInfo;
 use crate::types::Language;
 use crate::TldrResult;
@@ -212,12 +212,45 @@ pub fn analyze_halstead(
     language: Option<Language>,
     options: HalsteadOptions,
 ) -> TldrResult<HalsteadReport> {
-    // Parse the file
-    let (tree, source, detected_lang) = parse_file(path)?;
-    let lang = language.unwrap_or(detected_lang);
+    // fix-R2-themeB1 (v0.5.0 CLOSEOUT): resolve the effective language FIRST,
+    // then parse the tree AND build the function list under that SAME language.
+    //
+    // Previously this parsed with `parse_file(path)` (extension auto-detect)
+    // and built the function list with `extract_file(path, None)` (auto-detect
+    // AGAIN), independently of the caller's `--lang` override that was already
+    // resolved into `lang`. Both ignored the override. The visible failure:
+    // a C++ header (`.h`) with no `.cc`/`.cpp` sibling auto-detects as C, so
+    // cpp-fmt `format-inl.h --lang cpp` was walked with the C grammar. The C
+    // grammar misparses C++ entities into `function_definition` nodes whose
+    // names are stray tokens — the namespace name (`detail`), the template
+    // argument (`double`/`float`), the `noexcept` specifier, leaked struct
+    // members (`carrier_uint`) — and they surfaced BOTH via the extractor list
+    // and via the supplementary `get_function_node_kinds` AST walk below
+    // (which reuses `tree`). Parsing the tree with the resolved `lang` fixes
+    // the supplementary walk; routing `extract_file_with_lang(.., Some(lang))`
+    // fixes the extractor list. The Cpp grammar resolves these correctly
+    // (54 fns / 0 ghosts vs the C path's 66 / 25).
+    //
+    // For the common no-`--lang` case the resolved `lang` equals the
+    // path-detected language, so tree, source, and function list are all
+    // byte-identical to the previous behaviour.
+    let lang = match language {
+        Some(l) => l,
+        None => Language::from_path(path).ok_or_else(|| {
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            crate::TldrError::UnsupportedLanguage(ext)
+        })?,
+    };
 
-    // Extract function info to get names and line numbers
-    let module = extract_file(path, None)?;
+    // Parse the file under the resolved language so the tree the
+    // supplementary walk consumes matches the per-language extractor.
+    let (tree, source, _parsed_lang) = parse_file_with_lang(path, Some(lang))?;
+
+    // Extract function info (names + line numbers) under the same language.
+    let module = extract_file_with_lang(path, None, Some(lang))?;
 
     let mut functions = Vec::new();
     let mut violations = Vec::new();
@@ -2268,5 +2301,108 @@ def func2():
             merged.summary.total_functions, 0,
             "Empty merge should have 0 total_functions"
         );
+    }
+
+    /// fix-R2-themeB1: a C++ header analyzed with an explicit `--lang cpp`
+    /// (`Some(Language::Cpp)`) must build its function list with the Cpp
+    /// extractor, NOT re-auto-detect. A `.h` file with no `.cc`/`.cpp` sibling
+    /// auto-detects as C; the C grammar then misparses C++ entities into
+    /// `function_definition` nodes whose names are stray tokens — the namespace
+    /// name (`detail`), the template argument (`double`), the `noexcept`
+    /// specifier, etc. Before the fix `analyze_halstead` called
+    /// `extract_file(path, None)`, discarding the resolved `lang`, so these
+    /// ghosts leaked into `report.functions`. The synthetic below mirrors
+    /// cpp-fmt `format-inl.h:58/384/388`.
+    #[test]
+    fn test_halstead_cpp_header_lang_override_excludes_entity_ghosts() {
+        // `.h` extension on purpose: alone it auto-detects as C, reproducing
+        // the production mis-route that `--lang cpp` is supposed to override.
+        let source = r#"
+namespace detail {
+using std::locale;
+}
+
+template <> struct cache_accessor<double> {
+  static auto get_cached_power(int k) noexcept -> int {
+    return k;
+  }
+};
+
+int real_free_function(int a, int b) {
+  return a + b;
+}
+"#;
+        let file = create_temp_file(source, ".h");
+        let report = analyze_halstead(file.path(), Some(Language::Cpp), HalsteadOptions::new())
+            .expect("cpp halstead");
+
+        let names: Vec<&str> = report.functions.iter().map(|f| f.name.as_str()).collect();
+
+        // The C-grammar-misparse ghost tokens must NOT appear as function names.
+        for ghost in ["detail", "double", "noexcept", "namespace", "struct", "carrier_uint"] {
+            assert!(
+                !names.contains(&ghost),
+                "C++ entity token {:?} must not be emitted as a function name (got {:?})",
+                ghost,
+                names
+            );
+        }
+
+        // No empty/blank ghost names either.
+        assert!(
+            report.functions.iter().all(|f| !f.name.trim().is_empty()),
+            "no nameless ghost functions allowed, got {:?}",
+            names
+        );
+
+        // The genuine free function must still be present (the fix must not
+        // over-prune real functions).
+        assert!(
+            names.contains(&"real_free_function"),
+            "real free function must survive, got {:?}",
+            names
+        );
+    }
+
+    /// fix-R2-themeB1 blast-radius guard: in the common no-`--lang` case the
+    /// resolved `lang` equals the path-detected language, so switching from
+    /// `extract_file(path, None)` to `extract_file_with_lang(path, None,
+    /// Some(lang))` must leave non-C++ output byte-identical. Analyze the same
+    /// Python source with `None` (auto-detect) and with an explicit
+    /// `Some(Language::Python)`; the function names and core metrics must match.
+    #[test]
+    fn test_halstead_lang_override_matches_autodetect_for_python() {
+        let source = r#"
+def alpha(a, b):
+    return a + b * 2
+
+def beta(x):
+    y = x - 1
+    return y
+"#;
+        let file = create_temp_file(source, ".py");
+
+        let auto = analyze_halstead(file.path(), None, HalsteadOptions::new())
+            .expect("auto-detect halstead");
+        let forced = analyze_halstead(file.path(), Some(Language::Python), HalsteadOptions::new())
+            .expect("forced-python halstead");
+
+        let auto_names: Vec<&str> = auto.functions.iter().map(|f| f.name.as_str()).collect();
+        let forced_names: Vec<&str> =
+            forced.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            auto_names, forced_names,
+            "auto-detect and explicit-lang function lists must match for non-C++ input"
+        );
+        assert_eq!(
+            auto.summary.total_functions, forced.summary.total_functions,
+            "function counts must match"
+        );
+        // Spot-check per-function operator/operand counts are identical.
+        for (a, f) in auto.functions.iter().zip(forced.functions.iter()) {
+            assert_eq!(a.name, f.name);
+            assert_eq!(a.metrics.n1, f.metrics.n1, "n1 must match for {}", a.name);
+            assert_eq!(a.metrics.n2, f.metrics.n2, "n2 must match for {}", a.name);
+        }
     }
 }
