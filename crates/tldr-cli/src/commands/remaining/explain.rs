@@ -653,8 +653,27 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
             }
             idx += 1;
         }
-    } else if let Some(params_node) = func_node.child_by_field_name("parameters") {
-        sig.params = extract_params(params_node, source);
+    } else if matches!(language, Language::Python) {
+        // R3 (v0.5.0 CLOSEOUT, explain cluster #8): the generic
+        // `extract_params` walker below only recognises PYTHON parameter
+        // node-kinds (`identifier`, `typed_parameter`,
+        // `typed_default_parameter`, `default_parameter`). Ruby ALSO
+        // exposes a `parameters` field, but its tree-sitter grammar spells
+        // optional / splat / keyword / block params as
+        // `optional_parameter` / `splat_parameter` / `keyword_parameter` /
+        // `hash_splat_parameter` / `block_parameter` — all of which the
+        // python walker drops, silently undercounting Ruby arity
+        // (`process_route(pattern, conditions, block = nil, values = [])`
+        // came back as just `[pattern, conditions]`). Because the partial
+        // result was non-empty, the canonical `extract_function_params`
+        // fallback further down never fired. Restrict this rich
+        // python-only walker (which uniquely carries `type` / `default`
+        // fields) to Python; every other language with a `parameters`
+        // field now falls through to the canonical, language-correct
+        // dispatcher below — the same one `tldr extract` uses.
+        if let Some(params_node) = func_node.child_by_field_name("parameters") {
+            sig.params = extract_params(params_node, source);
+        }
     } else if matches!(language, Language::Kotlin) {
         // Kotlin's tree-sitter grammar exposes the parameter list as a
         // NAMED child `function_value_parameters` rather than a field, so
@@ -1360,6 +1379,33 @@ fn find_callees_recursive(
                 return;
             }
 
+            // R4 (v0.5.0 CLOSEOUT, explain cluster #8): tree-sitter-elixir
+            // spells `def`/`defp`/`if`/`unless`/`case`/`cond`/`with`/… as
+            // `call` nodes, and the `def NAME(args)` head nests the
+            // function's own name as an inner `call(NAME, args)`. Without a
+            // filter (the analogue of the C/C++ `is_cpp_non_callee` guard
+            // above) `find_callees` reported `def`, the function's OWN name,
+            // `case`, `if`, `with`, and Kernel guards (`is_list`, …) as if
+            // they were invoked callees. Suppress (a) control-flow /
+            // definition keyword calls and Kernel guards, and (b) the
+            // def-head's own-name call — but recurse into children so real
+            // calls inside the body/arms are still enumerated.
+            if matches!(language, Language::Elixir)
+                && (is_elixir_non_callee(&name) || is_elixir_def_head_call(node, source))
+            {
+                for child in node.children(&mut node.walk()) {
+                    find_callees_recursive(
+                        child,
+                        source,
+                        file_path,
+                        local_functions,
+                        language,
+                        callees,
+                    );
+                }
+                return;
+            }
+
             // Get base name for local function check
             let base_name = name.split('.').next().unwrap_or(&name);
 
@@ -1462,6 +1508,134 @@ fn is_cpp_non_callee(node: Node, name: &str) -> bool {
         }
     }
 
+    false
+}
+
+/// R4 (v0.5.0 CLOSEOUT, explain cluster #8): return `true` when an Elixir
+/// `call`-node name is NOT an invoked function — i.e. a definition macro,
+/// a control-flow macro, or a Kernel guard that tree-sitter-elixir parses
+/// as a `call` node. These pollute `tldr explain`'s `callees[]` when not
+/// filtered. The set is grounded in tree-sitter-elixir (def/defp/defmodule
+/// are extracted as the first `identifier` of a `call` node throughout
+/// `tldr-core`'s elixir extractor) plus the Elixir/Kernel special-form and
+/// guard vocabulary.
+fn is_elixir_non_callee(name: &str) -> bool {
+    // The bare last segment (defensive — these are always bare, but a
+    // qualified spelling should still be matched on its tail).
+    let tail = name.rsplit('.').next().unwrap_or(name);
+    matches!(
+        tail,
+        // Definition macros.
+        "def" | "defp"
+            | "defmacro"
+            | "defmacrop"
+            | "defmodule"
+            | "defprotocol"
+            | "defimpl"
+            | "defstruct"
+            | "defexception"
+            | "defguard"
+            | "defguardp"
+            | "defdelegate"
+            | "defoverridable"
+            | "defrecord"
+            | "defrecordp"
+            // Control-flow / special-form macros spelled as `call` nodes.
+            | "if"
+            | "unless"
+            | "case"
+            | "cond"
+            | "with"
+            | "for"
+            | "receive"
+            | "try"
+            | "quote"
+            | "unquote"
+            | "fn"
+            // Kernel type guards (`when is_list(x)` etc.) — not user calls.
+            | "is_atom"
+            | "is_binary"
+            | "is_bitstring"
+            | "is_boolean"
+            | "is_float"
+            | "is_function"
+            | "is_integer"
+            | "is_list"
+            | "is_map"
+            | "is_map_key"
+            | "is_nil"
+            | "is_number"
+            | "is_pid"
+            | "is_port"
+            | "is_reference"
+            | "is_tuple"
+            | "is_exception"
+            | "is_struct"
+    )
+}
+
+/// R4 (v0.5.0 CLOSEOUT, explain cluster #8): return `true` when `node` is
+/// the SIGNATURE HEAD of an Elixir `def`/`defp` (etc.) definition — i.e.
+/// the inner `call(NAME, args)` that names the function being defined,
+/// which must not be reported as a callee of itself.
+///
+/// tree-sitter-elixir shape (verified against tldr-core's elixir extractor
+/// at `crates/tldr-core/src/ast/extract.rs::extract_elixir_function_info`):
+///   (call (identifier "def")
+///         (arguments (call (identifier NAME) (arguments …))))      ; normal
+///   (call (identifier "def")
+///         (arguments (binary_operator                              ; w/ guard
+///                       (call (identifier NAME) …) "when" …)))
+///
+/// So a head call's parent is an `arguments` node whose grandparent is a
+/// `call` whose leading identifier is a definition macro (the guard case
+/// inserts a `binary_operator` between the head call and the `arguments`).
+/// We confirm the grandparent's leading identifier text against the
+/// definition-macro set so ordinary nested invocations such as
+/// `outer(inner(x))` — where `inner` IS a real callee — are never
+/// suppressed (there the grandparent call's head is `outer`, not a def
+/// macro).
+fn is_elixir_def_head_call(node: Node, source: &[u8]) -> bool {
+    if node.kind() != "call" {
+        return false;
+    }
+    // Climb past an optional `binary_operator` (the `when` guard wrapper).
+    let mut parent = match node.parent() {
+        Some(p) => p,
+        None => return false,
+    };
+    if parent.kind() == "binary_operator" {
+        parent = match parent.parent() {
+            Some(p) => p,
+            None => return false,
+        };
+    }
+    // Parent must be the `arguments` of the enclosing definition call, and
+    // `node` must be that `arguments`' FIRST child (the clause head), not a
+    // later positional argument.
+    if parent.kind() != "arguments" {
+        return false;
+    }
+    let def_call = match parent.parent() {
+        Some(p) if p.kind() == "call" => p,
+        _ => return false,
+    };
+    // The enclosing call's leading identifier must spell a definition
+    // macro (def/defp/defmacro/defmacrop/defguard/defguardp/defdelegate).
+    if let Some(first) = def_call.child(0) {
+        if first.kind() == "identifier" {
+            let kw = node_text(first, source);
+            return matches!(
+                kw,
+                "def" | "defp"
+                    | "defmacro"
+                    | "defmacrop"
+                    | "defguard"
+                    | "defguardp"
+                    | "defdelegate"
+            );
+        }
+    }
     false
 }
 
@@ -2602,11 +2776,30 @@ fn restore_explain_path_shape(report: &mut super::types::ExplainReport, user_fil
         .and_then(|p| dunce::canonicalize(p).ok());
 
     let rewrite = |s: &str| -> Option<String> {
+        // R2 (v0.5.0 CLOSEOUT, explain cluster #8): `<external>` is the
+        // per-file walker's sentinel for a stdlib/out-of-project callee.
+        // It is NOT a filesystem path, but `Path::new("<external>")` is
+        // `is_relative()`, so branch 3 below used to join it onto the
+        // project root (`src/main/.../owner/<external>`). Emit the
+        // sentinel verbatim — never path-join it. (Guard any other
+        // angle-bracketed sentinel the same way for safety.)
+        if s == "<external>" || (s.starts_with('<') && s.ends_with('>')) {
+            return None;
+        }
         let p = std::path::Path::new(s);
         // 1. Already user-input-shaped? (starts with the user's
         //    project root). Leave alone.
+        //
+        // R1 (v0.5.0 CLOSEOUT): when the user-shaped root is EMPTY (a
+        // bare-relative input rooted at CWD) every path — including an
+        // absolute `/private/tmp/...` one — "starts_with" the empty path,
+        // which would short-circuit the canonical-prefix rewrite in branch
+        // 2 and leak the resolved absolute form. Only honour the
+        // short-circuit for a NON-empty root; an empty root lets branch 2
+        // (abs `/private/tmp` -> bare suffix) and branch 3 (relative ->
+        // unchanged via `empty.join(rel) == rel`) do the right thing.
         if let Some(root) = user_project_root.as_ref() {
-            if p.starts_with(root) {
+            if !root.as_os_str().is_empty() && p.starts_with(root) {
                 return None;
             }
         }
@@ -2642,13 +2835,83 @@ fn restore_explain_path_shape(report: &mut super::types::ExplainReport, user_fil
     }
 }
 
-/// Walk upward from `user_file`'s parent directory (KEEPING the user's
-/// input shape — no canonicalisation) until a project-root marker is
-/// found. Mirrors `explain_project_root` but does not canonicalise the
-/// path, so the returned root keeps the user-supplied prefix
-/// (`/tmp/...`, `./repo/`, etc.).
+/// Return the project root in the USER'S input shape (so the path echo
+/// stays `/tmp/...`, `./repo/...`, or a bare-relative prefix instead of
+/// the macOS-canonicalised `/private/tmp/...`).
+///
+/// R1 (v0.5.0 CLOSEOUT, explain cluster #8): the previous implementation
+/// walked the *non-canonicalised* parent chain checking
+/// `dir.join(marker).exists()`. For a RELATIVE input path
+/// (`src/main/java/.../owner/Owner.java`, the common audit/CLI shape) the
+/// ancestor chain bottoms out at `""` and never reaches the actual root
+/// dir (`.`/CWD), so no marker ever matched and it fell back to
+/// `Some(parent)` — the file's OWN directory. `restore_explain_path_shape`
+/// branch 3 then joined that directory onto already-repo-relative callee
+/// paths, doubling them (`.../owner/` + `src/main/.../Person.java`).
+///
+/// Fix: find the root RELIABLY with `explain_project_root` (which
+/// canonicalises first and is already correct), then re-express that root
+/// in the user's input shape by trimming, from the user-supplied file, the
+/// same number of leading path components that separate the canonical file
+/// from the canonical root. The trim count is shape-independent, so the
+/// returned root keeps the user's exact prefix while pointing at the true
+/// project root for both absolute and relative input.
 fn user_project_root_from_input(user_file: &std::path::Path) -> Option<std::path::PathBuf> {
     let parent = user_file.parent()?;
+
+    // Canonical (absolute) project root — reliable for any input shape.
+    let canon_root = explain_project_root(user_file);
+
+    // Canonical (absolute) form of the input file, mirroring exactly what
+    // `explain_project_root` used internally to locate `canon_root`.
+    let canon_file = user_file.canonicalize().unwrap_or_else(|_| {
+        if user_file.is_absolute() {
+            user_file.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(user_file))
+                .unwrap_or_else(|_| user_file.to_path_buf())
+        }
+    });
+
+    // Depth from the canonical root down to the canonical file's PARENT
+    // directory == how many trailing components of `user_file` lie below
+    // the root (the file name itself is one more component).
+    if let Some(canon_parent) = canon_file.parent() {
+        if let Ok(rel) = canon_parent.strip_prefix(&canon_root) {
+            // `rel` is the chain of directories between root and the file's
+            // parent. Trim that many components off the USER-shaped parent
+            // to recover the user-shaped root.
+            let trim = rel.components().count();
+            let mut shaped_root = parent.to_path_buf();
+            let mut trimmed = 0;
+            while trimmed < trim {
+                match shaped_root.parent() {
+                    Some(p) if !p.as_os_str().is_empty() => {
+                        shaped_root = p.to_path_buf();
+                        trimmed += 1;
+                    }
+                    // Reached the top of the user-shaped path (a bare
+                    // relative input bottoms out at ""): the remaining root
+                    // IS the current working directory. Express it as the
+                    // EMPTY path so the callee/caller rewrite leaves the
+                    // already-repo-relative paths untouched (an empty root
+                    // means `root.join(rel) == rel`, and the branch-1
+                    // `starts_with("")` short-circuit returns None) —
+                    // keeping every emitted path in the same bare-relative
+                    // shape as the top-level `file`.
+                    _ => {
+                        shaped_root = std::path::PathBuf::new();
+                        trimmed = trim;
+                    }
+                }
+            }
+            return Some(shaped_root);
+        }
+    }
+
+    // Fallback (canonicalisation/strip failed): preserve the historical
+    // marker walk-up, which is correct for absolute input.
     let markers = [
         "Cargo.toml",
         "package.json",
