@@ -704,10 +704,20 @@ fn analyze_file(
     }
 
     let complexity_map = calculate_all_complexities_file(path).unwrap_or_default();
+    // R7 cluster[9] #50: several extractors (Elixir defmodule, Ruby, Java)
+    // list the SAME function in both `module_info.functions` AND a
+    // module-class's `methods`. Iterating the raw chain emitted every
+    // long_parameter_list / long_method finding twice. De-duplicate by
+    // (name, line) — a function is uniquely identified by its name and
+    // 1-indexed start line within a file — before the per-function smell
+    // loop so each physical declaration is scanned exactly once.
+    let mut seen_functions: std::collections::HashSet<(String, u32)> =
+        std::collections::HashSet::new();
     let all_functions = module_info
         .functions
         .iter()
-        .chain(module_info.classes.iter().flat_map(|c| c.methods.iter()));
+        .chain(module_info.classes.iter().flat_map(|c| c.methods.iter()))
+        .filter(|func| seen_functions.insert((func.name.clone(), func.line_number)));
     for func in all_functions {
         if should_analyze_smell(smell_filter, SmellType::LongParameterList) {
             maybe_add_long_parameter_smell(path, func, thresholds, suggest, &mut smells);
@@ -730,7 +740,31 @@ fn analyze_file(
         .unwrap_or_default();
     collect_tier1_ast_smells(path, &source, &lang_str, smell_filter, suggest, &mut smells);
 
+    // R7 cluster[9] #50: final per-file stable de-duplication safety net.
+    // The key includes `smell_type` so two genuinely DISTINCT smell kinds
+    // at the same (name, line) are both preserved; only exact duplicates
+    // (same type + name + line + reason) collapse. Stable: first
+    // occurrence wins, preserving deterministic ordering.
+    dedup_smell_findings(&mut smells);
+
     Ok(smells)
+}
+
+/// R7 cluster[9] #50: stable in-place de-duplication of a single file's
+/// smell findings keyed by `(smell_type, name, line, reason)`. Distinct
+/// smell types at the same location are preserved (different key); only
+/// exact repeats are removed. First occurrence wins.
+fn dedup_smell_findings(smells: &mut Vec<SmellFinding>) {
+    let mut seen: std::collections::HashSet<(String, String, u32, String)> =
+        std::collections::HashSet::new();
+    smells.retain(|s| {
+        seen.insert((
+            s.smell_type.to_string(),
+            s.name.clone(),
+            s.line,
+            s.reason.clone(),
+        ))
+    });
 }
 
 fn collect_god_class_smells(
@@ -1500,11 +1534,29 @@ pub fn detect_data_classes(source: &str, language: &str) -> Vec<SmellFinding> {
 }
 
 /// Path-aware variant of [`detect_data_classes`].
+///
+/// R7 cluster[9] #194/#206/#217: when a real file `path` is available
+/// (the case for the `smells` command), member counts come from the
+/// CANONICAL [`extract_file`] class list — the SAME source `god_class`
+/// uses — which correctly attaches Rust impl-block methods and Scala
+/// `template_body` members and does not emit Solidity structs as classes.
+/// This eliminates the self-contradiction where `Arg` was reported as both
+/// a 141-method god_class and a 0-method data_class. The path-less public
+/// API (used by older unit tests) keeps the in-body AST walker, which is
+/// adequate for the in-body-member languages (Python/Java/TS) it serves.
 pub fn detect_data_classes_with_path(
     source: &str,
     language: &str,
     path: Option<&Path>,
 ) -> Vec<SmellFinding> {
+    if let Some(p) = path {
+        if let Ok(module_info) = extract_file(p, None) {
+            return data_class_findings_from_classes(&module_info.classes);
+        }
+        // Fall through to the AST walker only if canonical extraction
+        // genuinely failed (parse error) — never silently emit nothing.
+    }
+
     let (tree, _lang) = match parse_source(source, language, path) {
         Some(v) => v,
         None => return Vec::new(),
@@ -1515,6 +1567,41 @@ pub fn detect_data_classes_with_path(
 
     find_classes_and_check_data_class(root, source, &mut findings);
 
+    findings
+}
+
+/// R7 cluster[9]: build data_class findings from the canonical
+/// [`crate::types::ClassInfo`] list (methods + fields already resolved
+/// across Rust impl blocks / Scala template bodies). Mirrors the
+/// thresholds of [`find_classes_and_check_data_class`].
+fn data_class_findings_from_classes(classes: &[crate::types::ClassInfo]) -> Vec<SmellFinding> {
+    let mut findings = Vec::new();
+    for class in classes {
+        let field_count = class.fields.len();
+        let method_count = class.methods.len();
+
+        if field_count >= 4 && method_count <= 2 {
+            let ratio = if field_count > 0 {
+                method_count as f64 / field_count as f64
+            } else {
+                0.0
+            };
+            if ratio < 0.5 {
+                findings.push(SmellFinding {
+                    smell_type: SmellType::DataClass,
+                    file: PathBuf::from("<source>"),
+                    name: class.name.clone(),
+                    line: class.line_number,
+                    reason: format!(
+                        "Class has {} fields and {} methods (data bag, ratio {:.2})",
+                        field_count, method_count, ratio
+                    ),
+                    severity: data_class_severity(field_count, method_count),
+                    suggestion: None,
+                });
+            }
+        }
+    }
     findings
 }
 
@@ -1670,11 +1757,23 @@ pub fn detect_lazy_elements(source: &str, language: &str) -> Vec<SmellFinding> {
 }
 
 /// Path-aware variant of [`detect_lazy_elements`].
+///
+/// R7 cluster[9] #206/#217: see [`detect_data_classes_with_path`]. When a
+/// real file `path` is available, member counts come from the canonical
+/// [`extract_file`] class list so Rust/Scala classes with real members are
+/// no longer reported as 0-method/0-field "lazy" classes and Solidity
+/// structs are not treated as classes at all.
 pub fn detect_lazy_elements_with_path(
     source: &str,
     language: &str,
     path: Option<&Path>,
 ) -> Vec<SmellFinding> {
+    if let Some(p) = path {
+        if let Ok(module_info) = extract_file(p, None) {
+            return lazy_element_findings_from_classes(&module_info.classes);
+        }
+    }
+
     let (tree, _lang) = match parse_source(source, language, path) {
         Some(v) => v,
         None => return Vec::new(),
@@ -1685,6 +1784,33 @@ pub fn detect_lazy_elements_with_path(
 
     find_classes_and_check_lazy(root, source, &mut findings);
 
+    findings
+}
+
+/// R7 cluster[9]: build lazy_element findings from the canonical
+/// [`crate::types::ClassInfo`] list. Mirrors the threshold of
+/// [`find_classes_and_check_lazy`] (<= 1 method AND <= 1 field).
+fn lazy_element_findings_from_classes(classes: &[crate::types::ClassInfo]) -> Vec<SmellFinding> {
+    let mut findings = Vec::new();
+    for class in classes {
+        let field_count = class.fields.len();
+        let method_count = class.methods.len();
+
+        if method_count <= 1 && field_count <= 1 {
+            findings.push(SmellFinding {
+                smell_type: SmellType::LazyElement,
+                file: PathBuf::from("<source>"),
+                name: class.name.clone(),
+                line: class.line_number,
+                reason: format!(
+                    "Class has only {} method(s) and {} field(s) - may not justify its own class",
+                    method_count, field_count
+                ),
+                severity: 1,
+                suggestion: None,
+            });
+        }
+    }
     findings
 }
 
@@ -7705,5 +7831,266 @@ export function Screenshot({
             t_small,
             t_large
         );
+    }
+
+    // =====================================================================
+    // R7 cluster[9] #194/#206/#217: data_class / lazy_element member
+    // counting must use the SAME canonical member counts that god_class
+    // uses (extract_file().classes[].methods/fields), which correctly
+    // attaches Rust impl-block methods and Scala template_body members and
+    // does NOT treat Solidity structs as classes. The pre-fix bespoke
+    // `count_class_members` AST walker only descended class_body/block/
+    // declaration_list, so:
+    //   - Rust struct methods (in sibling impl blocks) counted as 0
+    //   - Scala class members (template_body) counted as 0
+    //   - Solidity structs were treated as 0/0 "lazy" classes
+    // producing the #194 self-contradiction (Arg flagged BOTH god_class
+    // 141-methods AND data_class 0-methods) and the #206/#217 0/0 FPs.
+    // =====================================================================
+
+    fn write_tmp(name: &str, src: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, src).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn test_rust_struct_with_impl_methods_not_data_class() {
+        // A Rust struct with many fields BUT many impl-block methods is NOT
+        // a data class. Pre-fix the walker saw 0 methods (impl is a
+        // sibling node) and flagged it as a 30-field/0-method data bag.
+        let src = r#"
+pub struct Arg {
+    name: String,
+    id: u32,
+    help: bool,
+    long: String,
+    short: char,
+    required: bool,
+}
+impl Arg {
+    pub fn new() -> Self { Arg { name: String::new(), id: 0, help: false, long: String::new(), short: ' ', required: false } }
+    pub fn name(&self) -> &str { &self.name }
+    pub fn id(&self) -> u32 { self.id }
+    pub fn help(&self) -> bool { self.help }
+    pub fn long(&self) -> &str { &self.long }
+    pub fn required(&self) -> bool { self.required }
+}
+"#;
+        let (_dir, path) = write_tmp("arg.rs", src);
+        let findings = detect_data_classes_with_path(src, "rust", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "Arg"),
+            "Rust struct with impl methods must NOT be a data_class; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_rust_struct_with_impl_methods_not_lazy_element() {
+        let src = r#"
+pub struct Stack {
+    items: Vec<u32>,
+}
+impl Stack {
+    pub fn push(&mut self, x: u32) { self.items.push(x); }
+    pub fn pop(&mut self) -> Option<u32> { self.items.pop() }
+    pub fn len(&self) -> usize { self.items.len() }
+    pub fn is_empty(&self) -> bool { self.items.is_empty() }
+}
+"#;
+        let (_dir, path) = write_tmp("stack.rs", src);
+        let findings = detect_lazy_elements_with_path(src, "rust", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "Stack"),
+            "Rust struct with 4 impl methods must NOT be a lazy_element; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_scala_class_with_template_body_methods_not_lazy() {
+        // A Scala class whose members live in template_body must count
+        // those members; pre-fix the walker saw 0/0 and flagged it lazy.
+        let src = r#"
+class Stack[A] {
+  private var elems: List[A] = Nil
+  def push(x: A): Unit = { elems = x :: elems }
+  def peek: A = elems.head
+  def pop(): A = { val h = elems.head; elems = elems.tail; h }
+  def isEmpty: Boolean = elems.isEmpty
+  def size: Int = elems.length
+}
+"#;
+        let (_dir, path) = write_tmp("Stack.scala", src);
+        let findings = detect_lazy_elements_with_path(src, "scala", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "Stack"),
+            "Scala class with template_body methods must NOT be lazy; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_solidity_struct_not_treated_as_lazy_class() {
+        // A Solidity contract embedding a small struct must NOT surface the
+        // struct as a 0/0 lazy "class" (the canonical extractor does not
+        // emit Solidity structs as classes at all).
+        let src = r#"
+contract AccessControl {
+    struct RoleData {
+        mapping(address => bool) hasRole;
+        bytes32 adminRole;
+    }
+    mapping(bytes32 => RoleData) private _roles;
+    function hasRole(bytes32 role, address account) public view returns (bool) {
+        return _roles[role].hasRole[account];
+    }
+    function grantRole(bytes32 role, address account) public {
+        _roles[role].hasRole[account] = true;
+    }
+}
+"#;
+        let (_dir, path) = write_tmp("AccessControl.sol", src);
+        let findings = detect_lazy_elements_with_path(src, "solidity", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "RoleData"),
+            "Solidity struct RoleData must NOT be flagged as a lazy class; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_god_class_and_data_class_are_not_contradictory() {
+        // The #194 self-contradiction: a class must never be reported as
+        // BOTH god_class (many methods) AND data_class (0 methods) in the
+        // same smells run.
+        let src = r#"
+pub struct Arg {
+    a: u32, b: u32, c: u32, d: u32, e: u32,
+}
+impl Arg {
+"#;
+        let mut src = String::from(src);
+        for i in 0..25 {
+            src.push_str(&format!("    pub fn m{i}(&self) -> u32 {{ self.a }}\n"));
+        }
+        src.push_str("}\n");
+        let (dir, _path) = write_tmp("arg.rs", &src);
+        let report = detect_smells(dir.path(), ThresholdPreset::Default, None, false)
+            .expect("detect_smells should succeed");
+        let arg_smells: Vec<String> = report
+            .smells
+            .iter()
+            .filter(|s| s.name == "Arg")
+            .map(|s| s.smell_type.to_string())
+            .collect();
+        let is_god = arg_smells.iter().any(|t| t.as_str() == "God Class");
+        let is_data = arg_smells.iter().any(|t| t.as_str() == "Data Class");
+        assert!(is_god, "Arg with 25 methods should be a god_class");
+        assert!(
+            !is_data,
+            "Arg flagged god_class must NOT also be data_class; got {:?}",
+            arg_smells
+        );
+    }
+
+    // Python no-path behaviour must be preserved (regression guard for the
+    // no-path public API used by the existing Python unit tests).
+    #[test]
+    fn test_python_data_class_no_path_preserved() {
+        let source = r#"
+class UserData:
+    def __init__(self):
+        self.name = ""
+        self.email = ""
+        self.age = 0
+        self.address = ""
+        self.phone = ""
+"#;
+        let findings = detect_data_classes(source, "python");
+        assert!(
+            !findings.is_empty(),
+            "Python data class via no-path API must still be detected"
+        );
+    }
+
+    // =====================================================================
+    // R7 cluster[9] #50/#73: smells must not double-count a function that
+    // the extractor lists in BOTH module_info.functions AND a
+    // module-class's methods (Elixir defmodule, Ruby, Java). Pre-fix the
+    // `all_functions` chain emitted every long_parameter_list /
+    // long_method finding exactly twice.
+    // =====================================================================
+    #[test]
+    fn test_elixir_long_param_not_double_counted() {
+        // An Elixir module function with > 5 params is listed both as a
+        // module function and as a module-"class" method; the finding must
+        // be emitted ONCE.
+        let src = r#"
+defmodule Cookies do
+  def decode_value(a, b, c, d, e, f) do
+    a + b + c + d + e + f
+  end
+end
+"#;
+        let (dir, _path) = write_tmp("cookies.ex", src);
+        let report = detect_smells(
+            dir.path(),
+            ThresholdPreset::Default,
+            Some(SmellType::LongParameterList),
+            false,
+        )
+        .expect("detect_smells should succeed");
+        let count = report
+            .smells
+            .iter()
+            .filter(|s| s.name == "decode_value" && s.smell_type == SmellType::LongParameterList)
+            .count();
+        assert_eq!(
+            count, 1,
+            "decode_value long_parameter_list must be emitted exactly once; got {} ({:?})",
+            count,
+            report
+                .smells
+                .iter()
+                .map(|s| (&s.name, s.smell_type.to_string(), s.line))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_no_duplicate_smell_findings_overall() {
+        // No (smell_type, name, line) triple may appear more than once in a
+        // single file's smell set.
+        let src = r#"
+defmodule Q do
+  def split_keys(a, b, c, d, e, f, g) do
+    {a, b, c, d, e, f, g}
+  end
+  def other(a, b, c, d, e, f, g, h) do
+    {a, b, c, d, e, f, g, h}
+  end
+end
+"#;
+        let (dir, _path) = write_tmp("query.ex", src);
+        let report =
+            detect_smells(dir.path(), ThresholdPreset::Default, None, false).expect("smells ok");
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for s in &report.smells {
+            let key = (s.smell_type.to_string(), s.name.clone(), s.line);
+            assert!(
+                seen.insert(key.clone()),
+                "duplicate smell finding {:?}; full set {:?}",
+                key,
+                report
+                    .smells
+                    .iter()
+                    .map(|s| (s.smell_type.to_string(), &s.name, s.line))
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 }

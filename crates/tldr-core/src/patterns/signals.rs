@@ -366,67 +366,83 @@ pub fn detect_naming_case(name: &str) -> NamingCase {
         return NamingCase::Unknown;
     }
 
-    // language-coverage-fixes-v1 (P4.BUG-N4): require ≥1 underscore
-    // before classifying as snake_case / UPPER_SNAKE_CASE. Without
-    // this guard, `print` was classified as `SnakeCase` and `E1` as
-    // `UpperSnakeCase`, producing spurious "expected camelCase, got
-    // snake_case" violations against camelCase Java codebases (and
+    // R7 cluster[9] #235/#255: trim a LEADING-underscore private prefix
+    // BEFORE any case test, and classify on the core. A leading
+    // underscore is the idiomatic private marker in Swift, TypeScript,
+    // JavaScript, Rust, Python, etc. (`_create`, `_readBytes`, `_ptr`),
+    // and must NOT, by itself, make a camelCase/Pascal/upper identifier
+    // look like `snake_case`. Pre-fix, the `contains('_') && all
+    // lowercase` snake test ran on the raw name and matched `_create`
+    // (a leading `_` makes `contains('_')` true), flagging 198
+    // leading-underscore camelCase names in swift-collections and the
+    // axios JS leading-underscore set as snake_case violations. Only
+    // INTERNAL underscores should drive the snake/upper-snake decision,
+    // so we run every subsequent test on `core` (the name with leading
+    // underscores stripped). A single residual char after stripping is
+    // ambiguous, so fall back to Unknown.
+    let core = name.trim_start_matches('_');
+    if core.len() <= 1 {
+        return NamingCase::Unknown;
+    }
+
+    // language-coverage-fixes-v1 (P4.BUG-N4): require ≥1 INTERNAL
+    // underscore before classifying as snake_case / UPPER_SNAKE_CASE.
+    // Without this guard, `print` was classified as `SnakeCase` and
+    // `E1` as `UpperSnakeCase`, producing spurious "expected camelCase,
+    // got snake_case" violations against camelCase Java codebases (and
     // similar against PascalCase class expectations on `E1`-style
     // names). Single-word degenerate names get their own `LowerAlpha`
     // / `UpperAlpha` variants which the violation emitter treats as
     // compatible with both adjacent conventions.
 
-    // UPPER_SNAKE_CASE: all uppercase WITH underscores.
-    if name.contains('_')
-        && name
+    // UPPER_SNAKE_CASE: all uppercase WITH internal underscores.
+    if core.contains('_')
+        && core
             .chars()
             .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
     {
         return NamingCase::UpperSnakeCase;
     }
 
-    // snake_case: lowercase WITH underscores.
-    if name.contains('_')
-        && name
+    // snake_case: lowercase WITH internal underscores.
+    if core.contains('_')
+        && core
             .chars()
             .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
     {
         return NamingCase::SnakeCase;
     }
 
-    // Single-word lowercase / uppercase (no underscore): emit the
-    // dedicated degenerate variants so the violation emitter can
+    // Single-word lowercase / uppercase (no internal underscore): emit
+    // the dedicated degenerate variants so the violation emitter can
     // treat them as compatible with multiple conventions.
-    if name
+    if core
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && name.chars().any(|c| c.is_ascii_lowercase())
+        && core.chars().any(|c| c.is_ascii_lowercase())
     {
         return NamingCase::LowerAlpha;
     }
-    if name
+    if core
         .chars()
         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        && name.chars().any(|c| c.is_ascii_uppercase())
+        && core.chars().any(|c| c.is_ascii_uppercase())
     {
         return NamingCase::UpperAlpha;
     }
 
-    // PascalCase: starts with uppercase, no underscores (except at start for private)
-    let check_name = name.trim_start_matches('_');
-    if !check_name.is_empty() {
-        let first = check_name.chars().next().unwrap();
-        if first.is_ascii_uppercase() && !check_name.contains('_') {
-            return NamingCase::PascalCase;
-        }
+    // PascalCase: starts with uppercase, no internal underscores.
+    let first = core.chars().next().unwrap();
+    if first.is_ascii_uppercase() && !core.contains('_') {
+        return NamingCase::PascalCase;
+    }
 
-        // camelCase: starts with lowercase, no underscores, has uppercase
-        if first.is_ascii_lowercase()
-            && !check_name.contains('_')
-            && check_name.chars().any(|c| c.is_ascii_uppercase())
-        {
-            return NamingCase::CamelCase;
-        }
+    // camelCase: starts with lowercase, no internal underscores, has uppercase
+    if first.is_ascii_lowercase()
+        && !core.contains('_')
+        && core.chars().any(|c| c.is_ascii_uppercase())
+    {
+        return NamingCase::CamelCase;
     }
 
     NamingCase::Unknown

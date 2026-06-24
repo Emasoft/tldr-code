@@ -6,6 +6,7 @@ use super::super::language_profile::{
     node_text, LanguageNodeMap, LanguageProfile, LanguageSemantics, SignalAction, SignalTarget,
 };
 use super::super::signals::{detect_naming_case, PatternSignals};
+use crate::types::Evidence;
 
 /// Semantic extractor for Scala.
 pub struct ScalaSemantics;
@@ -110,7 +111,40 @@ impl ScalaSemantics {
                 .absolute_imports
                 .push((module, file_path.display().to_string()));
         }
+
+        // R7 cluster[9] #226: a Scala wildcard import (`import x._`) is a
+        // star import. tree-sitter-scala exposes the trailing `_` as a
+        // `namespace_wildcard` child of the `import_declaration`. A
+        // SELECTIVE brace import (`import x.{a, b}`) produces a
+        // `namespace_selectors` child instead and is NOT a star import, so
+        // we match strictly on `namespace_wildcard` (AST node kind, not a
+        // substring of the raw text). Pre-fix scala.rs only filled
+        // `absolute_imports` and never surfaced star_imports, so a repo
+        // with hundreds of `import zio._` lines reported `star_imports:
+        // none`.
+        if subtree_has_kind(node, "namespace_wildcard") {
+            let line = node.start_position().row as u32 + 1;
+            let snippet = text.lines().next().unwrap_or(&text).to_string();
+            signals
+                .import_patterns
+                .star_imports
+                .push(Evidence::new(file_path.display().to_string(), line, snippet));
+        }
     }
+}
+
+/// True when `node` (or any descendant) has the given tree-sitter kind.
+fn subtree_has_kind(node: Node, kind: &str) -> bool {
+    if node.kind() == kind {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if subtree_has_kind(child, kind) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Build the Scala language profile.

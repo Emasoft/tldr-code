@@ -204,13 +204,22 @@ impl PatternMiner {
         // language-agnostic idioms and several are pinned global by
         // existing tests.
         let soft_delete = self.signals_to_soft_delete(&aggregated_signals);
-        let error_handling = self.signals_to_error_handling(&aggregated_signals);
+        // R7 cluster[9] #25/#235/#255: `error_handling` and `type_coverage`
+        // are LANGUAGE-SPECIFIC (exception-type vocabulary, type-annotation
+        // coverage), so they must be derived from the PRIMARY language's
+        // signals — completing the T4 primary-binding that already covers
+        // `naming`/`api_conventions`. Pre-fix they used the cross-language
+        // aggregate, so a Swift/C++ repo with a stray vendored `.py`
+        // reported Python exceptions (`DocoptLanguageError`,
+        // `CompilerError`) and an inflated `coverage_functions` (e.g. 1.0
+        // from a handful of plain-JS files in a TS repo).
+        let error_handling = self.signals_to_error_handling(primary_signals);
         let naming = self.signals_to_naming(primary_signals);
         let resource_management = self.signals_to_resource_mgmt(&aggregated_signals);
         let validation = self.signals_to_validation(&aggregated_signals);
         let test_idioms = self.signals_to_test_idioms(&aggregated_signals);
         let import_patterns = self.signals_to_import_patterns(&aggregated_signals);
-        let type_coverage = self.signals_to_type_coverage(&aggregated_signals);
+        let type_coverage = self.signals_to_type_coverage(primary_signals);
         let api_conventions = self.signals_to_api_conventions(primary_signals);
         let async_patterns = self.signals_to_async_patterns(&aggregated_signals);
 
@@ -305,6 +314,19 @@ impl PatternMiner {
             patterns_by_language.insert(lang.clone(), idiom_count + dp_count);
         }
 
+        // R7 cluster[9] #224: reconcile the metadata pattern counts with
+        // the emitted output. `count_patterns_before_filter` only counts
+        // the idiom-category `DetectedPatterns`, but `design_patterns` (the
+        // GoF/Solidity/PHP/OCaml hits) ARE part of the report AND are added
+        // to `patterns_by_language` (dp_count above). Pre-fix this left
+        // before/after_filter inconsistent with both the emitted
+        // `design_patterns` array and `patterns_by_language` (e.g.
+        // solidity-solmate: 20 emitted, patterns_by_language.solidity=21,
+        // but before_filter=2/after_filter=1). Design patterns are deduped,
+        // not confidence-filtered, so they contribute equally to before and
+        // after counts.
+        let design_pattern_count = design_patterns.len();
+
         // Build metadata
         let metadata = PatternMetadata {
             files_analyzed,
@@ -315,8 +337,8 @@ impl PatternMiner {
                 files_by_language,
                 patterns_by_language,
             },
-            patterns_before_filter: patterns_before,
-            patterns_after_filter: patterns_after,
+            patterns_before_filter: patterns_before + design_pattern_count,
+            patterns_after_filter: patterns_after + design_pattern_count,
             confidence_threshold: self.config.min_confidence,
         };
 

@@ -2236,6 +2236,154 @@ fn test_invariant_detect_naming_case_correctness() {
     assert_eq!(detect_naming_case("__init__"), NamingCase::Unknown);
 }
 
+/// R7 cluster[9] #235/#255: a leading-underscore (private idiom) prefix on
+/// a camelCase/PascalCase/UPPER name must NOT force a `snake_case`
+/// classification. The classifier must trim leading underscores first and
+/// classify on the core, counting only INTERNAL underscores for snake.
+#[test]
+fn test_leading_underscore_does_not_force_snake_case() {
+    // Leading-underscore camelCase (Swift/TS/Rust private idiom) -> CamelCase,
+    // NOT SnakeCase. Previously '_readBytes' matched `contains('_') && all
+    // lowercase` and was wrongly classified SnakeCase.
+    assert_eq!(detect_naming_case("_readBytes"), NamingCase::CamelCase);
+    assert_eq!(detect_naming_case("_transformValue"), NamingCase::CamelCase);
+    // Single leading-underscore lowercase word -> LowerAlpha (compatible with
+    // both snake & camel), NOT SnakeCase. ('_create', '_ptr', '_append')
+    assert_eq!(detect_naming_case("_create"), NamingCase::LowerAlpha);
+    assert_eq!(detect_naming_case("_ptr"), NamingCase::LowerAlpha);
+    // Leading-underscore PascalCase -> PascalCase (already worked, keep green).
+    assert_eq!(detect_naming_case("_PrivateType"), NamingCase::PascalCase);
+    // Leading-underscore UPPER constant -> UpperSnakeCase (internal '_').
+    assert_eq!(detect_naming_case("_MAX_LEN"), NamingCase::UpperSnakeCase);
+    // Leading-underscore single UPPER word -> UpperAlpha (compatible).
+    assert_eq!(detect_naming_case("_MAX"), NamingCase::UpperAlpha);
+    // GENUINE snake_case with an internal underscore stays SnakeCase even
+    // with a leading underscore ('_process_data').
+    assert_eq!(detect_naming_case("_process_data"), NamingCase::SnakeCase);
+    // Plain (non-underscore) classifications must be unchanged.
+    assert_eq!(detect_naming_case("process_data"), NamingCase::SnakeCase);
+    assert_eq!(detect_naming_case("processData"), NamingCase::CamelCase);
+    // dunder still skipped.
+    assert_eq!(detect_naming_case("__init__"), NamingCase::Unknown);
+}
+
+/// R7 cluster[9] #25/#26: C++ function-name extraction must be AST-driven.
+/// The pre-fix text-split (`text.split('(').next().split_whitespace().last()`)
+/// grabbed the RETURN TYPE / keyword for several declarator shapes:
+///   - `explicit operator bool()` -> "bool"
+///   - `operator int()`           -> "int"
+///   - `bool operator()(...)`     -> "operator"
+/// and namespaces were pushed into class_names, dragging the C++ class
+/// majority to snake_case. This test pins the AST-navigated names.
+#[test]
+fn test_cpp_function_names_are_ast_driven_not_text_split() {
+    let source = r#"
+class Foo {
+public:
+  explicit operator bool() const { return true; }
+  operator int() { return 0; }
+  bool operator()(int x) const { return x > 0; }
+  void do_thing() {}
+  int snake_case_fn(int a) { return a; }
+};
+int regular_function(int x) { return x; }
+void MyClass::method_impl(int x) {}
+"#;
+    let signals = detect_signals(Language::Cpp, source);
+    let names: Vec<&str> = signals
+        .naming
+        .function_names
+        .iter()
+        .map(|(n, _, _, _)| n.as_str())
+        .collect();
+
+    // Real function/method names must be present.
+    assert!(
+        names.contains(&"do_thing"),
+        "expected real method `do_thing`; got {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"snake_case_fn"),
+        "expected real method `snake_case_fn`; got {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"regular_function"),
+        "expected free function `regular_function`; got {:?}",
+        names
+    );
+    // Qualified definition `MyClass::method_impl` must resolve to the method
+    // name, never the qualifier.
+    assert!(
+        names.contains(&"method_impl"),
+        "expected qualified method `method_impl`; got {:?}",
+        names
+    );
+
+    // The text-split garbage must NOT appear: return-type keywords and the
+    // bare `operator` token must never be recorded as function names.
+    assert!(
+        !names.contains(&"bool"),
+        "primitive return type `bool` must NOT be a function name; got {:?}",
+        names
+    );
+    assert!(
+        !names.contains(&"int"),
+        "primitive return type `int` must NOT be a function name; got {:?}",
+        names
+    );
+    assert!(
+        !names.contains(&"operator"),
+        "bare `operator` token must NOT be a function name; got {:?}",
+        names
+    );
+}
+
+/// R7 cluster[9] #25/#26: C++ namespace names must NOT be recorded as class
+/// names. Pre-fix `detect_namespace` pushed the namespace identifier (often
+/// snake_case: `detail`, `fmt`) into naming.class_names, flipping the C++
+/// class-naming majority to snake_case.
+#[test]
+fn test_cpp_namespace_not_counted_as_class() {
+    let source = r#"
+namespace detail {
+  class MyWidget {};
+  int helper() { return 1; }
+}
+namespace fmt {
+  class Formatter {};
+}
+"#;
+    let signals = detect_signals(Language::Cpp, source);
+    let class_names: Vec<&str> = signals
+        .naming
+        .class_names
+        .iter()
+        .map(|(n, _, _, _)| n.as_str())
+        .collect();
+    assert!(
+        class_names.contains(&"MyWidget"),
+        "real class `MyWidget` must be recorded; got {:?}",
+        class_names
+    );
+    assert!(
+        class_names.contains(&"Formatter"),
+        "real class `Formatter` must be recorded; got {:?}",
+        class_names
+    );
+    assert!(
+        !class_names.contains(&"detail"),
+        "namespace `detail` must NOT be a class name; got {:?}",
+        class_names
+    );
+    assert!(
+        !class_names.contains(&"fmt"),
+        "namespace `fmt` must NOT be a class name; got {:?}",
+        class_names
+    );
+}
+
 #[test]
 fn test_invariant_fallback_detection_is_language_agnostic() {
     let source = r#"

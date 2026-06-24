@@ -284,6 +284,45 @@ fn first_user_defined_type_name(spec: Node, source: &str) -> Option<String> {
     None
 }
 
+/// R7 cluster[9] #216/#217: true when a `new_expression` constructs a
+/// USER-DEFINED contract/type (`new C(...)`), and NOT when it allocates
+/// dynamic memory for a primitive or an array (`new string(n)`,
+/// `new bytes(n)`, `new uint[](n)`, `new Foo[](n)`).
+///
+/// tree-sitter-solidity AST shapes (verified):
+/// ```text
+/// new C(...)        new_expression -> type_name -> user_defined_type   (FACTORY)
+/// new string(n)     new_expression -> type_name -> primitive_type      (alloc)
+/// new uint[](n)     new_expression -> type_name -> [ type_name(uint) ] (array alloc)
+/// new Foo[](n)      new_expression -> type_name -> [ type_name -> udt ](array alloc)
+/// ```
+/// An array `type_name` carries a `[` token child (and a NESTED
+/// `type_name`); a direct construction's `type_name` has a
+/// `user_defined_type` as its direct child with no `[`.
+fn new_constructs_user_type(new_expr: Node) -> bool {
+    // Find the `type_name` child of the new_expression.
+    let mut cursor = new_expr.walk();
+    let type_name = new_expr
+        .children(&mut cursor)
+        .find(|c| c.kind() == "type_name");
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    // An array allocation has a `[` token child (`T[]`); never a factory.
+    let mut tc = type_name.walk();
+    let mut has_user_defined_direct_child = false;
+    for child in type_name.children(&mut tc) {
+        match child.kind() {
+            "[" => return false,            // array allocation
+            "user_defined_type" => has_user_defined_direct_child = true,
+            // A nested `type_name` (array element wrapper) or a
+            // `primitive_type` is NOT a direct contract construction.
+            _ => {}
+        }
+    }
+    has_user_defined_direct_child
+}
+
 /// Resolve a `user_defined_type` to its name (bare identifier or dotted
 /// `member_expression`).
 fn user_defined_type_name(node: Node, source: &str) -> Option<String> {
@@ -332,7 +371,20 @@ fn collect_facts(node: Node, source: &str, facts: &mut ContractFacts) {
                 collect_facts(child, source, facts);
             }
             "new_expression" => {
-                facts.constructs_with_new = true;
+                // R7 cluster[9] #216/#217: a Factory constructs a
+                // USER-DEFINED contract/type via `new C(...)`. The
+                // `new_expression` node is ALSO used for dynamic-memory
+                // allocation — `new string(n)`, `new bytes(n)`,
+                // `new T[](n)` — which is NOT contract construction. Pure
+                // libraries (Base64/Strings/ShortStrings/MerkleProof/
+                // ERC165Checker) were mislabelled Factory solely because
+                // they allocate a `new string`/`new bytes`/`new <prim>[]`
+                // buffer. Inspect the constructed `type_name`: only a
+                // direct `user_defined_type` (not `primitive_type`, not an
+                // `array_type`/`T[]` wrapper) is a factory construction.
+                if new_constructs_user_type(child) {
+                    facts.constructs_with_new = true;
+                }
             }
             "yul_evm_builtin" => {
                 if node_text(child, source) == "delegatecall" {

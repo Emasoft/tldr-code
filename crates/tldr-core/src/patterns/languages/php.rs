@@ -121,19 +121,24 @@ impl PhpSemantics {
         }
 
         // ---- Factory -------------------------------------------------
-        // A factory exposes a method whose name signals object creation
-        // (`create*` / `make*` / `build*` / `new*`). An abstract factory
-        // declares such a method `abstract`; a concrete factory builds
-        // instances via `new` inside the method body.
-        let factory_method = methods.iter().find(|m| is_factory_method_name(&m.name));
+        // R7 cluster[9] #150/#158 (design-fork Option A, see
+        // decisions/r7-cl9-php-factory-name-only-heuristic.md): a Factory
+        // requires EVIDENCE of construction, never a bare factory-shaped
+        // method NAME. A method named `create*`/`make*`/`build*`/`new*` is
+        // a factory ONLY when it actually constructs an object (`new` in
+        // its body) OR is declared `abstract` (the abstract-factory
+        // contract). The pre-fix name-only "exposes a factory method"
+        // branch flagged `newLine(): void`, `buildLine(): string` and
+        // `buildUri(): UriInterface` (transforms input, no `new`).
+        let factory_method = methods
+            .iter()
+            .find(|m| is_factory_method_name(&m.name) && (m.is_abstract || m.constructs_new));
         let class_named_factory = name.ends_with("Factory");
         if let Some(fm) = factory_method {
             let evidence = if fm.is_abstract {
                 format!("class `{name}` declares an abstract factory method `{}`", fm.name)
-            } else if fm.constructs_new {
-                format!("class `{name}` builds instances in `{}` via `new`", fm.name)
             } else {
-                format!("class `{name}` exposes a factory method `{}`", fm.name)
+                format!("class `{name}` builds instances in `{}` via `new`", fm.name)
             };
             signals.design_patterns.push_pattern(
                 "Factory",

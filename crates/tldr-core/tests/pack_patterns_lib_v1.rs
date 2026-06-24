@@ -73,6 +73,209 @@ fn mine(path: &str) -> tldr_core::types::PatternReport {
         .expect("mine_patterns must succeed on the corpus")
 }
 
+/// Run the exact `tldr patterns` pipeline over an in-memory single-file
+/// fixture written to a temp dir. Used by the R7 cluster[9] char-tests
+/// that pin precise accuracy behaviour the real corpora confirmed but
+/// which a minimal AST input exercises deterministically.
+fn mine_source(file_name: &str, source: &str) -> tldr_core::types::PatternReport {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join(file_name);
+    std::fs::write(&path, source).unwrap();
+    let config = PatternConfig {
+        max_files: 100_000,
+        ..PatternConfig::default()
+    };
+    let miner = PatternMiner::new(config);
+    miner
+        .mine_patterns(dir.path(), None)
+        .expect("mine_patterns must succeed on the fixture")
+}
+
+// ============================================================================
+// R7 cluster[9] #216/#217: Solidity Factory must require construction of a
+// USER-DEFINED type (`new ProxyAdmin(...)`), never `new string/bytes/T[]`
+// dynamic-memory allocation. Pure libraries (Base64/Strings/MerkleProof)
+// were flagged Factory solely because they call `new string(n)`.
+// ============================================================================
+#[test]
+fn solidity_factory_excludes_new_primitive_and_array_alloc() {
+    // A pure library that only allocates dynamic memory via `new string` /
+    // `new bytes` / `new T[]` — NOT a factory.
+    let lib = r#"
+library Strings {
+    function buffer(uint256 length) internal pure returns (string memory) {
+        string memory s = new string(length);
+        bytes memory b = new bytes(2 * length + 2);
+        uint256[] memory arr = new uint256[](length);
+        return s;
+    }
+}
+"#;
+    let report = mine_source("Strings.sol", lib);
+    let factories: Vec<&str> = report
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == "Factory")
+        .map(|d| d.subject.as_str())
+        .collect();
+    assert!(
+        factories.is_empty(),
+        "library allocating only new string/bytes/array must NOT be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn solidity_factory_detects_new_user_defined_contract() {
+    // A real factory: constructs a user-defined contract via `new C(...)`.
+    let factory = r#"
+contract ProxyAdmin {}
+contract Deployer {
+    function deploy(address owner) public returns (address) {
+        return address(new ProxyAdmin());
+    }
+}
+"#;
+    let report = mine_source("Deployer.sol", factory);
+    let factory_subjects: Vec<&str> = report
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == "Factory")
+        .map(|d| d.subject.as_str())
+        .collect();
+    assert!(
+        factory_subjects.contains(&"Deployer"),
+        "contract constructing a user-defined type via `new` must be a Factory; got {:?}",
+        factory_subjects
+    );
+}
+
+// ============================================================================
+// R7 cluster[9] #226: Scala `import x._` wildcard must register a
+// star_imports signal. Pre-fix scala.rs only pushed the whole import text
+// into absolute_imports and never inspected the trailing `._`.
+// ============================================================================
+#[test]
+fn scala_wildcard_import_registers_star_imports() {
+    let src = r#"
+import zio._
+import scala.collection.mutable.{Map, Set}
+object Foo {
+  def bar(x: Int): Int = x + 1
+}
+"#;
+    let report = mine_source("Foo.scala", src);
+    let ip = report
+        .import_patterns
+        .expect("scala fixture must produce an import_patterns block");
+    assert_ne!(
+        ip.star_imports,
+        tldr_core::types::StarImportUsage::None,
+        "Scala `import zio._` wildcard must populate star_imports; got {:?}",
+        ip.star_imports
+    );
+}
+
+#[test]
+fn scala_selective_brace_import_is_not_star() {
+    // `import x.{a, b}` is a SELECTIVE import, not a wildcard — it must NOT
+    // count as a star import.
+    let src = r#"
+import scala.collection.mutable.{Map, Set}
+object Bar {
+  def baz(x: Int): Int = x
+}
+"#;
+    let report = mine_source("Bar.scala", src);
+    let ip = report
+        .import_patterns
+        .expect("scala fixture must produce an import_patterns block");
+    assert_eq!(
+        ip.star_imports,
+        tldr_core::types::StarImportUsage::None,
+        "Scala selective brace-import `.{{a, b}}` must NOT count as star; got {:?}",
+        ip.star_imports
+    );
+}
+
+// ============================================================================
+// R7 cluster[9] #150/#158 (design-fork, Option A): PHP Factory must require
+// EVIDENCE of construction (a `new` in the method body OR an abstract
+// factory method OR a *Factory-named class with a constructing method) —
+// never a bare name match. See
+// decisions/r7-cl9-php-factory-name-only-heuristic.md.
+// ============================================================================
+#[test]
+fn php_factory_requires_construction_not_just_name() {
+    // Methods named like factories that do NOT construct anything must NOT
+    // be flagged: newLine() -> void, buildLine() -> string, buildUri()
+    // transforms its input.
+    let src = r#"<?php
+class OutputStyle {
+    public function newLine(): void { echo "\n"; }
+    public function buildLine(): string { return "x"; }
+    public function buildUri(UriInterface $u): UriInterface { return $u->withPath("/"); }
+}
+"#;
+    let report = mine_source("OutputStyle.php", src);
+    let factories: Vec<&str> = report
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == "Factory")
+        .map(|d| d.subject.as_str())
+        .collect();
+    assert!(
+        factories.is_empty(),
+        "PHP class with factory-NAMED but non-constructing methods must NOT \
+         be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_detects_constructs_new() {
+    // A real factory: a method that constructs an object via `new`.
+    let src = r#"<?php
+class ClientBuilder {
+    public function createClient(): Client { return new Client(); }
+}
+"#;
+    let report = mine_source("ClientBuilder.php", src);
+    let factories: Vec<&str> = report
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == "Factory")
+        .map(|d| d.subject.as_str())
+        .collect();
+    assert!(
+        factories.contains(&"ClientBuilder"),
+        "PHP class whose method constructs via `new` must be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_detects_abstract_factory_method() {
+    // An abstract factory method IS a factory contract even with no `new`.
+    let src = r#"<?php
+abstract class ShapeFactory {
+    abstract public function createShape(): Shape;
+}
+"#;
+    let report = mine_source("ShapeFactory.php", src);
+    let factories: Vec<&str> = report
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == "Factory")
+        .map(|d| d.subject.as_str())
+        .collect();
+    assert!(
+        factories.contains(&"ShapeFactory"),
+        "PHP abstract factory method must be a Factory; got {:?}",
+        factories
+    );
+}
+
 // ============================================================================
 // Solidity: Ownable + Proxy design patterns detected from the AST.
 // ============================================================================

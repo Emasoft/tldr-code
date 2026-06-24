@@ -23,7 +23,13 @@ impl LanguageSemantics for CppSemantics {
             "class_specifier" => self.detect_class(node, source, file_path, signals),
             "function_definition" => self.detect_function(node, source, file_path, signals),
             "preproc_include" => self.detect_include(node, source, file_path, signals),
-            "namespace_definition" => self.detect_namespace(node, source, file_path, signals),
+            // R7 cluster[9] #25/#26: `namespace_definition` is intentionally
+            // NOT handled here. A namespace name (often snake_case:
+            // `detail`, `fmt`, `std`) is NOT a class and pushing it into
+            // naming.class_names flipped the C++ class-naming majority to
+            // snake_case. The generic walker still recurses into the
+            // namespace body, so classes/functions declared inside a
+            // namespace are detected by their own node handlers.
             _ => {}
         }
     }
@@ -54,11 +60,14 @@ impl CppSemantics {
         file_path: &Path,
         signals: &mut PatternSignals,
     ) {
-        let name = if let Some(decl) = node.child_by_field_name("declarator") {
-            extract_name_from_declarator(&node_text(decl, source))
-        } else {
-            extract_name_from_declarator(&node_text(node, source))
-        };
+        // R7 cluster[9] #25/#26: navigate the `function_declarator` AST to
+        // the real name node instead of a `split('(')`/`split_whitespace`
+        // text heuristic. The old text-split grabbed the return-type token
+        // for several declarator shapes (`operator bool()` -> "bool",
+        // `operator int()` -> "int", `bool operator()(...)` -> "operator").
+        let name = node
+            .child_by_field_name("declarator")
+            .and_then(|decl| extract_function_name_from_declarator(decl, source));
         if let Some(name) = name {
             let case = detect_naming_case(&name);
             signals
@@ -84,36 +93,91 @@ impl CppSemantics {
         }
     }
 
-    fn detect_namespace(
-        &self,
-        node: Node,
-        source: &str,
-        file_path: &Path,
-        signals: &mut PatternSignals,
-    ) {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            let name = node_text(name_node, source);
-            let case = detect_naming_case(&name);
-            signals
-                .naming
-                .class_names
-                .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+}
+
+/// R7 cluster[9] #25/#26: resolve a C++ function name by navigating the
+/// `function_declarator` AST to its name node, rather than splitting raw
+/// text on `(` and taking the last whitespace token (which returned the
+/// return-type keyword for `operator bool()`/`operator int()` and the bare
+/// `operator` token for `bool operator()(...)`).
+///
+/// Declarator wrappers (`pointer_declarator`, `reference_declarator`,
+/// `parenthesized_declarator`) are unwrapped to reach the
+/// `function_declarator`, whose first declarator-position child is the
+/// name. Recognised name nodes:
+///   - `identifier`            free function (`regular_function`)
+///   - `field_identifier`      method (`do_thing`)
+///   - `qualified_identifier`  `MyClass::method` -> the trailing name
+///   - `operator_name`         `operator()` / `operator+`
+///   - `destructor_name`       `~Foo`
+///
+/// Conversion operators (`operator_cast`: `operator bool()`,
+/// `operator int()`) carry no convention-meaningful identifier, so they
+/// are intentionally skipped from naming statistics (returning `None`)
+/// rather than mislabelled as the cast target type.
+fn extract_function_name_from_declarator(node: Node, source: &str) -> Option<String> {
+    match node.kind() {
+        // The actual function declarator: its declarator-position child is
+        // the name node.
+        "function_declarator" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if let Some(name) = name_node_text(child, source) {
+                    return Some(name);
+                }
+            }
+            None
         }
+        // Pointer/reference/parenthesized wrappers around the real
+        // declarator (e.g. `int* foo()`); descend through the `declarator`
+        // field to the inner function_declarator.
+        "pointer_declarator" | "reference_declarator" | "parenthesized_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|inner| extract_function_name_from_declarator(inner, source)),
+        // Conversion operator (`operator bool()`): no meaningful name for
+        // naming-convention purposes — skip rather than record the cast
+        // target type as a "function name".
+        "operator_cast" => None,
+        // A bare name node directly in the declarator slot (defensive).
+        _ => name_node_text(node, source),
     }
 }
 
-fn extract_name_from_declarator(text: &str) -> Option<String> {
-    let before_paren = text.split('(').next()?.trim();
-    let name = before_paren
-        .split_whitespace()
-        .last()
-        .unwrap_or("")
-        .trim_matches('*')
-        .trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
+/// Resolve a C++ declarator name node to its identifier text. Returns
+/// `None` for any node that is not a recognised name node (so type
+/// keywords / parameter lists are never mistaken for the name).
+fn name_node_text(node: Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" => Some(node_text(node, source)),
+        // `MyClass::method_impl` — take the trailing name after the last
+        // `::`, never the qualifier.
+        "qualified_identifier" => {
+            // The last `identifier`/`field_identifier` descendant is the
+            // unqualified method name.
+            let mut name = None;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "identifier" | "field_identifier" => name = Some(node_text(child, source)),
+                    "qualified_identifier" => {
+                        // Nested qualification (A::B::c): recurse to the tail.
+                        if let Some(inner) = name_node_text(child, source) {
+                            name = Some(inner);
+                        }
+                    }
+                    "operator_name" | "destructor_name" => {
+                        name = Some(node_text(child, source))
+                    }
+                    _ => {}
+                }
+            }
+            name
+        }
+        // `operator()`, `operator+`, etc. — a real (if unusual) name.
+        "operator_name" => Some(node_text(node, source)),
+        // `~Foo` destructor.
+        "destructor_name" => Some(node_text(node, source)),
+        _ => None,
     }
 }
 
@@ -145,8 +209,8 @@ pub fn profile() -> LanguageProfile {
     );
     map.dispatch
         .insert("preproc_include", vec![SignalAction::CallSemantics]);
-    map.dispatch
-        .insert("namespace_definition", vec![SignalAction::CallSemantics]);
+    // R7 cluster[9] #25/#26: namespace_definition is deliberately NOT
+    // dispatched — namespace names are not classes (see process_node).
 
     LanguageProfile {
         node_map: map,

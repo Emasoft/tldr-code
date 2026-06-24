@@ -8,9 +8,41 @@
 //! Calculates consistency score and flags violations.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use super::signals::{NamingCase, PatternSignals};
 use crate::types::{NamingConvention, NamingPattern, NamingViolation};
+
+/// R7 cluster[9] #25/#26: exclude identifiers declared in TEST files from
+/// the naming-convention determination. Test code routinely follows a
+/// different convention than the library it exercises — most acutely C++
+/// gtest, whose PascalCase `TEST(...)`/fixture helpers outnumbered a
+/// snake_case library (cpp-fmt: 42 test `.cc` files vs 19 source files),
+/// flipping the GLOBAL function-convention majority to `pascal_case` and
+/// flagging every real snake_case library function as a violation.
+///
+/// Scoped to patterns naming (this function only) so the file walk and
+/// every other command are untouched. Uses the canonical
+/// [`crate::analysis::clones::is_test_file`] matcher (the same one the
+/// `smells` command uses to drop test findings).
+///
+/// FALLBACK: if filtering would leave a category EMPTY (a test-only input,
+/// e.g. the synthetic `detect_signals` fixtures whose file is literally
+/// `test_file`), the full set is used so the convention does not vanish.
+fn filter_out_test_files(
+    names: &[(String, NamingCase, String, u32)],
+) -> Vec<(String, NamingCase, String, u32)> {
+    let non_test: Vec<(String, NamingCase, String, u32)> = names
+        .iter()
+        .filter(|(_, _, file, _)| !crate::analysis::clones::is_test_file(Path::new(file)))
+        .cloned()
+        .collect();
+    if non_test.is_empty() {
+        names.to_vec()
+    } else {
+        non_test
+    }
+}
 
 /// Convert signals to naming pattern
 pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
@@ -19,6 +51,12 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
     if !naming.has_signals() {
         return None;
     }
+
+    // R7 cluster[9] #25/#26: drop test-file identifiers from the
+    // convention computation (see `filter_out_test_files`).
+    let src_function_names = filter_out_test_files(&naming.function_names);
+    let src_class_names = filter_out_test_files(&naming.class_names);
+    let src_constant_names = filter_out_test_files(&naming.constant_names);
 
     // reg-go-extract-v1: when the function bucket is majority-exempt
     // (Go's visibility-driven convention), its identifiers are still
@@ -33,18 +71,18 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
         if function_majority_exempt {
             &[]
         } else {
-            &naming.function_names
+            &src_function_names
         };
 
     // Determine majority convention for each category
     let functions = detect_majority_convention(function_names_for_majority);
-    let classes = detect_majority_convention(&naming.class_names);
-    let constants = detect_majority_convention(&naming.constant_names);
+    let classes = detect_majority_convention(&src_class_names);
+    let constants = detect_majority_convention(&src_constant_names);
 
     // Calculate consistency score
     let function_consistency = calculate_consistency(function_names_for_majority, &functions);
-    let class_consistency = calculate_consistency(&naming.class_names, &classes);
-    let constant_consistency = calculate_consistency(&naming.constant_names, &constants);
+    let class_consistency = calculate_consistency(&src_class_names, &classes);
+    let constant_consistency = calculate_consistency(&src_constant_names, &constants);
 
     // pack-patterns-v1: identifiers evaluated under the per-identifier
     // (precomputed) convention path — e.g. Go funcs, whose
@@ -75,11 +113,11 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
     // (double counting). When exempt, the global function bucket is empty.
     let global_function_len = function_names_for_majority.len();
     let total_items =
-        global_function_len + naming.class_names.len() + naming.constant_names.len() + precomputed_total;
+        global_function_len + src_class_names.len() + src_constant_names.len() + precomputed_total;
     let consistency_score = if total_items > 0 {
         let fn_weight = global_function_len as f64 / total_items as f64;
-        let cls_weight = naming.class_names.len() as f64 / total_items as f64;
-        let const_weight = naming.constant_names.len() as f64 / total_items as f64;
+        let cls_weight = src_class_names.len() as f64 / total_items as f64;
+        let const_weight = src_constant_names.len() as f64 / total_items as f64;
         let pre_weight = precomputed_total as f64 / total_items as f64;
 
         function_consistency * fn_weight
@@ -100,8 +138,8 @@ pub fn signals_to_pattern(signals: &PatternSignals) -> Option<NamingPattern> {
     // camelCase-majority package) as false positives.
     let mut violations = Vec::new();
     violations.extend(find_violations(function_names_for_majority, &functions));
-    violations.extend(find_violations(&naming.class_names, &classes));
-    violations.extend(find_violations(&naming.constant_names, &constants));
+    violations.extend(find_violations(&src_class_names, &classes));
+    violations.extend(find_violations(&src_constant_names, &constants));
 
     // pack-patterns-v1: append directly-computed violations from
     // languages whose convention is NOT a single global majority (Go's

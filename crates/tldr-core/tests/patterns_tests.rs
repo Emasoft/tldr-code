@@ -297,6 +297,114 @@ def create_user():
     assert!(pattern.confidence > 0.0);
 }
 
+/// R7 cluster[9] #25/#235: `error_handling` is language-specific and must
+/// be derived from the PRIMARY language's signals, not the cross-language
+/// aggregate. A C++-majority repo with a stray vendored `.py` must NOT
+/// report Python exception types (the bleed that surfaced
+/// `DocoptLanguageError`/`CompilerError` on cpp-fmt / swift-collections).
+#[test]
+fn test_error_handling_does_not_bleed_foreign_python_exceptions() {
+    let dir = create_test_dir();
+    // C++ is the primary language (3 files) with its own try/catch idiom.
+    for i in 0..3 {
+        let cpp = format!(
+            r#"
+#include <stdexcept>
+class Widget{i} {{
+public:
+  void run() {{
+    try {{ work(); }} catch (const std::runtime_error& e) {{ handle(e); }}
+  }}
+}};
+"#
+        );
+        write_file(&dir, &format!("widget{i}.cc", i = i), &cpp);
+    }
+    // A single stray vendored Python file defining a custom exception.
+    write_file(
+        &dir,
+        "vendor/support.py",
+        r#"
+class DocoptLanguageError(Exception):
+    pass
+
+try:
+    parse()
+except DocoptLanguageError as e:
+    raise
+"#,
+    );
+
+    // Auto-detect the language (no explicit filter) so the primary-language
+    // logic runs over the polyglot directory.
+    let report = detect_patterns(dir.path(), None).expect("detect_patterns ok");
+    if let Some(eh) = report.error_handling {
+        assert!(
+            !eh.exception_types.iter().any(|t| t == "DocoptLanguageError"),
+            "Python exception `DocoptLanguageError` must NOT bleed into a \
+             C++-primary repo's error_handling; got {:?}",
+            eh.exception_types
+        );
+    }
+}
+
+/// R7 cluster[9] #25/#26: the C++ naming-convention majority must be
+/// computed from LIBRARY source, not the (often larger) test tree. A
+/// snake_case library with many PascalCase gtest files must still report
+/// `function_convention = snake_case`, and its snake_case functions must
+/// not be flagged as violations. Pre-fix the 42-vs-19 test/source file
+/// ratio in cpp-fmt flipped the global majority to pascal_case.
+#[test]
+fn test_cpp_naming_majority_excludes_test_dir() {
+    let dir = create_test_dir();
+    // Library source: snake_case free functions (the real convention).
+    write_file(
+        &dir,
+        "src/format.cc",
+        r#"
+int parse_format_spec(int a) { return a; }
+void write_buffer(int x) {}
+int convert_arg(int y) { return y; }
+void grow_storage() {}
+"#,
+    );
+    // A large test tree with PascalCase function/method names (gtest-style).
+    for i in 0..8 {
+        write_file(
+            &dir,
+            &format!("test/case{i}-test.cc", i = i),
+            &format!(
+                r#"
+void RunFormatTest{i}() {{}}
+void CheckBufferGrows{i}() {{}}
+int ComputeExpected{i}(int v) {{ return v; }}
+"#
+            ),
+        );
+    }
+
+    let report = detect_patterns(dir.path(), Some(Language::Cpp)).expect("detect_patterns ok");
+    let naming = report.naming.expect("cpp repo must produce naming");
+
+    // The LIBRARY convention (snake_case) must win over the test tree.
+    assert_eq!(
+        naming.functions,
+        NamingConvention::SnakeCase,
+        "C++ function convention must be snake_case from library source, \
+         not pascal_case from the test tree; got {:?}",
+        naming.functions
+    );
+    // The real snake_case library functions must NOT be flagged.
+    for libfn in ["parse_format_spec", "write_buffer", "convert_arg", "grow_storage"] {
+        assert!(
+            !naming.violations.iter().any(|v| v.name == libfn),
+            "library snake_case fn `{}` must not be a violation; got {:?}",
+            libfn,
+            naming.violations.iter().map(|v| &v.name).collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn test_detect_patterns_python_async_patterns() {
     let dir = create_test_dir();
