@@ -543,31 +543,43 @@ fn slice_lines(
     }
 
     // (2) Data dependence closure over the DFG's line-anchored def-use edges.
-    let mut frontier: Vec<u32> = vec![criterion_line];
+    //
+    // fix-R7 (cluster[11] RC5): this closure is now RE-RUNNABLE from an
+    // arbitrary seed frontier so the control-dependence pass (step 3) can feed
+    // newly-admitted predicate lines back through it, giving a JOINT data+control
+    // fixpoint. Previously the data closure ran ONCE from the criterion and the
+    // control pass ran afterwards as a one-shot, so a definition used ONLY by a
+    // control predicate (sds.c `avail`@206 used by guard@212) was dropped: the
+    // guard line was added but its own data dependency was never resolved.
     let mut seen: HashSet<u32> = HashSet::new();
     seen.insert(criterion_line);
-    while let Some(cur) = frontier.pop() {
-        for e in &pdg.dfg.edges {
-            if let Some(var) = variable {
-                if e.var != var {
-                    continue;
+    let run_data_closure =
+        |lines: &mut HashSet<u32>, seen: &mut HashSet<u32>, seed: Vec<u32>| {
+            let mut frontier = seed;
+            while let Some(cur) = frontier.pop() {
+                for e in &pdg.dfg.edges {
+                    if let Some(var) = variable {
+                        if e.var != var {
+                            continue;
+                        }
+                    }
+                    let (anchor, other) = match direction {
+                        // Backward: `cur` uses a value defined at `def_line`.
+                        SliceDirection::Backward => (e.use_line, e.def_line),
+                        // Forward: `cur` defines a value used at `use_line`.
+                        SliceDirection::Forward => (e.def_line, e.use_line),
+                    };
+                    if anchor != cur || other == 0 {
+                        continue;
+                    }
+                    if seen.insert(other) {
+                        lines.insert(other);
+                        frontier.push(other);
+                    }
                 }
             }
-            let (anchor, other) = match direction {
-                // Backward: `cur` uses a value defined at `def_line`.
-                SliceDirection::Backward => (e.use_line, e.def_line),
-                // Forward: `cur` defines a value used at `use_line`.
-                SliceDirection::Forward => (e.def_line, e.use_line),
-            };
-            if anchor != cur || other == 0 {
-                continue;
-            }
-            if seen.insert(other) {
-                lines.insert(other);
-                frontier.push(other);
-            }
-        }
-    }
+        };
+    run_data_closure(&mut lines, &mut seen, vec![criterion_line]);
 
     // (2b) Sparse-DFG directional ref-half. Several backends emit a *sparse*
     // def-use graph: notably OCaml `let .. in` chains (and some C/C++ prologues)
@@ -699,6 +711,20 @@ fn slice_lines(
                         if pline > 0 && ctrl_seen_lines.insert(pline) {
                             lines.insert(pline);
                             ctrl_lines.push(pline);
+                            // fix-R7 (cluster[11] RC5): a control predicate has
+                            // its OWN data dependencies (the guard `if avail > 0`
+                            // reads `avail`). Re-run the data closure seeded from
+                            // the predicate line so those defs are pulled in
+                            // (JOINT fixpoint). Any lines the data closure newly
+                            // admits are themselves enqueued for control
+                            // resolution so the interleave runs to a fixpoint.
+                            let before: HashSet<u32> = lines.clone();
+                            run_data_closure(&mut lines, &mut seen, vec![pline]);
+                            for &nl in lines.difference(&before) {
+                                if ctrl_seen_lines.insert(nl) {
+                                    ctrl_lines.push(nl);
+                                }
+                            }
                         }
                     }
                 }
@@ -899,6 +925,53 @@ def foo(cond):
         assert!(
             !slice.is_empty(),
             "slice should include control dependencies"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC5): a definition used ONLY by a control predicate
+    /// that guards the criterion must be pulled into the backward slice. The
+    /// slice ran the data closure ONCE from the criterion, THEN added control
+    /// predicates as a separate one-shot pass — so a predicate line's OWN data
+    /// dependency was never resolved. Here `avail` (line 3) is used only by the
+    /// guard `if avail > 0:` (line 4), which controls `result = compute()`
+    /// (line 5). Slicing line 5 must include the guard (4) AND `avail`'s def
+    /// (3). Reproduces sds.c `avail`@206 used by guard@212. Joint data+control
+    /// fixpoint required.
+    #[test]
+    fn test_backward_slice_data_dep_of_control_predicate_included() {
+        let source = r#"
+def foo(n):
+    avail = n - 1
+    if avail > 0:
+        result = compute()
+    else:
+        result = 0
+    return result
+"#;
+        // Line 5 is `result = compute()`.
+        let slice = get_slice(
+            source,
+            "foo",
+            5,
+            SliceDirection::Backward,
+            None,
+            Language::Python,
+        )
+        .unwrap();
+
+        // The controlling guard `if avail > 0:` is line 4.
+        assert!(
+            slice.contains(&4),
+            "slice must include the controlling guard line 4, got {:?}",
+            slice
+        );
+        // The guard reads `avail`, whose sole def is line 3 — it must be pulled
+        // in transitively (this is the bug: data-dep of a control predicate).
+        assert!(
+            slice.contains(&3),
+            "slice must include `avail` def (line 3), the data dependency of the \
+             controlling guard; got {:?}",
+            slice
         );
     }
 

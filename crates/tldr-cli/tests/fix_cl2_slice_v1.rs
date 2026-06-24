@@ -166,33 +166,37 @@ fn luau_parseif_backward_not_full_block() {
 
 #[test]
 fn rust_detect_cycles_backward_not_full_block() {
-    // detect_cycles 803..849; criterion 813 (`if visited.contains(start_node)`).
-    // Pre-fix returned 803..815 contiguous (comments 804..808,810..811 and the
-    // unrelated `cycles` def @806 plus post-criterion 814..815).
-    assert_backward_precise(RUST_DEPS, "detect_cycles", 813, 830, "rust/IT3-rust-04");
+    // detect_cycles 852..~895; criterion 862 (`if visited.contains(start_node)`).
+    // fix-R7 (cluster[11]): line numbers re-synced to the current deps.rs — the
+    // `detect_cycles` function shifted +49 lines when cluster[10]
+    // (fix-R7-cl10-deps-graph-v1) edited deps.rs; the hardcoded 813 then pointed
+    // at unrelated code, so the slice came back empty. The criterion / def lines
+    // are otherwise unchanged in shape.
+    assert_backward_precise(RUST_DEPS, "detect_cycles", 862, 879, "rust/IT3-rust-04");
 }
 
 #[test]
 fn rust_detect_cycles_backward_excludes_unrelated_def() {
-    // The `cycles` HashSet is defined on line 806 and is NOT used to compute
-    // the criterion `if visited.contains(start_node)` (line 813). A precise
-    // backward slice must exclude it.
+    // The `cycles` HashSet is defined on line 855 and is NOT used to compute
+    // the criterion `if visited.contains(start_node)` (line 862). A precise
+    // backward slice must exclude it. (Line numbers re-synced post cluster[10]
+    // deps.rs shift — see sibling test.)
     if !Path::new(RUST_DEPS).exists() {
         eprintln!("skipping: {RUST_DEPS} not present");
         return;
     }
-    let lines = slice_lines(RUST_DEPS, "detect_cycles", 813, "backward");
+    let lines = slice_lines(RUST_DEPS, "detect_cycles", 862, "backward");
     assert!(
-        !lines.contains(&806),
-        "rust/IT3-rust-05: backward slice from 813 must exclude the unrelated `cycles` \
-         definition on line 806; got {lines:?}"
+        !lines.contains(&855),
+        "rust/IT3-rust-05: backward slice from 862 must exclude the unrelated `cycles` \
+         definition on line 855; got {lines:?}"
     );
     // But the variables that DO feed the criterion must be present: `visited`
-    // (def 809) and `start_node` (def 812).
+    // (def 858) and `start_node` (def 861).
     assert!(
-        lines.contains(&809) && lines.contains(&812),
-        "rust: backward slice from 813 must include the defs that feed it \
-         (visited@809, start_node@812); got {lines:?}"
+        lines.contains(&858) && lines.contains(&861),
+        "rust: backward slice from 862 must include the defs that feed it \
+         (visited@858, start_node@861); got {lines:?}"
     );
 }
 
