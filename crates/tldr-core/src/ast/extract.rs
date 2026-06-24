@@ -3779,7 +3779,21 @@ fn associate_rust_impl_methods(
     for child in node.children(&mut cursor) {
         if child.kind() == "impl_item" {
             if let Some(type_name) = get_impl_type_name(&child, source) {
-                let methods = extract_methods_from_impl_body(&child, source);
+                // fix-R7-cl6-rust-trait-impl (v0.5.0 CLOSEOUT): tree-sitter-rust
+                // exposes a `trait` field on `impl_item` ONLY for
+                // `impl Trait for Type` (absent on an inherent `impl Type`).
+                // This is the same authoritative signal the inheritance walker
+                // uses (inheritance/rust.rs). A method defined inside a
+                // trait-impl block (`fn eq` in `impl PartialEq for Glob`,
+                // `fn deref` in `impl Deref for Tokens`) is dispatched through
+                // the trait, not called by a free name — so dead-code analysis
+                // must treat it as a trait method (it was flagged possibly_dead
+                // because the receiver STRUCT is not a trait). Tag each such
+                // method with a synthetic `"trait_impl"` decorator that
+                // `collect_all_functions` (dead.rs) maps onto
+                // `is_trait_method`.
+                let is_trait_impl = child.child_by_field_name("trait").is_some();
+                let methods = extract_methods_from_impl_body(&child, source, is_trait_impl);
                 if let Some(indices) = struct_map.get(&type_name) {
                     // Associate with the first matching struct/enum
                     if let Some(&idx) = indices.first() {
@@ -3835,15 +3849,27 @@ fn get_impl_type_name(impl_node: &Node, source: &str) -> Option<String> {
     }
 }
 
-/// Extract all methods (FunctionInfo) from an impl block's body
-fn extract_methods_from_impl_body(impl_node: &Node, source: &str) -> Vec<FunctionInfo> {
+/// Extract all methods (FunctionInfo) from an impl block's body.
+///
+/// fix-R7-cl6-rust-trait-impl (v0.5.0 CLOSEOUT): when `is_trait_impl` is true
+/// (the enclosing block is `impl Trait for Type`), each method is tagged with a
+/// synthetic `"trait_impl"` decorator so downstream dead-code analysis treats it
+/// as a trait method (dispatched, never directly named).
+fn extract_methods_from_impl_body(
+    impl_node: &Node,
+    source: &str,
+    is_trait_impl: bool,
+) -> Vec<FunctionInfo> {
     let mut methods = Vec::new();
 
     if let Some(body) = impl_node.child_by_field_name("body") {
         let mut cursor = body.walk();
         for item in body.children(&mut cursor) {
             if item.kind() == "function_item" {
-                let info = extract_rust_function_info(&item, source, true);
+                let mut info = extract_rust_function_info(&item, source, true);
+                if is_trait_impl && !info.decorators.iter().any(|d| d == "trait_impl") {
+                    info.decorators.push("trait_impl".to_string());
+                }
                 methods.push(info);
             }
         }
@@ -6340,7 +6366,20 @@ fn extract_cpp_functions_detailed(node: &Node, source: &str, functions: &mut Vec
             // Only top-level functions (not inside class/struct bodies)
             if !is_inside_cpp_class(&child) {
                 let info = extract_cpp_function_info(&child, source, false);
-                functions.push(info);
+                // fix-R7-cl6-cpp-blank-ghost (v0.5.0 CLOSEOUT): the C++ name
+                // resolver returns an EMPTY name for declarators it cannot map
+                // to a function name — chiefly a variable-bound lambda
+                // (`auto pop_one = [](...){...}`, which is a local, not a free
+                // function) and some trailing-return-type forms. Emitting a
+                // nameless `FunctionInfo` produced ghost entries with malformed
+                // `() -> <fragment>` signatures that polluted `extract` /
+                // `explain` and (pre the dead.rs backstop) `dead` (cpp-fmt:
+                // 72/180). A nameless top-level entity is never a real free
+                // function, so drop it at the source. (The dead-analysis guard
+                // remains as defense-in-depth.)
+                if !info.name.trim().is_empty() {
+                    functions.push(info);
+                }
             }
         }
         // Recurse, but skip class/struct bodies (methods handled in class extraction)

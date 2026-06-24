@@ -668,37 +668,47 @@ pub fn collect_all_functions(
         let is_framework_entry =
             is_framework_entry_file(file_path, language) || has_framework_directive(file_path);
 
-        // dead-by-file-population-v1 (M-045): Elixir's AST extractor surfaces
-        // every `def` as BOTH a top-level function `foo` AND a method
-        // `Module.foo` of the enclosing-module pseudo-class. That produces a
-        // qualified/unqualified duplicate pair for the same source function
-        // (e.g. `sent_pushes` + `Plug.Test.sent_pushes` in
-        // `lib/plug/test.ex`). The qualified form is the canonical Elixir
-        // identifier (`Module.fn`), so build a set of bare method names
-        // present under any class in this file and skip the top-level entry
-        // whose name matches — emit only the qualified `Module.fn` variant.
-        // No other language exhibits this double-emit pattern; the dedup is
-        // gated on `language == Elixir`.
-        let elixir_class_method_names: std::collections::HashSet<String> = if matches!(
-            language,
-            crate::types::Language::Elixir
-        ) {
-            info.classes
-                .iter()
-                .flat_map(|c| c.methods.iter().map(|m| m.name.clone()))
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        };
+        // fix-R7-cl6-qualified-dedup (v0.5.0 CLOSEOUT): several languages'
+        // DETAILED *functions* extractor recurses into class bodies and emits
+        // every method ALSO as a top-level `info.functions` entry (bare name),
+        // while the *classes* extractor emits the same method under
+        // `classes[].methods` (qualified `Class.method`). `collect_all_functions`
+        // then produces BOTH `getAddress` and `Owner.getAddress` for one source
+        // method, and FunctionRef identity is (file, name) — so the two are
+        // distinct and BOTH land in dead/possibly_dead, doubling the headline
+        // counts (java-petclinic: 12 entries / 6 real; also csharp). Previously
+        // only Elixir (M-045) was deduped. Generalize to ALL languages, keyed on
+        // (bare_name, line_number): a top-level function whose name AND line
+        // coincide with a class method in the same file IS that method's
+        // double-emit and is dropped (the qualified `Class.method` form is kept).
+        // Matching on the line too is essential — it guarantees a *genuine*
+        // free function that merely shares a name with a method (different line)
+        // is never dropped. C# additionally drops async methods from its classes
+        // extractor, so an async method appears only as a bare top-level entry;
+        // that bare form has NO matching (name,line) class method and is
+        // therefore correctly KEPT (no qualified twin to collapse onto).
+        // Only methods with a known (non-zero) line participate: a 0/unknown
+        // line is not a reliable identity and could falsely collapse unrelated
+        // same-named entries.
+        let class_method_keys: std::collections::HashSet<(String, u32)> = info
+            .classes
+            .iter()
+            .flat_map(|c| {
+                c.methods
+                    .iter()
+                    .filter(|m| m.line_number != 0)
+                    .map(|m| (m.name.clone(), m.line_number))
+            })
+            .collect();
 
         // Add top-level functions
         for func in &info.functions {
-            // Elixir qualified/unqualified dedup (M-045): drop the bare
-            // top-level form if the same name exists as a class method in
-            // this file — the qualified `Module.fn` form will be emitted
-            // in the class-method loop below.
-            if matches!(language, crate::types::Language::Elixir)
-                && elixir_class_method_names.contains(&func.name)
+            // Drop the bare top-level form if the SAME (name, line) exists as a
+            // class method in this file — it is the recursive-extractor
+            // double-emit; the qualified `Class.fn` form is emitted in the
+            // class-method loop below.
+            if func.line_number != 0
+                && class_method_keys.contains(&(func.name.clone(), func.line_number))
             {
                 continue;
             }
@@ -742,6 +752,14 @@ pub fn collect_all_functions(
 
             for method in &class.methods {
                 let full_name = format!("{}.{}", class.name, method.name);
+                // fix-R7-cl6-rust-trait-impl (v0.5.0 CLOSEOUT): a method carrying
+                // the synthetic `"trait_impl"` decorator was defined inside an
+                // `impl Trait for Type` block (Rust extractor). It is dispatched
+                // through the trait, not by a free name, so it must be treated as
+                // a trait method even though the receiver STRUCT is not itself a
+                // trait. Per-method (not per-class) so an inherent method on the
+                // same struct stays dead-checkable.
+                let is_trait_impl_method = method.decorators.iter().any(|d| d == "trait_impl");
                 // is-public-visibility-v1 (v0.4.2 M-007): same preference
                 // ordering as top-level functions.
                 let is_public = explicit_or_inferred_visibility(
@@ -768,7 +786,7 @@ pub fn collect_all_functions(
                     ref_count: 0,
                     is_public,
                     is_test,
-                    is_trait_method: is_trait,
+                    is_trait_method: is_trait || is_trait_impl_method,
                     has_decorator,
                     decorator_names: method.decorators.clone(),
                 });
@@ -3253,6 +3271,136 @@ mod tests {
                 .iter()
                 .any(|f| f.name == "Socket.receive"),
             "a non-Solidity `receive` must remain dead-checkable"
+        );
+    }
+
+    /// Rust trait-impl methods (tagged `"trait_impl"` by the extractor) are
+    /// treated as trait methods → excluded from dead analysis, even though the
+    /// receiver struct is not itself a trait. An inherent method on the same
+    /// struct stays dead-checkable.
+    #[test]
+    fn test_rust_trait_impl_method_is_trait_method() {
+        use crate::types::Language;
+        let modules = module_with_class(
+            "glob.rs",
+            Language::Rust,
+            "Glob",
+            None,
+            vec![
+                method("eq", None, vec!["trait_impl"]),     // impl PartialEq for Glob
+                method("inherent_helper", None, vec![]),    // inherent impl
+            ],
+        );
+        let funcs = collect_all_functions(&modules);
+        let eq = funcs.iter().find(|f| f.name == "Glob.eq").unwrap();
+        assert!(
+            eq.is_trait_method,
+            "a `trait_impl`-tagged method must be marked is_trait_method"
+        );
+        let inherent = funcs
+            .iter()
+            .find(|f| f.name == "Glob.inherent_helper")
+            .unwrap();
+        assert!(
+            !inherent.is_trait_method,
+            "an inherent method must NOT be marked is_trait_method"
+        );
+        let report = dead_code_analysis_refcount(&funcs, &HashMap::new(), None).unwrap();
+        let flagged: Vec<&str> = report
+            .possibly_dead
+            .iter()
+            .chain(report.dead_functions.iter())
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"Glob.eq"),
+            "trait-impl method `eq` must not be flagged dead; got {:?}",
+            flagged
+        );
+    }
+
+    /// Qualified/unqualified dedup: a method surfaced both as a bare top-level
+    /// `info.functions` entry AND a `Class.method` entry (same name+line — the
+    /// Java/C#/Kotlin/Scala recursive-extractor double-emit) is counted ONCE
+    /// (the qualified form). A genuine free function sharing a name but at a
+    /// DIFFERENT line is preserved.
+    #[test]
+    fn test_qualified_unqualified_method_deduped() {
+        use crate::types::{FunctionInfo, IntraFileCallGraph, Language, ModuleInfo};
+        let bare = |name: &str, line: u32| FunctionInfo {
+            name: name.to_string(),
+            params: vec![],
+            return_type: None,
+            docstring: None,
+            is_method: false,
+            is_async: false,
+            decorators: vec![],
+            visibility: None,
+            line_number: line,
+            line_end: line,
+            state_mutability: None,
+        };
+        let modules = vec![(
+            PathBuf::from("Owner.java"),
+            ModuleInfo {
+                file_path: PathBuf::from("Owner.java"),
+                language: Language::Java,
+                docstring: None,
+                imports: vec![],
+                // double-emit: getAddress@69 (also a class method) + a genuine
+                // free function freeFn@200 that shares NO line with any method.
+                functions: vec![bare("getAddress", 69), bare("freeFn", 200)],
+                classes: vec![crate::types::ClassInfo {
+                    name: "Owner".to_string(),
+                    bases: vec![],
+                    docstring: None,
+                    methods: vec![FunctionInfo {
+                        name: "getAddress".to_string(),
+                        params: vec![],
+                        return_type: None,
+                        docstring: None,
+                        is_method: true,
+                        is_async: false,
+                        decorators: vec![],
+                        visibility: None,
+                        line_number: 69,
+                        line_end: 70,
+                        state_mutability: None,
+                    }],
+                    fields: vec![],
+                    decorators: vec![],
+                    line_number: 60,
+                    line_end: 90,
+                    kind: None,
+                    modifiers: Vec::new(),
+                    events: Vec::new(),
+                    errors: Vec::new(),
+                }],
+                constants: vec![],
+                call_graph: IntraFileCallGraph::default(),
+                modifiers: Vec::new(),
+                events: Vec::new(),
+                errors: Vec::new(),
+            },
+        )];
+        let funcs = collect_all_functions(&modules);
+        let names: Vec<&str> = funcs.iter().map(|f| f.name.as_str()).collect();
+        // The bare `getAddress` double-emit is dropped; only `Owner.getAddress` remains.
+        assert!(
+            names.contains(&"Owner.getAddress"),
+            "qualified method must be present; got {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"getAddress"),
+            "bare double-emit of getAddress must be deduped; got {:?}",
+            names
+        );
+        // The genuine free function (different line) is preserved.
+        assert!(
+            names.contains(&"freeFn"),
+            "a genuine free function at a different line must be kept; got {:?}",
+            names
         );
     }
 

@@ -3274,12 +3274,29 @@ impl<'a> DfgBuilder<'a> {
                 // A `parameter_declaration` may declare multiple names sharing
                 // one type (`(a, b int)`), each exposed under the `name` field.
                 let mut pc = child.walk();
-                for (i, sub) in child.children(&mut pc).enumerate() {
-                    if sub.kind() == "identifier"
-                        && child.field_name_for_child(i as u32) == Some("name")
-                    {
-                        if let Ok(t) = sub.utf8_text(self.source.as_bytes()) {
-                            if t != "_" && !self.go_named_results.iter().any(|n| n == t) {
+                let name_nodes: Vec<Node> = child
+                    .children(&mut pc)
+                    .enumerate()
+                    .filter(|(i, sub)| {
+                        sub.kind() == "identifier"
+                            && child.field_name_for_child(*i as u32) == Some("name")
+                    })
+                    .map(|(_, sub)| sub)
+                    .collect();
+                for sub in name_nodes {
+                    if let Ok(t) = sub.utf8_text(self.source.as_bytes()) {
+                        if t != "_" {
+                            // A Go named result is IMPLICITLY zero-initialized at
+                            // function entry — record a Definition so (a)
+                            // reaching-defs never flags an un-assigned named
+                            // result read by the naked return as "uninitialized"
+                            // (`func f() (handle Handle, ps *Params, tsr bool)`
+                            // returning `handle`/`ps` un-set), and (b) it is
+                            // treated like a parameter (the entry def, not a body
+                            // store) by dead-stores. This is the named-result
+                            // analogue of recording input parameters as defs.
+                            self.add_ref_from_node(sub, RefType::Definition);
+                            if !self.go_named_results.iter().any(|n| n == t) {
                                 self.go_named_results.push(t.to_string());
                             }
                         }
@@ -7059,6 +7076,49 @@ func foo() int {
             "x should have at least 3 refs, got {}",
             x_refs.len()
         );
+    }
+
+    /// fix-R7-cl6-go-named-return (v0.5.0 CLOSEOUT): named results are recorded
+    /// as Definitions at function entry (implicit zero-init) AND a naked
+    /// `return` synthesizes a Use of each.
+    #[test]
+    fn test_go_named_results_def_at_entry_and_naked_return_use() {
+        let source = r#"
+package main
+
+func getValue(path string) (handle int, ps string, tsr bool) {
+    tsr = true
+    return
+}
+"#;
+        let dfg = get_dfg_context(source, "getValue", Language::Go).unwrap();
+        // Each named result has a Definition at entry (so reaching-defs never
+        // flags an un-assigned named result read by the naked return as
+        // uninitialized).
+        for name in ["handle", "ps", "tsr"] {
+            assert!(
+                dfg.refs
+                    .iter()
+                    .any(|r| r.name == name && matches!(r.ref_type, RefType::Definition)),
+                "named result `{}` must have an entry Definition; refs={:?}",
+                name,
+                dfg.refs
+                    .iter()
+                    .filter(|r| r.name == name)
+                    .map(|r| (&r.ref_type, r.line))
+                    .collect::<Vec<_>>()
+            );
+        }
+        // The naked return synthesizes a Use of each named result.
+        for name in ["handle", "ps", "tsr"] {
+            assert!(
+                dfg.refs
+                    .iter()
+                    .any(|r| r.name == name && matches!(r.ref_type, RefType::Use)),
+                "named result `{}` must have a Use synthesized at the naked return",
+                name
+            );
+        }
     }
 
     #[test]
