@@ -3234,46 +3234,63 @@ fn extract_go_interface_methods_recursive(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "method_elem" || child.kind() == "method_spec" {
-            // The method name is a field_identifier child node.
-            // Extract it by finding the first field_identifier.
-            let mut name = String::new();
             let mut params = Vec::new();
             let mut return_type = None;
             let line_number = child.start_position().row as u32 + 1;
             let line_end = child.end_position().row as u32 + 1;
 
-            let mut inner_cursor = child.walk();
-            for inner in child.children(&mut inner_cursor) {
-                match inner.kind() {
-                    "field_identifier" => {
-                        name = get_node_text(&inner, source);
-                    }
-                    "parameter_list" => {
-                        // Extract parameter names from the parameter list
-                        let mut param_cursor = inner.walk();
-                        for param in inner.children(&mut param_cursor) {
-                            if param.kind() == "parameter_declaration" {
-                                if let Some(pname) = param.child_by_field_name("name") {
-                                    params.push(get_node_text(&pname, source));
-                                }
+            // fix-R2-themeB B3 (v0.5.0 CLOSEOUT): a `method_elem`/`method_spec`
+            // has TWO `parameter_list` children — the INPUT list (exposed via
+            // the `parameters` field) and, when the method has named return
+            // values, the RESULT tuple (exposed via the `result` field, e.g.
+            // `TrySet(...) (isSet bool, err error)`). The previous loop matched
+            // EVERY `parameter_list` child indiscriminately, so the named-return
+            // tuple was folded into `params` — over-reporting arity and tripping
+            // the `long_parameter_list` smell (gin form_mapping.go `TrySet`:
+            // reported 6 = 4 real + 2 named returns). Resolve the input list via
+            // the `parameters` field ONLY; the `result` parameter_list is the
+            // return type, never an input parameter. The concrete-method path
+            // (`extract_go_params`) already does this correctly — this mirrors it.
+            // The method name is the `name` field (a `field_identifier`).
+            let name = child
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source))
+                .unwrap_or_default();
+            if let Some(params_node) = child.child_by_field_name("parameters") {
+                let mut param_cursor = params_node.walk();
+                for param in params_node.children(&mut param_cursor) {
+                    if param.kind() == "parameter_declaration" {
+                        // Go groups same-typed params: `name, value string` is a
+                        // single `parameter_declaration` with multiple identifier
+                        // children. `child_by_field_name("name")` returns only the
+                        // FIRST, dropping the rest (gin SetCookie control:
+                        // `name, value string` lost `value`). Collect EVERY
+                        // identifier child to recover the full grouped arity —
+                        // mirroring `extract_go_params`.
+                        let mut inner = param.walk();
+                        let mut found_any = false;
+                        for id in param.children(&mut inner) {
+                            if id.kind() == "identifier" {
+                                params.push(get_node_text(&id, source));
+                                found_any = true;
+                            }
+                        }
+                        if !found_any {
+                            if let Some(pname) = param.child_by_field_name("name") {
+                                params.push(get_node_text(&pname, source));
                             }
                         }
                     }
-                    "type_identifier" | "qualified_type" | "pointer_type" | "slice_type"
-                    | "map_type" | "channel_type" | "function_type" | "interface_type"
-                    | "struct_type" | "parenthesized_type" => {
-                        // This is the return type (simple single return)
-                        return_type = Some(get_node_text(&inner, source));
-                    }
-                    _ => {}
                 }
             }
 
-            // Also check for result field (tuple return types)
-            if return_type.is_none() {
-                if let Some(result) = child.child_by_field_name("result") {
-                    return_type = Some(get_node_text(&result, source));
-                }
+            // Return type: prefer the `result` field (covers both single types
+            // and named/positional return tuples). The previous per-child scan
+            // for individual type-node kinds is unnecessary once the `result`
+            // field is consulted, and conflating it with `parameter_list`
+            // matching is exactly what caused the param over-count above.
+            if let Some(result) = child.child_by_field_name("result") {
+                return_type = Some(get_node_text(&result, source));
             }
 
             if !name.is_empty() {
@@ -8435,7 +8452,17 @@ fn extract_elixir_functions_detailed(node: &Node, source: &str, functions: &mut 
         if child.kind() == "call" {
             if let Some(first) = child.child(0) {
                 let text = get_node_text(&first, source);
-                if text == "def" || text == "defp" {
+                // fix-R2-themeB B2 (v0.5.0 CLOSEOUT): in Elixir `def`, `defp`,
+                // `defmacro` and `defmacrop` are ALL `call` nodes with identical
+                // argument shape (the defined name + params live in the first
+                // argument). The `extract` path matched only `def`/`defp`, so
+                // every macro was dropped (phoenix router.ex: 0/9 macros while
+                // `structure` listed all 9). `extract_elixir_function_info`
+                // resolves the name/params from the arguments regardless of the
+                // keyword, so the macro keywords just need to enter the same arm.
+                // Mirrors the structure path (extractor.rs def/defp/defmacro/
+                // defmacrop classification).
+                if text == "def" || text == "defp" || text == "defmacro" || text == "defmacrop" {
                     let info = extract_elixir_function_info(&child, source);
                     functions.push(info);
                 } else if text != "defmodule" {
@@ -12073,6 +12100,168 @@ class C {{
             names.contains(&"create"),
             "ambient `export function create` must be captured, got {:?}",
             names
+        );
+    }
+
+    // =========================================================================
+    // fix-R2-themeB B2: Elixir `defmacro`/`defmacrop` must be listed by `extract`
+    // (the `structure` path already lists them). Root cause was
+    // `extract_elixir_functions_detailed` matching only `def`/`defp`.
+    // =========================================================================
+
+    /// A `defmacro` and a `defmacrop` inside a module must both surface as
+    /// functions from `extract` — mirroring the structure path. Mixed with a
+    /// plain `def` to prove the existing arms are unaffected.
+    #[test]
+    fn test_extract_elixir_defmacro_and_defmacrop() {
+        let mut file = NamedTempFile::with_suffix(".ex").unwrap();
+        write!(
+            file,
+            "defmodule M do\n  defmacro plug(p) do\n    quote do\n      1\n    end\n  end\n\n  defmacrop helper(x) do\n    quote do\n      2\n    end\n  end\n\n  def regular(a) do\n    a\n  end\nend\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"plug"),
+            "`defmacro plug` must be extracted, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"helper"),
+            "`defmacrop helper` must be extracted, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"regular"),
+            "plain `def regular` must still be extracted, got {:?}",
+            names
+        );
+        // The macro's params must be captured too (arity correctness).
+        let plug = info
+            .functions
+            .iter()
+            .find(|f| f.name == "plug")
+            .expect("plug macro");
+        assert_eq!(
+            plug.params,
+            vec!["p".to_string()],
+            "defmacro plug/1 must bind param `p`, got {:?}",
+            plug.params
+        );
+    }
+
+    /// Guard: a macro that shares a name with a plain function (multi-clause-ish)
+    /// must not crash and both keyword forms coexist. Also proves `defmacro` is
+    /// not double-counted vs the recursion path.
+    #[test]
+    fn test_extract_elixir_defmacro_no_double_count() {
+        let mut file = NamedTempFile::with_suffix(".ex").unwrap();
+        write!(
+            file,
+            "defmodule M do\n  defmacro __using__(opts) do\n    quote do\n      unquote(opts)\n    end\n  end\nend\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let using_count = info
+            .functions
+            .iter()
+            .filter(|f| f.name == "__using__")
+            .count();
+        assert_eq!(
+            using_count, 1,
+            "`defmacro __using__` must appear exactly once, got {} ({:?})",
+            using_count,
+            info.functions.iter().map(|f| f.name.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    // =========================================================================
+    // fix-R2-themeB B3: Go interface-method param count must EXCLUDE named
+    // return values. Root cause: `extract_go_interface_methods_recursive`
+    // treated EVERY `parameter_list` child (including the result tuple) as
+    // input params. The top-level/method path (`extract_go_params`, reading the
+    // `parameters` field) was already correct.
+    // =========================================================================
+
+    /// An interface method with named return values: only the input parameters
+    /// count. `TrySet(value int, key string) (isSet bool, err error)` => 2.
+    #[test]
+    fn test_extract_go_interface_named_returns_not_params() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\ntype Setter interface {{\n\tTrySet(value int, key string) (isSet bool, err error)\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let m = info
+            .classes
+            .iter()
+            .flat_map(|c| c.methods.iter())
+            .find(|m| m.name == "TrySet")
+            .expect("TrySet interface method");
+        assert_eq!(
+            m.params,
+            vec!["value".to_string(), "key".to_string()],
+            "interface method named returns (isSet, err) must NOT be counted as params, got {:?}",
+            m.params
+        );
+    }
+
+    /// CONTROL: an interface method with MANY real params and NO named returns
+    /// must keep all of them. `SetCookie(name, value string, maxAge int)` => 3.
+    /// (Mirrors gin context.go SetCookie, the decisive control case.)
+    #[test]
+    fn test_extract_go_interface_real_params_unchanged() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\ntype Cookier interface {{\n\tSetCookie(name, value string, maxAge int)\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let m = info
+            .classes
+            .iter()
+            .flat_map(|c| c.methods.iter())
+            .find(|m| m.name == "SetCookie")
+            .expect("SetCookie interface method");
+        assert_eq!(
+            m.params,
+            vec!["name".to_string(), "value".to_string(), "maxAge".to_string()],
+            "interface method with no named returns must keep all real params, got {:?}",
+            m.params
+        );
+    }
+
+    /// CONTROL: a top-level Go func with named returns was ALREADY correct via
+    /// `extract_go_params` (reads only the `parameters` field). Lock that in so
+    /// the B3 fix does not regress it. `Foo(a, b int) (sum int, err error)` => 2.
+    #[test]
+    fn test_extract_go_toplevel_named_returns_still_correct() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\nfunc Foo(a, b int) (sum int, err error) {{\n\treturn\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "Foo")
+            .expect("Foo func");
+        assert_eq!(
+            f.params,
+            vec!["a".to_string(), "b".to_string()],
+            "top-level func named returns must NOT be counted as params, got {:?}",
+            f.params
         );
     }
 }
