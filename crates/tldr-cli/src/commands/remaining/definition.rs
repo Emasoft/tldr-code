@@ -172,7 +172,17 @@ pub struct DefinitionArgs {
     /// line number (1-indexed, for position-based lookup)
     pub line: Option<u32>,
 
-    /// column number (0-indexed, for position-based lookup)
+    /// column number (0-indexed, for position-based lookup).
+    ///
+    /// CONVENTION (fix-R7 cluster[11] RC9 — decided, see
+    /// `decisions/r7-cl11-definition-column-convention.md`): the INPUT column is
+    /// 0-indexed (editor-cursor / tree-sitter byte-offset style), while the
+    /// REPORTED column in the result is 1-indexed, matching `references` and
+    /// `structure` (`diff-column-one-indexed-v1`). This input/output asymmetry
+    /// is intentional and retained: making the input 1-indexed would diverge
+    /// from existing 0-indexed positional callers/tests, and making the output
+    /// 0-indexed would diverge from the 1-indexed `references`/`structure`
+    /// family. The `line` argument is 1-indexed (human line numbers).
     pub column: Option<u32>,
 
     /// Find symbol by name instead of position
