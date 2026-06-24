@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::extract::extract_file;
 use crate::ast::parser::ParserPool;
 use crate::callgraph::cross_file_types::{CallGraphIR, CallSite, CallType, FileIR, FuncDef};
-use crate::metrics::calculate_all_complexities_file;
+use crate::metrics::complexity::calculate_all_complexities_keyed_file;
 use crate::types::inheritance::InheritanceReport;
 use crate::types::Language;
 use crate::TldrResult;
@@ -703,7 +703,12 @@ fn analyze_file(
         collect_god_class_smells(path, &module_info.classes, thresholds, suggest, &mut smells);
     }
 
-    let complexity_map = calculate_all_complexities_file(path).unwrap_or_default();
+    // fix-R2-themeA: key by (name, line) so same-name overloads do not
+    // collide. Previously a bare-name map meant a trivial 4-line overload
+    // inherited a long overload's lines_of_code (cluster 9 #4: csharp
+    // CalculateSize, ocaml `equal`) and likewise its cyclomatic. Each `func`
+    // below is now matched to its OWN (name, line_number) entry.
+    let complexity_map = calculate_all_complexities_keyed_file(path).unwrap_or_default();
     // R7 cluster[9] #50: several extractors (Elixir defmodule, Ruby, Java)
     // list the SAME function in both `module_info.functions` AND a
     // module-class's `methods`. Iterating the raw chain emitted every
@@ -857,10 +862,13 @@ fn maybe_add_long_method_smell(
     func: &crate::types::FunctionInfo,
     thresholds: &Thresholds,
     suggest: bool,
-    complexity_map: &std::collections::HashMap<String, crate::types::ComplexityMetrics>,
+    complexity_map: &std::collections::HashMap<(String, u32), crate::types::ComplexityMetrics>,
     smells: &mut Vec<SmellFinding>,
 ) {
-    let Some(metrics) = complexity_map.get(&func.name) else {
+    // fix-R2-themeA: look up by (name, line) — same distinct key the map is
+    // built with — so this `func`'s own metrics are read, not a same-named
+    // overload's collided value.
+    let Some(metrics) = complexity_map.get(&(func.name.clone(), func.line_number)) else {
         return;
     };
     if metrics.lines_of_code as usize > thresholds.long_method_loc {
@@ -7853,6 +7861,57 @@ export function Screenshot({
         let path = dir.path().join(name);
         std::fs::write(&path, src).unwrap();
         (dir, path)
+    }
+
+    // =====================================================================
+    // fix-R2-themeA (cluster 9 #4): a trivial overload must NOT inherit a
+    // long same-named overload's lines_of_code. Pre-fix the complexity map
+    // was keyed by BARE name, so the LAST overload's LOC was read for EVERY
+    // same-named method — e.g. csharp BsonBinaryWriter.CalculateSize, ocaml
+    // common.ml `equal`. Each physical overload must be evaluated against
+    // its OWN LOC.
+    // =====================================================================
+    #[test]
+    fn test_csharp_long_method_overload_not_collided() {
+        // CalculateSize(int)        -> 1 LOC  (must NOT be long_method)
+        // CalculateSize(BsonToken)  -> >50 LOC (the real long_method)
+        let mut src = String::from(
+            "class BsonBinaryWriter {\n    int CalculateSize(int x) { return x; }\n\n    int CalculateSize(BsonToken t) {\n        int size = 0;\n",
+        );
+        // pad the second overload well past the default long_method_loc (50)
+        for i in 0..70 {
+            src.push_str(&format!("        size += {i};\n"));
+        }
+        src.push_str("        return size;\n    }\n}\n");
+
+        let (dir, _path) = write_tmp("BsonBinaryWriter.cs", &src);
+        let report = detect_smells(dir.path(), ThresholdPreset::Default, None, false)
+            .expect("detect_smells should succeed");
+
+        let long_methods: Vec<(u32, String)> = report
+            .smells
+            .iter()
+            .filter(|s| {
+                s.smell_type == SmellType::LongMethod
+                    && s.name.ends_with("CalculateSize")
+            })
+            .map(|s| (s.line, s.reason.clone()))
+            .collect();
+
+        // EXACTLY one CalculateSize long_method finding: the real long
+        // overload. The 1-line overload must not be flagged at all.
+        assert_eq!(
+            long_methods.len(),
+            1,
+            "only the long CalculateSize overload is a long_method; got {:?}",
+            long_methods
+        );
+        // And it must be attributed to the LONG overload's line (line 4 in
+        // this source: the `CalculateSize(BsonToken)` decl), never line 2.
+        assert_ne!(
+            long_methods[0].0, 2,
+            "the trivial 1-line overload (line 2) must NOT be flagged long_method"
+        );
     }
 
     #[test]

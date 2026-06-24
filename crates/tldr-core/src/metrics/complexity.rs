@@ -136,16 +136,82 @@ pub fn calculate_all_complexities_file(
     calculate_all_complexities_from_tree(root, &source, lang)
 }
 
+/// Calculate complexity metrics for ALL functions in a file, keyed by
+/// `(name, line)` so same-name overloads do not collide.
+///
+/// See [`calculate_all_complexities_keyed_from_tree`]. Use this instead of
+/// [`calculate_all_complexities_file`] when the caller has each function's
+/// 1-indexed start line (`FunctionInfo::line_number`) available to disambiguate
+/// overloads.
+pub fn calculate_all_complexities_keyed_file(
+    path: &Path,
+) -> TldrResult<HashMap<(String, u32), ComplexityMetrics>> {
+    let (tree, source, lang) = parse_file(path)?;
+    let root = tree.root_node();
+    calculate_all_complexities_keyed_from_tree(root, &source, lang)
+}
+
+/// Source-string convenience wrapper for
+/// [`calculate_all_complexities_keyed_from_tree`]. Parses `source` once and
+/// returns the `(name, line)`-keyed metrics map.
+pub fn calculate_all_complexities_keyed(
+    source: &str,
+    language: Language,
+) -> TldrResult<HashMap<(String, u32), ComplexityMetrics>> {
+    let tree = parse(source, language)?;
+    let root = tree.root_node();
+    calculate_all_complexities_keyed_from_tree(root, source, language)
+}
+
 /// Calculate complexity metrics for all functions given an already-parsed tree.
 ///
 /// Use this when you already have a parsed tree to avoid redundant parsing.
 /// Walks the AST depth-first to find all function/method nodes, then runs
 /// the complexity calculator on each.
+///
+/// The returned map is keyed by the BARE function name. When a file contains
+/// multiple same-named functions (C++/C#/Swift overloads, Scala/OCaml
+/// multi-clause defs) the entries collide and the last one walked wins. This
+/// is preserved for backward compatibility with callers that only have a bare
+/// name to look up by (`debt`, `maintainability`, `bugbot first_run`). Callers
+/// that can supply the function's start line (`quality::complexity`,
+/// `quality::smells`) should use [`calculate_all_complexities_keyed_from_tree`]
+/// instead, which assigns each overload a distinct entry.
 pub fn calculate_all_complexities_from_tree(
     root: Node,
     source: &str,
     language: Language,
 ) -> TldrResult<HashMap<String, ComplexityMetrics>> {
+    // Fold the distinctly-keyed map down to bare-name keys. Iteration order of
+    // a HashMap is unspecified, so to keep the historical "last function walked
+    // wins" semantics deterministic we re-insert in ascending start-line order
+    // (the DFS visited shallow-to-deep / top-to-bottom, so the largest line is
+    // the one the old code inserted last for same-name collisions).
+    let keyed = calculate_all_complexities_keyed_from_tree(root, source, language)?;
+    let mut ordered: Vec<((String, u32), ComplexityMetrics)> = keyed.into_iter().collect();
+    ordered.sort_by(|a, b| a.0 .1.cmp(&b.0 .1));
+    let mut results = HashMap::new();
+    for ((name, _line), metrics) in ordered {
+        results.insert(name, metrics);
+    }
+    Ok(results)
+}
+
+/// Calculate complexity metrics for all functions, keyed by `(name, line)`.
+///
+/// Identical AST walk to [`calculate_all_complexities_from_tree`] but keys each
+/// entry by `(bare_name, decl_keyword_line)` so same-name overloads do NOT
+/// collide. `decl_keyword_line` is computed with the exact same normalisation
+/// (`decl_keyword_line_from_node`) that the extractor uses for
+/// `FunctionInfo::line_number` / `MethodInfo::line_number`, so a consumer can
+/// look up an entry by `(method.name, method.line_number)` and get THAT
+/// instance's metrics rather than whichever overload happened to be inserted
+/// last (cluster 9 / cluster 11 root cause).
+pub fn calculate_all_complexities_keyed_from_tree(
+    root: Node,
+    source: &str,
+    language: Language,
+) -> TldrResult<HashMap<(String, u32), ComplexityMetrics>> {
     let func_kinds = get_function_node_kinds(language);
     let mut results = HashMap::new();
 
@@ -164,7 +230,14 @@ pub fn calculate_all_complexities_from_tree(
                     );
                     metrics.cognitive = canonical.cognitive;
                     metrics.max_nesting = canonical.max_nesting;
-                    results.insert(name, metrics);
+                    // fix-R2-themeA: key by (name, decl-keyword line) so that
+                    // same-name overloads get distinct entries. The line MUST
+                    // match the extractor's `line_number` (which routes
+                    // annotation/modifier-decorated decls through
+                    // `decl_keyword_line_from_node`) so consumer lookups by
+                    // `(name, func.line_number)` hit the right instance.
+                    let line = crate::ast::extract::decl_keyword_line_from_node(&node);
+                    results.insert((name, line), metrics);
                 }
             }
         }
@@ -1132,6 +1205,173 @@ class MyClass:
 
         // Clean up
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // =========================================================================
+    // fix-R2-themeA: same-name overload collision in the batch metrics map.
+    //
+    // metrics::complexity built a HashMap<String, _> keyed by BARE name, so a
+    // file with several same-named functions (C++/C#/Swift overloads,
+    // Scala/OCaml multi-clause defs) collapsed to a single entry — every
+    // same-named function then read the LAST one's metric. Reproduces:
+    //   - cluster 11 RC10: swift cURLDescription (trivial forwarder reported
+    //     with the complex overload's cyclomatic)
+    //   - cluster 9 #4: csharp CalculateSize / ocaml `equal` (a 1-4 line
+    //     overload reported with the long overload's lines_of_code)
+    // The keyed map must give EACH overload its own (name, line) entry.
+    // =========================================================================
+
+    #[test]
+    fn test_keyed_overloads_get_distinct_cyclomatic() {
+        // Two C++ `area` overloads in ONE translation unit:
+        //   - area(int)   : straight line  -> cyclomatic 1
+        //   - area(int,int): 3 decision pts -> cyclomatic 4
+        // Bare-name keying loses one of them; (name,line) keying keeps both
+        // with their OWN cyclomatic.
+        let source = r#"
+int area(int s) {
+    return s * s;
+}
+
+int area(int w, int h) {
+    if (w < 0) return 0;
+    if (h < 0) return 0;
+    if (w == h) return w * w;
+    return w * h;
+}
+"#;
+        let keyed = calculate_all_complexities_keyed(source, Language::Cpp).unwrap();
+
+        // Both physical overloads survive as distinct entries.
+        let mut areas: Vec<(u32, u32)> = keyed
+            .iter()
+            .filter(|((name, _line), _m)| name == "area")
+            .map(|((_name, line), m)| (*line, m.cyclomatic))
+            .collect();
+        areas.sort();
+        assert_eq!(
+            areas.len(),
+            2,
+            "both `area` overloads must survive distinctly, got {:?}",
+            areas
+        );
+        // First overload (lower line) is straight-line; second is branchy.
+        assert_eq!(areas[0].1, 1, "area(int) is straight-line cyclomatic 1");
+        assert_eq!(
+            areas[1].1, 4,
+            "area(int,int) has 3 decision points -> cyclomatic 4"
+        );
+        // The bug was that BOTH read the same (last) value; assert they differ.
+        assert_ne!(
+            areas[0].1, areas[1].1,
+            "overloads must NOT share the collided last-wins cyclomatic"
+        );
+    }
+
+    #[test]
+    fn test_keyed_overloads_get_distinct_loc() {
+        // Two `compute` overloads with very different lengths. The short one
+        // must NOT inherit the long one's lines_of_code (cluster 9 #4 shape).
+        let source = r#"
+int compute(int x) { return x; }
+
+int compute(int a, int b) {
+    int t = 0;
+    t += a;
+    t += b;
+    t += a * b;
+    t += a - b;
+    return t;
+}
+"#;
+        let keyed = calculate_all_complexities_keyed(source, Language::Cpp).unwrap();
+        let mut locs: Vec<(u32, u32)> = keyed
+            .iter()
+            .filter(|((name, _line), _m)| name == "compute")
+            .map(|((_name, line), m)| (*line, m.lines_of_code))
+            .collect();
+        locs.sort();
+        assert_eq!(locs.len(), 2, "both `compute` overloads survive, got {:?}", locs);
+        // The 1-line overload keeps ~1 LOC; the long one is clearly larger.
+        assert_eq!(locs[0].1, 1, "single-line overload stays 1 LOC, got {:?}", locs);
+        assert!(
+            locs[1].1 >= 7,
+            "multi-line overload keeps its own larger LOC, got {:?}",
+            locs
+        );
+        assert_ne!(
+            locs[0].1, locs[1].1,
+            "short overload must NOT inherit the long overload's LOC"
+        );
+    }
+
+    #[test]
+    fn test_keyed_line_matches_extractor_line_number() {
+        // The (name,line) key MUST agree with the extractor's `line_number`
+        // (which is what consumers look up by). Verify the keyed map's lines
+        // line up with extract_file's reported function lines for overloads.
+        use crate::ast::extract_file;
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("tldr_keyed_line_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("overload.cpp");
+        let mut f = std::fs::File::create(&file_path).unwrap();
+        write!(
+            f,
+            "int area(int s) {{ return s * s; }}\n\nint area(int w, int h) {{\n    if (w < 0) return 0;\n    return w * h;\n}}\n"
+        )
+        .unwrap();
+
+        let keyed = calculate_all_complexities_keyed_file(&file_path).unwrap();
+        let module = extract_file(&file_path, None).unwrap();
+
+        // Every `area` FunctionInfo line must be present as a key in the map.
+        let area_fns: Vec<u32> = module
+            .functions
+            .iter()
+            .filter(|fi| fi.name == "area")
+            .map(|fi| fi.line_number)
+            .collect();
+        assert!(
+            area_fns.len() >= 2,
+            "extractor should see both overloads, got {:?}",
+            area_fns
+        );
+        for line in &area_fns {
+            assert!(
+                keyed.contains_key(&("area".to_string(), *line)),
+                "keyed map missing (area, {}); keys present: {:?}",
+                line,
+                keyed.keys().collect::<Vec<_>>()
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_keyed_fold_preserves_unique_name_behavior() {
+        // For unique-name files the keyed map and the legacy bare-name map must
+        // carry identical metrics — guard against the re-key changing the
+        // common (non-overload) case.
+        let source = r#"
+def alpha():
+    return 1
+
+def beta(x):
+    if x > 0:
+        return 1
+    return 0
+"#;
+        let bare = calculate_all_complexities(source, Language::Python).unwrap();
+        let keyed = calculate_all_complexities_keyed(source, Language::Python).unwrap();
+        assert_eq!(bare.len(), keyed.len(), "no collisions => same cardinality");
+        for ((name, _line), km) in &keyed {
+            let bm = bare.get(name).expect("bare map has the same names");
+            assert_eq!(bm.cyclomatic, km.cyclomatic, "cyclomatic parity for {}", name);
+            assert_eq!(bm.lines_of_code, km.lines_of_code, "LOC parity for {}", name);
+            assert_eq!(bm.cognitive, km.cognitive, "cognitive parity for {}", name);
+        }
     }
 
     // =========================================================================

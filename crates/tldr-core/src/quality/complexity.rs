@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::count::count_functions_canonical;
 use crate::ast::extract::extract_file;
 use crate::error::TldrError;
-use crate::metrics::calculate_all_complexities_file;
+use crate::metrics::complexity::calculate_all_complexities_keyed_file;
 use crate::types::Language;
 use crate::TldrResult;
 
@@ -330,8 +330,12 @@ fn analyze_file_complexity(
         )
     })?;
 
-    // Single-pass: parse file once, get all complexities in one AST walk
-    let metrics_map = calculate_all_complexities_file(file_path)?;
+    // Single-pass: parse file once, get all complexities in one AST walk.
+    // fix-R2-themeA: key by (name, line) so same-name overloads
+    // (C++/C#/Swift, Scala/OCaml multi-clause) do not collide — each method
+    // below is looked up by its OWN (name, line_number) rather than reading
+    // whichever overload was inserted last into a bare-name map.
+    let metrics_map = calculate_all_complexities_keyed_file(file_path)?;
 
     // Extract module info for line numbers and class/method structure
     let module = extract_file(file_path, None)?;
@@ -340,7 +344,7 @@ fn analyze_file_complexity(
 
     // Process top-level functions
     for func in &module.functions {
-        if let Some(metrics) = metrics_map.get(&func.name) {
+        if let Some(metrics) = metrics_map.get(&(func.name.clone(), func.line_number)) {
             results.push(FunctionComplexity {
                 name: func.name.clone(),
                 file: file_path.to_path_buf(),
@@ -366,10 +370,12 @@ fn analyze_file_complexity(
                 continue;
             }
 
-            // calculate_all_complexities_file() keys by bare function name
-            // (from get_function_name()), not qualified ClassName.method.
-            // Look up by bare method name.
-            if let Some(metrics) = metrics_map.get(&method.name) {
+            // fix-R2-themeA: the keyed map uses (bare_name, decl-keyword line)
+            // — the SAME normalisation the extractor used for
+            // `method.line_number` — so look up by (method.name, line). This
+            // disambiguates same-name overloads that previously collided to a
+            // single bare-name entry.
+            if let Some(metrics) = metrics_map.get(&(method.name.clone(), method.line_number)) {
                 results.push(FunctionComplexity {
                     name: format!("{}.{}", class.name, method.name),
                     file: file_path.to_path_buf(),
@@ -481,6 +487,73 @@ def func_cc4(a, b, c):
         // CC values: 1, 2, 3, 4 -> avg = 2.5
         assert!((report.avg_cyclomatic - 2.5).abs() < 0.01);
         assert_eq!(report.max_cyclomatic, 4);
+    }
+
+    #[test]
+    fn test_complexity_swift_overloads_report_distinct_cyclomatic() {
+        // fix-R2-themeA (cluster 11 RC10): a Swift type with multiple
+        // same-named method overloads must report EACH overload's own
+        // cyclomatic, not broadcast the most-complex overload's value to all.
+        // Mirrors Alamofire Request.swift `cURLDescription` (trivial forwarder
+        // vs. a complex implementation).
+        let dir = create_test_dir();
+        let source = r#"
+struct Request {
+    func cURLDescription() -> String {
+        return cURLDescription { _ in }
+    }
+
+    func cURLDescription(calling handler: (String) -> Void) -> String {
+        var components = ["$ curl -v"]
+        if a { components.append("-1") }
+        if b { components.append("-2") }
+        if c { components.append("-3") }
+        if d { components.append("-4") }
+        return components.joined()
+    }
+}
+"#;
+        write_file(&dir, "Request.swift", source);
+
+        let report =
+            analyze_complexity(dir.path(), Some(Language::Swift), None).unwrap();
+
+        let curl: Vec<&FunctionComplexity> = report
+            .functions
+            .iter()
+            .filter(|f| f.name.ends_with("cURLDescription"))
+            .collect();
+        assert_eq!(
+            curl.len(),
+            2,
+            "both cURLDescription overloads must appear, got {:?}",
+            report
+                .functions
+                .iter()
+                .map(|f| (&f.name, f.line, f.cyclomatic))
+                .collect::<Vec<_>>()
+        );
+        let cycs: std::collections::HashSet<usize> =
+            curl.iter().map(|f| f.cyclomatic).collect();
+        assert!(
+            cycs.len() > 1,
+            "overloads must NOT share one collided cyclomatic; got {:?}",
+            curl.iter().map(|f| (f.line, f.cyclomatic)).collect::<Vec<_>>()
+        );
+        // The trivial forwarder must be low (1-2), distinctly below the
+        // 4-branch overload (cyclomatic 5).
+        let min_cyc = cycs.iter().min().copied().unwrap();
+        let max_cyc = cycs.iter().max().copied().unwrap();
+        assert!(
+            min_cyc <= 2,
+            "trivial forwarder overload should be cyclomatic <=2, got {}",
+            min_cyc
+        );
+        assert!(
+            max_cyc >= 4,
+            "branchy overload should keep its higher cyclomatic, got {}",
+            max_cyc
+        );
     }
 
     #[test]
