@@ -1559,6 +1559,80 @@ function f(a, b) {
         );
     }
 
+    /// fix-R7 (cluster[11] RC3): JS function-expression methods assigned to a
+    /// member (`res.send = function send(body){}`), to a variable
+    /// (`const f = function(){}`), or via arrow (`res.json = (o) => {}`) must be
+    /// found and named by the batch complexity walk. Previously the JS function
+    /// kind list contained the bare `function` keyword-leaf but NOT
+    /// `function_expression`, and `get_function_name` had no JS arm to recover
+    /// the LHS name, so these methods were silently dropped from the map —
+    /// which is why `health`/`smells`/`debt`/`diff` under-reported express-style
+    /// `res.X = function(){}` modules.
+    #[test]
+    fn test_js_function_expression_methods_are_named_and_counted() {
+        let source = r#"
+res.send = function send(body) {
+    if (body) { return this; }
+    return this;
+};
+res.json = function (obj) {
+    if (obj) { return this; }
+    return this;
+};
+res.sendFile = (path) => {
+    if (path) { return this; }
+    return this;
+};
+const helper = function () {
+    return 1;
+};
+function topLevel() {
+    return 0;
+}
+"#;
+        let map = calculate_all_complexities(source, Language::JavaScript).unwrap();
+
+        // Named function_expression assigned to a member: keyed by the member
+        // property name `send` (its own `function send` name also works).
+        assert!(
+            map.contains_key("send") || map.contains_key("res.send"),
+            "named function_expression `res.send = function send()` must be found, got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // Anonymous function_expression assigned to a member -> LHS property.
+        assert!(
+            map.contains_key("json") || map.contains_key("res.json"),
+            "anonymous `res.json = function(){{}}` must be found via LHS name, got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // Arrow assigned to a member -> LHS property.
+        assert!(
+            map.contains_key("sendFile") || map.contains_key("res.sendFile"),
+            "arrow `res.sendFile = () => {{}}` must be found, got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // function_expression bound to a const variable -> declarator name.
+        assert!(
+            map.contains_key("helper"),
+            "`const helper = function(){{}}` must be found, got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // Regression: the plain top-level declaration still found.
+        assert!(
+            map.contains_key("topLevel"),
+            "top-level function_declaration must still be found, got keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // The `send` method has a real cyclomatic > 1 (it has an `if`), proving
+        // the body was actually analyzed (not a 0/empty placeholder).
+        let send_key = if map.contains_key("send") { "send" } else { "res.send" };
+        assert!(
+            map[send_key].cyclomatic >= 2,
+            "function_expression body must be analyzed (cyclomatic>=2 for the `if`), got {}",
+            map[send_key].cyclomatic
+        );
+    }
+
     #[test]
     fn test_python_logical_operators_still_counted_once() {
         // Regression guard: Python `and`/`or` must STILL be credited (via the

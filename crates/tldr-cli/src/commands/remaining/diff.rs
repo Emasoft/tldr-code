@@ -4274,6 +4274,47 @@ class OriginalClass:
         pool.parse(source, Language::Python).unwrap()
     }
 
+    /// fix-R7 (cluster[11] RC3): `diff` must surface JS function-expression
+    /// methods (`res.send = function(){}`, `const f = function(){}`), not just
+    /// top-level `function` declarations. Reproduces the express
+    /// `lib/response.js` case where the `res.X = function(){}` methods were all
+    /// absent from the diff node list.
+    #[test]
+    fn test_diff_extracts_js_function_expression_methods() {
+        let src = r#"
+res.send = function send(body) { return this; };
+res.json = function (obj) { return this; };
+res.sendFile = (path) => { return this; };
+const helper = function () { return 1; };
+function topLevel() { return 0; }
+"#;
+        let pool = ParserPool::new();
+        let tree = pool.parse(src, Language::JavaScript).unwrap();
+        let nodes = extract_nodes(tree.root_node(), src.as_bytes(), Language::JavaScript);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"send"),
+            "named function_expression `res.send` must be extracted, got {names:?}"
+        );
+        assert!(
+            names.contains(&"json"),
+            "anonymous `res.json = function(){{}}` must be extracted via LHS, got {names:?}"
+        );
+        assert!(
+            names.contains(&"sendFile"),
+            "arrow `res.sendFile` must be extracted, got {names:?}"
+        );
+        assert!(
+            names.contains(&"helper"),
+            "`const helper = function(){{}}` must be extracted, got {names:?}"
+        );
+        assert!(
+            names.contains(&"topLevel"),
+            "top-level declaration must still be extracted, got {names:?}"
+        );
+    }
+
     #[test]
     fn test_extract_nodes() {
         let tree = parse_python(SAMPLE_A);

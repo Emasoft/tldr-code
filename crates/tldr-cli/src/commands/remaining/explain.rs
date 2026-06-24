@@ -202,11 +202,18 @@ const PURE_BUILTINS: &[&str] = &[
 fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Python => &["function_definition", "async_function_definition"],
+        // fix-R7 (cluster[11] RC3): include `function_expression` so diff
+        // surfaces `obj.x = function(){}` / `const f = function(){}` methods
+        // (express-style modules previously showed only top-level declarations).
+        // The bare `function` keyword-leaf is removed — it is a child token, not
+        // a function node.
         Language::TypeScript | Language::JavaScript => &[
             "function_declaration",
+            "function_expression",
             "arrow_function",
             "method_definition",
-            "function",
+            "generator_function",
+            "generator_function_declaration",
         ],
         Language::Go => &["function_declaration", "method_declaration"],
         Language::Rust => &["function_item"],
@@ -1735,9 +1742,14 @@ fn find_callers_in_file(
 }
 
 /// Collect all function names in a file
-fn collect_function_names(root: Node, source: &[u8], func_kinds: &[&str]) -> HashSet<String> {
+fn collect_function_names(
+    root: Node,
+    source: &[u8],
+    func_kinds: &[&str],
+    language: Language,
+) -> HashSet<String> {
     let mut names = HashSet::new();
-    collect_function_names_recursive(root, source, &mut names, func_kinds);
+    collect_function_names_recursive(root, source, &mut names, func_kinds, language);
     names
 }
 
@@ -1746,24 +1758,28 @@ fn collect_function_names_recursive(
     source: &[u8],
     names: &mut HashSet<String>,
     func_kinds: &[&str],
+    language: Language,
 ) {
     if func_kinds.contains(&node.kind()) {
-        // Try field name first
-        if let Some(name_node) = node.child_by_field_name("name") {
-            names.insert(node_text(name_node, source).to_string());
-        } else {
-            // Fallback: search for identifier child
-            for child in node.children(&mut node.walk()) {
-                if child.kind() == "identifier" {
-                    names.insert(node_text(child, source).to_string());
-                    break;
+        // fix-R7 (cluster[11] RC3): delegate to the canonical name extractor so
+        // anonymous JS/TS `function_expression` / `arrow_function` methods are
+        // named from their LHS binding (`obj.send = function(){}` -> `send`),
+        // matching the complexity/health walk. The previous local heuristic
+        // (name field, else first identifier child) returned nothing for those
+        // and dropped them from the diff.
+        if let Ok(source_str) = std::str::from_utf8(source) {
+            if let Some(name) =
+                tldr_core::ast::function_finder::get_function_name(node, language, source_str)
+            {
+                if !name.is_empty() {
+                    names.insert(name);
                 }
             }
         }
     }
 
     for child in node.children(&mut node.walk()) {
-        collect_function_names_recursive(child, source, names, func_kinds);
+        collect_function_names_recursive(child, source, names, func_kinds, language);
     }
 }
 
@@ -3180,7 +3196,7 @@ impl ExplainArgs {
         report.complexity = Some(complexity_info);
 
         // Collect local function names for call graph analysis
-        let local_functions = collect_function_names(root, source_bytes, func_kinds);
+        let local_functions = collect_function_names(root, source_bytes, func_kinds, language);
 
         // Find callees
         report.callees = find_callees(
@@ -3445,7 +3461,7 @@ def complex_func(x, y):
         let tree = parser.parse(SAMPLE_CODE, None).unwrap();
         let root = tree.root_node();
 
-        let local_funcs = collect_function_names(root, SAMPLE_CODE.as_bytes(), func_kinds);
+        let local_funcs = collect_function_names(root, SAMPLE_CODE.as_bytes(), func_kinds, language);
         let func = find_function_node(root, SAMPLE_CODE.as_bytes(), "main", func_kinds).unwrap();
         let callees = find_callees(
             func,

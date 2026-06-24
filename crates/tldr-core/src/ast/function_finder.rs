@@ -1045,11 +1045,18 @@ fn language_has_decl_impl_duality(language: Language) -> bool {
 pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
     match language {
         Language::Python => &["function_definition"],
+        // fix-R7 (cluster[11] RC3): include `function_expression` so methods
+        // written as `obj.x = function(){}` / `const f = function(){}` are
+        // analyzed (health/smells/debt/diff previously dropped them). The bare
+        // `function` keyword-LEAF was removed: it is a child token of every
+        // function_expression/declaration, never a function node itself, and
+        // matching it produced a nameless skip. `generator_function` covers
+        // `function*(){}` expression form.
         Language::TypeScript | Language::JavaScript => &[
             "function_declaration",
+            "function_expression",
             "arrow_function",
             "method_definition",
-            "function",
             "generator_function_declaration",
             "generator_function",
         ],
@@ -1498,12 +1505,82 @@ pub fn get_function_name(node: Node, language: Language, source: &str) -> Option
             // For function_definition (anonymous), no name
             None
         }
+        Language::TypeScript | Language::JavaScript => {
+            // fix-R7 (cluster[11] RC3): name JS/TS function nodes, including the
+            // anonymous *expression* forms that previously fell through the
+            // catch-all and got dropped.
+            //
+            // 1. A `name` field exists for `function_declaration` and a NAMED
+            //    `function_expression` (`function send(){}`) -> use it.
+            if let Some(name) = node.child_by_field_name("name") {
+                return Some(name.utf8_text(source.as_bytes()).unwrap_or("").to_string());
+            }
+            // `method_definition` carries the method name in a `name` field too,
+            // already handled above. For anonymous `function_expression` /
+            // `arrow_function` / `generator_function`, recover the binding name
+            // from the parent construct (the LHS the function is assigned to).
+            js_name_from_binding_parent(node, source)
+        }
         _ => {
             // Most languages use "name" field
             node.child_by_field_name("name")
                 .map(|n| n.utf8_text(source.as_bytes()).unwrap_or("").to_string())
         }
     }
+}
+
+/// fix-R7 (cluster[11] RC3): derive the name of an anonymous JS/TS function
+/// expression / arrow / generator from the construct it is bound to.
+///
+/// Handled binding shapes (AST-verified):
+///   * `obj.send = function(){}`  -> `assignment_expression` whose `left` is a
+///     `member_expression`; use its `property` (`send`).
+///   * `x = function(){}`         -> `assignment_expression` with a bare
+///     `identifier` left; use it.
+///   * `const f = function(){}`   -> `variable_declarator` `name` (`f`).
+///   * `{ key: function(){} }`    -> `pair` `key` (object-literal method).
+///   * `export default function(){}` and other unnamed positions -> None.
+fn js_name_from_binding_parent(node: Node, source: &str) -> Option<String> {
+    let parent = node.parent()?;
+    match parent.kind() {
+        "assignment_expression" => {
+            let left = parent.child_by_field_name("left")?;
+            js_target_name(left, source)
+        }
+        "variable_declarator" => parent
+            .child_by_field_name("name")
+            .and_then(|n| js_target_name(n, source)),
+        "pair" => parent
+            .child_by_field_name("key")
+            .map(|k| js_property_text(k, source)),
+        _ => None,
+    }
+}
+
+/// Extract the binding name from a JS/TS assignment / declarator target.
+/// For a member access (`a.b.send`) we take the final property segment so the
+/// method is keyed by its own name; a bare identifier is returned as-is.
+fn js_target_name(target: Node, source: &str) -> Option<String> {
+    match target.kind() {
+        "identifier" | "property_identifier" | "shorthand_property_identifier" => {
+            Some(target.utf8_text(source.as_bytes()).unwrap_or("").to_string())
+        }
+        "member_expression" => target
+            .child_by_field_name("property")
+            .map(|p| js_property_text(p, source)),
+        // Subscript `a["send"]` -> the string literal index, stripped of quotes.
+        "subscript_expression" => target
+            .child_by_field_name("index")
+            .map(|i| js_property_text(i, source)),
+        _ => None,
+    }
+}
+
+/// Text of a JS property/key node, stripping surrounding quotes from string
+/// literals so `{ "send": ... }` and `a["send"]` key on `send`.
+fn js_property_text(node: Node, source: &str) -> String {
+    let raw = node.utf8_text(source.as_bytes()).unwrap_or("");
+    raw.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string()
 }
 
 /// Get the body node of a function
