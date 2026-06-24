@@ -567,6 +567,36 @@ fn extract_function_names(source: &str, language: Language) -> ContractsResult<V
             }
         }
     }
+
+    // fix-R2-themeE (RC9): the Solidity-only methods bridge above left every
+    // OTHER method-bearing language under-counting. For languages whose
+    // callable units live (wholly or partly) inside classes/objects,
+    // `extract_functions` returns only the FREE functions — for C# that is the
+    // empty set (C# has no free functions at all), so `compute_coverage`'s
+    // `total_functions` stayed empty and collapsed to the FILE count (a C#
+    // project of 51 files reported `total_functions: 51`, not its ~499
+    // methods). Bridge in `extract_methods` for the method-bearing languages
+    // (C#, Java, Kotlin, Scala, Swift, Ruby, C++) — deduped against the free
+    // functions already collected — so the verify sweep runs `run_contracts`
+    // per real method and the coverage denominator reflects the true method
+    // count. Mirrors the `health` command's method-aware function count.
+    if matches!(
+        language,
+        Language::CSharp
+            | Language::Java
+            | Language::Kotlin
+            | Language::Scala
+            | Language::Swift
+            | Language::Ruby
+            | Language::Cpp
+    ) {
+        let methods = tldr_core::ast::extractor::extract_methods(&tree, source, language);
+        for m in methods {
+            if !names.contains(&m) {
+                names.push(m);
+            }
+        }
+    }
     Ok(names)
 }
 
@@ -1103,5 +1133,106 @@ def baz(a, b):
 
         assert_eq!(report.files_analyzed, 0);
         assert_eq!(report.summary.coverage.total_functions, 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // fix-R2-themeE (RC9): verify coverage denominator must reflect REAL
+    // methods for method-only / method-bearing languages, not collapse to the
+    // file count. extract_functions returns [] for C# (no free functions), so
+    // the Solidity-only extract_methods bridge left total_functions empty and
+    // compute_coverage fell back to total_files (==1 here). After the fix the
+    // bridge runs for C#/Java/Kotlin/Scala/Swift/Ruby/C++, so total_functions
+    // == the real method count.
+    // -------------------------------------------------------------------------
+
+    /// RC9: a single C# file with five methods must report
+    /// total_functions == 5 (the method count), NOT 1 (the file count).
+    #[test]
+    fn rc9_verify_csharp_total_functions_is_method_count_not_file_count() {
+        let temp = TempDir::new().unwrap();
+        let cs = r#"
+public class Calc {
+    public int Add(int a, int b) { return a + b; }
+    public int Sub(int a, int b) { return a - b; }
+    public int Mul(int a, int b) { return a * b; }
+    public int Neg(int a) { return -a; }
+    public int Id(int a) { return a; }
+}
+"#;
+        fs::write(temp.path().join("Calc.cs"), cs).unwrap();
+
+        let report = run_verify(temp.path(), Language::CSharp, false, None).unwrap();
+
+        assert_eq!(
+            report.files_analyzed, 1,
+            "exactly one C# source file present"
+        );
+        let total = report.summary.coverage.total_functions;
+        assert!(
+            total > report.files_analyzed,
+            "RC9: total_functions ({}) must exceed the file count ({}) — it must \
+             count C# methods, not collapse to total_files",
+            total,
+            report.files_analyzed
+        );
+        assert_eq!(
+            total, 5,
+            "RC9: the five C# methods (Add/Sub/Mul/Neg/Id) must all count toward \
+             total_functions, got {}",
+            total
+        );
+    }
+
+    /// RC9 blast-radius: C# methods bridge does not regress the Solidity path
+    /// (which already bridged extract_methods) nor the Python free-function
+    /// path. extract_function_names must still return the right names.
+    #[test]
+    fn rc9_extract_function_names_csharp_methods_and_solidity_unchanged() {
+        // C#: free functions = []; methods = the five member methods.
+        let cs = r#"
+public class Calc {
+    public int Add(int a, int b) { return a + b; }
+    public int Sub(int a, int b) { return a - b; }
+    private int Helper(int a) { return a; }
+}
+"#;
+        let cs_names = extract_function_names(cs, Language::CSharp).unwrap();
+        assert!(
+            cs_names.contains(&"Add".to_string())
+                && cs_names.contains(&"Sub".to_string())
+                && cs_names.contains(&"Helper".to_string()),
+            "RC9: C# method names must be bridged into extract_function_names, got {:?}",
+            cs_names
+        );
+
+        // Solidity: contract member functions still bridged (unchanged path).
+        let sol = r#"
+contract Token {
+    function transfer(address to, uint256 amount) public returns (bool) {
+        require(amount > 0, "amount");
+        return true;
+    }
+    function balanceOf(address who) public view returns (uint256) {
+        return 0;
+    }
+}
+"#;
+        let sol_names = extract_function_names(sol, Language::Solidity).unwrap();
+        assert!(
+            sol_names.contains(&"transfer".to_string())
+                && sol_names.contains(&"balanceOf".to_string()),
+            "RC9 blast-radius: Solidity contract methods must still be bridged, got {:?}",
+            sol_names
+        );
+
+        // Python: free functions unchanged (no method double-add, dedup holds).
+        let py = "def foo():\n    pass\n\ndef bar(x):\n    return x\n";
+        let py_names = extract_function_names(py, Language::Python).unwrap();
+        assert_eq!(
+            py_names.len(),
+            2,
+            "RC9 blast-radius: Python free functions unchanged, got {:?}",
+            py_names
+        );
     }
 }

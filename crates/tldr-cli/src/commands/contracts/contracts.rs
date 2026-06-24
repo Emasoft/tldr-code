@@ -3353,6 +3353,211 @@ fn extract_return_type_postconditions(
 // Untyped Parameter Extraction
 // =============================================================================
 
+/// fix-R2-themeE (RC3): collect the parameter names a Lua/Luau function body
+/// marks OPTIONAL via an `assert(... or <param> == nil ...)` guard.
+///
+/// Roact-style code documents optional parameters with a disjunction inside an
+/// assert: `assert(typeof(props) == 'table' or props == nil)`. The presence of
+/// the `... or <param> == nil` clause is the source's OWN statement that the
+/// parameter may be absent — so the untyped-parameter heuristic must not emit
+/// `parameter <param> is required` for it. These asserts are frequently nested
+/// inside `if config.typeChecks then ... end`, so the scan recurses through the
+/// whole body (any block / if-statement), not just the top-level statements.
+///
+/// AST-driven, no regex:
+/// - Locate `assert(...)` calls by KIND (`config.is_call`) + callee name
+///   (`config.is_assert_call_name`), reusing the existing `extract_call_name`.
+/// - In the assert's first argument, find a boolean `or` node (a
+///   `binary_expression`/`binary_operator` whose operator token KIND is `or`).
+/// - In either `or` operand, find an equality `<ident> == nil` /
+///   `nil == <ident>` and record the identifier.
+fn collect_optional_params_from_body(
+    func: Node,
+    source: &[u8],
+    config: &LanguageConfig,
+) -> HashSet<String> {
+    let mut optional = HashSet::new();
+    if !config.has_assert_calls() {
+        return optional;
+    }
+    let body = match get_function_body(func, config) {
+        Some(b) => b,
+        None => return optional,
+    };
+    collect_optional_params_walk(body, source, config, &mut optional);
+    optional
+}
+
+/// Recursive worker for [`collect_optional_params_from_body`]: walk every node,
+/// and whenever an assert call is found, harvest `<param> == nil` operands from
+/// any `or` disjunction in its first argument.
+fn collect_optional_params_walk(
+    node: Node,
+    source: &[u8],
+    config: &LanguageConfig,
+    optional: &mut HashSet<String>,
+) {
+    if config.is_call(node.kind()) {
+        if let Some(name) = extract_call_name(node, source) {
+            if config.is_assert_call_name(&name) {
+                if let Some(arg) = first_call_argument_node(node) {
+                    collect_or_nil_params(arg, source, optional);
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_optional_params_walk(child, source, config, optional);
+    }
+}
+
+/// Return the first argument NODE of a call (the AST analogue of
+/// [`extract_first_call_argument`], which returns text). Handles the Lua/Luau
+/// `arguments` wrapper and the generic argument-list shapes.
+fn first_call_argument_node(call_node: Node) -> Option<Node> {
+    if let Some(args) = call_node.child_by_field_name("arguments") {
+        let mut cursor = args.walk();
+        for arg in args.children(&mut cursor) {
+            if arg.is_named() {
+                return Some(arg);
+            }
+        }
+    }
+    // Fallback: scan children for an `arguments`/argument-list wrapper.
+    let mut cursor = call_node.walk();
+    for child in call_node.children(&mut cursor) {
+        let k = child.kind();
+        if k == "arguments" || k == "argument_list" || k == "value_arguments" {
+            let mut inner = child.walk();
+            for arg in child.children(&mut inner) {
+                if arg.is_named() {
+                    return Some(arg);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Within `node`, find boolean `or` disjunctions and record any
+/// `<identifier> == nil` / `nil == <identifier>` operand's identifier into
+/// `optional`. Recurses so nested disjunctions are covered.
+fn collect_or_nil_params(node: Node, source: &[u8], optional: &mut HashSet<String>) {
+    if is_boolean_or_node(node, source) {
+        // Inspect the two operands of the `or` for a `<param> == nil` equality.
+        for operand in binary_named_operands(node) {
+            if let Some(name) = ident_compared_to_nil(operand, source) {
+                optional.insert(name);
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_or_nil_params(child, source, optional);
+    }
+}
+
+/// True if `node` is a binary expression whose operator is the boolean `or`.
+/// Lua/Luau expose the operator as an unnamed token child with KIND `or`; some
+/// grammars expose an `operator` field whose text is `or` / `||`.
+fn is_boolean_or_node(node: Node, source: &[u8]) -> bool {
+    if !matches!(node.kind(), "binary_expression" | "binary_operator") {
+        return false;
+    }
+    if let Some(op) = node.child_by_field_name("operator") {
+        return matches!(op.kind(), "or" | "||")
+            || matches!(get_node_text(op, source), "or" | "||");
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if !child.is_named() && matches!(child.kind(), "or" | "||") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return the NAMED operands (left/right) of a binary node, preferring the
+/// `left`/`right` fields and falling back to the first & last named children.
+fn binary_named_operands(node: Node) -> Vec<Node> {
+    if let (Some(l), Some(r)) = (
+        node.child_by_field_name("left"),
+        node.child_by_field_name("right"),
+    ) {
+        return vec![l, r];
+    }
+    let mut named = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_named() {
+            named.push(child);
+        }
+    }
+    if named.len() >= 2 {
+        let first = named[0];
+        let last = named[named.len() - 1];
+        vec![first, last]
+    } else {
+        named
+    }
+}
+
+/// If `node` is an equality `<identifier> == nil` (or `nil == <identifier>`),
+/// return the identifier name. The operator must be `==`; the `nil` operand is
+/// a `nil` literal node. Lua/Luau use `binary_expression` with an unnamed `==`
+/// token and a `nil` literal child.
+fn ident_compared_to_nil(node: Node, source: &[u8]) -> Option<String> {
+    if !matches!(
+        node.kind(),
+        "binary_expression" | "binary_operator" | "comparison_operator"
+    ) {
+        return None;
+    }
+    // Operator must be `==`.
+    let op_is_eq = if let Some(op) = node.child_by_field_name("operator") {
+        matches!(op.kind(), "==")
+            || get_node_text(op, source) == "=="
+    } else {
+        let mut cursor = node.walk();
+        let mut found = false;
+        for child in node.children(&mut cursor) {
+            if !child.is_named() && child.kind() == "==" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if !op_is_eq {
+        return None;
+    }
+
+    let operands = binary_named_operands(node);
+    if operands.len() != 2 {
+        return None;
+    }
+    let (a, b) = (operands[0], operands[1]);
+    let a_nil = is_nil_literal(a, source);
+    let b_nil = is_nil_literal(b, source);
+    // Exactly one side must be `nil`; the other must be a bare identifier.
+    let ident_node = match (a_nil, b_nil) {
+        (false, true) => a,
+        (true, false) => b,
+        _ => return None,
+    };
+    if ident_node.kind() == "identifier" {
+        return Some(get_node_text(ident_node, source).to_string());
+    }
+    None
+}
+
+/// True if `node` is a Lua/Luau `nil` literal.
+fn is_nil_literal(node: Node, source: &[u8]) -> bool {
+    node.kind() == "nil" || get_node_text(node, source).trim() == "nil"
+}
+
 /// Extract preconditions from untyped function parameters.
 ///
 /// For languages where parameters can appear without type annotations (e.g., Python, JavaScript),
@@ -3381,6 +3586,12 @@ fn extract_untyped_param_preconditions(
     // Collect names already covered by typed_param extraction to avoid duplicates
     let existing_vars: HashSet<String> = conditions.iter().map(|c| c.variable.clone()).collect();
 
+    // fix-R2-themeE (RC3): params the body marks optional via
+    // `assert(... or <param> == nil ...)` must NOT receive a
+    // "parameter <param> is required" precondition. Scan the body once and pass
+    // the optional set down so the recursive emitter can suppress them.
+    let optional_params = collect_optional_params_from_body(func, source, config);
+
     for params in clauses {
         extract_untyped_params_recursive(
             params,
@@ -3389,6 +3600,7 @@ fn extract_untyped_param_preconditions(
             config,
             line,
             &existing_vars,
+            &optional_params,
         );
     }
 
@@ -3396,6 +3608,10 @@ fn extract_untyped_param_preconditions(
 }
 
 /// Recursively extract untyped parameter names from the parameter list.
+///
+/// fix-R2-themeE (RC3): `optional_params` carries the names the body marked
+/// optional via `assert(... or <param> == nil ...)`. A plain untyped parameter
+/// in that set is skipped instead of emitting `parameter <name> is required`.
 fn extract_untyped_params_recursive(
     node: Node,
     source: &[u8],
@@ -3403,6 +3619,7 @@ fn extract_untyped_params_recursive(
     config: &LanguageConfig,
     line: u32,
     existing_vars: &HashSet<String>,
+    optional_params: &HashSet<String>,
 ) {
     // contracts-type-printer-v1 (CLUSTER-M-046): skip Scala
     // `(implicit ...)` parameter groups — see
@@ -3428,6 +3645,7 @@ fn extract_untyped_params_recursive(
                 config,
                 line,
                 existing_vars,
+                optional_params,
             );
             return;
         }
@@ -3443,6 +3661,7 @@ fn extract_untyped_params_recursive(
                     config,
                     line,
                     existing_vars,
+                    optional_params,
                 );
                 return;
             }
@@ -3475,6 +3694,12 @@ fn extract_untyped_params_recursive(
                     continue;
                 }
                 if existing_vars.contains(name) {
+                    continue;
+                }
+                // fix-R2-themeE (RC3): the body's own
+                // `assert(... or <name> == nil ...)` declares this parameter
+                // optional, so do NOT emit a "is required" precondition for it.
+                if optional_params.contains(name) {
                     continue;
                 }
                 let constraint = format!("parameter {} is required", name);
@@ -3554,6 +3779,7 @@ fn extract_untyped_params_recursive(
                     config,
                     line,
                     existing_vars,
+                    optional_params,
                 );
             }
 
@@ -5328,5 +5554,131 @@ struct Stack {
             "Swift: should detect assert() precondition on count, got: {:?}",
             report.preconditions
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // fix-R2-themeE (RC3): Lua/Luau untyped-parameter "all required" must
+    // honour `or x == nil` optionality asserts. createElement's body guards
+    // `props`/`children` with `assert(typeof(props) == 'table' or props == nil)`
+    // (nested in `if config.typeChecks then`), so those params are OPTIONAL —
+    // only `component` is genuinely required. Before the fix the untyped-param
+    // extractor unconditionally emitted "parameter <name> is required" for all
+    // three, never scanning the body.
+    // -------------------------------------------------------------------------
+
+    const LUA_OPTIONAL_PARAMS: &str = r#"
+local function createElement(component, props, children)
+    assert(typeof(component) == 'string')
+    if config.typeChecks then
+        assert(typeof(props) == 'table' or props == nil)
+        assert(typeof(children) == 'table' or children == nil)
+    end
+    return { component = component }
+end
+"#;
+
+
+    /// RC3: `props`/`children` made optional by `or x == nil` asserts must NOT
+    /// carry a "parameter X is required" precondition; `component` (no such
+    /// disjunction) must remain required. Lua variant.
+    #[test]
+    fn rc3_lua_or_nil_assert_marks_param_optional() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("createElement.lua");
+        fs::write(&file_path, LUA_OPTIONAL_PARAMS).unwrap();
+
+        let report = run_contracts(&file_path, "createElement", Language::Lua, 100).unwrap();
+
+        let is_required = |name: &str| {
+            report.preconditions.iter().any(|p| {
+                p.variable == name && p.constraint == format!("parameter {} is required", name)
+            })
+        };
+
+        assert!(
+            is_required("component"),
+            "RC3: `component` has no `or ==nil` guard and must stay required; got {:?}",
+            report.preconditions
+        );
+        assert!(
+            !is_required("props"),
+            "RC3: `props` is guarded by `or props == nil` and must NOT be 'is required'; got {:?}",
+            report.preconditions
+        );
+        assert!(
+            !is_required("children"),
+            "RC3: `children` is guarded by `or children == nil` and must NOT be 'is required'; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// RC3 (Luau blast-radius): the Luau grammar wraps each formal in a
+    /// `parameter` node which the untyped-param extractor already treats as a
+    /// typed-param kind and skips — so Luau never emitted "parameter X is
+    /// required" for these to begin with. The Lua-targeted optionality fix must
+    /// NOT regress Luau into newly emitting (or dropping anything from) that
+    /// path. Pin Luau's actual behavior: none of the three appear as
+    /// "is required", and the genuine `typeof(component)=='string'` assert
+    /// precondition is still present.
+    #[test]
+    fn rc3_luau_param_required_behavior_unchanged() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("createElement.luau");
+        fs::write(&file_path, LUA_OPTIONAL_PARAMS).unwrap();
+
+        let report = run_contracts(&file_path, "createElement", Language::Luau, 100).unwrap();
+
+        let is_required = |name: &str| {
+            report.preconditions.iter().any(|p| {
+                p.variable == name && p.constraint == format!("parameter {} is required", name)
+            })
+        };
+
+        for name in ["component", "props", "children"] {
+            assert!(
+                !is_required(name),
+                "RC3 (Luau): `{}` must not carry an 'is required' precondition (grammar wraps it in a `parameter` node); got {:?}",
+                name,
+                report.preconditions
+            );
+        }
+        // The explicit guard assert is still surfaced.
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.constraint.contains("typeof(component)")),
+            "RC3 (Luau): the `assert(typeof(component) == 'string')` guard must still surface; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// RC3 blast-radius: a plain Lua function with NO `or ==nil` guards must
+    /// keep ALL its params "is required" (the optionality scan must not
+    /// over-fire and silence genuinely-required params).
+    #[test]
+    fn rc3_lua_plain_params_all_still_required() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("add.lua");
+        let src = r#"
+local function add(a, b)
+    return a + b
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+
+        let report = run_contracts(&file_path, "add", Language::Lua, 100).unwrap();
+
+        for name in ["a", "b"] {
+            assert!(
+                report.preconditions.iter().any(|p| {
+                    p.variable == name
+                        && p.constraint == format!("parameter {} is required", name)
+                }),
+                "RC3 blast: plain param `{}` (no optionality guard) must stay required; got {:?}",
+                name,
+                report.preconditions
+            );
+        }
     }
 }

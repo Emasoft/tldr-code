@@ -4058,6 +4058,53 @@ fn classify_assertion_call(
     }
 
     if (is_true || is_false) && !args.is_empty() {
+        // fix-R2-themeE (RC6): a bare single-boolean assertion may WRAP an
+        // equality — Elixir `assert action_name(conn) == :show`, Lua/Luau
+        // `assert(add(1, 2) == 3)`. The callee (`assert`) matches the truthy
+        // vocabulary, but the test is really an input/output assertion. Before
+        // falling through to the truthy property below, inspect `args[0]`: if it
+        // is a binary EQUALITY node, destructure it into the function-under-test
+        // (the call-shaped operand) and the expected output (the value operand),
+        // and emit an `input_output` spec — mirroring the dedicated
+        // equality-matcher path above. Only `is_true` (an affirmative assertion)
+        // can carry input/output semantics; a `is_false` equality (`assertFalse(a
+        // == b)`) is a genuine negative property, so it is left to the truthy/
+        // falsy path. The structured destructure returns `None` for Rust's flat
+        // `assert!(x == y)` macro token_tree (no binary node), so the existing
+        // Rust-macro handling below is unaffected.
+        if is_true {
+            if let Some((lhs, rhs)) = equality_operands(args[0], source) {
+                // Pick the call-shaped operand as the FUT; the other is the
+                // expected value. If BOTH sides are calls, prefer the left
+                // (matches the `f(x) == g(y)` "lhs is the subject" convention
+                // and the dominant `f(x) == literal` shape).
+                let lhs_call = first_callable_inside(lhs);
+                let rhs_call = first_callable_inside(rhs);
+                let pair = match (lhs_call, rhs_call) {
+                    (Some(c), _) => Some((c, rhs)),
+                    (None, Some(c)) => Some((c, lhs)),
+                    (None, None) => None,
+                };
+                if let Some((call_arg, value_arg)) = pair {
+                    if let Some((fname, inputs)) =
+                        extract_call_info_for_lang(call_arg, source, language, vocab)
+                    {
+                        let output = try_eval_literal(value_arg, source);
+                        let fs = ensure(specs, &fname);
+                        fs.input_output_specs.push(InputOutputSpec {
+                            function: fname,
+                            inputs,
+                            output,
+                            test_function: test_func_name.to_string(),
+                            line,
+                            confidence: Confidence::High,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+
         // First arg is the boolean expression; if it's a call_expression,
         // take its name. Otherwise emit a generic property on the contained
         // call when present.
@@ -4346,6 +4393,85 @@ fn first_callable_inside(n: Node) -> Option<Node> {
         if let Some(found) = first_callable_inside(child) {
             return Some(found);
         }
+    }
+    None
+}
+
+/// fix-R2-themeE (RC6): if `node` is a binary EQUALITY expression, return its
+/// two operands `(left, right)`; otherwise `None`.
+///
+/// A bare single-boolean assertion (`assert(f(x) == v)` in Lua/Luau,
+/// `assert f(x) == v` in Elixir) reaches the truthy classifier with the whole
+/// equality as `args[0]`. Without destructuring, the `==` and the expected
+/// value are dropped and the test is mis-modeled as a `truthy` property. This
+/// helper recognises the equality so the caller can re-route it through the
+/// same input/output emission the dedicated equality-matcher path uses.
+///
+/// AST-driven, no regex:
+/// - Equality node kinds: Elixir `binary_operator`, Lua/Luau (and the JS-style
+///   grammars) `binary_expression`, Python-style `comparison_operator`.
+/// - The operator is read by `child_by_field_name("operator")` when the grammar
+///   exposes it (Elixir), otherwise by scanning the anonymous token children for
+///   one whose KIND is an equality operator (`==` / `===` / `is`). This is the
+///   Lua/Luau shape, where the operator is an unnamed token with no field.
+/// - Inequality / boolean (`or` / `and`) / comparison operators are explicitly
+///   NOT matched, so `typeof(x)=='t' or x==nil` and `a != b` fall through to the
+///   existing truthy / inequality handling untouched.
+fn equality_operands<'a>(node: Node<'a>, source: &[u8]) -> Option<(Node<'a>, Node<'a>)> {
+    if !matches!(
+        node.kind(),
+        "binary_operator" | "binary_expression" | "comparison_operator"
+    ) {
+        return None;
+    }
+
+    // Determine the operator. Prefer the named `operator` field; fall back to
+    // the first anonymous (token) child whose kind reads like an operator.
+    let is_equality_op = |k: &str| matches!(k, "==" | "===" | "is");
+
+    let op_is_equality = if let Some(op_node) = node.child_by_field_name("operator") {
+        // Elixir exposes the operator both as a field and via the token kind;
+        // compare the source text so we are robust to grammars that name the
+        // operator field but type the token generically.
+        let txt = std::str::from_utf8(&source[op_node.start_byte()..op_node.end_byte()])
+            .unwrap_or("");
+        is_equality_op(op_node.kind()) || matches!(txt.trim(), "==" | "===" | "is")
+    } else {
+        // Lua/Luau: the operator is an unnamed token child with no field — its
+        // node KIND is the operator literal (`==`, `or`, `and`, `~=`, …).
+        let mut c = node.walk();
+        let mut found = false;
+        for ch in node.children(&mut c) {
+            if !ch.is_named() && is_equality_op(ch.kind()) {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+
+    if !op_is_equality {
+        return None;
+    }
+
+    // Operands: prefer the named left/right fields; otherwise take the first and
+    // last NAMED children (operator tokens are unnamed and thus skipped).
+    let left = node.child_by_field_name("left");
+    let right = node.child_by_field_name("right");
+    if let (Some(l), Some(r)) = (left, right) {
+        return Some((l, r));
+    }
+    let mut named: Vec<Node<'a>> = Vec::new();
+    let mut c = node.walk();
+    for ch in node.children(&mut c) {
+        if ch.is_named() {
+            named.push(ch);
+        }
+    }
+    if named.len() >= 2 {
+        let first = named[0];
+        let last = named[named.len() - 1];
+        return Some((first, last));
     }
     None
 }
@@ -6373,6 +6499,148 @@ describe('module', () => {
             exc_type("crashes"),
             "Error",
             "argument-less toThrow() must fall back to Error"
+        );
+    }
+
+    /// fix-R2-themeE (RC6): a bare single-boolean assertion that wraps an
+    /// EQUALITY — Elixir `assert action_name(conn) == :show` — must be
+    /// DESTRUCTURED into an input_output spec (FUT = the call operand,
+    /// output = the value operand), NOT collapsed into a truthy property.
+    /// Before the fix the `assert` callee matched the truthy vocabulary and
+    /// `first_callable_inside(args[0])` produced property_type "truthy"
+    /// (dropping the `==` and the expected `:show`).
+    #[test]
+    fn rc6_elixir_bare_assert_equality_is_input_output_not_truthy() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("controller_test.exs");
+        let src = r#"
+defmodule MyApp.ControllerTest do
+  use ExUnit.Case
+
+  test "renders show" do
+    assert action_name(conn) == :show
+  end
+end
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let f = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "action_name")
+            .unwrap_or_else(|| {
+                panic!(
+                    "RC6: `action_name` must be the FUT of `assert action_name(conn) == :show`; got {:?}",
+                    report.functions.iter().map(|f| &f.function_name).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            !f.input_output_specs.is_empty(),
+            "RC6: equality assertion must yield an input_output spec, got io={} prop={}",
+            f.input_output_specs.len(),
+            f.property_specs.len()
+        );
+        assert_eq!(
+            f.input_output_specs[0].output,
+            serde_json::json!(":show"),
+            "RC6: the `== :show` RHS must become the spec output"
+        );
+        // The equality must NOT also surface as a truthy property.
+        assert!(
+            !f.property_specs.iter().any(|p| p.property_type == "truthy"),
+            "RC6: destructured equality must not be modeled as truthy"
+        );
+        // whole-suite: input_output must be > 0 (was 0 pre-fix).
+        assert!(
+            report.summary.by_type.input_output > 0,
+            "RC6: by_type.input_output must be > 0 for the equality suite"
+        );
+    }
+
+    /// fix-R2-themeE (RC6): Lua/Luau `assert(add(1, 2) == 3)` — the busted
+    /// single-arg `assert` over an equality — must destructure to an
+    /// input_output spec (`add` => 3), not a truthy property. Lua uses a
+    /// `binary_expression` with an anonymous `==` token (no operator field),
+    /// so the destructure must read the operator token by kind.
+    #[test]
+    fn rc6_lua_bare_assert_equality_is_input_output_not_truthy() {
+        let temp = TempDir::new().unwrap();
+        let test_path = temp.path().join("add_spec.lua");
+        let src = r#"
+describe("add", function()
+  it("adds two numbers", function()
+    assert(add(1, 2) == 3)
+  end)
+end)
+"#;
+        fs::write(&test_path, src).unwrap();
+        let report = run_specs(&test_path, None).unwrap();
+
+        let f = report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "add")
+            .unwrap_or_else(|| {
+                panic!(
+                    "RC6: `add` must be the FUT of `assert(add(1,2) == 3)`; got {:?}",
+                    report.functions.iter().map(|f| &f.function_name).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            !f.input_output_specs.is_empty(),
+            "RC6: Lua equality assertion must yield input_output, got io={} prop={}",
+            f.input_output_specs.len(),
+            f.property_specs.len()
+        );
+        // RC6 is about DESTRUCTURING the equality into input/output — not about
+        // literal typing. Lua's numeric literal node is `number` (not Python's
+        // `integer`), so `try_eval_literal` records its source text "3" (the
+        // same current behavior pinned for Java `decimal_integer_literal` in
+        // `char_flat_classifier_vocabulary`). Promoting `number` to a JSON
+        // integer is the separate (research-needed) trace-typer concern, out of
+        // scope here. Pin the value that proves the RHS reached the output slot.
+        assert_eq!(
+            f.input_output_specs[0].output,
+            serde_json::json!("3"),
+            "RC6: the `== 3` RHS must become the spec output (source-text form)"
+        );
+        assert!(
+            !f.property_specs.iter().any(|p| p.property_type == "truthy"),
+            "RC6: Lua destructured equality must not be modeled as truthy"
+        );
+    }
+
+    /// fix-R2-themeE (RC6) blast-radius: a GENUINE single-boolean assertion
+    /// (no equality inside) must STILL classify as a truthy property — the
+    /// destructure only fires when args[0] is an equality binary.
+    #[test]
+    fn rc6_genuine_truthy_assert_still_truthy() {
+        let temp = TempDir::new().unwrap();
+
+        // Lua: assert(is_ready()) — no `==`, stays truthy.
+        let lua_path = temp.path().join("ready_spec.lua");
+        let lua_src = r#"
+describe("ready", function()
+  it("is ready", function()
+    assert(is_ready())
+  end)
+end)
+"#;
+        fs::write(&lua_path, lua_src).unwrap();
+        let lua_report = run_specs(&lua_path, None).unwrap();
+        let ready = lua_report
+            .functions
+            .iter()
+            .find(|f| f.function_name == "is_ready")
+            .expect("RC6 blast: is_ready FUT from assert(is_ready())");
+        assert!(
+            ready.property_specs.iter().any(|p| p.property_type == "truthy"),
+            "RC6 blast: bare assert(is_ready()) must remain a truthy property"
+        );
+        assert!(
+            ready.input_output_specs.is_empty(),
+            "RC6 blast: a non-equality assert must not invent an input_output spec"
         );
     }
 }
