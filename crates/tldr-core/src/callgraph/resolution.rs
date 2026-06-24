@@ -1713,8 +1713,15 @@ fn resolve_capitalized_receiver(
 /// still resolvable when it is the sole candidate.
 fn is_test_path(p: &Path) -> bool {
     p.components().any(|c| {
+        // fix-R7 (cluster[11]): case-insensitive — Swift/Java/Kotlin capitalise
+        // the directory (`Tests/`, `Test/`). The prior (case-sensitive) form
+        // never matched Swift's `Tests/` so the prefer-non-test FuncIndex
+        // tiebreak silently did nothing for swift-collections / swift-alamofire
+        // (`Session` -> Tests/WebSocketTests.swift). Lowercasing makes the
+        // tiebreak fire for those repos too.
+        let lc = c.as_os_str().to_string_lossy().to_ascii_lowercase();
         matches!(
-            c.as_os_str().to_string_lossy().as_ref(),
+            lc.as_str(),
             "tests" | "test" | "__tests__" | "spec" | "specs" | "testing"
         )
     })

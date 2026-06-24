@@ -7,7 +7,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tree_sitter::{Parser, Tree};
 
@@ -385,6 +385,24 @@ impl FuncEntry {
     }
 }
 
+/// fix-R7 (cluster[11]): a path is "test" when any of its components is a
+/// conventional test directory name. Mirrors `resolution::is_test_path` and
+/// `context::builder::is_test_path` so the ClassIndex prefer-production tiebreak
+/// matches the rest of the call-graph resolver. Used ONLY as a tiebreak (never
+/// to exclude), so a test-only class is still resolvable when it is the sole
+/// definition.
+fn path_is_test(p: &Path) -> bool {
+    p.components().any(|c| {
+        // Case-insensitive: Swift/Java/Kotlin conventionally capitalise the
+        // directory (`Tests/`, `Test/`), unlike Python/JS (`tests/`).
+        let lc = c.as_os_str().to_string_lossy().to_ascii_lowercase();
+        matches!(
+            lc.as_str(),
+            "tests" | "test" | "__tests__" | "spec" | "specs" | "testing"
+        )
+    })
+}
+
 /// Entry in the class index.
 ///
 /// Stores metadata about a class definition for cross-file resolution.
@@ -688,8 +706,31 @@ impl ClassIndex {
     }
 
     /// Inserts a class entry.
+    ///
+    /// fix-R7 (cluster[11], Swift research-needed): `ClassIndex` is
+    /// single-valued, so when a class name is defined in more than one file the
+    /// surviving entry decides where `calls`/`hubs`/`impact` etc. resolve it.
+    /// Plain `HashMap::insert` was last-write-wins (order-dependent), which made
+    /// `Session` (production `Source/Core/Session.swift` + `extension Session`
+    /// in `Tests/...`) resolve to a TEST file. We apply the same prefer-
+    /// production tiebreak the FuncIndex resolver uses: a production definition
+    /// is never overwritten by a colliding test-file definition. A test-only
+    /// class is still stored (the rule is a tiebreak among collisions, not an
+    /// exclusion). Distinct definitions that are both production keep the
+    /// last-write-wins behaviour (genuine collision the index cannot
+    /// disambiguate without module scope — see the design-fork doc).
     pub fn insert(&mut self, class_name: impl Into<String>, entry: ClassEntry) {
-        self.entries.insert(class_name.into(), entry);
+        let class_name = class_name.into();
+        if let Some(existing) = self.entries.get(&class_name) {
+            let existing_is_test = path_is_test(&existing.file_path);
+            let new_is_test = path_is_test(&entry.file_path);
+            // Keep the existing PRODUCTION def when the incoming one is a test
+            // def — do not let a test file clobber the canonical definition.
+            if !existing_is_test && new_is_test {
+                return;
+            }
+        }
+        self.entries.insert(class_name, entry);
     }
 
     /// Looks up a class by name.
@@ -714,9 +755,16 @@ impl ClassIndex {
 
     /// Merges another ClassIndex into this one.
     ///
-    /// Used to combine results from parallel processing.
+    /// Used to combine results from parallel processing. fix-R7 (cluster[11]):
+    /// routes every merged entry through [`ClassIndex::insert`] so the
+    /// prefer-production tiebreak applies to cross-shard collisions too (a
+    /// test-file shard merged after a production shard must not clobber the
+    /// canonical def). Previously `HashMap::extend` was last-write-wins and
+    /// shard-order-dependent.
     pub fn merge(&mut self, other: ClassIndex) {
-        self.entries.extend(other.entries);
+        for (name, entry) in other.entries {
+            self.insert(name, entry);
+        }
     }
 
     /// Returns an iterator over all entries.
@@ -838,6 +886,98 @@ mod tests {
         assert!(config.respect_ignore);
         assert_eq!(config.parallelism, 0);
         assert!(!config.verbose);
+    }
+
+    /// fix-R7 (cluster[11], Swift research-needed): when a class name is defined
+    /// in BOTH a production file and a test file, `ClassIndex` (single-valued)
+    /// must keep the PRODUCTION definition regardless of insertion order. The
+    /// pre-fix `HashMap::insert` was last-write-wins, so `Session` (defined in
+    /// `Source/Core/Session.swift` and `extension Session` in
+    /// `Tests/WebSocketTests.swift`) resolved to the test file in `hubs`/`calls`
+    /// depending on shard ordering. This is the same "prefer non-test"
+    /// disambiguation already applied to FuncIndex.
+    #[test]
+    fn class_index_prefers_production_over_test_regardless_of_order() {
+        let src = ClassEntry::new(
+            PathBuf::from("Source/Core/Session.swift"),
+            30,
+            200,
+            vec!["request".to_string()],
+            vec![],
+        );
+        let test = ClassEntry::new(
+            PathBuf::from("Tests/WebSocketTests.swift"),
+            10,
+            50,
+            vec!["request".to_string()],
+            vec![],
+        );
+
+        // Order A: production first, then test inserted later (the order that
+        // previously let the test file overwrite the canonical def).
+        let mut idx_a = ClassIndex::new();
+        idx_a.insert("Session", src.clone());
+        idx_a.insert("Session", test.clone());
+        assert_eq!(
+            idx_a.get("Session").map(|e| e.file_path.clone()),
+            Some(PathBuf::from("Source/Core/Session.swift")),
+            "production def must win when a later test def collides"
+        );
+
+        // Order B: test first, then production.
+        let mut idx_b = ClassIndex::new();
+        idx_b.insert("Session", test.clone());
+        idx_b.insert("Session", src.clone());
+        assert_eq!(
+            idx_b.get("Session").map(|e| e.file_path.clone()),
+            Some(PathBuf::from("Source/Core/Session.swift")),
+            "production def must win when inserted after a test def"
+        );
+    }
+
+    /// fix-R7 (cluster[11], Swift): a test-only class (no production definition)
+    /// must STILL be resolvable — the prefer-production rule is a tiebreak, not
+    /// an exclusion (regression guard for the bounded fix).
+    #[test]
+    fn class_index_keeps_test_only_class() {
+        let test = ClassEntry::new(
+            PathBuf::from("Tests/HelperTests.swift"),
+            5,
+            20,
+            vec!["help".to_string()],
+            vec![],
+        );
+        let mut idx = ClassIndex::new();
+        idx.insert("TestOnlyHelper", test);
+        assert_eq!(
+            idx.get("TestOnlyHelper").map(|e| e.file_path.clone()),
+            Some(PathBuf::from("Tests/HelperTests.swift")),
+            "a test-only class must remain resolvable when it is the sole def"
+        );
+    }
+
+    /// fix-R7 (cluster[11], Swift): `ClassIndex::merge` (used to combine parallel
+    /// shards) must apply the same prefer-production tiebreak; a test-file shard
+    /// merged on top of a production shard must not clobber the production def.
+    #[test]
+    fn class_index_merge_prefers_production() {
+        let mut prod_shard = ClassIndex::new();
+        prod_shard.insert(
+            "Session",
+            ClassEntry::new(PathBuf::from("Source/Session.swift"), 1, 9, vec![], vec![]),
+        );
+        let mut test_shard = ClassIndex::new();
+        test_shard.insert(
+            "Session",
+            ClassEntry::new(PathBuf::from("Tests/SessionTests.swift"), 1, 9, vec![], vec![]),
+        );
+
+        prod_shard.merge(test_shard);
+        assert_eq!(
+            prod_shard.get("Session").map(|e| e.file_path.clone()),
+            Some(PathBuf::from("Source/Session.swift")),
+            "merge must keep the production def over a test def"
+        );
     }
 
     #[test]
