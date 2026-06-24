@@ -2167,10 +2167,19 @@ impl ResourceDetector {
         // For C/C++: also check for new/malloc at the call level
         if matches!(self.lang, Language::C | Language::Cpp) {
             if node.kind() == "call_expression" {
-                let text = node_text(node, source);
-                for &(creator, rtype) in patterns.creators {
-                    if text.starts_with(creator) {
-                        return Some(rtype.to_string());
+                // fix-R7 (cluster[11] RC2): match the creator by EXACT callee
+                // name (extracted from the AST `function` child), not by a
+                // raw-text prefix. `node_text(node).starts_with("fopen")`
+                // wrongly matched `fopen_s(&fp, ...)` (a Win32 wrapper whose
+                // result is an `errno_t`, not a FILE*), flagging the int return
+                // var as a leaked file. `extract_call_name` already pulls the
+                // bare callee identifier (`fopen_s` vs `fopen`), so equality is
+                // both correct and AST-driven.
+                if let Some(callee) = extract_call_name(node, source) {
+                    for &(creator, rtype) in patterns.creators {
+                        if callee == creator {
+                            return Some(rtype.to_string());
+                        }
                     }
                 }
             }
@@ -2259,6 +2268,12 @@ pub struct LeakDetector {
     paths_enumerated: usize,
     /// Whether we hit the limit
     hit_limit: bool,
+    /// Language being analyzed — selects the close-call extractor shape.
+    lang: Language,
+    /// fix-R7 (cluster[11] RC1): per-variable set of CFG block ids that close
+    /// the variable. Populated by [`LeakDetector::index_closes`] before path
+    /// analysis; consulted by [`LeakDetector::path_has_close`].
+    close_blocks: HashMap<String, HashSet<usize>>,
 }
 
 impl LeakDetector {
@@ -2267,44 +2282,93 @@ impl LeakDetector {
             max_paths: MAX_PATHS,
             paths_enumerated: 0,
             hit_limit: false,
+            lang: Language::Python,
+            close_blocks: HashMap::new(),
+        }
+    }
+
+    /// Construct a leak detector bound to a specific language so the close-call
+    /// extractor (`extract_close_call`) uses the right AST shape.
+    pub fn with_language(lang: Language) -> Self {
+        Self {
+            max_paths: MAX_PATHS,
+            paths_enumerated: 0,
+            hit_limit: false,
+            lang,
+            close_blocks: HashMap::new(),
         }
     }
 
     /// Detect potential leaks using CFG path analysis.
+    ///
+    /// `func_node` is the analyzed function's AST root. It is walked once to
+    /// index every close call (`fclose(fp)`, `fp.close()`, …) onto the CFG
+    /// block that contains it (fix-R7 cluster[11] RC1) and to detect handles
+    /// whose ownership is transferred out of the function (returned / stored),
+    /// which are not leaks.
     pub fn detect(
         &mut self,
         cfg: &SimpleCfg,
         resources: &[ResourceInfo],
         source: &[u8],
+        func_node: Node,
         show_paths: bool,
     ) -> Vec<LeakInfo> {
         let mut leaks = Vec::new();
         self.paths_enumerated = 0;
         self.hit_limit = false;
 
+        // fix-R7 (cluster[11] RC1): index close calls -> CFG blocks BEFORE path
+        // analysis so `path_has_close` is a real per-path membership check
+        // instead of the old hardcoded `false`.
+        self.index_closes(cfg, func_node, source);
+
         for resource in resources {
-            // Skip resources in context managers
+            // Skip resources in context managers / RAII / try-with-resources.
             if resource.closed {
                 continue;
             }
+
+            // fix-R7 (cluster[11] RC1): a handle whose ownership is transferred
+            // out of the function (C/C++ `return fp;`) is the CALLER's
+            // responsibility, not a leak here.
+            if resource_ownership_transferred(func_node, &resource.name, source, self.lang) {
+                continue;
+            }
+
+            // fix-R7 (cluster[11] RC1): lines that exit the function on the
+            // resource's OWN acquisition-failure guard (`if ((fp=fopen())==NULL)
+            // return;`, `fd=open(); if (fd==-1) return;`). On such a path the
+            // resource was NOT successfully acquired, so the absence of a close
+            // is correct, not a leak. Without this the very common C idiom
+            // "acquire in/with an error check, early-return on failure"
+            // false-positives (c-redis util.c `dir`/`fd`/`dir_fd`).
+            let failure_exit_lines =
+                acquisition_failure_exit_lines(func_node, &resource.name, source, self.lang);
 
             // Find all paths from resource creation to exits
             let paths = self.enumerate_paths(cfg, resource, source);
 
             // Check if any path lacks a close
             for path in &paths {
-                if !self.path_has_close(path, &resource.name) {
-                    leaks.push(LeakInfo {
-                        resource: resource.name.clone(),
-                        line: resource.line,
-                        paths: if show_paths {
-                            Some(vec![self.format_path(path)])
-                        } else {
-                            None
-                        },
-                    });
-                    break; // One leak path is enough per resource
+                if self.path_has_close(path, &resource.name) {
+                    continue;
                 }
+                // Skip acquisition-failure paths: the terminal block carries an
+                // error-guard exit on this resource (resource is NULL/invalid).
+                if self.path_exits_on_acquisition_failure(cfg, path, &failure_exit_lines) {
+                    continue;
+                }
+                leaks.push(LeakInfo {
+                    resource: resource.name.clone(),
+                    line: resource.line,
+                    paths: if show_paths {
+                        Some(vec![self.format_path(path)])
+                    } else {
+                        None
+                    },
+                });
+                break; // One leak path is enough per resource
             }
         }
 
@@ -2318,9 +2382,35 @@ impl LeakDetector {
         cfg: &SimpleCfg,
         resources: &[ResourceInfo],
         source: &[u8],
+        func_node: Node,
         show_paths: bool,
     ) -> Vec<LeakInfo> {
-        self.detect(cfg, resources, source, show_paths)
+        self.detect(cfg, resources, source, func_node, show_paths)
+    }
+
+    /// fix-R7 (cluster[11] RC1): walk the function body for close calls and
+    /// record, per resource variable, the set of CFG block ids that close it.
+    ///
+    /// A close is recognized by [`extract_close_call`] (the same extractor the
+    /// double-close / use-after-close detectors use) filtered by the language's
+    /// `closers` set, so this is AST-driven and consistent across the resource
+    /// analyses. The close-call's source line is mapped to its enclosing block
+    /// via the block's `lines` membership.
+    fn index_closes(&mut self, cfg: &SimpleCfg, func_node: Node, source: &[u8]) {
+        self.close_blocks.clear();
+        let patterns = get_resource_patterns(self.lang);
+        // Collect (var, close_line) pairs.
+        let mut close_lines: Vec<(String, u32)> = Vec::new();
+        collect_close_lines(func_node, source, self.lang, &patterns, &mut close_lines);
+
+        // Map each close line onto the block(s) whose `lines` contain it.
+        for (var, line) in close_lines {
+            for (block_id, block) in &cfg.blocks {
+                if block.lines.contains(&line) {
+                    self.close_blocks.entry(var.clone()).or_default().insert(*block_id);
+                }
+            }
+        }
     }
 
     /// Enumerate paths from resource creation to exits (TIGER-04: with limit).
@@ -2396,13 +2486,45 @@ impl LeakDetector {
         current_path.pop();
     }
 
+    /// fix-R7 (cluster[11] RC1): a path closes the resource iff ANY block on the
+    /// path is one of the blocks that close `resource_name` (precomputed by
+    /// [`LeakDetector::index_closes`]). Previously this was a hardcoded `false`,
+    /// so every path was considered close-free and every non-context-managed
+    /// resource was reported as a leak.
+    ///
+    /// The check is per-PATH (not per-function): a resource closed only on one
+    /// branch still leaks on the branch that omits the close, because that
+    /// path's blocks do not intersect the close-block set.
     fn path_has_close(&self, path: &[usize], resource_name: &str) -> bool {
-        // This is a simplified check - a real implementation would track
-        // the resource state through the CFG
-        // For now, we assume the path doesn't have a close
-        // (proper implementation would look for close calls in each block)
-        let _ = (path, resource_name);
-        false
+        let Some(blocks) = self.close_blocks.get(resource_name) else {
+            return false;
+        };
+        path.iter().any(|b| blocks.contains(b))
+    }
+
+    /// fix-R7 (cluster[11] RC1): true when this path exits through the
+    /// resource's acquisition-FAILURE guard (the resource is NULL/invalid on
+    /// this path, so no close is expected and it is not a leak).
+    ///
+    /// A path's terminal block is its last block; we check whether that block
+    /// contains any of the precomputed `failure_exit_lines` (return/exit
+    /// statements inside an error-guard `if` on this resource).
+    fn path_exits_on_acquisition_failure(
+        &self,
+        cfg: &SimpleCfg,
+        path: &[usize],
+        failure_exit_lines: &HashSet<u32>,
+    ) -> bool {
+        if failure_exit_lines.is_empty() {
+            return false;
+        }
+        let Some(&last) = path.last() else {
+            return false;
+        };
+        let Some(block) = cfg.blocks.get(&last) else {
+            return false;
+        };
+        block.lines.iter().any(|l| failure_exit_lines.contains(l))
     }
 
     fn format_path(&self, path: &[usize]) -> String {
@@ -3685,6 +3807,268 @@ fn qualified_creator_type(node: Node, source: &[u8], lang: Language) -> Option<S
     }
 }
 
+/// fix-R7 (cluster[11] RC1): collect `(resource_var, close_line)` pairs by
+/// walking `node` for close calls.
+///
+/// Recognizes a close exactly as the double-close / use-after-close detectors
+/// do: an AST call whose `(var, method)` (from [`extract_close_call`]) has
+/// `method` in the language's `closers` set. The 1-indexed source line of the
+/// call is recorded so the caller can map it onto a CFG block.
+fn collect_close_lines(
+    node: Node,
+    source: &[u8],
+    lang: Language,
+    patterns: &LangResourcePatterns,
+    out: &mut Vec<(String, u32)>,
+) {
+    let kind = node.kind();
+    if kind == "call"
+        || kind == "call_expression"
+        || kind == "method_invocation"
+        || kind == "invocation_expression"
+        || kind == "function_call"
+    {
+        if let Some((var_name, method)) = extract_close_call(node, source, lang) {
+            if patterns.closers.contains(&method.as_str()) {
+                let line = node.start_position().row as u32 + 1;
+                out.push((var_name, line));
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_close_lines(child, source, lang, patterns, out);
+    }
+}
+
+/// fix-R7 (cluster[11] RC1): true when ownership of `var_name` is transferred
+/// out of the function so it is NOT a leak here.
+///
+/// The common C/C++ pattern is `return fp;` (a factory that hands the open
+/// handle to its caller — e.g. tinyxml2 `XMLDocument::LoadFile`). We detect a
+/// `return`-kind statement whose returned expression is (or contains, after a
+/// cast/parenthesization) the bare identifier `var_name`. Languages with RAII /
+/// GC ownership do not need this (their handles are marked closed via
+/// `in_context_manager`/escape analysis already), so we scope it to C/C++.
+fn resource_ownership_transferred(
+    func_node: Node,
+    var_name: &str,
+    source: &[u8],
+    lang: Language,
+) -> bool {
+    if !matches!(lang, Language::C | Language::Cpp) {
+        return false;
+    }
+    return_transfers_var(func_node, var_name, source)
+}
+
+/// fix-R7 (cluster[11] RC1): collect the source lines that exit the function on
+/// `var_name`'s acquisition-FAILURE guard.
+///
+/// The C idiom `if ((fp = fopen(..)) == NULL) return -1;` (and `fd = open();
+/// if (fd == -1) return -1;`, `if (!p) return;`) means the early-return branch
+/// is taken ONLY when acquisition FAILED — the resource is NULL/invalid there,
+/// so the missing close on that path is correct, not a leak. We find `if`
+/// statements whose condition is an error-test referencing `var_name`
+/// (`== NULL`, `== 0`, `== -1`, `< 0`, or `!var`) and whose consequence
+/// contains an exit (`return`/`goto`/`break`/`continue`) that does NOT itself
+/// close the resource, and record those exit lines. The leak walk then skips
+/// any path whose terminal block is one of these failure exits.
+///
+/// Scoped to C/C++ (the idiom + the false-positive class are C/C++); other
+/// languages mark acquisition via `in_context_manager`/RAII already.
+fn acquisition_failure_exit_lines(
+    func_node: Node,
+    var_name: &str,
+    source: &[u8],
+    lang: Language,
+) -> HashSet<u32> {
+    let mut out = HashSet::new();
+    if !matches!(lang, Language::C | Language::Cpp) {
+        return out;
+    }
+    let patterns = get_resource_patterns(lang);
+    collect_acquisition_failure_exits(func_node, var_name, source, &patterns, &mut out);
+    out
+}
+
+fn collect_acquisition_failure_exits(
+    node: Node,
+    var_name: &str,
+    source: &[u8],
+    patterns: &LangResourcePatterns,
+    out: &mut HashSet<u32>,
+) {
+    if node.kind() == "if_statement" {
+        if let Some(cond) = node.child_by_field_name("condition") {
+            if condition_is_error_guard_on(cond, var_name, source) {
+                // The consequence is the then-branch. Collect exit statement
+                // lines that do not close the resource.
+                if let Some(cons) = node.child_by_field_name("consequence") {
+                    collect_exit_lines_without_close(cons, var_name, source, patterns, out);
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_acquisition_failure_exits(child, var_name, source, patterns, out);
+    }
+}
+
+/// True when `cond` is an error/null test that references `var_name`:
+/// `var == NULL|0|-1`, `var < 0`, `!var`, or the same with `var` assigned
+/// inside the condition (`(var = acquire()) == NULL`). Structural per AST.
+fn condition_is_error_guard_on(cond: Node, var_name: &str, source: &[u8]) -> bool {
+    match cond.kind() {
+        "parenthesized_expression" => cond
+            .named_child(0)
+            .map(|c| condition_is_error_guard_on(c, var_name, source))
+            .unwrap_or(false),
+        // `!var`
+        "unary_expression" => {
+            let op_is_not = cond
+                .child_by_field_name("operator")
+                .map(|o| node_text(o, source) == "!")
+                .unwrap_or(false);
+            op_is_not
+                && cond
+                    .child_by_field_name("argument")
+                    .map(|a| expr_references_var(a, var_name, source))
+                    .unwrap_or(false)
+        }
+        // `var == NULL`, `var == -1`, `var < 0`, `(var = acquire()) == NULL`
+        "binary_expression" => {
+            let op = cond
+                .child_by_field_name("operator")
+                .map(|o| node_text(o, source))
+                .unwrap_or_default();
+            if !matches!(op, "==" | "<" | "<=" | "!=") {
+                return false;
+            }
+            let left = cond.child_by_field_name("left");
+            let right = cond.child_by_field_name("right");
+            // One side references the var (directly or via the assignment), the
+            // other is an error sentinel (NULL / 0 / negative literal).
+            let var_side = left
+                .map(|l| expr_references_var(l, var_name, source))
+                .unwrap_or(false)
+                || right
+                    .map(|r| expr_references_var(r, var_name, source))
+                    .unwrap_or(false);
+            let sentinel_side = left
+                .map(|l| is_error_sentinel(l, source))
+                .unwrap_or(false)
+                || right.map(|r| is_error_sentinel(r, source)).unwrap_or(false);
+            var_side && sentinel_side
+        }
+        _ => false,
+    }
+}
+
+/// True when `node`'s subtree references the identifier `var_name` (as a bare
+/// identifier or as the LHS of an inner assignment `var = acquire()`).
+fn expr_references_var(node: Node, var_name: &str, source: &[u8]) -> bool {
+    match node.kind() {
+        "identifier" => node_text(node, source) == var_name,
+        "parenthesized_expression" | "assignment_expression" => {
+            let mut cursor = node.walk();
+            let children: Vec<Node> = node.children(&mut cursor).collect();
+            children
+                .into_iter()
+                .any(|c| expr_references_var(c, var_name, source))
+        }
+        _ => false,
+    }
+}
+
+/// True when `node` is an error sentinel: `NULL`, `0`, or a negative literal.
+fn is_error_sentinel(node: Node, source: &[u8]) -> bool {
+    match node.kind() {
+        "null" => true,
+        "number_literal" => {
+            let t = node_text(node, source);
+            t == "0" || t.starts_with('-')
+        }
+        "unary_expression" => {
+            // `-1`
+            node.child_by_field_name("operator")
+                .map(|o| node_text(o, source) == "-")
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+/// Collect lines of exit statements (`return`/`goto`/`break`/`continue`) within
+/// `node` that do NOT close `var_name`. A `return`-after-close is fine (handled
+/// by the close index); here we want the failure exits that skip the close.
+fn collect_exit_lines_without_close(
+    node: Node,
+    var_name: &str,
+    source: &[u8],
+    patterns: &LangResourcePatterns,
+    out: &mut HashSet<u32>,
+) {
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "return_statement" | "goto_statement" | "break_statement" | "continue_statement"
+    ) {
+        // If this exit's enclosing branch already closed the resource the close
+        // index covers it; we only need to mark the exit line so its CFG block
+        // (the failure-branch terminal) is recognized. Record the exit line.
+        let line = node.start_position().row as u32 + 1;
+        out.insert(line);
+        return;
+    }
+    // Do not descend into a nested closing call's siblings unnecessarily, but a
+    // simple full descent is correct and cheap for a guard body.
+    let _ = (var_name, patterns);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_exit_lines_without_close(child, var_name, source, patterns, out);
+    }
+}
+
+/// Recursively scan for a C/C++ `return_statement` that returns `var_name`.
+fn return_transfers_var(node: Node, var_name: &str, source: &[u8]) -> bool {
+    if node.kind() == "return_statement" {
+        // The returned expression is the first named child. Accept a bare
+        // identifier, or an identifier nested under a cast/parenthesized
+        // expression (`return (FILE*)fp;`).
+        if let Some(expr) = node.named_child(0) {
+            if identifier_subtree_matches(expr, var_name, source) {
+                return true;
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if return_transfers_var(child, var_name, source) {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when `node` IS the bare identifier `var_name`, or is a cast /
+/// parenthesized / unary wrapper whose sole identifier operand is `var_name`.
+/// Deliberately conservative: a `return f(fp);` (call, not a transfer of `fp`
+/// itself) does NOT match because the identifier is an argument of a call node,
+/// which we do not unwrap.
+fn identifier_subtree_matches(node: Node, var_name: &str, source: &[u8]) -> bool {
+    match node.kind() {
+        "identifier" => node_text(node, source) == var_name,
+        "cast_expression" | "parenthesized_expression" | "pointer_expression" => node
+            .named_child(node.named_child_count().saturating_sub(1))
+            .map(|c| identifier_subtree_matches(c, var_name, source))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Extract the variable name from a C/C++ declarator (handles pointer_declarator, etc.)
 fn extract_c_declarator_name(declarator: Node, source: &[u8]) -> Option<String> {
     match declarator.kind() {
@@ -4447,8 +4831,8 @@ fn analyze_function_with_lang(
     // Detect leaks
     let leaks = if check_leaks {
         let cfg = build_cfg_multilang(func_node, source, lang);
-        let mut leak_detector = LeakDetector::new();
-        leak_detector.detect_multilang(&cfg, &resources, source, args.show_paths)
+        let mut leak_detector = LeakDetector::with_language(lang);
+        leak_detector.detect_multilang(&cfg, &resources, source, func_node, args.show_paths)
     } else {
         Vec::new()
     };
@@ -5296,6 +5680,207 @@ void read() {
 "#;
         let got = char_detect(src, "read", Language::Cpp);
         assert_eq!(got, vec![("fp".to_string(), "file".to_string())]);
+    }
+
+    /// fix-R7 (cluster[11] RC2): `fopen_s` must NOT match the `fopen` creator.
+    /// The C/C++ creator match used `node_text(node).starts_with(creator)`, so
+    /// `fopen_s( &fp, ... )` (whose result `err` is an `errno_t` int, not a
+    /// FILE*) was misdetected as a `file` resource named `err`. Matching must be
+    /// exact callee-name equality via the AST `function` child.
+    /// Reproduces cpp-tinyxml2 `err`@2322.
+    #[test]
+    fn char_cpp_fopen_s_does_not_misdetect_errno_var() {
+        let src = r#"
+void open(const char* path, const char* mode) {
+    FILE* fp = 0;
+    errno_t err = fopen_s(&fp, path, mode);
+}
+"#;
+        let got = char_detect(src, "open", Language::Cpp);
+        assert!(
+            !got.iter().any(|(n, _)| n == "err"),
+            "errno_t `err` from fopen_s must NOT be flagged as a file resource: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC2): regression guard — the genuine `fopen` creator
+    /// still matches exactly after switching from prefix to exact equality.
+    #[test]
+    fn char_c_fopen_exact_still_detected() {
+        let src = "void read(const char* p) {\n    FILE* fp = fopen(p, \"r\");\n}\n";
+        let got = char_detect(src, "read", Language::C);
+        assert!(
+            got.iter().any(|(n, t)| n == "fp" && t == "file"),
+            "exact `fopen` must still be detected as file `fp`: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): a C file that IS closed on every path must NOT
+    /// be reported as a leak. `LeakDetector::path_has_close` was a hardcoded
+    /// `false`, so EVERY non-context-managed C/C++ resource was flagged leaked
+    /// regardless of an explicit `fclose`. Reproduces c-redis util.c `fp`@963
+    /// (closed at `if (fp) fclose(fp);`).
+    #[test]
+    fn char_c_fclose_on_all_paths_is_not_leak() {
+        let src = "\
+void seed() {
+    FILE *fp = fopen(\"/dev/urandom\", \"r\");
+    if (fp) fclose(fp);
+}
+";
+        let got = char_leak_names(src, Language::C);
+        assert!(
+            !got.contains(&"fp".to_string()),
+            "C `fp` closed via `fclose(fp)` must NOT leak: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): a C file that is opened but NEVER closed on
+    /// some path MUST still be reported as a leak (the real-leak direction —
+    /// the fix must not blanket-suppress leaks).
+    #[test]
+    fn char_c_no_close_still_leaks() {
+        let src = "\
+void read(const char* p) {
+    FILE *fp = fopen(p, \"r\");
+    return;
+}
+";
+        let got = char_leak_names(src, Language::C);
+        assert!(
+            got.contains(&"fp".to_string()),
+            "C `fp` never closed must still leak: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): a C/C++ function that RETURNS the handle
+    /// transfers ownership to the caller and must NOT be reported as a leak.
+    /// Reproduces cpp-tinyxml2 `fp`@2327 (`return fp;`@2329).
+    #[test]
+    fn char_cpp_returned_handle_is_not_leak() {
+        let src = "\
+FILE* openfile(const char* path, const char* mode) {
+    FILE* fp = fopen(path, mode);
+    return fp;
+}
+";
+        let got = char_leak_names(src, Language::Cpp);
+        assert!(
+            !got.contains(&"fp".to_string()),
+            "C++ returned handle `fp` (ownership transfer) must NOT leak: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): regression guard — Python non-managed open
+    /// must STILL leak (the shared `detect` path must keep working for the
+    /// in-context-manager=false case in languages that already worked).
+    #[test]
+    fn char_python_open_still_leaks_after_rc1() {
+        let src = "def read(path):\n    f = open(path)\n    return f.read()\n";
+        let got = char_leak_names(src, Language::Python);
+        assert!(
+            got.contains(&"f".to_string()),
+            "Python non-managed open must still leak `f`: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): a C resource acquired INSIDE an error-guard
+    /// `if` whose failure branch early-returns must NOT leak — on that branch
+    /// the resource is NULL (acquisition failed). Reproduces c-redis util.c
+    /// `dir`@1132 (`if ((dir = opendir(dname)) == NULL) return -1;` then
+    /// `closedir(dir)` on every other path).
+    #[test]
+    fn char_c_acquire_in_if_cond_failure_return_not_leak() {
+        let src = "\
+int dirRemove(char *dname) {
+    void *dir;
+    if ((dir = opendir(dname)) == NULL) {
+        return -1;
+    }
+    while (readdir(dir) != NULL) {
+        if (something()) {
+            closedir(dir);
+            return -1;
+        }
+    }
+    closedir(dir);
+    return 0;
+}
+";
+        let got = char_leak_names(src, Language::C);
+        assert!(
+            !got.contains(&"dir".to_string()),
+            "`dir` acquired in if-cond + closed on all real paths must NOT leak: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): the `fd = open(); if (fd == -1) return;` error
+    /// sentinel form (open returns -1 on failure) must also be recognized as an
+    /// acquisition-failure guard. Reproduces c-redis util.c `fd`@1141 /
+    /// `dir_fd`@1207. The fd is then closed via `close(fd)` on real paths.
+    #[test]
+    fn char_c_fd_error_sentinel_guard_not_leak() {
+        let src = "\
+int sync_dir(char *name) {
+    int fd = open(name, 0);
+    if (fd == -1) {
+        return -1;
+    }
+    if (fsync(fd) == -1) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+";
+        let got = char_leak_names(src, Language::C);
+        assert!(
+            !got.contains(&"fd".to_string()),
+            "`fd` with `== -1` failure guard + close on real paths must NOT leak: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): the acquisition-failure suppression must be
+    /// SCOPED — a resource acquired with an error guard but then NEVER closed on
+    /// a SUCCESS path must STILL leak (do not blanket-suppress).
+    #[test]
+    fn char_c_acquire_guard_but_no_close_on_success_still_leaks() {
+        let src = "\
+int bad(char *name) {
+    int fd = open(name, 0);
+    if (fd == -1) {
+        return -1;
+    }
+    use_fd(fd);
+    return 0;
+}
+";
+        let got = char_leak_names(src, Language::C);
+        assert!(
+            got.contains(&"fd".to_string()),
+            "`fd` valid but never closed on the success path must STILL leak: got {got:?}"
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC1): a C resource closed on ONE branch but leaked on
+    /// another (`if (cond) fclose(fp);` with no else) MUST be reported — the
+    /// per-path check must find the close-free path.
+    #[test]
+    fn char_c_close_on_one_branch_only_leaks() {
+        let src = "\
+void maybe(const char* p, int cond) {
+    FILE *fp = fopen(p, \"r\");
+    if (cond) {
+        fclose(fp);
+    }
+}
+";
+        let got = char_leak_names(src, Language::C);
+        assert!(
+            got.contains(&"fp".to_string()),
+            "C `fp` closed only on one branch must leak (close-free path exists): got {got:?}"
+        );
     }
 
     // =========================================================================
