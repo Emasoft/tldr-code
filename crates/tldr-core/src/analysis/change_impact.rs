@@ -370,7 +370,7 @@ pub fn change_impact_extended(
         // so the command still succeeds.
         if matches!(status, ChangeImpactStatus::NoChanges) {
             if let Ok(call_graph) = build_project_call_graph(project, language, None, true) {
-                let edge_count = call_graph.edges().count();
+                let (node_count, edge_count) = call_graph_node_edge_counts(&call_graph);
                 return Ok(ChangeImpactReport {
                     changed_files: vec![],
                     affected_tests: vec![],
@@ -379,7 +379,7 @@ pub fn change_impact_extended(
                     detection_method: method.to_string(),
                     metadata: Some(ChangeImpactMetadata {
                         language: language.to_string(),
-                        call_graph_nodes: edge_count,
+                        call_graph_nodes: node_count,
                         call_graph_edges: edge_count,
                         analysis_depth: Some(depth),
                     }),
@@ -439,16 +439,36 @@ pub fn change_impact_extended(
         affected_functions,
         detection_method: method.to_string(),
         metadata: {
-            let edge_count = call_graph.edges().count();
+            let (node_count, edge_count) = call_graph_node_edge_counts(&call_graph);
             Some(ChangeImpactMetadata {
                 language: language.to_string(),
-                call_graph_nodes: edge_count, // Approximate using edge count
+                call_graph_nodes: node_count,
                 call_graph_edges: edge_count,
                 analysis_depth: Some(depth),
             })
         },
         status: ChangeImpactStatus::Completed,
     })
+}
+
+/// fix-R7 (cluster[11] RC6): compute the REAL distinct-node count alongside the
+/// edge count for call-graph metadata.
+///
+/// A call-graph node is a distinct `(file, function)` participant. Previously
+/// `call_graph_nodes` was set to `edges().count()` (an "approximation" that was
+/// simply wrong — a fan-out graph reported nodes == edges). We derive nodes by
+/// inserting both endpoints of every edge into a set, so an isolated callee that
+/// is never itself a caller still counts once. This is language-agnostic (the
+/// call graph is already resolved) and a single pass over the edges.
+fn call_graph_node_edge_counts(call_graph: &ProjectCallGraph) -> (usize, usize) {
+    let mut nodes: HashSet<(&Path, &str)> = HashSet::new();
+    let mut edge_count = 0usize;
+    for edge in call_graph.edges() {
+        nodes.insert((edge.src_file.as_path(), edge.src_func.as_str()));
+        nodes.insert((edge.dst_file.as_path(), edge.dst_func.as_str()));
+        edge_count += 1;
+    }
+    (nodes.len(), edge_count)
 }
 
 /// Build an empty-shape report with the specified status.
@@ -1960,5 +1980,47 @@ func TestLogout(t *testing.T) {
         let report: ChangeImpactReport =
             serde_json::from_str(legacy_json).expect("legacy JSON should deserialize");
         assert_eq!(report.status, ChangeImpactStatus::Completed);
+    }
+
+    /// fix-R7 (cluster[11] RC6): change-impact metadata must report a REAL
+    /// distinct-node count, not the edge count. Previously both
+    /// `call_graph_nodes` and `call_graph_edges` were assigned the same
+    /// `edges().count()` value, so a fan-out graph (1 caller -> 2 callees,
+    /// = 3 nodes, 2 edges) reported nodes==edges==2. A node is a distinct
+    /// (file, function) participant in the graph.
+    #[test]
+    fn test_change_impact_node_count_distinct_from_edge_count() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let src = project.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // f calls g and h -> 3 distinct functions (nodes), 2 edges.
+        std::fs::write(
+            src.join("module.py"),
+            "def g():\n    return 1\n\ndef h():\n    return 2\n\ndef f():\n    g()\n    h()\n    return 0\n",
+        )
+        .unwrap();
+
+        let report = change_impact_extended(
+            project,
+            DetectionMethod::Explicit,
+            Language::Python,
+            10,
+            true,
+            &[],
+            Some(vec![src.join("module.py")]),
+        )
+        .expect("change_impact_extended should not error");
+
+        let md = report.metadata.expect("metadata should be present");
+        // 2 edges: f->g, f->h.
+        assert_eq!(md.call_graph_edges, 2, "expected exactly 2 edges (f->g, f->h)");
+        // 3 nodes: f, g, h. The bug reported 2 (== edges).
+        assert_eq!(
+            md.call_graph_nodes, 3,
+            "node count must be distinct (file,func) participants = 3, not the edge count"
+        );
     }
 }
