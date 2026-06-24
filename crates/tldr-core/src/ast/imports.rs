@@ -497,8 +497,21 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                 }
             }
             "mod_item" => {
-                // mod module_name;
-                if let Some(name) = child.child_by_field_name("name") {
+                // fix-R7 (cluster[11] RC8b): distinguish a module *declaration*
+                // (`mod foo;`) from an inline module *definition*
+                // (`mod tests { ... }`).
+                //
+                // A declaration brings an external module into the tree -> it is
+                // a legitimate module reference and is emitted. An inline
+                // definition is NOT an import (it defines, not imports); emitting
+                // it as one (module="tests") was wrong, and worse, the body was
+                // never descended so nested `use super::*` / `use crate::..`
+                // statements inside the module were lost. So: when the mod has a
+                // `body` (a `declaration_list`), recurse into it and emit nothing
+                // for the mod itself; only bodyless declarations are emitted.
+                if let Some(body) = child.child_by_field_name("body") {
+                    extract_rust_imports_recursive(&body, source, imports);
+                } else if let Some(name) = child.child_by_field_name("name") {
                     let module = get_node_text(&name, source);
                     imports.push(ImportInfo {
                         module,
@@ -642,8 +655,36 @@ fn collect_rust_use_paths(
             }
         }
         "use_wildcard" => {
-            // Handle `use foo::*`
-            imports.push((prefix, "*".to_string()));
+            // Handle `use foo::*`, `use self::Bar::*`, `use crate::x::*`.
+            //
+            // fix-R7 (cluster[11] RC8a): the wildcard's path lives in its first
+            // *named* child (a `scoped_identifier`, bare `identifier`, or a
+            // `self`/`super`/`crate` path keyword) followed by the `::` and `*`
+            // tokens. Previously we pushed `(prefix, "*")` and dropped that
+            // child entirely, so `use clap_builder::*` reported module="".
+            // Recover the path and join it with any inherited prefix.
+            let path = node
+                .children(&mut node.walk())
+                .find(|c| {
+                    c.is_named()
+                        && matches!(
+                            c.kind(),
+                            "scoped_identifier"
+                                | "identifier"
+                                | "self"
+                                | "super"
+                                | "crate"
+                                | "metavariable"
+                        )
+                })
+                .map(|c| get_node_text(&c, source))
+                .unwrap_or_default();
+            let module = match (prefix.is_empty(), path.is_empty()) {
+                (true, _) => path,
+                (false, true) => prefix,
+                (false, false) => format!("{}::{}", prefix, path),
+            };
+            imports.push((module, "*".to_string()));
         }
         "self" => {
             // Handle `{self, Read}` - self imports the module itself
@@ -2503,6 +2544,96 @@ import "fmt"
 
         assert_eq!(imports.len(), 1);
         assert!(imports[0].module.contains("std::collections"));
+    }
+
+    /// fix-R7 (cluster[11] RC8a): a glob `use path::*` must keep the module
+    /// path. Previously the `use_wildcard` arm emitted `(prefix, "*")` and
+    /// dropped the `scoped_identifier`/`identifier` child holding the path,
+    /// so `use clap_builder::*` reported module="" (an empty, useless edge).
+    #[test]
+    fn test_rust_use_glob_keeps_module_bare() {
+        let source = "use clap_builder::*;";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert_eq!(imports.len(), 1, "one glob import");
+        assert_eq!(
+            imports[0].module, "clap_builder",
+            "glob must keep the module path, not drop it to empty"
+        );
+        assert!(imports[0].names.contains(&"*".to_string()));
+    }
+
+    /// fix-R7 (cluster[11] RC8a): glob over a scoped path
+    /// `use self::ParseSizeErrorKind::*` must keep the full scoped module.
+    #[test]
+    fn test_rust_use_glob_keeps_scoped_module() {
+        let source = "use self::ParseSizeErrorKind::*;";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert_eq!(imports.len(), 1);
+        assert_eq!(
+            imports[0].module, "self::ParseSizeErrorKind",
+            "scoped glob must keep the full path"
+        );
+        assert!(imports[0].names.contains(&"*".to_string()));
+    }
+
+    /// fix-R7 (cluster[11] RC8b): an inline module definition
+    /// `mod tests { ... }` is NOT an import and must not be emitted as one;
+    /// its body MUST be recursed so nested `use` statements are captured.
+    /// Previously `mod tests` was reported as import module="tests" and the
+    /// body was never descended, so `use super::*` inside it was lost.
+    #[test]
+    fn test_rust_inline_mod_not_import_and_body_recursed() {
+        let source = "\
+mod tests {
+    use super::*;
+    use crate::foo::Bar;
+}
+";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        // The `mod tests { ... }` definition is not an import.
+        assert!(
+            !imports.iter().any(|i| i.module == "tests" && i.names.is_empty()),
+            "inline `mod tests {{}}` must not be reported as an import, got {:?}",
+            imports
+        );
+        // Nested uses inside the module body must be captured.
+        assert!(
+            imports.iter().any(|i| i.module == "super" && i.names.contains(&"*".to_string())),
+            "nested `use super::*` inside mod body must be captured, got {:?}",
+            imports
+        );
+        assert!(
+            imports.iter().any(|i| i.module == "crate::foo" && i.names.contains(&"Bar".to_string())),
+            "nested `use crate::foo::Bar` inside mod body must be captured, got {:?}",
+            imports
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC8b): a bare module declaration `mod foo;`
+    /// (no body) IS still surfaced as a module reference (regression guard:
+    /// the body-aware fix must not suppress declaration-only `mod`).
+    #[test]
+    fn test_rust_bare_mod_declaration_still_emitted() {
+        let source = "mod foo;\nmod bar;\n";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert!(
+            imports.iter().any(|i| i.module == "foo"),
+            "bare `mod foo;` should still be emitted, got {:?}",
+            imports
+        );
+        assert!(
+            imports.iter().any(|i| i.module == "bar"),
+            "bare `mod bar;` should still be emitted, got {:?}",
+            imports
+        );
     }
 
     #[test]
