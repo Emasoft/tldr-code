@@ -320,7 +320,18 @@ impl<'a> DfgBuilder<'a> {
             // binding names so the file-level macro/const/import/builtin
             // suppression never drops a genuine local read that shadows one of
             // those names.
-            Language::Go | Language::Python | Language::Rust | Language::C | Language::Cpp => {
+            //
+            // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): C#/Java join the set so that
+            // class-FIELD value reads can be suppressed (fields are collected
+            // into `imported_type_names`) without ever dropping a genuine local
+            // that shadows a field name (`var Power10 = ...` keeps its reads).
+            Language::Go
+            | Language::Python
+            | Language::Rust
+            | Language::C
+            | Language::Cpp
+            | Language::CSharp
+            | Language::Java => {
                 self.collect_generic_local_names(func_node);
             }
             _ => {}
@@ -363,6 +374,29 @@ impl<'a> DfgBuilder<'a> {
                     .child_by_field_name("name")
                     .or_else(|| node.child_by_field_name("declarator"))
                 {
+                    self.insert_generic_local_leaf_names(n);
+                }
+            }
+            // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): C#/Java/Go loop-and-pattern
+            // binders that do NOT surface a `variable_declarator`. Now that
+            // C#/Java participate in the file-level-name suppression, a binder
+            // that COLLIDES with a class field / method / type name must be in
+            // the shadow guard so its in-body reads survive (e.g. `foreach (var
+            // item ...)` where a field is also named `item`). C# `foreach_statement`
+            // exposes the binder as `[left]`; Java `enhanced_for_statement` and Go
+            // `for_range_clause` use `[name]`; C# `is T x` patterns
+            // (`declaration_pattern`) and `out var x` (`declaration_expression`)
+            // bind via `[name]`.
+            "foreach_statement" => {
+                if let Some(l) = node.child_by_field_name("left") {
+                    self.insert_generic_local_leaf_names(l);
+                }
+            }
+            "enhanced_for_statement"
+            | "declaration_pattern"
+            | "declaration_expression"
+            | "for_range_clause" => {
+                if let Some(n) = node.child_by_field_name("name") {
                     self.insert_generic_local_leaf_names(n);
                 }
             }
@@ -1604,6 +1638,39 @@ impl<'a> DfgBuilder<'a> {
             }
 
             // =================================================================
+            // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): PHP statement-level static
+            // variable declaration `static $x = ...;`.
+            // Shape (verified by debug-parse):
+            //   function_static_declaration
+            //     static
+            //     static_variable_declaration [name] variable_name ( = <value> )?
+            //     (',' static_variable_declaration)*
+            // Each declared `$x` is a function-local persistent binding; its
+            // `variable_name` was only ever classified as a USE (it falls to the
+            // default recurse arm), so reads of `$timeFormats` were flagged
+            // definite-uninitialized (php-symfony-console `formatTime`). Register
+            // each declared variable as a Definition and recurse into any
+            // initializer for uses.
+            // =================================================================
+            "function_static_declaration" if matches!(self.language, Language::Php) => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "static_variable_declaration" {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            if name.kind() == "variable_name" {
+                                self.add_ref_from_node(name, RefType::Definition);
+                            }
+                        }
+                        // The initializer (`= [...]`) is a value field whose
+                        // identifiers are genuine uses.
+                        if let Some(value) = child.child_by_field_name("value") {
+                            self.extract_refs_from_node(value, depth + 1)?;
+                        }
+                    }
+                }
+            }
+
+            // =================================================================
             // TypeScript/JavaScript/Java/C/C++ augmented assignment
             // =================================================================
             "augmented_assignment_expression" => {
@@ -1692,6 +1759,14 @@ impl<'a> DfgBuilder<'a> {
 
             // Go var declaration: var x = ...
             "var_declaration" => {
+                self.process_go_var_declaration(node, depth)?;
+            }
+            // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): a Go function-LOCAL `const`
+            // declaration shares the `const_spec` shape with `var_spec`; route it
+            // through the same handler so its bound name becomes a Definition.
+            // (Package-level consts are pre-collected by `collect_imports`; this
+            // arm only fires for declarations reached inside a function body.)
+            "const_declaration" if matches!(self.language, Language::Go) => {
                 self.process_go_var_declaration(node, depth)?;
             }
 
@@ -1833,6 +1908,27 @@ impl<'a> DfgBuilder<'a> {
                     for child in node.children(&mut cursor) {
                         self.extract_refs_from_node(child, depth + 1)?;
                     }
+                }
+            }
+
+            // =================================================================
+            // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): Elixir `stab_clause` —
+            // a `pattern -> body` arm of `case` / `fn` / `with` / `try`.
+            // Shape (verified by debug-parse):
+            //   stab_clause [left] arguments( <pattern> ) -> [right] body( <expr> )
+            // The `[left]` arguments hold a PATTERN that BINDS variables
+            // (`{:ok, cb} ->` binds `cb`); those bindings were never recorded as
+            // Definitions, so reads of `cb` in the clause body were flagged
+            // definite-uninitialized (elixir-phoenix `allow_jsonp`). Register the
+            // pattern's bound (lower-case) identifiers as Definitions, then
+            // recurse into the body for uses.
+            // =================================================================
+            "stab_clause" if matches!(self.language, Language::Elixir) => {
+                if let Some(left) = node.child_by_field_name("left") {
+                    self.extract_elixir_pattern_bindings(left);
+                }
+                if let Some(right) = node.child_by_field_name("right") {
+                    self.extract_refs_from_node(right, depth + 1)?;
                 }
             }
 
@@ -3214,12 +3310,22 @@ impl<'a> DfgBuilder<'a> {
         Ok(())
     }
 
-    /// Process Go var declaration: var x int = 10
-    /// AST: var_declaration -> var_spec (name, type, value)
+    /// Process a Go `var_declaration` or `const_declaration`.
+    /// AST: var_declaration -> var_spec (name, type, value); const_declaration ->
+    /// const_spec (name, value) — same shape.
+    ///
+    /// fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): a `const` declared INSIDE a function
+    /// body (`const stackBufSize = 128`) is a genuine local whose `const_spec`
+    /// has the same `[name]` / `[value]` shape as a `var_spec`. The pre-fix
+    /// dispatch only routed `var_declaration` here, so a function-local const was
+    /// never recorded as a Definition and its reads were flagged
+    /// definite-uninitialized (go-httprouter `CleanPath` `stackBufSize`). Package-
+    /// level consts are still pre-collected by `collect_imports`; this covers the
+    /// in-body case. Both `var_spec` and `const_spec` are handled identically.
     fn process_go_var_declaration(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "var_spec" {
+            if matches!(child.kind(), "var_spec" | "const_spec") {
                 // "name" field contains identifier(s)
                 if let Some(name) = child.child_by_field_name("name") {
                     if name.kind() == "identifier" {
@@ -3762,6 +3868,88 @@ impl<'a> DfgBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): register the variables BOUND by an
+    /// Elixir pattern (a `case` / `fn` / `with` clause head) as Definitions.
+    ///
+    /// In Elixir a bare lower-case `identifier` in pattern position is a binding
+    /// (`{:ok, cb}` binds `cb`); these node kinds are NOT bindings and are not
+    /// descended into:
+    ///   * `atom` (`:ok`), `string`, numbers, `keywords` — literals.
+    ///   * the `[operator]` / called name of a `call` (`Foo.bar(x)` in a pattern
+    ///     is a remote-call guard fragment, not a binder) — we skip the call
+    ///     `target`/`function` but still descend into its `arguments`, where
+    ///     sub-patterns may bind.
+    ///   * a PINNED identifier `^x` (`unary_operator` with `^`) — a match against
+    ///     an existing value, never a new binding.
+    ///   * the right side of a `dot` (a member/function name).
+    /// Nested containers (`tuple`, `list`, `map`, `binary_operator` for cons /
+    /// `<>` / `when` guards) are handled by recursion.
+    fn extract_elixir_pattern_bindings(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" => {
+                let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                // A bound pattern variable is lower-case (or `_`-prefixed). An
+                // upper-case identifier in pattern position is an alias/module
+                // reference, never a binding.
+                if text
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+                {
+                    self.add_ref_from_node(node, RefType::Definition);
+                }
+            }
+            // Pinned value `^existing` — a match, not a binding. Do not descend.
+            "unary_operator" => {
+                let is_pin = node.children(&mut node.walk()).any(|c| {
+                    !c.is_named() && c.utf8_text(self.source.as_bytes()).unwrap_or("") == "^"
+                });
+                if !is_pin {
+                    for child in node.children(&mut node.walk()) {
+                        self.extract_elixir_pattern_bindings(child);
+                    }
+                }
+            }
+            // A `when`-guarded clause head `pattern when guard`: the `[left]`
+            // pattern binds; the `[right]` guard is a boolean expression over
+            // already-bound names (no new bindings). For other binary operators
+            // in patterns (cons `|`, concat `<>`) both sides may bind, so descend
+            // into both when not a `when` guard.
+            "binary_operator" => {
+                let is_when = node.children(&mut node.walk()).any(|c| {
+                    c.kind() == "when"
+                        || (!c.is_named()
+                            && c.utf8_text(self.source.as_bytes()).unwrap_or("") == "when")
+                });
+                if is_when {
+                    if let Some(left) = node.child_by_field_name("left") {
+                        self.extract_elixir_pattern_bindings(left);
+                    }
+                } else {
+                    for child in node.children(&mut node.walk()) {
+                        self.extract_elixir_pattern_bindings(child);
+                    }
+                }
+            }
+            // A remote/local call in pattern position: skip the callee name but
+            // descend into its arguments (sub-patterns may bind there).
+            "call" => {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    self.extract_elixir_pattern_bindings(args);
+                }
+            }
+            // A `dot` (member access) names a function/field — never a binder.
+            "dot" => {}
+            // Literals / atoms — no bindings.
+            "atom" | "string" | "charlist" | "integer" | "float" | "boolean" | "nil" => {}
+            _ => {
+                for child in node.children(&mut node.walk()) {
+                    self.extract_elixir_pattern_bindings(child);
+                }
+            }
+        }
     }
 
     // =====================================================================
@@ -4326,8 +4514,28 @@ impl<'a> DfgBuilder<'a> {
             if args.kind() == "arguments" {
                 let mut args_cursor = args.walk();
                 for arg in args.children(&mut args_cursor) {
-                    if arg.kind() == "identifier" {
-                        self.add_ref_from_node(arg, RefType::Definition);
+                    match arg.kind() {
+                        "identifier" => {
+                            self.add_ref_from_node(arg, RefType::Definition);
+                        }
+                        // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): a parameter with a
+                        // DEFAULT value (`def allow_jsonp(conn, opts \\ [])`)
+                        // parses as a `binary_operator` whose `\\` operator joins
+                        // the param name (`[left]` identifier) to its default
+                        // (`[right]`). The pre-fix walk only matched bare
+                        // `identifier` args, so `opts` was never a Definition and
+                        // every read of it inside the body was flagged
+                        // definite-uninitialized (elixir-phoenix `allow_jsonp`).
+                        // Register the `[left]` identifier as the parameter; the
+                        // default expression is not a parameter source.
+                        "binary_operator" => {
+                            if let Some(left) = arg.child_by_field_name("left") {
+                                if left.kind() == "identifier" {
+                                    self.add_ref_from_node(left, RefType::Definition);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -5001,9 +5209,25 @@ impl<'a> DfgBuilder<'a> {
         // dead. (Member-NAME and callee positions were already classified
         // not-a-use by `generic_non_use_position`, so only true value reads of
         // file-level symbols reach here.)
+        //
+        // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): C#/Java join this block so that a
+        // bare value READ of a class FIELD (`scale + _end`, `Power10[i]`) — which
+        // is structurally identical to a local read but resolves to a class-scope
+        // member collected by `collect_field_declarator_names` — is classified
+        // not-a-use. The earlier C#/Java block only suppressed RECEIVER and
+        // member-NAME positions, so a field used as a bare operand still entered
+        // the analyzer (csharp-newtonsoft-bson `_end`/`Power10`/`MaxFractionDigits`
+        // flagged definite-uninitialized). Guarded by `generic_local_names`, so a
+        // genuine local shadowing a field/method/type name keeps its reads.
         if matches!(
             self.language,
-            Language::Go | Language::Python | Language::Rust | Language::C | Language::Cpp
+            Language::Go
+                | Language::Python
+                | Language::Rust
+                | Language::C
+                | Language::Cpp
+                | Language::CSharp
+                | Language::Java
         ) {
             let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
             if !text.is_empty()
@@ -5057,6 +5281,23 @@ impl<'a> DfgBuilder<'a> {
     fn solidity_use_context(&self, node: Node) -> Option<bool> {
         let parent = node.parent()?;
         let pkind = parent.kind();
+
+        // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): Solidity language globals
+        // (`msg`/`block`/`tx`/`now`/`this`/`abi`/`super`) are implicitly defined
+        // by the EVM, not by any declaration in the contract. A bare reference —
+        // including the `[object]` receiver of `msg.sender` / `block.timestamp` —
+        // is never a local variable, so it has no defining write and was flagged
+        // definite-uninitialized (solidity-solmate `ERC20.transferFrom` flagged
+        // `msg`). Suppress as a builtin BEFORE the receiver falls through to a
+        // `None` (use) decision. A contract that declared a local literally named
+        // `msg` would record that local's Definition, but such shadowing of a
+        // reserved global is not valid Solidity, so suppression is sound.
+        {
+            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+            if SOLIDITY_GLOBALS.contains(&text) {
+                return Some(false);
+            }
+        }
 
         // member_expression: `obj.field` — `[object]` is a use, `[property]`
         // is a static field-access name and never a local variable use.
@@ -5275,6 +5516,50 @@ impl<'a> DfgBuilder<'a> {
                     if target.id() == node.id() {
                         return Some(false);
                     }
+                }
+            }
+        }
+
+        // ---- Kotlin infix-function operator position --------------------------
+        // fix-R2-themeC (v0.5.0 CLOSEOUT, RC1): Kotlin INFIX functions
+        // (`shl`/`or`/`downTo`/`shr`/`and`/`xor`/`ushr`/`until`/`step`, and any
+        // user-declared `infix fun`) parse as a bare `identifier` sitting in the
+        // OPERATOR slot of an `infix_expression`: `lhs OP rhs` ->
+        //   infix_expression { identifier(lhs)  identifier(OP)  <rhs> }.
+        // tree-sitter-kotlin emits no `[operator]` field, but the operator is
+        // always a MIDDLE named child — never the first (lhs) or last (rhs)
+        // operand. Such an identifier is an infix-function callee, not a local
+        // variable (the kotlin-datetime `multiplyAndDivide` repro flagged `shl`,
+        // `or`, `downTo` as definite-uninitialized). Suppress the non-edge
+        // operand. (The lhs/rhs operands fall through and are classified
+        // normally — genuine variable reads survive.)
+        if matches!(self.language, Language::Kotlin) && kind == "infix_expression" {
+            let named: Vec<Node> = {
+                let mut cur = parent.walk();
+                parent.children(&mut cur).filter(|c| c.is_named()).collect()
+            };
+            if named.len() >= 3 {
+                let is_first = named.first().map(|c| c.id()) == Some(node.id());
+                let is_last = named.last().map(|c| c.id()) == Some(node.id());
+                if !is_first && !is_last {
+                    return Some(false);
+                }
+            }
+        }
+
+        // ---- C# preprocessor `#if` / `#elif` condition symbol ----------------
+        // fix-R2-themeC (v0.5.0 CLOSEOUT, RC1): a C# `#if SYMBOL` /
+        // `#elif SYMBOL` condition references a COMPILE-TIME preprocessor symbol
+        // (set via `/define` or `#define`), never a runtime local variable. The
+        // grammar exposes it as the `[condition]` of a `preproc_if` /
+        // `preproc_elif` node (`#if HAVE_CHAR_TO_LOWER_WITH_CULTURE` flagged that
+        // symbol as definite-uninitialized in csharp-newtonsoft `ToSeparatedCase`).
+        // The condition may be a bare identifier or a boolean expression over
+        // identifiers; suppress any identifier inside the `[condition]` subtree.
+        if matches!(kind, "preproc_if" | "preproc_elif") {
+            if let Some(cond) = parent.child_by_field_name("condition") {
+                if self.node_contains(cond, node) {
+                    return Some(false);
                 }
             }
         }
@@ -5720,6 +6005,13 @@ const JS_TS_GLOBALS: &[&str] = &[
     "Buffer", "console", "exports", "global", "module", "process", "require",
     "setImmediate", "setInterval", "setTimeout", "clearImmediate", "clearInterval", "clearTimeout",
     "__dirname", "__filename",
+    // fix-R2-themeC (v0.5.0 CLOSEOUT, RC1): the implicit per-function
+    // `arguments` object is always bound inside any non-arrow function body, so
+    // a read of `arguments` (`arguments.length`, `arguments[0]`) is never a free
+    // variable (js-lodash `flatSpread` flagged it definite-uninitialized). A
+    // genuine local literally named `arguments` would carry its own Definition
+    // and be recorded in `ts_js_local_names`, so its reads still survive.
+    "arguments",
     // Browser / DOM host
     "document", "window", "navigator", "self", "location", "history",
     "fetch", "XMLHttpRequest", "FormData", "URL", "URLSearchParams",
@@ -5774,6 +6066,15 @@ const PYTHON_BUILTINS: &[&str] = &[
 const RUST_PRELUDE: &[&str] = &[
     "Some", "None", "Ok", "Err", "Box", "Vec", "String", "Option", "Result", "Default",
     "Clone", "Copy", "drop", "Drop",
+];
+
+/// fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): Solidity language-level globals — magic
+/// objects the EVM injects into every function scope (Solidity docs "Units and
+/// Globally Available Variables" / "Block and Transaction Properties"). A bare
+/// reference to one of these is never a local variable, so it must never be
+/// classified as a definite-uninitialized read.
+const SOLIDITY_GLOBALS: &[&str] = &[
+    "msg", "block", "tx", "now", "this", "super", "abi",
 ];
 
 /// reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
