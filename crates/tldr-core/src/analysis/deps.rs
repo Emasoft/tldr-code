@@ -445,9 +445,18 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
         detect_dominant_language(&root)?
     };
 
-    // Get extensions for this language
+    // Get extensions for this language.
+    //
+    // RC1 (v0.5.0 R7 cluster[10]): use `scan_extensions()` (not
+    // `extensions()`) for the directory walk so C++ `.h` headers (and the
+    // JS/TS sibling spellings) participate. `extensions()` omits `.h` for
+    // Cpp, which silently dropped every header from the file set — so
+    // `#include "x.h"` never resolved (empty internal graph) and the
+    // header was never registered in `build_module_index`. The C++ grammar
+    // parses `.h` as a strict superset of C declarations. C is unaffected
+    // (its `scan_extensions()` already equals `extensions()`).
     let extensions: HashSet<String> = language
-        .extensions()
+        .scan_extensions()
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -1267,6 +1276,12 @@ fn index_module_for_language(
         // like `contracts/MyLib.sol`) and (b) the bare leaf name
         // (matches `import "MyLib.sol"` when the consumer is sloppy).
         Language::Solidity => index_solidity_module(index, file_path, relative),
+        // RC2 (v0.5.0 R7 cluster[10], #236): Swift modules are
+        // directory-based — a `Sources/<Module>/` dir IS the importable
+        // module (`import HeapModule`). Register every Swift file under its
+        // owning module name so `import HeapModule` resolves to any file in
+        // `Sources/HeapModule/`.
+        Language::Swift => index_swift_module(index, file_path, relative),
         _ => {}
     }
 }
@@ -1301,6 +1316,61 @@ fn index_solidity_module(
         let name_str = name.to_string_lossy().to_string();
         index.entry(name_str).or_insert_with(|| fp.clone());
     }
+}
+
+/// Index a Swift source file under the name of the SwiftPM module it belongs
+/// to.
+///
+/// RC2 (v0.5.0 R7 cluster[10], #236). Swift has no per-file module
+/// declaration: a target/module is a *directory* under `Sources/` (or
+/// `Tests/`). `import HeapModule` brings in every public symbol of the
+/// `Sources/HeapModule/` directory. So we derive the module name from the
+/// path — the path segment immediately following the first `Sources` (or
+/// `Tests`/`Source`/`src`) component — and register the file under it. The
+/// first file seen for a module wins as its representative (`or_insert`), so
+/// `import HeapModule` resolves to a stable file in that module. A flat
+/// layout (no `Sources/`) falls back to registering each file under its bare
+/// stem so single-directory packages still resolve.
+fn index_swift_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, relative: &Path) {
+    let fp = file_path.to_path_buf();
+
+    if let Some(module) = swift_module_name(relative) {
+        index.entry(module).or_insert_with(|| fp.clone());
+    }
+
+    // Fallback spelling: bare file stem (covers `import` of a flat-layout
+    // single-file module and keeps single-dir packages resolvable).
+    if let Some(stem) = relative.file_stem() {
+        let stem_str = stem.to_string_lossy().to_string();
+        if !stem_str.is_empty() {
+            index.entry(stem_str).or_insert_with(|| fp.clone());
+        }
+    }
+}
+
+/// Derive the SwiftPM module name for a project-relative path by taking the
+/// path segment that immediately follows the source-root component
+/// (`Sources` / `Source` / `Tests` / `src`). Returns `None` for a flat
+/// layout with no recognised source root.
+fn swift_module_name(relative: &Path) -> Option<String> {
+    let components: Vec<String> = relative
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    for (i, comp) in components.iter().enumerate() {
+        if matches!(comp.as_str(), "Sources" | "Source" | "Tests" | "src") {
+            // The module dir is the next component; require at least one
+            // further component after it (the file leaf) so we never treat
+            // the file itself as the module name.
+            if i + 2 < components.len() {
+                return components.get(i + 1).cloned();
+            }
+        }
+    }
+    None
 }
 
 /// Index a Lua/Luau source file under every reasonable spelling that a
@@ -2176,6 +2246,10 @@ fn resolve_import(
         Language::Php => resolve_php_import(import, root, current_file, index),
         Language::Lua | Language::Luau => resolve_lua_import(import, index),
         Language::Solidity => resolve_solidity_import(import, root, current_file, index),
+        // RC2 (v0.5.0 R7 cluster[10], #236): map a bare Swift module
+        // identifier (`import HeapModule`) to a representative file in the
+        // module's `Sources/<Module>/` directory.
+        Language::Swift => resolve_swift_import(import, index),
         _ => None,
     }
 }
@@ -2245,6 +2319,34 @@ fn resolve_solidity_import(
     }
 
     None
+}
+
+/// Resolve a Swift `import <Module>` directive to a representative file in
+/// that module's directory.
+///
+/// RC2 (v0.5.0 R7 cluster[10], #236). A Swift import names a SwiftPM
+/// module (a `Sources/<Module>/` directory), not a file. `index_swift_module`
+/// registered each module-directory under its name (first file wins as the
+/// representative), so resolution is a direct index lookup of the bare module
+/// identifier. Apple-SDK / Swift-runtime umbrellas (`Foundation`, `Swift`,
+/// …) are NOT project-local; they are filtered by `is_swift_stdlib` in
+/// `classify_import` and will simply miss the project index here (returning
+/// `None`, which lets the stdlib/external classifier take over).
+fn resolve_swift_import(import: &ImportInfo, index: &HashMap<String, PathBuf>) -> Option<PathBuf> {
+    let module = import.module.trim();
+    if module.is_empty() {
+        return None;
+    }
+    // Never resolve a stdlib/SDK umbrella to a coincidentally-named project
+    // file (e.g. a local `Foundation.swift`). Stdlib imports must fall
+    // through to the stdlib classifier, not become a bogus internal edge.
+    if is_swift_stdlib(module) {
+        return None;
+    }
+    // A Swift import head can carry a submodule (`os.log`); the importable
+    // unit is the umbrella (first segment).
+    let head = module.split('.').next().unwrap_or(module);
+    index.get(head).or_else(|| index.get(module)).cloned()
 }
 
 /// Normalise a path by collapsing `./` and `../` segments without
@@ -3241,14 +3343,22 @@ fn resolve_scala_import(
         return Some(path.clone());
     }
 
-    // Try progressively shorter prefixes
+    // RC14 (v0.5.0 R7 cluster[10], #199): drop AT MOST the trailing segment
+    // (the type/object name) to reach the import's OWN package, and resolve
+    // only against that. The previous code walked progressively shorter
+    // prefixes ALL the way up, so an unresolvable deeper import
+    // `cats.effect.tracing.TracingConstants` (file absent) wrongly resolved
+    // to an ANCESTOR-package file `cats.effect` (IO.scala) — fabricating a
+    // false edge that closed a 2-cycle (LocalQueue <-> IO). A Scala import
+    // `a.b.c.D` names the type `D` in package `a.b.c`; if it doesn't resolve
+    // to its own file or its own package, it must NOT be force-fit onto an
+    // ancestor package. Returning None lets the External/stdlib classifier
+    // take over instead of inventing a wrong internal edge.
     let parts: Vec<&str> = module.split('.').collect();
     if parts.len() > 1 {
-        for i in (1..parts.len()).rev() {
-            let prefix = parts[..i].join(".");
-            if let Some(path) = index.get(&prefix) {
-                return Some(path.clone());
-            }
+        let own_package = parts[..parts.len() - 1].join(".");
+        if let Some(path) = index.get(&own_package) {
+            return Some(path.clone());
         }
     }
 
@@ -6031,6 +6141,182 @@ mod tests {
         assert!(
             !internal.contains(&PathBuf::from("tests/fixtures/inner/deep/mypkg.py")),
             "import resolved to nested test decoy: {internal:?}"
+        );
+    }
+
+    // =========================================================================
+    // R7 cluster[10] deps-graph fixes (v0.5.0 CLOSEOUT)
+    // =========================================================================
+
+    /// RC1 (#120,#121,#28): C++ `.h` headers must be walked so `#include "x.h"`
+    /// resolves to an internal dependency. RED before fix: `analyze_dependencies`
+    /// used `language.extensions()` (no `.h` for Cpp), so a `.cpp` that includes
+    /// a project `.h` produced ZERO internal deps and the `.h` was never indexed.
+    #[test]
+    fn test_cpp_deps_resolves_header_includes() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "src/format.h",
+            "#pragma once\nint fmt();\n",
+        );
+        write_at(
+            root,
+            "src/format.cpp",
+            "#include \"format.h\"\nint fmt() { return 1; }\n",
+        );
+        // Header-to-header include too.
+        write_at(
+            root,
+            "src/core.h",
+            "#pragma once\n#include \"format.h\"\nstruct Core {};\n",
+        );
+
+        let opts = DepsOptions {
+            language: Some("cpp".to_string()),
+            ..Default::default()
+        };
+        let report = analyze_dependencies(root, &opts).unwrap();
+        // The .h files must be counted in the walk.
+        assert!(
+            report.stats.total_files >= 3,
+            "headers excluded from walk: total_files={}",
+            report.stats.total_files
+        );
+        // format.cpp -> format.h must be an internal edge.
+        let cpp = PathBuf::from("src/format.cpp");
+        let cpp_deps = report
+            .internal_dependencies
+            .get(&cpp)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            cpp_deps.contains(&PathBuf::from("src/format.h")),
+            "format.cpp -> format.h internal edge missing: {cpp_deps:?}"
+        );
+        assert!(
+            report.stats.total_internal_deps >= 2,
+            "expected >=2 internal deps (format.cpp->format.h, core.h->format.h), got {}",
+            report.stats.total_internal_deps
+        );
+    }
+
+    /// RC14 (#199): Scala package-prefix over-resolution -> false cycle. An
+    /// UNRESOLVABLE deeper import `cats.effect.tracing.TracingConstants`
+    /// (whose file is absent) must NOT resolve to a shorter ANCESTOR-package
+    /// file (`cats.effect` -> IO.scala). RED before fix: the prefix-shortening
+    /// fallback walked all the way up to `cats.effect`, fabricating a false
+    /// edge that closed a 2-cycle.
+    #[test]
+    fn test_resolve_scala_import_no_ancestor_package_overmatch() {
+        let mut index = HashMap::new();
+        // IO.scala lives in package `cats.effect`; index registers the
+        // parent-package key `cats.effect` -> IO.scala (first file wins).
+        index.insert(
+            "cats.effect".to_string(),
+            PathBuf::from("/p/cats/effect/IO.scala"),
+        );
+        index.insert(
+            "cats.effect.IO".to_string(),
+            PathBuf::from("/p/cats/effect/IO.scala"),
+        );
+
+        // An import of a type in a DEEPER package whose file is absent.
+        let import = ImportInfo {
+            module: "cats.effect.tracing.TracingConstants".to_string(),
+            names: Vec::new(),
+            is_from: Some(false),
+            alias: None,
+            line: 0,
+        };
+        let result = resolve_scala_import(
+            &import,
+            Path::new("/p"),
+            Path::new("/p/cats/effect/unsafe/LocalQueue.scala"),
+            &index,
+        );
+        assert!(
+            result.is_none(),
+            "deeper import must NOT resolve to an ancestor-package file (got {result:?})"
+        );
+    }
+
+    /// RC14 regression guard: dropping the TYPE segment to reach the import's
+    /// OWN package still resolves. `import a.b.C` where only the package
+    /// `a.b` is indexed must resolve to the `a.b` file.
+    #[test]
+    fn test_resolve_scala_import_own_package_still_resolves() {
+        let mut index = HashMap::new();
+        index.insert(
+            "myapp.models".to_string(),
+            PathBuf::from("/p/myapp/models/User.scala"),
+        );
+        let import = ImportInfo {
+            module: "myapp.models.User".to_string(),
+            names: Vec::new(),
+            is_from: Some(false),
+            alias: None,
+            line: 0,
+        };
+        let result = resolve_scala_import(
+            &import,
+            Path::new("/p"),
+            Path::new("/p/Main.scala"),
+            &index,
+        );
+        assert_eq!(
+            result,
+            Some(PathBuf::from("/p/myapp/models/User.scala")),
+            "import of a type in package a.b must resolve to the a.b package file"
+        );
+    }
+
+    /// RC2 (#236): Swift internal module dependencies. `import HeapModule`
+    /// where `Sources/HeapModule/` exists in the project must resolve to an
+    /// internal edge. RED before fix: `index_module_for_language` and
+    /// `resolve_import` had no `Language::Swift` arm (`_ => {}` / `_ => None`),
+    /// so every Swift import fell through to External and internal stayed 0.
+    #[test]
+    fn test_swift_deps_resolves_module_directory_imports() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Swift Package layout: each Sources/<Module>/ dir is an importable
+        // module.
+        write_at(
+            root,
+            "Sources/HeapModule/Heap.swift",
+            "public struct Heap<T> { public init() {} public func popMax() -> T? { nil } }\n",
+        );
+        write_at(
+            root,
+            "Sources/Collections/Deque.swift",
+            "import HeapModule\npublic struct Deque {}\n",
+        );
+
+        let opts = DepsOptions {
+            language: Some("swift".to_string()),
+            ..Default::default()
+        };
+        let report = analyze_dependencies(root, &opts).unwrap();
+        // Deque.swift imports HeapModule -> must resolve to a file in
+        // Sources/HeapModule.
+        let consumer = PathBuf::from("Sources/Collections/Deque.swift");
+        let internal = report
+            .internal_dependencies
+            .get(&consumer)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            internal
+                .iter()
+                .any(|p| p.starts_with("Sources/HeapModule")),
+            "Swift `import HeapModule` did not resolve to Sources/HeapModule: {internal:?}"
+        );
+        assert!(
+            report.stats.total_internal_deps >= 1,
+            "Swift internal deps still zero: {}",
+            report.stats.total_internal_deps
         );
     }
 }

@@ -577,8 +577,13 @@ fn collect_module_infos(
 ) -> TldrResult<HashMap<PathBuf, ModuleInfo>> {
     let mut infos = HashMap::new();
 
+    // RC1 (v0.5.0 R7 cluster[10]): use `scan_extensions()` so C++ `.h`
+    // headers participate in the Martin/coupling module set. Without the
+    // headers, `compute_martin_metrics_from_deps` consumed an empty
+    // include-graph (every module ca=ce=0). C and non-Cpp/JS-TS langs are
+    // unaffected.
     let extensions: HashSet<String> = language
-        .extensions()
+        .scan_extensions()
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -735,29 +740,85 @@ fn count_imports_between(
 ) -> usize {
     let mut count = 0;
 
-    // Get module name for target
-    let target_module = path_to_module_name(target);
-
     // Check if source imports target
     if let Some(source_info) = module_infos.get(source) {
         for import in &source_info.imports {
-            if import.module.contains(&target_module) || target_module.contains(&import.module) {
+            if import_refers_to_file(&import.module, target) {
                 count += 1;
             }
         }
     }
 
     // Check if target imports source
-    let source_module = path_to_module_name(source);
     if let Some(target_info) = module_infos.get(target) {
         for import in &target_info.imports {
-            if import.module.contains(&source_module) || source_module.contains(&import.module) {
+            if import_refers_to_file(&import.module, source) {
                 count += 1;
             }
         }
     }
 
     count
+}
+
+/// Decide whether an import's captured module string refers to the given
+/// target file.
+///
+/// RC12 (v0.5.0 R7 cluster[10], #7). The previous implementation collapsed
+/// both sides through `path_to_module_name` (which strips the extension:
+/// `sds.h` → `sds`) and then used a bidirectional `contains()` substring
+/// test. That over-counted: `sds.c`'s `#include "sds.h"` AND its
+/// `#include "sdsalloc.h"` BOTH satisfy `"sdsalloc.h".contains("sds")`, so a
+/// single real edge to `sds.h` was counted twice. The fix is a
+/// segment-anchored comparison that preserves the include's basename:
+///   * file-path-style imports (C/C++ `#include`, JS/TS relative paths,
+///     Lua/Ruby require paths) match only when the import's leaf filename
+///     equals the target's leaf filename (extension included), OR the import
+///     path is a segment-anchored suffix of the target's relative path.
+///   * dotted-module imports (Python/Java/…) keep an exact module-name match
+///     against the target's extension-stripped module name.
+fn import_refers_to_file(import_module: &str, target: &Path) -> bool {
+    let import_norm = import_module.replace('\\', "/");
+    let import_trimmed = import_norm
+        .trim_start_matches("./")
+        .trim_start_matches("../")
+        .trim_end_matches('/');
+
+    // Path-style import (carries a `/` separator or a file extension): compare
+    // leaf basenames exactly so `sds.h` != `sdsalloc.h`.
+    let looks_like_path = import_trimmed.contains('/')
+        || std::path::Path::new(import_trimmed)
+            .extension()
+            .is_some();
+
+    let target_leaf = target
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    if looks_like_path {
+        let import_leaf = import_trimmed
+            .rsplit('/')
+            .next()
+            .unwrap_or(import_trimmed);
+        if import_leaf == target_leaf {
+            return true;
+        }
+        // Segment-anchored suffix: `subdir/foo.h` import vs `a/b/subdir/foo.h`
+        // target relative path (both forward-slash normalised).
+        let target_rel = target.to_string_lossy().replace('\\', "/");
+        if target_rel == import_trimmed
+            || target_rel.ends_with(&format!("/{}", import_trimmed))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    // Dotted / bare module import: exact match against the target's
+    // extension-stripped module name (e.g. `utils` for `utils.py`).
+    let target_module = path_to_module_name(target);
+    !target_module.is_empty() && import_trimmed == target_module
 }
 
 /// Find imports that both modules share
@@ -1419,6 +1480,99 @@ mod tests {
             report.schema_version, "1.0",
             "default schema_version should be '1.0', got '{}'",
             report.schema_version
+        );
+    }
+
+    // =========================================================================
+    // R7 cluster[10] deps-graph: RC12 coupling import_count over-count
+    // =========================================================================
+
+    /// RC12 (#7): `count_imports_between` must NOT substring-collapse include
+    /// filenames. `sds.c` that `#include`s BOTH `sds.h` AND `sdsalloc.h` has
+    /// exactly ONE import edge to `sds.h` — not two. RED before fix:
+    /// `path_to_module_name(sds.h)=="sds"` plus `import.module.contains("sds")`
+    /// matched `sdsalloc.h` too, yielding import_count=2.
+    #[test]
+    fn test_count_imports_between_c_header_no_substring_overcount() {
+        use crate::ast::extract::extract_file;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let write = |rel: &str, content: &str| {
+            let p = root.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+            p
+        };
+
+        let sds_c = write(
+            "sds.c",
+            "#include \"sds.h\"\n#include \"sdsalloc.h\"\nint f() { return 1; }\n",
+        );
+        let sds_h = write("sds.h", "#pragma once\nint f();\n");
+        let _sdsalloc_h = write("sdsalloc.h", "#pragma once\n");
+
+        // Build module_infos keyed by the SAME relative-normalised path shape
+        // `count_imports_between` receives from `calculate_module_coupling`.
+        let mut module_infos: HashMap<PathBuf, ModuleInfo> = HashMap::new();
+        for (abs, rel) in [(&sds_c, "sds.c"), (&sds_h, "sds.h")] {
+            let info = extract_file(abs, Some(root)).unwrap();
+            module_infos.insert(PathBuf::from(rel), info);
+        }
+
+        let count = count_imports_between(
+            &PathBuf::from("sds.c"),
+            &PathBuf::from("sds.h"),
+            &module_infos,
+        );
+        assert_eq!(
+            count, 1,
+            "sds.c includes sds.h exactly once; sdsalloc.h must NOT count as an sds.h import (got {count})"
+        );
+    }
+
+    /// RC12 regression guard: a genuine dotted-module import is still counted
+    /// (the fix must not break non-file-path languages).
+    #[test]
+    fn test_count_imports_between_python_module_still_counts() {
+        use crate::ast::extract::extract_file;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let write = |rel: &str, content: &str| {
+            let p = root.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&p, content).unwrap();
+            p
+        };
+
+        let app = write("app.py", "from utils import helper\nx = helper()\n");
+        let utils = write("utils.py", "def helper():\n    return 1\n");
+
+        let mut module_infos: HashMap<PathBuf, ModuleInfo> = HashMap::new();
+        module_infos.insert(
+            PathBuf::from("app.py"),
+            extract_file(&app, Some(root)).unwrap(),
+        );
+        module_infos.insert(
+            PathBuf::from("utils.py"),
+            extract_file(&utils, Some(root)).unwrap(),
+        );
+
+        let count = count_imports_between(
+            &PathBuf::from("app.py"),
+            &PathBuf::from("utils.py"),
+            &module_infos,
+        );
+        assert!(
+            count >= 1,
+            "app.py imports utils — import_count must be >=1 (got {count})"
         );
     }
 }

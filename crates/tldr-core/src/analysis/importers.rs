@@ -30,8 +30,13 @@ pub fn find_importers(
     module: &str,
     language: Language,
 ) -> TldrResult<ImportersReport> {
+    // RC1 (v0.5.0 R7 cluster[10]): walk with `scan_extensions()` so C++
+    // `.h` headers are included — a header-only importer (`scan.h`
+    // `#include`ing `format-inl.h`) was previously invisible because
+    // `extensions()` omits `.h` for Cpp. C and all non-Cpp/JS-TS langs are
+    // unaffected (their `scan_extensions()` equals `extensions()`).
     let extensions: HashSet<String> = language
-        .extensions()
+        .scan_extensions()
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -206,7 +211,28 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             // Handle ./relative paths
             let import_clean = normalized_import.trim_start_matches("./");
             let target_clean = normalized_target.trim_start_matches("./");
-            import_clean == target_clean
+            if import_clean == target_clean {
+                return true;
+            }
+            // RC5 (v0.5.0 R7 cluster[10], #242): canonicalize relative
+            // specifiers so `./scanner` (queried) matches a file that imports
+            // the SAME leaf via a different relative depth (`../../scanner`).
+            // The TS/JS arm previously did only exact + `./`-trim and never
+            // resolved `../` prefixes, so equivalent relative spellings of the
+            // same target missed. `path_module_matches` (already used by
+            // Solidity/Lua/Ruby) strips leading `../`/`./` and does
+            // segment-anchored suffix + leaf matching. Strip a trailing
+            // module extension first so `../scanner.ts` matches `./scanner`,
+            // mirroring how `index_ts_js_module` registers extension-less keys.
+            fn strip_ts_ext(s: &str) -> &str {
+                for ext in [".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"] {
+                    if let Some(stripped) = s.strip_suffix(ext) {
+                        return stripped;
+                    }
+                }
+                s
+            }
+            path_module_matches(strip_ts_ext(&normalized_import), strip_ts_ext(&normalized_target))
         }
         Language::Go => {
             // Package path matching
@@ -256,14 +282,22 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             if import_module == target {
                 return true;
             }
+            // FORWARD-prefix: a query for the PARENT package `Foo.Bar` matches
+            // a more-specific import `Foo.Bar.Baz` (the file importing the
+            // child is an importer of the parent subtree).
             if import_module.starts_with(&format!("{}.", target)) {
                 return true;
             }
-            if import_module.contains('.')
-                && target.starts_with(&format!("{}.", import_module))
-            {
-                return true;
-            }
+            // RC4 (v0.5.0 R7 cluster[10], #34): the REVERSE-prefix rule
+            // (`target.starts_with("{import_module}.")`) is REMOVED. A query
+            // for a CHILD sub-namespace `Newtonsoft.Json.Bson.Utilities` must
+            // NOT match a file that only imports the PARENT namespace
+            // `using Newtonsoft.Json.Bson;` — importing the parent does not
+            // import the more-specific child type. This mirrors the Python fix
+            // (the reverse rule was likewise removed there). Exact +
+            // forward-prefix + bare-last-segment remain and cover every
+            // legitimate case (incl. the residual-bugs scala cats.effect and
+            // petclinic Owner queries).
             if !target.contains('.') && import_module.ends_with(&format!(".{}", target)) {
                 return true;
             }
@@ -793,6 +827,78 @@ mod tests {
         );
     }
 
+    // =========================================================================
+    // R7 cluster[10] deps-graph fixes (v0.5.0 CLOSEOUT)
+    // =========================================================================
+
+    /// RC4 (#34): importers reverse-prefix over-attribution for dotted-FQN
+    /// langs. A query for a CHILD sub-namespace `A.B.C` must NOT match a file
+    /// that imports the PARENT namespace `A.B`. `using Newtonsoft.Json.Bson;`
+    /// must not be returned for `importers Newtonsoft.Json.Bson.Utilities`.
+    /// RED before fix: the `target.starts_with("{import_module}.")` reverse
+    /// rule matched the parent import. Mirrors the Python fix.
+    #[test]
+    fn test_csharp_importers_child_query_excludes_parent_namespace_import() {
+        for lang in [
+            Language::CSharp,
+            Language::Java,
+            Language::Scala,
+            Language::Kotlin,
+        ] {
+            // import_module = parent namespace; target = deeper child.
+            assert!(
+                !module_matches("Newtonsoft.Json.Bson", "Newtonsoft.Json.Bson.Utilities", lang),
+                "{lang:?}: a child-namespace query must NOT match a parent-namespace import"
+            );
+            // Exact + forward-prefix + last-segment must still hold.
+            assert!(
+                module_matches(
+                    "Newtonsoft.Json.Bson.Utilities",
+                    "Newtonsoft.Json.Bson.Utilities",
+                    lang
+                ),
+                "{lang:?}: exact import must match"
+            );
+            assert!(
+                module_matches("Newtonsoft.Json.Bson.Utilities", "Newtonsoft.Json.Bson", lang),
+                "{lang:?}: parent-package query must still match a deeper import (forward)"
+            );
+            assert!(
+                module_matches("Newtonsoft.Json.Bson.Utilities", "Utilities", lang),
+                "{lang:?}: bare last-segment query must still match"
+            );
+        }
+    }
+
+    /// RC5 (#242): TS/JS relative-specifier under-resolution. A query for
+    /// `./scanner` must match a file that imports the SAME target file via a
+    /// different relative spelling `../../scanner`. RED before fix: the TS arm
+    /// did only exact + `./`-trim and never canonicalized relative paths.
+    #[test]
+    fn test_typescript_importers_relative_specifier_canonicalization() {
+        for lang in [Language::TypeScript, Language::JavaScript] {
+            // Same leaf file, different relative depth.
+            assert!(
+                module_matches("../../scanner", "./scanner", lang),
+                "{lang:?}: ../../scanner and ./scanner refer to the same leaf and must match"
+            );
+            assert!(
+                module_matches("../scanner", "scanner", lang),
+                "{lang:?}: bare-leaf query must match a relative import of that leaf"
+            );
+            // A trailing extension on one side should not block the match.
+            assert!(
+                module_matches("../../scanner.ts", "./scanner", lang),
+                "{lang:?}: extension on import side must still match a bare query"
+            );
+            // Two DIFFERENT leaf files must NOT match (no over-match).
+            assert!(
+                !module_matches("../../other", "./scanner", lang),
+                "{lang:?}: different leaf files must not match"
+            );
+        }
+    }
+
     /// lua-importers-require-symbol-v1: `tldr importers Type` over a Luau repo
     /// whose files do `local Type = require(script.Parent.Type)` must find
     /// those files (guards the require-path reconstruction path stays wired).
@@ -811,6 +917,42 @@ mod tests {
         assert!(
             report.total >= 1,
             "require(script.Parent.Type) importer not found: total={}",
+            report.total
+        );
+    }
+
+    /// RC1 (#28): C++ `.h` headers must participate in the importers walk so a
+    /// query for `widget.h` finds a `.h` file that `#include`s it. RED before
+    /// fix: `find_importers` used `language.extensions()` (no `.h` for Cpp), so
+    /// header-only importers (e.g. `scan.h` including `format-inl.h`) were
+    /// invisible.
+    #[test]
+    fn test_cpp_importers_includes_header_files() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // A C++ translation unit and TWO headers — one of which is included
+        // only by the other header (header-to-header include).
+        write_at(root, "src/widget.cpp", "#include \"widget.h\"\nint w() { return 1; }\n");
+        write_at(root, "src/widget.h", "#pragma once\nint w();\n");
+        write_at(
+            root,
+            "src/scan.h",
+            "#pragma once\n#include \"widget.h\"\nint s();\n",
+        );
+
+        let report = find_importers(root, "widget.h", Language::Cpp).unwrap();
+        // Both widget.cpp and scan.h include widget.h.
+        assert!(
+            report
+                .importers
+                .iter()
+                .any(|i| i.file.ends_with("scan.h")),
+            "header-to-header include scan.h->widget.h must be found: {:?}",
+            report.importers
+        );
+        assert!(
+            report.total >= 2,
+            "expected >=2 importers of widget.h (widget.cpp + scan.h), got {}",
             report.total
         );
     }

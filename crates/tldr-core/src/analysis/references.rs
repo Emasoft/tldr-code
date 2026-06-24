@@ -900,6 +900,18 @@ fn verify_single_candidate(
         });
     }
 
+    // RC7 (v0.5.0 R7 cluster[10], #146): a bare-name `references` query
+    // targets the function/method/const namespace, not a PHP `$variable`
+    // (which lives in a distinct sigil-prefixed namespace). A `$width`
+    // occurrence must NOT be reported as a reference to the method `width`.
+    if php_node_is_variable_occurrence(&node, language) {
+        return Some(VerifiedReference {
+            kind: ReferenceKind::Other,
+            confidence: 1.0,
+            is_valid: false,
+        });
+    }
+
     // Classify the reference kind based on AST context
     let kind = classify_reference_kind(&node, source, language);
 
@@ -908,6 +920,24 @@ fn verify_single_candidate(
         confidence: 1.0, // Fully verified by AST
         is_valid: true,
     })
+}
+
+/// RC7 (v0.5.0 R7 cluster[10], #146): true when `node` is the identifier of a
+/// PHP `$variable` occurrence (its immediate parent is `variable_name`).
+///
+/// In tree-sitter-php a `$width` reads as `variable_name($ , name "width")`,
+/// whereas a method `width()` reads as a `name` whose parent is a
+/// call/declaration node — never `variable_name`. PHP variables and
+/// functions/methods/constants occupy separate namespaces (the `$` sigil is
+/// load-bearing), so a bare-name reference query (which has no sigil) must
+/// exclude variable occurrences. Returns false for every non-PHP language.
+fn php_node_is_variable_occurrence(node: &Node, language: Language) -> bool {
+    if language != Language::Php {
+        return false;
+    }
+    node.parent()
+        .map(|p| p.kind() == "variable_name")
+        .unwrap_or(false)
 }
 
 /// Try to find the exact match node when position lookup returns a parent node
@@ -925,6 +955,15 @@ fn find_exact_match_node(
         if let Ok(text) = child.utf8_text(source) {
             if text == symbol {
                 if is_in_invalid_context(&child, language) {
+                    return Some(VerifiedReference {
+                        kind: ReferenceKind::Other,
+                        confidence: 1.0,
+                        is_valid: false,
+                    });
+                }
+                // RC7 (#146): exclude PHP `$variable` occurrences from a
+                // bare-name (function/method/const) reference query.
+                if php_node_is_variable_occurrence(&child, language) {
                     return Some(VerifiedReference {
                         kind: ReferenceKind::Other,
                         confidence: 1.0,
@@ -2552,6 +2591,37 @@ fn classify_elixir_reference(node: &Node, parent: &Node, source: &[u8]) -> Refer
             ReferenceKind::Read
         }
 
+        // RC8 (v0.5.0 R7 cluster[10], #56): a ZERO-ARITY `def name do` parses
+        // as `call(target=def, arguments(identifier name), do_block)` — the
+        // name's immediate parent is `arguments`, NOT a nested `call`. The
+        // existing `"call"` arm above only catches the with-args shape (where
+        // the name lives inside a nested `call`). Detect the zero-arity def
+        // here: if this identifier is the FIRST child of an `arguments` node
+        // whose parent `call` has target `def`/`defp`/`defmacro`/`defmacrop`,
+        // it is a Definition. Without this the def line was classified `read`.
+        "arguments" => {
+            if let Some(outer_call) = parent.parent() {
+                if outer_call.kind() == "call" {
+                    let target_is_def = outer_call
+                        .child_by_field_name("target")
+                        .and_then(|t| t.utf8_text(source).ok())
+                        .map(|t| matches!(t, "def" | "defp" | "defmacro" | "defmacrop"))
+                        .unwrap_or(false);
+                    if target_is_def {
+                        // Must be the first (name) argument.
+                        if let Some(first_arg) =
+                            first_named_child_of_kind(parent, &["identifier"])
+                        {
+                            if first_arg.id() == node.id() {
+                                return ReferenceKind::Definition;
+                            }
+                        }
+                    }
+                }
+            }
+            ReferenceKind::Read
+        }
+
         "dot" => {
             // Dotted call: App.greet — if the dot's parent is a call whose first
             // child is this dot, it's a Call.
@@ -3066,8 +3136,84 @@ fn check_definition_node(
         // empty `definitions[]` because the symbol resolver fell
         // through to the `_ => Ok(None)` branch.
         Language::Solidity => check_solidity_definition(node, symbol, source, file_path),
+        // RC8 (v0.5.0 R7 cluster[10], #56): Elixir definitions were never
+        // harvested (the `_ => Ok(None)` arm), so `definitions[]` was always
+        // empty for Elixir symbols — including zero-arity `def name do`,
+        // whose def line was then classified as `read`. Wire the dedicated
+        // Elixir definition matcher.
+        Language::Elixir => check_elixir_definition(node, symbol, source, file_path),
         _ => Ok(None),
     }
+}
+
+/// Check if an Elixir node is a `def`/`defp`/`defmacro`/`defmacrop`
+/// definition of the target symbol.
+///
+/// RC8 (v0.5.0 R7 cluster[10], #56). tree-sitter-elixir parses a definition
+/// as a `call` node whose `target` field is the identifier `def`/`defp`/…
+/// and whose `arguments` child holds the function name. There are two
+/// shapes (verified by debug-parse):
+///   * with-args: `arguments` contains a nested `call` whose `target` is the
+///     function-name identifier (`def add(a, b) do` → `call(add, args)`).
+///   * zero-arity: `arguments` contains the function-name `identifier`
+///     DIRECTLY (`def get_csrf_token do` → bare `identifier`).
+/// Both must be recognised. The matched name's position is recorded.
+fn check_elixir_definition(
+    node: &Node,
+    symbol: &str,
+    source: &[u8],
+    file_path: &Path,
+) -> TldrResult<Option<Definition>> {
+    if node.kind() != "call" {
+        return Ok(None);
+    }
+    // The `def`/… keyword is the `target` field.
+    let target_text = node
+        .child_by_field_name("target")
+        .and_then(|t| t.utf8_text(source).ok())
+        .unwrap_or("");
+    let def_kind = match target_text {
+        "def" | "defp" => DefinitionKind::Function,
+        "defmacro" | "defmacrop" => DefinitionKind::Function,
+        _ => return Ok(None),
+    };
+
+    // Locate the `arguments` child by KIND (it is not a named field).
+    let mut cursor = node.walk();
+    let args = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "arguments");
+    let Some(args) = args else {
+        return Ok(None);
+    };
+
+    // Inspect the first argument: a nested `call` (with-args) or a bare
+    // `identifier` (zero-arity).
+    let mut acursor = args.walk();
+    for child in args.children(&mut acursor) {
+        let name_node = match child.kind() {
+            // with-args: def add(a, b) -> call(target=add, ...)
+            "call" => child.child_by_field_name("target"),
+            // zero-arity: def get_csrf_token -> bare identifier
+            "identifier" => Some(child),
+            _ => None,
+        };
+        if let Some(name_node) = name_node {
+            if name_node.utf8_text(source).unwrap_or("") == symbol {
+                let signature = extract_signature(node, source, Language::Elixir);
+                return Ok(Some(Definition {
+                    file: file_path.to_path_buf(),
+                    line: node.start_position().row + 1,
+                    column: name_node.start_position().column + 1,
+                    kind: def_kind,
+                    signature,
+                }));
+            }
+        }
+        // Only the FIRST argument carries the name; stop after it.
+        break;
+    }
+    Ok(None)
 }
 
 /// Check if a Solidity node is a definition of the target symbol.
@@ -5200,6 +5346,132 @@ let _ = print_string (greet "Alice")
         assert_eq!(
             report.total_references, report.stats.verified_references,
             "stats.verified_references should mirror total_references"
+        );
+    }
+
+    // =========================================================================
+    // R7 cluster[10] deps-graph: references RC8 (Elixir zero-arity def) + RC7
+    // (PHP variable_name exclusion)
+    // =========================================================================
+
+    /// RC8 (#56): a zero-arity Elixir `def name do` must be recognised as a
+    /// DEFINITION and lifted into `definitions[]`. RED before fix: the name
+    /// node's parent is `arguments` (not `call`), so `is_elixir_def_call`
+    /// never fired and the def line was classified as `read`, leaving
+    /// `definitions[]` empty.
+    #[test]
+    fn test_elixir_zero_arity_def_is_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(
+            lib.join("csrf.ex"),
+            "defmodule CSRF do\n  def get_csrf_token do\n    :token\n  end\n\n  def use_it do\n    get_csrf_token()\n  end\nend\n",
+        )
+        .unwrap();
+
+        // find_definitions must surface the zero-arity def.
+        let defs = find_definitions("get_csrf_token", root, Some("elixir")).unwrap();
+        assert!(
+            !defs.is_empty(),
+            "zero-arity Elixir def must be found as a definition"
+        );
+        assert!(
+            defs.iter().any(|d| d.line == 2),
+            "definition should be at line 2 (def get_csrf_token do): {:?}",
+            defs.iter().map(|d| d.line).collect::<Vec<_>>()
+        );
+
+        // The references report must classify line 2 as a Definition, not Read.
+        let opts = ReferencesOptions {
+            include_definition: true,
+            language: Some("elixir".to_string()),
+            ..Default::default()
+        };
+        let report = find_references("get_csrf_token", root, &opts).unwrap();
+        assert!(
+            !report.definitions.is_empty(),
+            "ReferencesReport.definitions[] must be populated for zero-arity def"
+        );
+        let def_line_kind = report
+            .references
+            .iter()
+            .find(|r| r.line == 2)
+            .map(|r| r.kind);
+        assert!(
+            def_line_kind != Some(ReferenceKind::Read),
+            "def line must not be classified Read; got {def_line_kind:?}"
+        );
+    }
+
+    /// RC8 regression guard: with-args defs still resolve (the existing
+    /// nested-`call` path must keep working).
+    #[test]
+    fn test_elixir_with_args_def_still_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(
+            lib.join("math.ex"),
+            "defmodule Math do\n  def add(a, b) do\n    a + b\n  end\nend\n",
+        )
+        .unwrap();
+
+        let defs = find_definitions("add", root, Some("elixir")).unwrap();
+        assert!(
+            defs.iter().any(|d| d.line == 2),
+            "with-args Elixir def must still be a definition at line 2: {:?}",
+            defs.iter().map(|d| d.line).collect::<Vec<_>>()
+        );
+    }
+
+    /// RC7 (#146): a PHP bare-name query for a method `width` must NOT match
+    /// occurrences of the local variable `$width`. PHP variables live in a
+    /// distinct sigil-prefixed namespace; `$width` is a different entity from
+    /// the method `width()`. RED before fix: the `name` token inside
+    /// `variable_name` (text == "width") was collected and classified Read at
+    /// confidence 1.0.
+    #[test]
+    fn test_php_references_method_query_excludes_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Box.php"),
+            "<?php\nclass Box {\n    public function width() { return 10; }\n    public function area() {\n        $width = 5;\n        $w = $width;\n        return $width * $this->width();\n    }\n}\n",
+        )
+        .unwrap();
+
+        let opts = ReferencesOptions {
+            language: Some("php".to_string()),
+            ..Default::default()
+        };
+        let report = find_references("width", root, &opts).unwrap();
+
+        // No reference may point at a `$width` variable occurrence (lines 5,6,7
+        // contain `$width`). The only legitimate references are the method
+        // definition (line 3) and the `$this->width()` call (line 7).
+        for r in &report.references {
+            let is_var_line = matches!(r.line, 5 | 6);
+            assert!(
+                !is_var_line,
+                "PHP $width variable occurrence wrongly matched as method ref at line {} kind {:?}",
+                r.line, r.kind
+            );
+        }
+        // The genuine method call `$this->width()` (line 7) must still be a Call.
+        assert!(
+            report
+                .references
+                .iter()
+                .any(|r| r.line == 7 && r.kind == ReferenceKind::Call),
+            "the real $this->width() call must still be found: {:?}",
+            report
+                .references
+                .iter()
+                .map(|r| (r.line, r.kind))
+                .collect::<Vec<_>>()
         );
     }
 }
