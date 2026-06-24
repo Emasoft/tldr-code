@@ -883,6 +883,15 @@ pub fn run_health(
     // ratio uses the corrected `functions_analyzed`.
     summary.score = compute_health_score(&summary, options.complexity_threshold);
 
+    // fix-R7 (cluster[11] RC7): the C4 canonicalisation corrected ONLY
+    // `summary.functions_analyzed` (structure-based, de-duplicated). The
+    // complexity/dead sub-reports' `details.functions_analyzed` still carried
+    // the raw bare+qualified method double-count (e.g. java-petclinic
+    // summary=174 vs details=361), an internally inconsistent report. Project
+    // the canonical count into those sub-report details so every
+    // `functions_analyzed` the user sees agrees.
+    project_canonical_functions_analyzed(&mut report.sub_results, summary.functions_analyzed);
+
     report.summary = summary;
 
     // Step 6: Record total elapsed time (T28: use as_secs_f64)
@@ -1227,6 +1236,34 @@ fn canonicalize_counters_from_structure(
 
     summary.classes_analyzed = classes_total;
     summary.functions_analyzed = functions_total;
+}
+
+/// fix-R7 (cluster[11] RC7): overwrite the `functions_analyzed` field in the
+/// `complexity` and `dead` sub-report `details` payloads with the canonical
+/// (structure-deduplicated) value, so the per-sub-report counts agree with
+/// `summary.functions_analyzed`.
+///
+/// Without this, languages whose complexity/dead enumerators key each method
+/// under BOTH a bare and a qualified name (Java/Kotlin/C#/Scala) emit a doubled
+/// `functions_analyzed` in `details.*` while the summary is correct — the
+/// java-petclinic 174-vs-361 split. We only touch the headline counter; the
+/// per-function arrays and all other fields are left untouched.
+fn project_canonical_functions_analyzed(
+    sub_results: &mut IndexMap<String, SubAnalysisResult>,
+    canonical: usize,
+) {
+    for key in ["complexity", "dead"] {
+        if let Some(result) = sub_results.get_mut(key) {
+            if let Some(serde_json::Value::Object(map)) = result.details.as_mut() {
+                if map.contains_key("functions_analyzed") {
+                    map.insert(
+                        "functions_analyzed".to_string(),
+                        serde_json::Value::from(canonical),
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Compute the overall health score (0-100).
@@ -1820,5 +1857,68 @@ mod tests {
             "expected 2 functions + 2 methods = 4, got {} (classes={})",
             report.summary.functions_analyzed, report.summary.classes_analyzed,
         );
+    }
+
+    /// fix-R7 (cluster[11] RC7): the `details.complexity` and `details.dead`
+    /// sub-reports must report the SAME `functions_analyzed` as the canonical
+    /// `summary.functions_analyzed`. The C4 fix corrected only the summary
+    /// (java-petclinic 0 -> 174) but left the sub-report details carrying the
+    /// raw bare+qualified Java method DOUBLE-count (361), producing the visible
+    /// 174-vs-361 split. Run in FULL mode so the complexity/dead sub-analyzers
+    /// actually populate their details.
+    #[test]
+    fn test_health_details_functions_analyzed_match_summary_java() {
+        use std::fs;
+        let temp = tempfile::TempDir::new().unwrap();
+        let p = temp.path();
+        // A Java class whose methods are enumerated under BOTH a bare and a
+        // qualified key by the complexity/dead enumerators (the double-count
+        // source). Three methods, zero free functions.
+        fs::write(
+            p.join("Owner.java"),
+            "package com.example;\n\
+             public class Owner {\n\
+             \x20   public String getName() { return name; }\n\
+             \x20   public void setName(String n) { this.name = n; }\n\
+             \x20   public boolean isNew() { return id == null; }\n\
+             }\n",
+        )
+        .unwrap();
+
+        let opts = HealthOptions {
+            quick: false,
+            ..HealthOptions::default()
+        };
+        let report = run_health(p, Some(Language::Java), opts).unwrap();
+        let summary_fa = report.summary.functions_analyzed;
+        assert_eq!(summary_fa, 3, "summary functions_analyzed should be 3");
+
+        // The complexity sub-report's details.functions_analyzed must equal the
+        // canonical summary value (not a doubled raw count).
+        if let Some(cx) = report.sub_results.get("complexity") {
+            if let Some(details) = &cx.details {
+                if let Some(fa) = details.get("functions_analyzed").and_then(|v| v.as_u64()) {
+                    assert_eq!(
+                        fa as usize, summary_fa,
+                        "details.complexity.functions_analyzed ({}) must match \
+                         summary.functions_analyzed ({})",
+                        fa, summary_fa
+                    );
+                }
+            }
+        }
+        // Same for the dead sub-report.
+        if let Some(dead) = report.sub_results.get("dead") {
+            if let Some(details) = &dead.details {
+                if let Some(fa) = details.get("functions_analyzed").and_then(|v| v.as_u64()) {
+                    assert_eq!(
+                        fa as usize, summary_fa,
+                        "details.dead.functions_analyzed ({}) must match \
+                         summary.functions_analyzed ({})",
+                        fa, summary_fa
+                    );
+                }
+            }
+        }
     }
 }
