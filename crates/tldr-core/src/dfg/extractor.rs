@@ -1901,6 +1901,16 @@ impl<'a> DfgBuilder<'a> {
                 Language::Lua | Language::Luau => {
                     self.process_lua_for_statement(node, depth)?
                 }
+                // fix-R7 (cluster[11] RC4): Kotlin `for (x in iterable) body`
+                // reuses the `for_statement` kind but exposes its parts as
+                // POSITIONAL children (`variable_declaration` loop binder, the
+                // iterable expression after `in`, and a `block`/
+                // `control_structure_body`) — NONE with the `left`/`right`/`body`
+                // fields the Python handler reads. The campaign added shape-aware
+                // arms for Go/C/Java/Lua but left Kotlin on this broken
+                // fallthrough, so the loop variable, the iterable read, AND the
+                // entire loop body (loop-carried reassignments) were dropped.
+                Language::Kotlin => self.process_kotlin_for_statement(node, depth)?,
                 _ => self.process_for_loop(node, depth)?,
             },
 
@@ -3815,6 +3825,87 @@ impl<'a> DfgBuilder<'a> {
             self.extract_refs_from_node(body, depth + 1)?;
         }
         Ok(())
+    }
+
+    /// fix-R7 (cluster[11] RC4): Kotlin `for (x in iterable) body`.
+    ///
+    /// tree-sitter-kotlin exposes the parts as POSITIONAL children with no
+    /// field names:
+    ///   `for_statement` -> `for` `(` `variable_declaration` `in` <iterable>
+    ///                      `)` (`block` | `control_structure_body` | <stmt>)
+    /// Roles, by position relative to the `in` and `)` tokens:
+    ///   * the `variable_declaration` before `in` is the loop binder — its
+    ///     `identifier`(s) are DEFINITIONS (Kotlin allows destructuring
+    ///     `for ((k, v) in m)` via a `multi_variable_declaration`);
+    ///   * everything between `in` and `)` is the iterable expression — USES;
+    ///   * everything after `)` is the loop body — analyzed normally (so its
+    ///     loop-carried reassignments are recorded).
+    fn process_kotlin_for_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        #[derive(PartialEq)]
+        enum Phase {
+            Binder,
+            Iterable,
+            Body,
+        }
+        let mut phase = Phase::Binder;
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "for" | "(" => {}
+                "in" => {
+                    // Past the binder, now reading the iterable.
+                    phase = Phase::Iterable;
+                }
+                ")" => {
+                    // Iterable closed, the remainder is the body.
+                    phase = Phase::Body;
+                }
+                _ => match phase {
+                    Phase::Binder => {
+                        // The loop binder. Register each bound identifier as a
+                        // Definition. `variable_declaration` /
+                        // `multi_variable_declaration` wrap the name(s); a bare
+                        // identifier is tolerated defensively.
+                        self.register_kotlin_for_binder(child);
+                    }
+                    Phase::Iterable => {
+                        // Iterable expression -> uses (`b` in `1..b`, the
+                        // collection in `for (x in items)`, etc.).
+                        self.extract_refs_from_node(child, depth + 1)?;
+                    }
+                    Phase::Body => {
+                        self.extract_refs_from_node(child, depth + 1)?;
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
+
+    /// Register the loop-variable definition(s) of a Kotlin `for` binder.
+    /// Handles `variable_declaration` (single `i`, possibly typed `i: Int`) and
+    /// `multi_variable_declaration` (destructuring `(k, v)`), descending to the
+    /// leaf `identifier`(s).
+    ///
+    /// The type annotation (`user_type`/`type_identifier` subtree of `i: Int`)
+    /// is NOT a binding — in this grammar a `user_type` wraps a plain
+    /// `identifier` for the type name, so a naive descent would wrongly record
+    /// the TYPE (`Int`) as a loop-variable definition. We therefore skip type
+    /// and `:` nodes and only recurse the binder structure.
+    fn register_kotlin_for_binder(&mut self, node: Node) {
+        match node.kind() {
+            "identifier" | "simple_identifier" => {
+                self.add_ref_from_node(node, RefType::Definition);
+            }
+            // Type annotation and its punctuation are not bindings.
+            "user_type" | "type_identifier" | "nullable_type" | "type_reference" | ":" => {}
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.register_kotlin_for_binder(child);
+                }
+            }
+        }
     }
 
     fn process_lua_local_declaration(&mut self, node: Node, depth: usize) -> TldrResult<()> {
@@ -7454,6 +7545,120 @@ fun foo(): Int {
             "Kotlin var count should produce definitions, got defs: {:?}",
             defs
         );
+    }
+
+    /// fix-R7 (cluster[11] RC4): Kotlin `for (i in range) { body }` —
+    /// the `for_statement` node has POSITIONAL children (variable_declaration,
+    /// in, iterable, block), NONE of which carry the `left`/`right`/`body`
+    /// field names the Python-shaped `process_for_loop` reads. Before this fix
+    /// Kotlin fell through to that handler, which found nothing, so the loop
+    /// variable, the iterable read, AND the entire loop body (including
+    /// loop-carried reassignments) were dropped — slices collapsed to 0 edges.
+    #[test]
+    fn test_kotlin_for_loop_var_iterable_and_body_captured() {
+        let source = r#"
+fun multiplyAndDivide(a: Int, b: Int): Int {
+    var r = a
+    for (i in 1..b) {
+        r = r * 2
+        r = r + i
+    }
+    return r
+}
+"#;
+        let dfg = get_dfg_context(source, "multiplyAndDivide", Language::Kotlin).unwrap();
+
+        let defs: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| matches!(r.ref_type, RefType::Definition | RefType::Update))
+            .map(|r| r.name.as_str())
+            .collect();
+        let uses: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.ref_type == RefType::Use)
+            .map(|r| r.name.as_str())
+            .collect();
+
+        // Loop variable `i` is defined by the for-binder.
+        assert!(
+            defs.contains(&"i"),
+            "Kotlin for loop variable `i` must be a definition, got defs: {:?}",
+            defs
+        );
+        // The iterable `1..b` reads `b`.
+        assert!(
+            uses.contains(&"b"),
+            "Kotlin for iterable must read `b`, got uses: {:?}",
+            uses
+        );
+        // Loop body reassignments of `r` (loop-carried) must be recorded.
+        assert!(
+            defs.contains(&"r"),
+            "Kotlin loop body reassignment of `r` must be recorded, got defs: {:?}",
+            defs
+        );
+        // `i` is read inside the body (`r = r + i`).
+        assert!(
+            uses.contains(&"i"),
+            "Kotlin loop body use of `i` must be recorded, got uses: {:?}",
+            uses
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC4): a TYPED Kotlin loop binder `for (x: Int in ..)`
+    /// must record `x` as the loop variable but must NOT record the type name
+    /// `Int` as a definition (the `user_type` subtree wraps a plain identifier
+    /// in this grammar).
+    #[test]
+    fn test_kotlin_for_typed_binder_excludes_type_name() {
+        let source = r#"
+fun f(items: List<Int>): Int {
+    var s = 0
+    for (x: Int in items) {
+        s = s + x
+    }
+    return s
+}
+"#;
+        let dfg = get_dfg_context(source, "f", Language::Kotlin).unwrap();
+        let defs: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| matches!(r.ref_type, RefType::Definition | RefType::Update))
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(defs.contains(&"x"), "typed loop var `x` must be a def, got {:?}", defs);
+        assert!(
+            !defs.contains(&"Int"),
+            "type name `Int` must NOT be recorded as a loop-variable definition, got {:?}",
+            defs
+        );
+    }
+
+    /// fix-R7 (cluster[11] RC4): destructuring Kotlin loop binder
+    /// `for ((k, v) in map)` records both `k` and `v` as definitions.
+    #[test]
+    fn test_kotlin_for_destructuring_binder() {
+        let source = r#"
+fun f(m: Map<String, Int>): Int {
+    var s = 0
+    for ((k, v) in m) {
+        s = s + v
+    }
+    return s
+}
+"#;
+        let dfg = get_dfg_context(source, "f", Language::Kotlin).unwrap();
+        let defs: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| matches!(r.ref_type, RefType::Definition | RefType::Update))
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(defs.contains(&"k"), "destructured `k` must be a def, got {:?}", defs);
+        assert!(defs.contains(&"v"), "destructured `v` must be a def, got {:?}", defs);
     }
 
     #[test]
