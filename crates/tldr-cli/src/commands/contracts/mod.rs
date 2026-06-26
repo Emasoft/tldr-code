@@ -39,6 +39,12 @@ pub mod error;
 pub mod types;
 pub mod validation;
 
+// fix-R3-rc4 (RC4): single AST-driven definition of "the bare names a file
+// declares", shared by the `invariants` / `specs` / `verify` sub-commands to
+// scope test-derived results to a source FILE. Replaces the per-command,
+// recomputed-or-absent defined-symbol namespaces.
+pub mod symbols;
+
 // Phase 3: contracts command implementation
 #[path = "contracts.rs"]
 pub mod contracts_cmd;

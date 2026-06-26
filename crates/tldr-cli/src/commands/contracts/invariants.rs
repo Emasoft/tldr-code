@@ -26,7 +26,7 @@
 //! rather than actual runtime tracing. It parses function calls from test
 //! assertions and infers invariants from the argument patterns observed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -456,8 +456,24 @@ pub fn run_invariants(
     // source file; fall back to Python so the historical default (and the
     // pytest-only test corpus) keeps its exact `int`/`str`/`is not None`
     // spelling when detection is unavailable.
-    let source_lang =
-        super::test_recognizer::detect_language(source_path).unwrap_or(Language::Python);
+    let detected_lang = super::test_recognizer::detect_language(source_path);
+    let source_lang = detected_lang.unwrap_or(Language::Python);
+
+    // fix-R3-rc4 (RC4): the `<FILE>` positional now SCOPES the report. Build the
+    // set of bare names actually DECLARED in `source_path` — the defined-symbol
+    // namespace the engine never computed — so the test-derived observation
+    // buckets can be intersected against it below (the FILE used to be purely
+    // decorative, making the output invariant under the positional).
+    //
+    // `None` means the file's symbols are UNKNOWN (language undetectable,
+    // unreadable, or unparseable); in that case we deliberately fall back to the
+    // historical unfiltered behaviour rather than silently emptying every report
+    // — distinguishing "parse failed" from the genuine "parsed, zero defs"
+    // (`Some(empty)`) case.
+    let defined: Option<HashSet<String>> = match detected_lang {
+        Some(lang) => super::symbols::defined_symbols_for_file(source_path, lang),
+        None => None,
+    };
 
     // Collect observations from test files (Python only — observations
     // are extracted via the existing pytest-aware AST walker).
@@ -485,6 +501,21 @@ pub fn run_invariants(
     let mut by_kind: HashMap<String, u32> = HashMap::new();
 
     for (func_name, obs_list) in by_function.iter() {
+        // fix-R3-rc4 (RC4): scope to symbols DECLARED in the analyzed FILE.
+        // Drop any observed call whose bare name is not declared there. Under
+        // the conventional per-file definition this correctly excludes
+        // constructors of other types, inherited members, and framework /
+        // extension methods — none are declared in this file. When `defined`
+        // is `None` (symbols unknown) the filter is skipped entirely so the
+        // report falls back to the unfiltered set. Dropped names do not count
+        // toward the summary totals, so the summary now also discriminates on
+        // the FILE positional.
+        if let Some(ref defined) = defined {
+            if !defined.contains(func_name) {
+                continue;
+            }
+        }
+
         let obs_count = obs_list.len() as u32;
         total_observations += obs_count;
 
@@ -1860,5 +1891,197 @@ def test_add():
         let py_nn = infer_non_null_invariant("arg0", &refs, 3, Confidence::Low, Language::Python)
             .expect("python nn inv");
         assert_eq!(py_nn.expression, "arg0 is not None");
+    }
+
+    // ========================================================================
+    // fix-R3-rc4 (RC4): the `<FILE>` positional must SCOPE the reported
+    // functions to the symbols DECLARED in that file, instead of echoing every
+    // call name observed across the whole test tree. These characterization
+    // tests pin the real ground-truth scoping (not merely non-emptiness).
+    // ========================================================================
+
+    /// Build a `src_a.py` / `src_b.py` pair and a `tests/` dir whose assertions
+    /// observe BOTH `alpha` and `beta`. Returns the temp dir (kept alive) plus
+    /// the two source paths and the test directory.
+    fn scope_fixture() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let src_a = temp.path().join("src_a.py");
+        let src_b = temp.path().join("src_b.py");
+        fs::write(&src_a, "def alpha(x):\n    return x\n").unwrap();
+        fs::write(&src_b, "def beta(x):\n    return x\n").unwrap();
+        let tests = temp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("test_both.py"),
+            r#"
+from src_a import alpha
+from src_b import beta
+
+def test_alpha():
+    assert alpha(1) == 1
+    assert alpha(2) == 2
+
+def test_beta():
+    assert beta(1) == 1
+    assert beta(2) == 2
+"#,
+        )
+        .unwrap();
+        (temp, src_a, src_b, tests)
+    }
+
+    fn invariant_names(source: &Path, tests: &Path) -> Vec<String> {
+        let report = run_invariants(source, tests, None, 1).unwrap();
+        let mut names: Vec<String> = report
+            .functions
+            .iter()
+            .map(|f| f.function_name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Test 1 (the core bug) — the positional now DISCRIMINATES. Scoping to
+    /// `src_a.py` reports `alpha` and NOT `beta`; scoping to `src_b.py` reports
+    /// `beta` and NOT `alpha`; the two reports DIFFER. Before the fix both
+    /// files emit the identical observed-everywhere list.
+    #[test]
+    fn invariants_file_positional_scopes_to_declared_symbols() {
+        let (_temp, src_a, src_b, tests) = scope_fixture();
+
+        let a = invariant_names(&src_a, &tests);
+        let b = invariant_names(&src_b, &tests);
+
+        assert!(
+            a.contains(&"alpha".to_string()),
+            "src_a.py declares alpha, so it must be reported: {a:?}"
+        );
+        assert!(
+            !a.contains(&"beta".to_string()),
+            "beta is NOT declared in src_a.py and must be excluded: {a:?}"
+        );
+        assert!(
+            b.contains(&"beta".to_string()),
+            "src_b.py declares beta, so it must be reported: {b:?}"
+        );
+        assert!(
+            !b.contains(&"alpha".to_string()),
+            "alpha is NOT declared in src_b.py and must be excluded: {b:?}"
+        );
+        assert_ne!(a, b, "the FILE positional must change the reported set");
+    }
+
+    /// Test 2 (Q2) — names observed in the test tree but NOT declared in the
+    /// scoped file (helper functions, builtins, would-be framework/inherited
+    /// calls) are dropped. The report is EXACTLY the declared symbol, which is
+    /// airtight: `helper` is definitely observed (`assert helper(3) == 3`), so
+    /// without scoping the set could not equal `{compute}`.
+    #[test]
+    fn invariants_drops_names_not_declared_in_file() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("calc.py");
+        fs::write(&src, "def compute(x):\n    return x\n").unwrap();
+        let tests = temp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("test_calc.py"),
+            r#"
+from calc import compute
+
+def test_compute():
+    assert compute(1) == 1
+    assert compute(2) == 2
+    assert helper(3) == 3
+    assert str(compute(1)) == "1"
+"#,
+        )
+        .unwrap();
+
+        let names = invariant_names(&src, &tests);
+        assert_eq!(
+            names,
+            vec!["compute".to_string()],
+            "only the symbol declared in calc.py survives scoping: {names:?}"
+        );
+    }
+
+    /// Test 3 (Q2) — empty-but-correct. A file whose declared symbols are
+    /// disjoint from every observed call yields an EMPTY function list (the
+    /// documented intended outcome under strict declared-in-file scoping), not
+    /// a crash and not the unfiltered list.
+    #[test]
+    fn invariants_empty_when_no_observed_name_declared_in_file() {
+        let temp = TempDir::new().unwrap();
+        // `unrelated.py` declares only `unrelated`, which the tests never call.
+        let src = temp.path().join("unrelated.py");
+        fs::write(&src, "def unrelated():\n    return 0\n").unwrap();
+        let tests = temp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("test_x.py"),
+            "\ndef test_x():\n    assert compute(1) == 1\n    assert compute(2) == 2\n",
+        )
+        .unwrap();
+
+        let report = run_invariants(&src, &tests, None, 1).unwrap();
+        assert!(
+            report.functions.is_empty(),
+            "no observed call is declared in unrelated.py -> empty report: {:?}",
+            report
+                .functions
+                .iter()
+                .map(|f| f.function_name.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Test 4 — parse-failure / unreadable fallback. A `.py` file containing
+    /// invalid UTF-8 is still detected as Python by extension, but its declared
+    /// symbols are UNKNOWN (read fails). The report must FALL BACK to unfiltered
+    /// rather than silently empty everything, so a parser gap can never erase a
+    /// report.
+    #[test]
+    fn invariants_falls_back_to_unfiltered_when_file_unreadable() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("broken.py");
+        fs::write(&src, [0xff, 0xfe, 0x00, 0x80, 0x81]).unwrap();
+        let tests = temp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("test_x.py"),
+            "\ndef test_x():\n    assert compute(1) == 1\n    assert compute(2) == 2\n",
+        )
+        .unwrap();
+
+        let names = invariant_names(&src, &tests);
+        assert!(
+            names.contains(&"compute".to_string()),
+            "an unreadable FILE must fall back to unfiltered (compute retained): {names:?}"
+        );
+    }
+
+    /// Test 5 — same-name KNOWN LIMITATION. Scoping matches by UNQUALIFIED
+    /// name: a file declaring `read` keeps every observed `read` call even
+    /// where the canonical (receiver-type-qualified) key would distinguish two
+    /// classes. This pins the accepted bare-name imprecision so a future
+    /// signature-keyed fix has a target.
+    #[test]
+    fn invariants_bare_name_match_keeps_same_named_symbol_known_limitation() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("reader.py");
+        fs::write(&src, "def read(x):\n    return x\n").unwrap();
+        let tests = temp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("test_read.py"),
+            "\ndef test_read():\n    assert read(1) == 1\n    assert read(2) == 2\n",
+        )
+        .unwrap();
+
+        let names = invariant_names(&src, &tests);
+        assert!(
+            names.contains(&"read".to_string()),
+            "bare-name match keeps `read` declared in reader.py: {names:?}"
+        );
     }
 }

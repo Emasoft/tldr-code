@@ -109,8 +109,15 @@ impl SpecsArgs {
             self.from_tests.display()
         ));
 
-        // Run extraction
-        let report = run_specs(&self.from_tests, self.function.as_deref())?;
+        // Run extraction. fix-R3-rc4 (RC4): the previously-dead `--source` flag
+        // now SCOPES the recovered specs to the functions declared in that
+        // source file, mirroring `invariants <FILE>` (its help already
+        // advertised "Source directory for cross-referencing").
+        let report = run_specs_scoped(
+            &self.from_tests,
+            self.function.as_deref(),
+            self.source.as_deref(),
+        )?;
 
         // Output based on format
         let use_text = matches!(self.output_format, ContractsOutputFormat::Text)
@@ -277,6 +284,66 @@ pub fn run_specs(test_path: &Path, function_filter: Option<&str>) -> ContractsRe
     };
 
     Ok(SpecsReport { functions, summary })
+}
+
+/// Run specs extraction, then (fix-R3-rc4 / RC4) optionally SCOPE the recovered
+/// specs to the functions actually DECLARED in `source_file`.
+///
+/// This gives the previously-dead `--source` flag the cross-referencing meaning
+/// its help advertises and makes `specs --source <FILE>` behave like
+/// `invariants <FILE>`: both share `contracts::symbols::defined_symbols_for_file`
+/// as the single definition of a file's declared symbols. When `source_file`'s
+/// symbols are UNKNOWN (undetectable language, unreadable, or unparseable) the
+/// specs are returned UNSCOPED — a parser gap never silently empties the report.
+pub fn run_specs_scoped(
+    test_path: &Path,
+    function_filter: Option<&str>,
+    source_file: Option<&Path>,
+) -> ContractsResult<SpecsReport> {
+    let mut report = run_specs(test_path, function_filter)?;
+
+    if let Some(source) = source_file {
+        if let Some(language) = super::test_recognizer::detect_language(source) {
+            if let Some(defined) = super::symbols::defined_symbols_for_file(source, language) {
+                report
+                    .functions
+                    .retain(|f| defined.contains(&f.function_name));
+                report.summary = recompute_specs_summary(&report.functions, &report.summary);
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Recompute the spec-count fields of a `SpecsSummary` after the function set
+/// has been scoped by `--source`. The scan-provenance counts
+/// (`test_files_scanned` / `test_functions_scanned`) describe what was
+/// *examined*, not what survived scoping, so they are preserved verbatim.
+fn recompute_specs_summary(functions: &[FunctionSpecs], prev: &SpecsSummary) -> SpecsSummary {
+    let total_io: u32 = functions
+        .iter()
+        .map(|f| f.input_output_specs.len() as u32)
+        .sum();
+    let total_exc: u32 = functions
+        .iter()
+        .map(|f| f.exception_specs.len() as u32)
+        .sum();
+    let total_prop: u32 = functions
+        .iter()
+        .map(|f| f.property_specs.len() as u32)
+        .sum();
+    SpecsSummary {
+        total_specs: total_io + total_exc + total_prop,
+        by_type: SpecsByType {
+            input_output: total_io,
+            exception: total_exc,
+            property: total_prop,
+        },
+        test_functions_scanned: prev.test_functions_scanned,
+        test_files_scanned: prev.test_files_scanned,
+        functions_found: functions.len() as u32,
+    }
 }
 
 /// Intermediate result from parsing a single file.
@@ -5606,6 +5673,66 @@ let%test "add" = equal (add 2 3) 5
                 .any(|f| f.function_name == "equal"),
             "equal must not appear as a function-under-test"
         );
+    }
+
+    /// fix-R3-rc4 (RC4): the previously-dead `specs --source <FILE>` flag now
+    /// SCOPES recovered specs to the functions DECLARED in that file. Without
+    /// `--source` both `alpha` and `beta` are recovered; scoping to a file that
+    /// declares only `alpha` drops `beta` (mirrors invariants test 1).
+    #[test]
+    fn specs_source_flag_scopes_to_declared_symbols() {
+        let temp = TempDir::new().unwrap();
+        let src_a = temp.path().join("src_a.py");
+        fs::write(&src_a, "def alpha(x):\n    return x\n").unwrap();
+        let tests = temp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        fs::write(
+            tests.join("test_both.py"),
+            r#"
+def test_alpha():
+    assert alpha(1) == 1
+    assert alpha(2) == 2
+
+def test_beta():
+    assert beta(1) == 1
+    assert beta(2) == 2
+"#,
+        )
+        .unwrap();
+
+        // Unscoped: both functions-under-test are recovered.
+        let unscoped = run_specs(&tests, None).unwrap();
+        let unames: Vec<String> = unscoped
+            .functions
+            .iter()
+            .map(|f| f.function_name.clone())
+            .collect();
+        assert!(
+            unames.contains(&"alpha".to_string()),
+            "alpha recovered without --source: {unames:?}"
+        );
+        assert!(
+            unames.contains(&"beta".to_string()),
+            "beta IS recovered without --source: {unames:?}"
+        );
+
+        // Scoped to src_a.py (declares only `alpha`): `beta` is dropped.
+        let scoped = run_specs_scoped(&tests, None, Some(&src_a)).unwrap();
+        let snames: Vec<String> = scoped
+            .functions
+            .iter()
+            .map(|f| f.function_name.clone())
+            .collect();
+        assert!(
+            snames.contains(&"alpha".to_string()),
+            "alpha is declared in src_a.py: {snames:?}"
+        );
+        assert!(
+            !snames.contains(&"beta".to_string()),
+            "beta is NOT declared in src_a.py and must be scoped out: {snames:?}"
+        );
+        // The summary is recomputed to match the scoped function set.
+        assert_eq!(scoped.summary.functions_found, snames.len() as u32);
     }
 
     /// CHAR: Rust `assert_eq!(add(2, 3), 5)` macro (flat token_tree path).

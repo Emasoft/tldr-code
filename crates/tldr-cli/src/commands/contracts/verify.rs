@@ -27,8 +27,6 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::Args;
-use tldr_core::ast::extractor::extract_functions;
-use tldr_core::ast::ParserPool;
 use tldr_core::walker::walk_project;
 
 use tldr_core::Language;
@@ -523,81 +521,26 @@ fn analyze_file_contracts(
     Ok(reports)
 }
 
-/// Extract function names from source code.
+/// Extract the bare names of functions/methods DECLARED in `source`.
 ///
-/// verify-aggregator-v1 (v0.4.2 M-011): previously a line-based regex
-/// matching only Python's `def NAME(` syntax, which silently returned
-/// an empty list for every other language. As a result `sweep_contracts`
-/// invoked `run_contracts` zero times on C / C++ / Kotlin / Scala /
-/// Swift / OCaml / Ruby / Rust / Go / Java / TS / JS files and the
-/// aggregator's `contracts.items_found` was always `0`.
+/// verify-aggregator-v1 (v0.4.2 M-011): previously a line-based regex matching
+/// only Python's `def NAME(` syntax, which silently returned an empty list for
+/// every other language. As a result `sweep_contracts` invoked `run_contracts`
+/// zero times on C / C++ / Kotlin / Scala / Swift / OCaml / Ruby / Rust / Go /
+/// Java / TS / JS files and the aggregator's `contracts.items_found` was always
+/// `0`. It was then made AST-based (ParserPool + tree-sitter `extract_functions`
+/// plus the Solidity and method-bearing-language bridges).
 ///
-/// Now parses the source with the shared [`ParserPool`] and delegates
-/// to [`tldr_core::ast::extractor::extract_functions`], which covers
-/// every supported language via tree-sitter. On parse failure we fall
-/// back to the empty list (matches the previous behaviour for
-/// malformed files — `analyze_file_contracts` records the error
-/// upstream when `run_contracts` itself fails on a function).
+/// fix-R3-rc4 (RC4): that AST extractor is now hoisted into
+/// `contracts::symbols::defined_symbol_names`, the SINGLE shared definition of
+/// "the symbols a file declares", so `verify` and `invariants` (and `specs
+/// --source`) agree on it instead of recomputing it ad hoc. This wrapper is
+/// behaviour-preserving for the verify sweep: it still covers every supported
+/// language and still falls back to the empty list on blank/unparseable source
+/// (`analyze_file_contracts` records the error upstream when `run_contracts`
+/// itself fails on a function).
 fn extract_function_names(source: &str, language: Language) -> ContractsResult<Vec<String>> {
-    if source.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let pool = ParserPool::new();
-    let tree = match pool.parse(source, language) {
-        Ok(t) => t,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut names = extract_functions(&tree, source, language);
-
-    // v0.5.0 SOL-CONV-R1-5 (V11): Solidity wraps every concrete function
-    // inside a contract/interface/library, so `extract_functions`
-    // (which is configured for `methods_only=false`) returns ZERO names
-    // for typical .sol files. The verify project-scan then invokes
-    // `run_contracts` zero times and the aggregator's `contracts`
-    // sub-result reports `items_found = 0` even when the source has
-    // multiple documented functions (e.g., OpenZeppelin ERC20). Extend
-    // with the contract-member method names so per-function NatSpec /
-    // require / if-revert extraction runs across the whole file.
-    if language == Language::Solidity {
-        let methods =
-            tldr_core::ast::extractor::extract_solidity_methods_for_verify(&tree, source);
-        for m in methods {
-            if !names.contains(&m) {
-                names.push(m);
-            }
-        }
-    }
-
-    // fix-R2-themeE (RC9): the Solidity-only methods bridge above left every
-    // OTHER method-bearing language under-counting. For languages whose
-    // callable units live (wholly or partly) inside classes/objects,
-    // `extract_functions` returns only the FREE functions — for C# that is the
-    // empty set (C# has no free functions at all), so `compute_coverage`'s
-    // `total_functions` stayed empty and collapsed to the FILE count (a C#
-    // project of 51 files reported `total_functions: 51`, not its ~499
-    // methods). Bridge in `extract_methods` for the method-bearing languages
-    // (C#, Java, Kotlin, Scala, Swift, Ruby, C++) — deduped against the free
-    // functions already collected — so the verify sweep runs `run_contracts`
-    // per real method and the coverage denominator reflects the true method
-    // count. Mirrors the `health` command's method-aware function count.
-    if matches!(
-        language,
-        Language::CSharp
-            | Language::Java
-            | Language::Kotlin
-            | Language::Scala
-            | Language::Swift
-            | Language::Ruby
-            | Language::Cpp
-    ) {
-        let methods = tldr_core::ast::extractor::extract_methods(&tree, source, language);
-        for m in methods {
-            if !names.contains(&m) {
-                names.push(m);
-            }
-        }
-    }
-    Ok(names)
+    Ok(super::symbols::defined_symbol_names(source, language))
 }
 
 /// Sweep specs extraction from test directory.
