@@ -493,6 +493,20 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
     // Build module index for O(1) lookup (S7-R8)
     let module_index = build_module_index(&root, &files, language);
 
+    // RC13 (v0.5.0 R3, #33): C# whole-namespace `using NS;` fork-A resolution.
+    // The flat `module_index` maps a namespace string to ONE file (first
+    // walked wins), so every consumer of a namespace funneled to one arbitrary
+    // file while the real target got zero edges. The fork-A resolver below
+    // binds a `using NS;` to the file(s) declaring the type(s) the consumer
+    // ACTUALLY uses (AST declared-types index + per-consumer used-type set),
+    // matching every mature namespace-language tool (jdeps/NDepend/Roslyn/
+    // Structure101/SonarQube). Built once; consulted per file in the loop.
+    let csharp_symbols = if language == Language::CSharp {
+        Some(build_csharp_symbol_index(&files))
+    } else {
+        None
+    };
+
     // Build dependency graph
     let mut internal_dependencies: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
     let mut external_dependencies: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
@@ -533,8 +547,15 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
 
             match dep_kind {
                 DepKind::Internal => {
-                    // Try to resolve to get the actual file path
-                    if let Some(target_path) =
+                    // RC13: C# internal edges are computed by the fork-A
+                    // symbol resolver (once per file, after this loop), NOT by
+                    // the flat first-wins index lookup — which fabricated a
+                    // confidently-wrong single edge per `using NS;`. External /
+                    // Stdlib classification for C# still flows through the arms
+                    // above; only Internal resolution is rerouted.
+                    if language == Language::CSharp {
+                        // handled by csharp_symbols.resolve_file below
+                    } else if let Some(target_path) =
                         resolve_import(&import, &root, file_path, &module_index, language)
                     {
                         let target_relative = make_relative_path(&target_path, &root);
@@ -580,6 +601,21 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                     // stdlib surface (kotlin reported `kotlin.collections`,
                     // c# reported `System.IO`, ocaml reported `Stdlib.Map`,
                     // etc.).
+                }
+            }
+        }
+
+        // RC13: append C# fork-A internal edges (one per actually-used type,
+        // resolved across the file's `using` namespaces with CS0104 ambiguity
+        // suppression). Edges are returned sorted for byte-stable output.
+        if let Some(sym) = &csharp_symbols {
+            for target in sym.resolve_file(file_path) {
+                let target_relative = make_relative_path(&target, &root);
+                if target_relative != relative_path
+                    && !file_internal_deps.contains(&target_relative)
+                {
+                    file_internal_deps.push(target_relative);
+                    total_internal_deps += 1;
                 }
             }
         }
@@ -3285,6 +3321,367 @@ fn is_csharp_stdlib(module_name: &str) -> bool {
     module_name.starts_with("System")
         || module_name.starts_with("Microsoft")
         || module_name.starts_with("Windows")
+}
+
+// =============================================================================
+// RC13 (v0.5.0 R3, #33): C# whole-namespace `using NS;` fork-A resolution.
+// =============================================================================
+//
+// A C# `using NS;` imports the WHOLE (open-ended, multi-file) namespace, which
+// the flat `HashMap<String, PathBuf>` module index cannot model — it maps a
+// namespace string to ONE arbitrary file (first walked wins). The result on
+// `csharp-newtonsoft-bson` was that all 10 consumers of
+// `Newtonsoft.Json.Bson.Utilities` funneled their edge to `AsyncUtils.cs`
+// (10 incoming) while the real target `ValidationUtils.cs` received ZERO.
+//
+// Fork A (the unanimous industry model — jdeps / NDepend / Roslyn /
+// Structure101 / SonarQube) resolves a whole-namespace `using` to the file(s)
+// declaring the type(s) the consumer ACTUALLY uses. That needs two AST passes
+// the path-based index lacks:
+//   * DECLARED types per file, keyed by their real (AST) namespace — NOT the
+//     filename stem (C# legally allows many top-level types per `.cs` file).
+//   * USED simple type names per consumer (call-site receivers, `new` types,
+//     base types) — a `using NS;` carries no symbol list of its own.
+// Binding follows C# precedence (spec §9 / diagnostic CS0104): same-namespace
+// declared types HIDE imports; otherwise a used name that EXACTLY ONE imported
+// namespace declares yields an edge; a name declared by TWO+ imported
+// namespaces is AMBIGUOUS (CS0104) and yields NO edge — never the first-walked
+// file. The syntactic-only ceiling: binary-dependency types and overload /
+// extension receivers cannot be bound without assembly metadata and degrade to
+// UNRESOLVED (edge omitted), never to a wrong edge.
+
+/// Per-file C# symbol facts gathered from one AST parse.
+#[derive(Default)]
+struct CSharpFileFacts {
+    /// Namespaces in which THIS file declares one or more types (local scope
+    /// that hides `using`-namespace imports per C# resolution precedence).
+    own_namespaces: Vec<String>,
+    /// Namespaces this file imports via a plain `using NS;` (NOT `using
+    /// static`, NOT an alias `using X = ...`).
+    using_namespaces: Vec<String>,
+    /// Simple type names referenced at call sites / `new` / base lists.
+    used_types: std::collections::HashSet<String>,
+}
+
+/// Fork-A C# resolver: a declared-type index plus per-file usage facts.
+struct CSharpSymbolIndex {
+    /// `namespace` -> list of `(TypeName, declaring file)`.
+    decls: HashMap<String, Vec<(String, PathBuf)>>,
+    /// consumer file -> usage facts.
+    files: HashMap<PathBuf, CSharpFileFacts>,
+}
+
+impl CSharpSymbolIndex {
+    /// Resolve the set of internal file edges a C# consumer file owns, by
+    /// binding each USED simple type name against DECLARED types reachable
+    /// through the file's namespace scope (local-first, then `using`s, with
+    /// CS0104 ambiguity suppression). Returns a sorted, de-duplicated list for
+    /// byte-stable output.
+    fn resolve_file(&self, file: &Path) -> Vec<PathBuf> {
+        let facts = match self.files.get(file) {
+            Some(f) => f,
+            None => return Vec::new(),
+        };
+        let mut edges: Vec<PathBuf> = Vec::new();
+
+        for used in &facts.used_types {
+            // (1) Same-namespace declared types HIDE imports (local-first).
+            let mut local_hit = false;
+            for ns in &facts.own_namespaces {
+                if let Some(types) = self.decls.get(ns) {
+                    for (type_name, decl_file) in types {
+                        if type_name == used {
+                            local_hit = true;
+                            if decl_file != file && !edges.contains(decl_file) {
+                                edges.push(decl_file.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            if local_hit {
+                continue;
+            }
+
+            // (2) Imported namespaces. Track which DISTINCT namespaces declare
+            // the used name — two or more is CS0104-ambiguous (no edge).
+            let mut hit_namespaces = 0usize;
+            let mut hit_files: Vec<PathBuf> = Vec::new();
+            for ns in &facts.using_namespaces {
+                if let Some(types) = self.decls.get(ns) {
+                    let mut found_in_ns = false;
+                    for (type_name, decl_file) in types {
+                        if type_name == used {
+                            found_in_ns = true;
+                            if !hit_files.contains(decl_file) {
+                                hit_files.push(decl_file.clone());
+                            }
+                        }
+                    }
+                    if found_in_ns {
+                        hit_namespaces += 1;
+                    }
+                }
+            }
+            // Exactly one declaring namespace -> bind. Zero -> unresolved
+            // (external / binary). Two+ -> ambiguous (CS0104) -> NO edge,
+            // never the first-walked file.
+            if hit_namespaces == 1 {
+                for decl_file in hit_files {
+                    if decl_file != *file && !edges.contains(&decl_file) {
+                        edges.push(decl_file);
+                    }
+                }
+            }
+        }
+
+        edges.sort();
+        edges
+    }
+}
+
+/// Parse C# source into a tree-sitter tree (mirrors `parse_go_tree`).
+fn parse_csharp_tree(source: &str) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_c_sharp::LANGUAGE.into())
+        .ok()?;
+    parser.parse(source, None)
+}
+
+/// Join two namespace components with `.`, tolerating empties.
+fn join_csharp_ns(outer: &str, inner: &str) -> String {
+    if outer.is_empty() {
+        inner.to_string()
+    } else if inner.is_empty() {
+        outer.to_string()
+    } else {
+        format!("{outer}.{inner}")
+    }
+}
+
+/// Reduce a C# type node to its simple (unqualified) name, peeling generics,
+/// nullable / array wrappers and namespace qualifiers (R2).
+fn csharp_simple_type_name(node: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => node.utf8_text(src).ok().map(|s| s.to_string()),
+        "generic_name" => {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok())
+            {
+                return Some(name.to_string());
+            }
+            let mut c = node.walk();
+            let mut result = None;
+            for ch in node.children(&mut c) {
+                if ch.kind() == "identifier" {
+                    if let Ok(t) = ch.utf8_text(src) {
+                        result = Some(t.to_string());
+                    }
+                    break;
+                }
+            }
+            result
+        }
+        // `A.B` qualified type -> the trailing simple name `B`.
+        "qualified_name" => node
+            .child_by_field_name("name")
+            .and_then(|n| csharp_simple_type_name(n, src)),
+        "nullable_type" | "array_type" => node
+            .child_by_field_name("type")
+            .and_then(|n| csharp_simple_type_name(n, src)),
+        _ => None,
+    }
+}
+
+/// Build the fork-A C# symbol index by AST-parsing every C# file once.
+fn build_csharp_symbol_index(files: &[PathBuf]) -> CSharpSymbolIndex {
+    let mut decls: HashMap<String, Vec<(String, PathBuf)>> = HashMap::new();
+    let mut file_facts: HashMap<PathBuf, CSharpFileFacts> = HashMap::new();
+
+    for file in files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let tree = match parse_csharp_tree(&source) {
+            Some(t) => t,
+            None => continue,
+        };
+        let root = tree.root_node();
+        let src = source.as_bytes();
+
+        let mut facts = CSharpFileFacts::default();
+        collect_csharp_declared_types(root, src, "", file, &mut decls, &mut facts.own_namespaces);
+        collect_csharp_using_and_uses(root, src, &mut facts);
+        file_facts.insert(file.clone(), facts);
+    }
+
+    CSharpSymbolIndex {
+        decls,
+        files: file_facts,
+    }
+}
+
+/// Walk a C# AST collecting top-level type declarations keyed by their real
+/// (AST) namespace. Handles block `namespace X { ... }` (nested body),
+/// `file_scoped_namespace_declaration` (applies to FOLLOWING siblings, no
+/// body — R1), and nested namespaces. Top-level type kinds per R1:
+/// class/struct/interface/enum/record/delegate (+ `record_struct` on older
+/// grammars). The `name` field is an `identifier`. Does NOT descend into a
+/// type's body — nested types are not reachable by their bare simple name.
+fn collect_csharp_declared_types(
+    node: tree_sitter::Node,
+    src: &[u8],
+    current_ns: &str,
+    file: &Path,
+    decls: &mut HashMap<String, Vec<(String, PathBuf)>>,
+    own_namespaces: &mut Vec<String>,
+) {
+    let mut cursor = node.walk();
+    // A `file_scoped_namespace_declaration` re-scopes all FOLLOWING siblings.
+    let mut scoped_ns: Option<String> = None;
+    for child in node.children(&mut cursor) {
+        let effective_ns: String = scoped_ns
+            .clone()
+            .unwrap_or_else(|| current_ns.to_string());
+        match child.kind() {
+            "file_scoped_namespace_declaration" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(src).ok())
+                    .unwrap_or("");
+                scoped_ns = Some(join_csharp_ns(current_ns, name));
+            }
+            "namespace_declaration" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(src).ok())
+                    .unwrap_or("");
+                let combined = join_csharp_ns(&effective_ns, name);
+                if let Some(body) = child.child_by_field_name("body") {
+                    collect_csharp_declared_types(
+                        body, src, &combined, file, decls, own_namespaces,
+                    );
+                } else {
+                    collect_csharp_declared_types(
+                        child, src, &combined, file, decls, own_namespaces,
+                    );
+                }
+            }
+            "class_declaration"
+            | "struct_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration"
+            | "delegate_declaration"
+            | "record_struct_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    if let Ok(type_name) = name_node.utf8_text(src) {
+                        let ns = effective_ns.clone();
+                        decls
+                            .entry(ns.clone())
+                            .or_default()
+                            .push((type_name.to_string(), file.to_path_buf()));
+                        if !ns.is_empty() && !own_namespaces.contains(&ns) {
+                            own_namespaces.push(ns);
+                        }
+                    }
+                }
+            }
+            _ => {
+                collect_csharp_declared_types(
+                    child,
+                    src,
+                    &effective_ns,
+                    file,
+                    decls,
+                    own_namespaces,
+                );
+            }
+        }
+    }
+}
+
+/// Walk a C# AST collecting (a) plain `using NS;` namespaces and (b) the simple
+/// type names referenced anywhere in the file (call-site receivers, `new`
+/// types, declared variable types, base types). Over-collection is safe: a
+/// used name that matches no declared type simply yields no edge.
+fn collect_csharp_using_and_uses(
+    node: tree_sitter::Node,
+    src: &[u8],
+    facts: &mut CSharpFileFacts,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "using_directive" => {
+                let text = child.utf8_text(src).unwrap_or("");
+                // Skip `using static ...` (imports members, not types) and
+                // aliases `using X = ...;` (handled by the alias machinery).
+                if text.contains(" static ") || text.contains('=') {
+                    continue;
+                }
+                if let Some(ns) = csharp_using_namespace(child, src) {
+                    if !is_csharp_stdlib(&ns) && !facts.using_namespaces.contains(&ns) {
+                        facts.using_namespaces.push(ns);
+                    }
+                }
+            }
+            "member_access_expression" => {
+                // The receiver `X` in `X.Member(...)` — the leading simple
+                // type name when X is a bare identifier (static access).
+                if let Some(expr) = child.child_by_field_name("expression") {
+                    if expr.kind() == "identifier" {
+                        if let Ok(t) = expr.utf8_text(src) {
+                            facts.used_types.insert(t.to_string());
+                        }
+                    }
+                }
+                collect_csharp_using_and_uses(child, src, facts);
+            }
+            "object_creation_expression" => {
+                if let Some(ty) = child.child_by_field_name("type") {
+                    if let Some(name) = csharp_simple_type_name(ty, src) {
+                        facts.used_types.insert(name);
+                    }
+                }
+                collect_csharp_using_and_uses(child, src, facts);
+            }
+            "variable_declaration" => {
+                if let Some(ty) = child.child_by_field_name("type") {
+                    if let Some(name) = csharp_simple_type_name(ty, src) {
+                        facts.used_types.insert(name);
+                    }
+                }
+                collect_csharp_using_and_uses(child, src, facts);
+            }
+            "base_list" => {
+                let mut bc = child.walk();
+                for b in child.children(&mut bc) {
+                    if let Some(name) = csharp_simple_type_name(b, src) {
+                        facts.used_types.insert(name);
+                    }
+                }
+            }
+            _ => collect_csharp_using_and_uses(child, src, facts),
+        }
+    }
+}
+
+/// Extract the namespace name from a plain `using NS;` directive node.
+fn csharp_using_namespace(using: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    let mut c = using.walk();
+    for ch in using.children(&mut c) {
+        match ch.kind() {
+            "qualified_name" | "identifier" | "name" => {
+                return ch.utf8_text(src).ok().map(|s| s.to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // =============================================================================
@@ -6676,5 +7073,206 @@ mod tests {
             // Dotted form (qualified value ref) gates on the head segment.
             assert!(is_ocaml_stdlib(&format!("{m}.lock")));
         }
+    }
+
+    // =========================================================================
+    // RC13 (v0.5.0 R3, #33): C# whole-namespace `using NS;` fork-A resolution.
+    // Two `.cs` files declaring the SAME namespace collided on one flat index
+    // key (first walked won), funneling every consumer to one arbitrary file
+    // while the real target got ZERO incoming edges. Fork A binds a `using` to
+    // the file(s) declaring the type(s) the consumer ACTUALLY uses. The Src/
+    // (above-source-root) layout is reproduced so the bug actually fires.
+    // =========================================================================
+
+    /// A consumer that `using`s a namespace and uses ONE type from it resolves
+    /// to that type's declaring file — NOT the first-walked sibling.
+    #[test]
+    fn test_csharp_fork_a_resolves_used_type_not_first_walked() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Two files declare the IDENTICAL namespace (the collision).
+        write_at(
+            root,
+            "Src/Newtonsoft.Json.Bson/Utilities/AsyncUtils.cs",
+            "namespace Newtonsoft.Json.Bson.Utilities {\n  internal static class AsyncUtils {\n    public static void Noop() {}\n  }\n}\n",
+        );
+        write_at(
+            root,
+            "Src/Newtonsoft.Json.Bson/Utilities/ValidationUtils.cs",
+            "namespace Newtonsoft.Json.Bson.Utilities {\n  internal static class ValidationUtils {\n    public static void ArgumentNotNull(object o, string n) {}\n  }\n}\n",
+        );
+        // Consumer uses ValidationUtils, the SECOND-walked file.
+        write_at(
+            root,
+            "Src/Newtonsoft.Json.Bson/BsonDataObjectId.cs",
+            "using Newtonsoft.Json.Bson.Utilities;\nnamespace Newtonsoft.Json.Bson {\n  public class BsonDataObjectId {\n    public BsonDataObjectId(object value) {\n      ValidationUtils.ArgumentNotNull(value, \"value\");\n    }\n  }\n}\n",
+        );
+
+        let report = analyze_dependencies(
+            root,
+            &DepsOptions {
+                language: Some("csharp".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let consumer = PathBuf::from("Src/Newtonsoft.Json.Bson/BsonDataObjectId.cs");
+        let validation = PathBuf::from("Src/Newtonsoft.Json.Bson/Utilities/ValidationUtils.cs");
+        let async_utils = PathBuf::from("Src/Newtonsoft.Json.Bson/Utilities/AsyncUtils.cs");
+        let edges = report
+            .internal_dependencies
+            .get(&consumer)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            edges.contains(&validation),
+            "consumer must depend on the USED type's file ValidationUtils.cs, got {edges:?}"
+        );
+        assert!(
+            !edges.contains(&async_utils),
+            "consumer must NOT depend on the first-walked AsyncUtils.cs, got {edges:?}"
+        );
+
+        // The real target now receives an incoming edge; the phantom does not.
+        let incoming_validation = report
+            .internal_dependencies
+            .values()
+            .filter(|v| v.contains(&validation))
+            .count();
+        let incoming_async = report
+            .internal_dependencies
+            .values()
+            .filter(|v| v.contains(&async_utils))
+            .count();
+        assert!(
+            incoming_validation > 0,
+            "ValidationUtils.cs must have >0 incoming edges"
+        );
+        assert_eq!(
+            incoming_async, 0,
+            "AsyncUtils.cs must no longer absorb the namespace's consumers"
+        );
+    }
+
+    /// Using BOTH types of a namespace yields BOTH edges (proves it's
+    /// used-driven, not a single arbitrary pick).
+    #[test]
+    fn test_csharp_fork_a_both_used_types_both_edges() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "Src/App/Utilities/AsyncUtils.cs",
+            "namespace App.Utilities {\n  internal static class AsyncUtils {\n    public static void A() {}\n  }\n}\n",
+        );
+        write_at(
+            root,
+            "Src/App/Utilities/ValidationUtils.cs",
+            "namespace App.Utilities {\n  internal static class ValidationUtils {\n    public static void V() {}\n  }\n}\n",
+        );
+        write_at(
+            root,
+            "Src/App/Consumer.cs",
+            "using App.Utilities;\nnamespace App {\n  public class Consumer {\n    public void Go() {\n      ValidationUtils.V();\n      AsyncUtils.A();\n    }\n  }\n}\n",
+        );
+
+        let report = analyze_dependencies(
+            root,
+            &DepsOptions {
+                language: Some("csharp".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let consumer = PathBuf::from("Src/App/Consumer.cs");
+        let edges = report
+            .internal_dependencies
+            .get(&consumer)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            edges.contains(&PathBuf::from("Src/App/Utilities/ValidationUtils.cs")),
+            "missing ValidationUtils edge: {edges:?}"
+        );
+        assert!(
+            edges.contains(&PathBuf::from("Src/App/Utilities/AsyncUtils.cs")),
+            "missing AsyncUtils edge: {edges:?}"
+        );
+    }
+
+    /// CS0104: a used simple name declared by TWO imported namespaces is
+    /// AMBIGUOUS — no edge, explicitly NOT the first-walked declarer.
+    #[test]
+    fn test_csharp_fork_a_ambiguous_simple_name_no_edge() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_at(
+            root,
+            "Src/App/Alpha/Foo.cs",
+            "namespace App.Alpha {\n  public class Foo { public static void M() {} }\n}\n",
+        );
+        write_at(
+            root,
+            "Src/App/Beta/Foo.cs",
+            "namespace App.Beta {\n  public class Foo { public static void M() {} }\n}\n",
+        );
+        write_at(
+            root,
+            "Src/App/Consumer.cs",
+            "using App.Alpha;\nusing App.Beta;\nnamespace App {\n  public class Consumer {\n    public void Go() { Foo.M(); }\n  }\n}\n",
+        );
+
+        let report = analyze_dependencies(
+            root,
+            &DepsOptions {
+                language: Some("csharp".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let consumer = PathBuf::from("Src/App/Consumer.cs");
+        let edges = report
+            .internal_dependencies
+            .get(&consumer)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !edges.contains(&PathBuf::from("Src/App/Alpha/Foo.cs")),
+            "ambiguous Foo must NOT bind to Alpha/Foo.cs: {edges:?}"
+        );
+        assert!(
+            !edges.contains(&PathBuf::from("Src/App/Beta/Foo.cs")),
+            "ambiguous Foo must NOT bind to Beta/Foo.cs: {edges:?}"
+        );
+    }
+
+    /// AST declared-type pass registers EVERY top-level type, not just the
+    /// filename stem — a single `.cs` file may legally declare many types.
+    #[test]
+    fn test_csharp_declared_type_ast_multiple_types_per_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let rel = "Src/App/Types.cs";
+        write_at(
+            root,
+            rel,
+            "namespace App.Models {\n  public class Alpha {}\n  public class Beta {}\n}\n",
+        );
+        let file = root.join(rel);
+        let index = build_csharp_symbol_index(&[file.clone()]);
+        let ns = index
+            .decls
+            .get("App.Models")
+            .cloned()
+            .unwrap_or_default();
+        let names: std::collections::BTreeSet<&str> =
+            ns.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains("Alpha") && names.contains("Beta"),
+            "both top-level types must be indexed (not just the filename stem): {names:?}"
+        );
     }
 }
