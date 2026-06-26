@@ -8947,7 +8947,13 @@ fn extract_elixir_module_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (elixir): populate `kind` from the canonical
+        // `classify_node` discriminator (single source of truth) — a
+        // `defmodule` call classifies as `EntityKind::Module` → "module",
+        // mirroring the Scala arm. Additive: the field was `None` (omitted)
+        // for Elixir before, so consumers that ignore `kind` are unaffected.
+        kind: crate::ast::entity::classify_node(*node, Language::Elixir, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -10121,6 +10127,38 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    /// RC2-META Stage 3 (elixir): `extract`'s module `ClassInfo` must carry
+    /// kind="module" (from the canonical `classify_node`) instead of the
+    /// previous `None`. Additive — agrees with the `EntityKind::Module` that
+    /// `structure` emits for the same `defmodule`.
+    #[test]
+    fn test_extract_elixir_module_kind_is_module() {
+        use crate::ast::parser::parse;
+        let source = r#"
+defmodule Plug.Builder do
+  defmacro __using__(opts) do
+    opts
+  end
+
+  def compile(env) do
+    env
+  end
+end
+"#;
+        let tree = parse(source, Language::Elixir).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Elixir);
+        let module = classes
+            .iter()
+            .find(|c| c.name == "Plug.Builder")
+            .expect("Plug.Builder module must be extracted as a ClassInfo");
+        assert_eq!(
+            module.kind.as_deref(),
+            Some("module"),
+            "elixir module ClassInfo.kind must be \"module\", got {:?}",
+            module.kind
+        );
+    }
 
     #[test]
     fn test_extract_python_file() {

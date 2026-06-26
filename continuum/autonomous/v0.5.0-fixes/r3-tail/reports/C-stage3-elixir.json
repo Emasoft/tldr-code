@@ -1,0 +1,34 @@
+{
+  "language": "elixir",
+  "stage": "rc2-meta STAGE 3 — universal kind population (elixir)",
+  "result": "success",
+  "implemented": "Wired the canonical classify_node discriminator into the production structure/extract/interface paths for Elixir so EntityKind is populated additively: defmacro/defmacrop -> kind=\"macro\", def/defp -> kind=\"method\" inside a defmodule (else \"function\"), defmodule -> kind=\"module\". Closes the #57 bidirectional seam (structure.definitions AND interface.functions now both report kind=\"macro\" for the same defmacro nodes).",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/types.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/interface_extraction_ocaml_elixir_v1.rs"
+  ],
+  "edits": [
+    "extractor.rs::try_elixir_call_definition — compute DefinitionInfo.kind via crate::ast::entity::classify_node (single source of truth): EntityKind::Macro -> \"macro\"; otherwise preserve the existing module-context rule (\"method\" inside defmodule, \"function\" at top level). Replaces the previous hardcoded method/function-only branch that mislabelled macros as \"method\".",
+    "extractor.rs (FileStructure builder) — method_infos filter widened from `kind==\"method\"` to `kind==\"method\" || kind==\"macro\"` so Elixir macros (now kind=\"macro\") are NOT dropped from the per-module method_infos view they have always appeared in. Elixir is the only producer of kind=\"macro\" in definitions, so other languages stay byte-identical.",
+    "extract.rs::extract_elixir_module_info — ClassInfo.kind set from classify_node(defmodule call) -> \"module\" (was None), mirroring the Scala arm.",
+    "patterns/types.rs — added additive `kind: Option<String>` (serde default + skip_serializing_if=Option::is_none) to the interface FunctionInfo display struct.",
+    "patterns/interface.rs::extract_function_info — populate FunctionInfo.kind via classify_node, gated on Language::Elixir (macro/function); all other FunctionInfo construction sites set kind:None (JSON byte-identical for non-Elixir)."
+  ],
+  "char_tests": [
+    "tldr-core ast::extractor::tests::test_elixir_definition_kinds_macro_method_module — structure definitions: defmacro/defmacrop=macro, def/defp inside module=method, defmodule=module",
+    "tldr-core ast::extractor::tests::test_elixir_macros_retained_in_method_infos — macros remain in method_infos after the kind flip (no dropped construct)",
+    "tldr-core ast::extract::tests::test_extract_elixir_module_kind_is_module — extract module ClassInfo.kind == \"module\"",
+    "tldr-cli interface_extraction_ocaml_elixir_v1::test_interface_elixir_macro_kind — interface functions: defmacro=macro, def=function"
+  ],
+  "lib_test": "cargo test -p tldr-core --lib: 5272 passed, 0 failed, 342 ignored. Touched cli suites: interface_extraction_ocaml_elixir_v1 (6 ok), elixir_method_infos_v1 (8 ok), elixir_multiclause_and_mix_v1 (2 ok), structure_method_infos_all_langs_v1 (7 ok), structure_functions_projection_v1 (5 ok), cross_command_consistency_v1 (2 ok), cross_command_consistency_v3 (6 ok), interface_per_lang_v1 (7 ok). Pre-existing unrelated RED: interface_per_lang_v1::javascript_prototype_assignments_emitted (JS prototype-assignment detection, no elixir/no struct overlap; my interface.rs change is fully Elixir-gated + kind:None literals which cannot drop a function — byte-identical JS behavior vs HEAD).",
+  "goldens_rebaselined": [],
+  "goldens_note": "No goldens required re-baselining. The kind additions are additive (skip_serializing_if) and the macro kind flip (method->macro in structure.definitions) did not break any existing live assertion — all touched suites passed unmodified. New behavior is covered by 4 NEW char-tests rather than by mutating existing assertions.",
+  "json_delta": "Elixir only. (1) `tldr structure` `definitions[].kind`: defmacro/defmacrop entries change \"method\"->\"macro\" (top-level macros \"function\"->\"macro\"); def/defp and defmodule unchanged. method_infos still contains the macros (filter now includes kind=\"macro\"); method_infos schema itself unchanged (no kind field). (2) `tldr extract` module ClassInfo gains `kind:\"module\"` (was omitted/None). (3) `tldr interface` `functions[]` gain a new optional `kind` field: \"macro\" for defmacro/defmacrop, \"function\" for def/defp (omitted for every non-Elixir language).",
+  "corpus_verification": "elixir-plug/lib/plug/builder.ex: structure definitions report Plug.Builder=module, __using__(148)/__before_compile__(172)/plug(249)/builder_opts(279)=macro, init/compile=method; method_infos retains all 4 macros; extract Plug.Builder=module; interface __using__/__before_compile__/plug/builder_opts=macro, __builder_opts__/compile=function. #57 bidirectional seam confirmed: structure AND interface agree macros are kind=macro.",
+  "committed": true,
+  "status": "closed",
+  "notes": "classify_node (Stages 1+2) used as the single source of truth; no new per-language kind table written. method-vs-function nuance for plain def differs between structure (\"method\", has module context) and interface (\"function\", flattened) — pre-existing modeling difference, out of scope for the macro seam; full cross-command method/function agreement is Stage 4 per the staged plan."
+}

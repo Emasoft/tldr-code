@@ -1432,12 +1432,27 @@ pub fn extract_function_info(func_node: Node, source: &[u8], lang: Language) -> 
     let is_async = detect_async(func_node, source, lang);
     let docstring = extract_docstring(func_node, source, lang);
 
+    // RC2-META Stage 3 (elixir): tag the entity kind from the canonical
+    // `classify_node` discriminator so `interface` reports `defmacro`/
+    // `defmacrop` as kind="macro" and `def`/`defp` as kind="function" — the
+    // #57 bidirectional seam (structure's `definitions` now agrees on
+    // kind="macro" for the same nodes). Gated on Elixir so every other
+    // language keeps `kind: None` (omitted from JSON).
+    let kind = if lang == Language::Elixir {
+        let src_str = std::str::from_utf8(source).unwrap_or("");
+        tldr_core::ast::entity::classify_node(func_node, lang, src_str)
+            .map(|k| k.as_str().to_string())
+    } else {
+        None
+    };
+
     FunctionInfo {
         name,
         signature,
         docstring,
         lineno,
         is_async,
+        kind,
     }
 }
 
@@ -2371,6 +2386,7 @@ fn walk_ocaml_mli(
                         docstring: None,
                         lineno,
                         is_async: false,
+                        kind: None,
                     });
                 }
             }
@@ -3054,6 +3070,7 @@ fn reconcile_lua_exports(
                     docstring: None,
                     lineno: export.lineno,
                     is_async: false,
+                    kind: None,
                 });
             }
         } else {
@@ -3240,6 +3257,7 @@ fn collect_js_member_exports(
                     docstring: None,
                     lineno,
                     is_async,
+                    kind: None,
                 });
             }
             None => {}
@@ -3549,6 +3567,7 @@ fn flatten_class_methods_to_functions(
                 docstring: None,
                 lineno: method.lineno,
                 is_async: method.is_async,
+                kind: None,
             });
         }
     }
@@ -4737,6 +4756,7 @@ class Child(Parent, Mixin):
                 docstring: Some("A function.".to_string()),
                 lineno: 5,
                 is_async: false,
+                kind: None,
             }],
             classes: vec![ClassInfo {
                 name: "MyClass".to_string(),

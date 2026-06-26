@@ -184,6 +184,46 @@ end\n";
     );
 }
 
+/// RC2-META Stage 3 (elixir, #57 seam): `tldr interface` must tag Elixir
+/// `defmacro` exports with kind="macro" and plain `def` exports with
+/// kind="function" — the same discrimination `structure`'s `definitions`
+/// now emits via the canonical `classify_node`. Additive: the `kind` field
+/// is new and only present for Elixir.
+#[test]
+fn test_interface_elixir_macro_kind() {
+    let src = "\
+defmodule Demo do\n\
+  defmacro mac(x), do: x\n\
+  def fun(x), do: x\n\
+end\n";
+    let path = write_temp("iface_elixir_macro_kind_v1.ex", src);
+    let v = run_tldr_json(&["interface", path.to_str().unwrap()]);
+
+    let funcs = v
+        .get("functions")
+        .and_then(|f| f.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let kind_of = |name: &str| -> Option<String> {
+        funcs
+            .iter()
+            .find(|f| f.get("name").and_then(|n| n.as_str()) == Some(name))
+            .and_then(|f| f.get("kind").and_then(|k| k.as_str()).map(String::from))
+    };
+    assert_eq!(
+        kind_of("mac").as_deref(),
+        Some("macro"),
+        "defmacro `mac` must be interface kind=macro (funcs={})",
+        serde_json::to_string(&funcs).unwrap_or_default(),
+    );
+    assert_eq!(
+        kind_of("fun").as_deref(),
+        Some("function"),
+        "def `fun` must be interface kind=function (funcs={})",
+        serde_json::to_string(&funcs).unwrap_or_default(),
+    );
+}
+
 #[test]
 fn test_interface_elixir_real_repo() {
     let f = "/tmp/repos/elixir-plug/lib/plug/conn.ex";

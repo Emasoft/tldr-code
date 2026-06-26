@@ -486,6 +486,14 @@ pub struct FunctionInfo {
     pub lineno: u32,
     /// Whether the function is async
     pub is_async: bool,
+    /// RC2-META Stage 3: AST-derived entity-kind discriminator
+    /// ("function"/"macro"/…) from the canonical `classify_node`. Populated
+    /// for Elixir so the `interface` command distinguishes `defmacro`/
+    /// `defmacrop` (kind="macro") from `def`/`defp` (kind="function") — the
+    /// #57 structure/interface seam. `None` (and the `skip_serializing_if`
+    /// guard) keeps every other language's `interface` JSON byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// Information about a public method within a class.
@@ -1237,6 +1245,7 @@ mod tests {
                 docstring: Some("A function".to_string()),
                 lineno: 5,
                 is_async: false,
+                kind: None,
             }],
             classes: vec![],
             values: vec![],

@@ -566,9 +566,16 @@ fn extract_file_structure(
     // consumers. Order is preserved from `definitions` (source order); we do
     // NOT attempt to align indices with the legacy `methods: Vec<String>`
     // field — they are independent views.
+    // RC2-META Stage 3 (elixir): `macro` joins `method` here so Elixir
+    // `defmacro`/`defmacrop` declarations — now correctly kind="macro" in
+    // `definitions` (#57 seam) — are NOT dropped from the per-module
+    // `method_infos` view they have always appeared in (they were previously
+    // tagged "method"). Elixir is currently the only producer of kind="macro"
+    // in `definitions`, so this leaves every other language's `method_infos`
+    // byte-identical.
     let method_infos: Vec<MethodInfo> = definitions
         .iter()
-        .filter(|d| d.kind == "method")
+        .filter(|d| d.kind == "method" || d.kind == "macro")
         .map(|d| MethodInfo {
             name: d.name.clone(),
             signature: d.signature.clone(),
@@ -3673,18 +3680,34 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                 let line_start = node.start_position().row as u32 + 1;
                 let line_end = node.end_position().row as u32 + 1;
                 let signature = extract_def_signature(node, source);
-                // elixir-method-infos-v1: def/defp/defmacro/defmacrop inside a
-                // `defmodule … do … end` block are emitted with kind="method" so
-                // the `method_infos` view (filtered by kind=="method") is
-                // populated for Elixir, mirroring how Ruby methods inside
-                // `module`/`class` blocks are classified. Top-level
-                // def/defmacro (rare but legal in scripts) remain "function".
-                // defmacro/defmacrop were previously dropped entirely (#57),
-                // hiding the whole DSL surface of Phoenix/Plug routers.
-                let kind_str = if is_inside_elixir_defmodule(&node, source) {
-                    "method"
-                } else {
-                    "function"
+                // RC2-META Stage 3 (elixir): the canonical `classify_node`
+                // discriminator is the single source of truth for the
+                // def/defp/defmacro/defmacrop split. `defmacro`/`defmacrop`
+                // classify as `EntityKind::Macro` → "macro" (the #57
+                // structure/interface seam: macros were previously
+                // mislabelled "method"); `def`/`defp` are
+                // `EntityKind::Function`, refined to "method" when the
+                // definition lives inside a `defmodule … do … end` block
+                // (elixir-method-infos-v1: mirrors Ruby methods inside
+                // `module`/`class` blocks; top-level def remains "function").
+                // The macro kind is additive — its entries are retained in the
+                // `method_infos` view by the `method` || `macro` filter so no
+                // construct is dropped (defmacro/defmacrop were dropped
+                // entirely pre-#57; they remain visible here, now correctly
+                // discriminated).
+                let kind_str = match crate::ast::entity::classify_node(
+                    node,
+                    Language::Elixir,
+                    source,
+                ) {
+                    Some(crate::ast::entity::EntityKind::Macro) => "macro",
+                    _ => {
+                        if is_inside_elixir_defmodule(&node, source) {
+                            "method"
+                        } else {
+                            "function"
+                        }
+                    }
                 };
                 return Some(DefinitionInfo {
                     name: name.to_string(),
@@ -5806,6 +5829,108 @@ end
             "extract_functions must include guarded `match`, got {:?}",
             funcs
         );
+    }
+
+    /// RC2-META Stage 3 (elixir): `structure`'s `definitions` must discriminate
+    /// the Elixir def-family via the canonical `classify_node` — `defmacro`/
+    /// `defmacrop` are kind="macro" (the #57 seam, previously mislabelled
+    /// "method"), `def`/`defp` inside a module are kind="method", and
+    /// `defmodule` is kind="module". The `method_infos` view must STILL retain
+    /// the macros (no construct dropped).
+    #[test]
+    fn test_elixir_definition_kinds_macro_method_module() {
+        let source = r#"
+defmodule Router do
+  defmacro resources(path) do
+    path
+  end
+
+  defmacrop helper(x) do
+    x
+  end
+
+  def handle(conn) do
+    conn
+  end
+
+  defp internal(x) do
+    x
+  end
+end
+"#;
+        let tree = parse(source, Language::Elixir).unwrap();
+        let defs = extract_definitions(&tree, source, Language::Elixir);
+        let kind_of = |name: &str| -> Option<String> {
+            defs.iter()
+                .find(|d| d.name == name)
+                .map(|d| d.kind.clone())
+        };
+        assert_eq!(
+            kind_of("resources").as_deref(),
+            Some("macro"),
+            "defmacro `resources` must be kind=macro, defs={:?}",
+            defs.iter().map(|d| (&d.name, &d.kind)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            kind_of("helper").as_deref(),
+            Some("macro"),
+            "defmacrop `helper` must be kind=macro"
+        );
+        assert_eq!(
+            kind_of("handle").as_deref(),
+            Some("method"),
+            "def `handle` inside defmodule must be kind=method"
+        );
+        assert_eq!(
+            kind_of("internal").as_deref(),
+            Some("method"),
+            "defp `internal` inside defmodule must be kind=method"
+        );
+        assert_eq!(
+            kind_of("Router").as_deref(),
+            Some("module"),
+            "defmodule `Router` must be kind=module"
+        );
+    }
+
+    /// RC2-META Stage 3 (elixir): the `method_infos` view (filtered by
+    /// kind ∈ {method, macro}) must retain Elixir macros — the #57 seam fix
+    /// flips their `definitions` kind from "method" to "macro" and that must
+    /// NOT drop them from the per-module method view.
+    #[test]
+    fn test_elixir_macros_retained_in_method_infos() {
+        use std::io::Write;
+        let source = r#"
+defmodule Router do
+  defmacro resources(path) do
+    path
+  end
+
+  def handle(conn) do
+    conn
+  end
+end
+"#;
+        let dir = std::env::temp_dir();
+        let path = dir.join("rc2_meta_stage3_elixir_method_infos.ex");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(source.as_bytes()).unwrap();
+        drop(f);
+        let structure =
+            extract_file_structure(&path, &path, Language::Elixir).unwrap();
+        let mi_names: Vec<&str> =
+            structure.method_infos.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            mi_names.contains(&"resources"),
+            "macro `resources` must remain in method_infos, got {:?}",
+            mi_names
+        );
+        assert!(
+            mi_names.contains(&"handle"),
+            "method `handle` must remain in method_infos, got {:?}",
+            mi_names
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     /// (fix-R7-cl2-ocaml-nested-letin-v1) The generic definition collector
