@@ -23,6 +23,7 @@
 //! Python, Go, Rust, Java, TypeScript/JavaScript, C, C++, Ruby, C#, Scala,
 //! PHP, Lua, Luau, Elixir, OCaml, and more via tree-sitter grammars.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -1961,6 +1962,309 @@ fn get_function_body<'a>(func: Node<'a>, config: &LanguageConfig) -> Option<Node
 // Precondition Extraction
 // =============================================================================
 
+/// Collect the identifier/name leaf texts referenced anywhere under `node`
+/// (AST-driven, no regex). Skips the implicit-receiver names self/cls/this.
+///
+/// Used so the entry-precondition scope test can compare the names an assert
+/// condition references against the parameter set and the body-local
+/// definition map.
+fn collect_identifier_names(node: Node, source: &[u8], out: &mut HashSet<String>) {
+    let kind = node.kind();
+    if kind == "identifier" || kind == "name" {
+        let text = get_node_text(node, source);
+        if text != "self" && text != "cls" && text != "this" {
+            out.insert(text.to_string());
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_identifier_names(child, source, out);
+    }
+}
+
+/// Collect the formal-parameter identifier names of `func` (AST-driven).
+///
+/// Reuses [`collect_value_param_clauses`] (which already handles Scala
+/// currying, C/C++ `function_declarator`, and Swift `body`-field params) and
+/// harvests the parameter identifiers from each clause, preferring the
+/// `name`/`pattern` field of typed-parameter nodes and otherwise taking bare
+/// `identifier`/`name` children. Type-annotation subtrees are not descended.
+fn collect_param_names(func: Node, source: &[u8], config: &LanguageConfig) -> HashSet<String> {
+    let mut params = HashSet::new();
+    for clause in collect_value_param_clauses(func, config) {
+        collect_param_identifiers(clause, source, config, &mut params);
+    }
+    params
+}
+
+/// Recursive worker for [`collect_param_names`].
+fn collect_param_identifiers(
+    node: Node,
+    source: &[u8],
+    config: &LanguageConfig,
+    out: &mut HashSet<String>,
+) {
+    // C/C++ `function_declarator` mixes the function-name identifier with the
+    // parameter list — descend only into the parameter list (mirrors
+    // `extract_untyped_params_recursive`).
+    if node.kind() == "function_declarator" {
+        if let Some(plist) = node.child_by_field_name("parameters") {
+            collect_param_identifiers(plist, source, config, out);
+            return;
+        }
+        let mut local = node.walk();
+        for child in node.children(&mut local) {
+            if child.kind() == "parameter_list" {
+                collect_param_identifiers(child, source, config, out);
+                return;
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if config.typed_param_kinds.contains(&kind) {
+            let name_node = child
+                .child_by_field_name("name")
+                .or_else(|| child.child_by_field_name("pattern"))
+                .or_else(|| find_first_identifier(child));
+            if let Some(n) = name_node {
+                let t = get_node_text(n, source);
+                if t != "self" && t != "cls" && t != "this" {
+                    out.insert(t.to_string());
+                }
+            }
+        } else if kind == "identifier" || kind == "name" {
+            let t = get_node_text(child, source);
+            if t != "self" && t != "cls" && t != "this" {
+                out.insert(t.to_string());
+            }
+        } else if kind == "default_parameter" || kind == "optional_parameter" {
+            if let Some(n) = child.child_by_field_name("name") {
+                out.insert(get_node_text(n, source).to_string());
+            }
+        } else if !kind.contains("type") && kind != "(" && kind != ")" && kind != "," && kind != ":"
+        {
+            // Nested grouping (tuple patterns / parameter sublists). Descend,
+            // but never into a type-annotation subtree.
+            collect_param_identifiers(child, source, config, out);
+        }
+    }
+}
+
+/// Build the body-local definition map: for every name (re)assigned inside
+/// `body`, record the earliest 1-based line of its assignment.
+///
+/// Names absent from this map are entry-state (formal parameters / receiver
+/// fields / globals); names present are body-locals. This is the single linear
+/// def-order pass the entry-vs-body decision needs (no CFG/dominance).
+fn collect_first_assignments(
+    node: Node,
+    source: &[u8],
+    config: &LanguageConfig,
+    out: &mut HashMap<String, u32>,
+) {
+    if config.is_assignment(node.kind()) {
+        record_assignment_targets(node, source, out);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_first_assignments(child, source, config, out);
+    }
+}
+
+/// Record the left-hand target identifier(s) of a single assignment node into
+/// `out`, keyed on the earliest assignment line. Only the assignment *target*
+/// (left/pattern/name field, or the syntax left of the first `=`/`:=` token)
+/// is harvested — never the right-hand side — so a parameter used on the RHS is
+/// not mistaken for a body-local.
+fn record_assignment_targets(node: Node, source: &[u8], out: &mut HashMap<String, u32>) {
+    let line = node.start_position().row as u32 + 1;
+    let mut targets: Vec<Node> = Vec::new();
+
+    // Prefer splitting on the assignment operator: this captures EVERY left-
+    // hand target (`local a, b = ...`) where a `name`/`left` field would expose
+    // only the first. Match the (augmented-)assignment tokens, never the
+    // comparison operators (`==`, `~=`, `<=`, ...).
+    let mut op_byte: Option<usize> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if !child.is_named()
+            && matches!(
+                child.kind(),
+                "=" | ":=" | "+=" | "-=" | "*=" | "/=" | "%=" | "//=" | "..=" | "^=" | "|=" | "&="
+            )
+        {
+            op_byte = Some(child.start_byte());
+            break;
+        }
+    }
+    if let Some(ob) = op_byte {
+        let mut c2 = node.walk();
+        for child in node.children(&mut c2) {
+            if child.is_named() && child.start_byte() < ob {
+                targets.push(child);
+            }
+        }
+    } else if let Some(left) = node.child_by_field_name("left") {
+        targets.push(left);
+    } else if let Some(pat) = node.child_by_field_name("pattern") {
+        targets.push(pat);
+    } else if let Some(name) = node.child_by_field_name("name") {
+        targets.push(name);
+    }
+    for t in targets {
+        let mut ids = HashSet::new();
+        collect_identifier_names(t, source, &mut ids);
+        for name in ids {
+            out.entry(name)
+                .and_modify(|l| {
+                    if line < *l {
+                        *l = line;
+                    }
+                })
+                .or_insert(line);
+        }
+    }
+}
+
+/// Decide whether an assert whose condition references `referenced` (at 1-based
+/// `line`) expresses an *entry* precondition rather than an in-body assertion.
+///
+/// A name is entry-state when it is a formal parameter (`params`) or is never
+/// assigned in the body (receiver field / global — absent from `first_assign`).
+/// A name that is a body-local assigned at or before the assert is NOT entry
+/// state, so the assert is an in-body assertion and must not be surfaced as a
+/// precondition (R2/R3: a body-local does not exist at entry).
+fn is_entry_precondition(
+    referenced: &HashSet<String>,
+    line: u32,
+    params: &HashSet<String>,
+    first_assign: &HashMap<String, u32>,
+) -> bool {
+    for name in referenced {
+        if params.contains(name) {
+            continue;
+        }
+        if let Some(&def_line) = first_assign.get(name) {
+            if line >= def_line {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Emit assert-derived preconditions from a single statement node (the
+/// assert/call branches of [`extract_preconditions`], factored out so the
+/// guard-if consequence descent (Piece 2) can reuse them). The guard-clause
+/// (throw-negation) branch is intentionally NOT included here.
+fn collect_asserts_from_stmt(
+    stmt: Node,
+    source: &[u8],
+    config: &LanguageConfig,
+    params: &HashSet<String>,
+    first_assign: &HashMap<String, u32>,
+    out: &mut Vec<Condition>,
+) {
+    let kind = stmt.kind();
+    if config.is_assert(kind) {
+        if let Some(cond) = precondition_from_assert(stmt, source, config, params, first_assign) {
+            out.push(cond);
+        }
+    } else if config.assert_is_macro && kind == "expression_statement" {
+        let mut inner = stmt.walk();
+        for child in stmt.children(&mut inner) {
+            if config.is_assert(child.kind()) {
+                if let Some(cond) =
+                    precondition_from_assert(child, source, config, params, first_assign)
+                {
+                    out.push(cond);
+                }
+            }
+        }
+    } else if config.has_assert_calls() && config.is_call(kind) {
+        if let Some(cond) =
+            precondition_from_assert_call(stmt, source, config, params, first_assign)
+        {
+            out.push(cond);
+        }
+    } else if config.has_assert_calls() && kind == "expression_statement" {
+        let mut inner = stmt.walk();
+        for child in stmt.children(&mut inner) {
+            let candidate = if child.kind() == "expression" {
+                let mut inner_cursor = child.walk();
+                let found = child
+                    .children(&mut inner_cursor)
+                    .find(|c| config.is_call(c.kind()));
+                found.unwrap_or(child)
+            } else {
+                child
+            };
+            if config.is_call(candidate.kind()) {
+                if let Some(cond) =
+                    precondition_from_assert_call(candidate, source, config, params, first_assign)
+                {
+                    out.push(cond);
+                }
+            }
+        }
+    }
+}
+
+/// Locate the unconditional then-branch (`consequence`) node of a guard-if.
+///
+/// Most grammars expose it via `config.if_consequence_field`. Some (e.g.
+/// tree-sitter-kotlin-ng) attach the then-block as an UNLABELED child, so fall
+/// back to the first wrapper-kind child that is neither the condition nor the
+/// `alternative` (else/elseif) arm — which, by grammar order, is the then-block.
+fn guard_consequence_node<'a>(stmt: Node<'a>, config: &LanguageConfig) -> Option<Node<'a>> {
+    if let Some(c) = stmt.child_by_field_name(config.if_consequence_field) {
+        return Some(c);
+    }
+    let mut idx = 0u32;
+    let mut cursor = stmt.walk();
+    for child in stmt.children(&mut cursor) {
+        let fname = stmt.field_name_for_child(idx);
+        idx += 1;
+        if fname == Some(config.if_condition_field) || fname == Some(config.if_alternative_field) {
+            continue;
+        }
+        if matches!(child.kind(), "block" | "statements" | "control_structure_body") {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// Walk a guard-if `consequence` for top-level assert/call statements (Piece 2,
+/// facet a). Wrapper nodes (`block` / `statements` / `control_structure_body`,
+/// e.g. Kotlin/Swift) are unwrapped so the assert is reached, but nested
+/// `if`/loop bodies are NOT descended (they are conditional, not unconditional-
+/// entry guards) — `collect_asserts_from_stmt` simply ignores those kinds.
+fn collect_guard_consequence_asserts(
+    node: Node,
+    source: &[u8],
+    config: &LanguageConfig,
+    params: &HashSet<String>,
+    first_assign: &HashMap<String, u32>,
+    out: &mut Vec<Condition>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if !child.is_named() {
+            continue;
+        }
+        if matches!(child.kind(), "block" | "statements" | "control_structure_body") {
+            collect_guard_consequence_asserts(child, source, config, params, first_assign, out);
+        } else {
+            let stmt = unwrap_solidity_statement(child);
+            collect_asserts_from_stmt(stmt, source, config, params, first_assign, out);
+        }
+    }
+}
+
 /// Extract preconditions from guard clauses and assertions (multi-language).
 fn extract_preconditions(
     func: Node,
@@ -1976,6 +2280,14 @@ fn extract_preconditions(
         Some(b) => b,
         None => return Ok(()),
     };
+
+    // Per-function scope/order context (root-cause dataflow the Condition
+    // struct never carried): the formal-parameter set and the earliest line on
+    // which each name is (re)assigned in the body. These drive the
+    // entry-precondition-vs-body-assertion decision inside the assert emitters.
+    let params = collect_param_names(func, source, config);
+    let mut first_assign: HashMap<String, u32> = HashMap::new();
+    collect_first_assignments(body, source, config, &mut first_assign);
 
     let mut cursor = body.walk();
     for raw_stmt in body.children(&mut cursor) {
@@ -2004,9 +2316,31 @@ fn extract_preconditions(
                     conditions.push(cond);
                 }
             }
+            // Piece 2 (facet a): param-asserts-only descent into a leading
+            // guard-if `consequence` block, INDEPENDENT of `body_contains_throw`.
+            // A leading `if cfg then assert(param ...) end` lifts its parameter
+            // asserts to entry preconditions. Key on node KIND `if_statement`
+            // (already true here via `config.is_if`); descend ONLY the
+            // unconditional `consequence` (never `alternative` / elseif/else);
+            // a missing/empty consequence yields `None` and is skipped. The
+            // Piece-1 scope/order predicate inside the emitters guarantees only
+            // genuine PARAM asserts survive, so body-locals nested in the guard
+            // are still dropped.
+            if let Some(consequence) = guard_consequence_node(stmt, config) {
+                collect_guard_consequence_asserts(
+                    consequence,
+                    source,
+                    config,
+                    &params,
+                    &first_assign,
+                    conditions,
+                );
+            }
         } else if config.is_assert(kind) {
             // Pattern: assert <expr> / assert!(<expr>)
-            if let Some(cond) = precondition_from_assert(stmt, source, config) {
+            if let Some(cond) =
+                precondition_from_assert(stmt, source, config, &params, &first_assign)
+            {
                 conditions.push(cond);
             }
         } else if config.assert_is_macro && kind == "expression_statement" {
@@ -2019,7 +2353,9 @@ fn extract_preconditions(
             let mut inner = stmt.walk();
             for child in stmt.children(&mut inner) {
                 if config.is_assert(child.kind()) {
-                    if let Some(cond) = precondition_from_assert(child, source, config) {
+                    if let Some(cond) =
+                        precondition_from_assert(child, source, config, &params, &first_assign)
+                    {
                         conditions.push(cond);
                     }
                 } else if config.is_if(child.kind()) {
@@ -2034,7 +2370,9 @@ fn extract_preconditions(
         } else if config.has_assert_calls() && config.is_call(kind) {
             // Pattern: require(cond), check(cond), assert(cond), precondition(cond)
             // These are call expressions that act as assertions (Kotlin, Swift, Luau)
-            if let Some(cond) = precondition_from_assert_call(stmt, source, config) {
+            if let Some(cond) =
+                precondition_from_assert_call(stmt, source, config, &params, &first_assign)
+            {
                 conditions.push(cond);
             }
         } else if config.has_assert_calls() && kind == "expression_statement" {
@@ -2057,7 +2395,13 @@ fn extract_preconditions(
                     child
                 };
                 if config.is_call(candidate.kind()) {
-                    if let Some(cond) = precondition_from_assert_call(candidate, source, config) {
+                    if let Some(cond) = precondition_from_assert_call(
+                        candidate,
+                        source,
+                        config,
+                        &params,
+                        &first_assign,
+                    ) {
                         conditions.push(cond);
                     }
                 }
@@ -2079,6 +2423,8 @@ fn precondition_from_assert_call(
     call_node: Node,
     source: &[u8],
     config: &LanguageConfig,
+    params: &HashSet<String>,
+    first_assign: &HashMap<String, u32>,
 ) -> Option<Condition> {
     let call_name = extract_call_name(call_node, source)?;
     if !config.is_assert_call_name(&call_name) {
@@ -2092,6 +2438,20 @@ fn precondition_from_assert_call(
 
     if arg_text.is_empty() {
         return None;
+    }
+
+    // Root-cause entry-vs-body discrimination: an assert that references a
+    // body-local defined at or before it is an in-body assertion, NOT an entry
+    // contract — drop it (R3: relabel/drop, never a confidence downgrade, since
+    // verify's coverage metric counts presence not confidence). When the first
+    // argument node cannot be located the referenced set is empty and the
+    // assert is kept (conservative, no regression).
+    if let Some(arg_node) = first_call_argument_node(call_node) {
+        let mut referenced = HashSet::new();
+        collect_identifier_names(arg_node, source, &mut referenced);
+        if !is_entry_precondition(&referenced, line, params, first_assign) {
+            return None;
+        }
     }
 
     // solidity-sol016-cluster-v1 M14: when a second string-literal
@@ -2611,6 +2971,8 @@ fn precondition_from_assert(
     assert_stmt: Node,
     source: &[u8],
     config: &LanguageConfig,
+    params: &HashSet<String>,
+    first_assign: &HashMap<String, u32>,
 ) -> Option<Condition> {
     let line = assert_stmt.start_position().row as u32 + 1;
 
@@ -2622,6 +2984,13 @@ fn precondition_from_assert(
         // Extract the condition from the macro arguments
         // The token_tree child contains the arguments
         let condition_text = extract_macro_args(assert_stmt, source)?;
+        // Entry-vs-body discrimination over the macro's referenced identifiers
+        // (the macro-name identifier is entry-neutral and never disqualifies).
+        let mut referenced = HashSet::new();
+        collect_identifier_names(assert_stmt, source, &mut referenced);
+        if !is_entry_precondition(&referenced, line, params, first_assign) {
+            return None;
+        }
         return Some(Condition::high(
             condition_text.clone(),
             condition_text,
@@ -2632,6 +3001,14 @@ fn precondition_from_assert(
     // Standard assert statement (Python, Java, OCaml)
     let condition_node = extract_assert_condition(assert_stmt, source)?;
     let condition_text = get_node_text(condition_node, source);
+
+    // Entry-vs-body discrimination: drop asserts that reference a body-local
+    // defined at or before this line (in-body assertion, not entry contract).
+    let mut referenced = HashSet::new();
+    collect_identifier_names(condition_node, source, &mut referenced);
+    if !is_entry_precondition(&referenced, line, params, first_assign) {
+        return None;
+    }
 
     match condition_node.kind() {
         "call" if config.has_isinstance && is_isinstance_call(condition_node, source) => {
@@ -3415,7 +3792,10 @@ fn collect_optional_params_walk(
 
 /// Return the first argument NODE of a call (the AST analogue of
 /// [`extract_first_call_argument`], which returns text). Handles the Lua/Luau
-/// `arguments` wrapper and the generic argument-list shapes.
+/// `arguments` wrapper, the Solidity `call_argument` shape, the Swift
+/// `call_suffix > value_arguments` nesting, and the generic argument-list
+/// shapes. (The returned node may itself be a `value_argument` wrapper — that
+/// is fine for identifier collection, which recurses.)
 fn first_call_argument_node(call_node: Node) -> Option<Node> {
     if let Some(args) = call_node.child_by_field_name("arguments") {
         let mut cursor = args.walk();
@@ -3425,16 +3805,61 @@ fn first_call_argument_node(call_node: Node) -> Option<Node> {
             }
         }
     }
-    // Fallback: scan children for an `arguments`/argument-list wrapper.
+    // Solidity: direct `call_argument` named children.
     let mut cursor = call_node.walk();
     for child in call_node.children(&mut cursor) {
-        let k = child.kind();
-        if k == "arguments" || k == "argument_list" || k == "value_arguments" {
+        if child.kind() == "call_argument" {
             let mut inner = child.walk();
-            for arg in child.children(&mut inner) {
-                if arg.is_named() {
-                    return Some(arg);
+            for ic in child.children(&mut inner) {
+                if ic.is_named() {
+                    return Some(ic);
                 }
+            }
+            return Some(child);
+        }
+    }
+    // Fallback: scan children for an `arguments`/argument-list wrapper, peeling
+    // a Swift `call_suffix` to reach the inner `value_arguments`.
+    let mut cursor = call_node.walk();
+    for raw_child in call_node.children(&mut cursor) {
+        let raw_kind = raw_child.kind();
+        let child = if raw_kind == "call_suffix" {
+            let mut suffix_cursor = raw_child.walk();
+            let mut found = None;
+            for c in raw_child.children(&mut suffix_cursor) {
+                if c.kind() == "value_arguments" {
+                    found = Some(c);
+                    break;
+                }
+            }
+            match found {
+                Some(va) => va,
+                None => continue,
+            }
+        } else if raw_kind == "arguments"
+            || raw_kind == "argument_list"
+            || raw_kind == "value_arguments"
+        {
+            raw_child
+        } else {
+            continue;
+        };
+        let mut inner = child.walk();
+        for arg in child.children(&mut inner) {
+            let ak = arg.kind();
+            if arg.is_named() && ak != "value_argument" {
+                return Some(arg);
+            }
+            if ak == "value_argument" {
+                // Unwrap to the inner expression (skip argument labels).
+                let mut va_cursor = arg.walk();
+                for va_child in arg.children(&mut va_cursor) {
+                    let vak = va_child.kind();
+                    if va_child.is_named() && vak != "value_argument_label" {
+                        return Some(va_child);
+                    }
+                }
+                return Some(arg);
             }
         }
     }
@@ -5680,5 +6105,232 @@ end
                 report.preconditions
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // fix-R3-rc2: precondition walk must be scope-aware.
+    //   Facet (a): a PARAM assert nested in a leading guard-if consequence is
+    //   recovered as an entry precondition (Piece 2 descent).
+    //   Facet (b): a top-level assert on a BODY-LOCAL is NOT an entry contract
+    //   and must leave `preconditions[]` (Piece 1 scope/order predicate).
+    // -------------------------------------------------------------------------
+
+    /// Facet (a) positive (Luau): `if cfg then assert(x ~= nil) end` lifts the
+    /// guarded PARAM assert to a high-confidence entry precondition.
+    #[test]
+    fn rc2_luau_guarded_param_assert_recovered() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("f.luau");
+        let src = r#"
+local function f(x)
+    if cfg then
+        assert(x ~= nil)
+    end
+    return x
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "f", Language::Luau, 100).unwrap();
+
+        let recovered = report
+            .preconditions
+            .iter()
+            .find(|p| p.variable.contains("x") && p.constraint.contains("~= nil"));
+        let recovered = recovered.unwrap_or_else(|| {
+            panic!(
+                "facet (a): guarded param assert `x ~= nil` must be recovered; got {:?}",
+                report.preconditions
+            )
+        });
+        assert_eq!(
+            recovered.confidence,
+            Confidence::High,
+            "facet (a): recovered guarded param assert must be high confidence; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// Facet (a) positive (Lua): mirror of the Luau case.
+    #[test]
+    fn rc2_lua_guarded_param_assert_recovered() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("f.lua");
+        let src = r#"
+local function f(x)
+    if cfg then
+        assert(x ~= nil)
+    end
+    return x
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "f", Language::Lua, 100).unwrap();
+
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.constraint.contains("~= nil") && p.confidence == Confidence::High),
+            "facet (a) Lua: guarded param assert `x ~= nil` must be recovered as high; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// Facet (a) positive (Kotlin): `if (cfg) { require(x > 0) }` recovers the
+    /// guarded param assert via the same Piece-2 descent (cross-language).
+    #[test]
+    fn rc2_kotlin_guarded_require_recovered() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("F.kt");
+        let src = r#"
+fun f(x: Int): Int {
+    if (cfg) {
+        require(x > 0)
+    }
+    return x
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "f", Language::Kotlin, 100).unwrap();
+
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.constraint.contains("x > 0") && p.confidence == Confidence::High),
+            "facet (a) Kotlin: guarded `require(x > 0)` must be recovered as high; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// Facet (a) negative: a BODY-LOCAL assert nested in a guard-if must NOT be
+    /// promoted — Piece 2 + Piece 1 compose so only param asserts survive.
+    #[test]
+    fn rc2_luau_guarded_body_local_assert_not_promoted() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("g.luau");
+        let src = r#"
+local function g(p)
+    local v = compute()
+    if cfg then
+        assert(v ~= nil)
+    end
+    return p
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "g", Language::Luau, 100).unwrap();
+
+        assert!(
+            !report
+                .preconditions
+                .iter()
+                .any(|p| p.constraint.contains("v ~= nil")),
+            "facet (a) neg: body-local `v` asserted in a guard-if must NOT be a precondition; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// Facet (a) `else`/`elseif` guard: an assert inside an `alternative` arm
+    /// must NOT be promoted — only the unconditional `consequence` is descended.
+    #[test]
+    fn rc2_luau_else_arm_assert_not_promoted() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("h.luau");
+        let src = r#"
+local function h(x)
+    if cfg then
+        return x
+    else
+        assert(x ~= nil)
+    end
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "h", Language::Luau, 100).unwrap();
+
+        assert!(
+            !report
+                .preconditions
+                .iter()
+                .any(|p| p.constraint.contains("~= nil")),
+            "facet (a): assert in an `else` arm must NOT be promoted; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// Facet (a) empty then-branch: `if cfg then end` (no consequence block)
+    /// must not panic.
+    #[test]
+    fn rc2_luau_empty_then_no_panic() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("e.luau");
+        let src = r#"
+local function e(x)
+    if cfg then end
+    return x
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        // Must not panic; result is fine either way.
+        let _ = run_contracts(&file_path, "e", Language::Luau, 100).unwrap();
+    }
+
+    /// Facet (b) (Luau): the `expectfail` reproduction — all three asserts
+    /// reference body-locals (`success`/`actual`) so none may surface as an
+    /// entry precondition. Includes the MIXED case (`string.find(actual,
+    /// expected, ...)` references param `expected` AND local `actual`).
+    #[test]
+    fn rc2_luau_body_local_asserts_dropped() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("classes.luau");
+        let src = r#"
+local function expectfail(s, expected, f)
+    local success, actual = pcall(f)
+    assert(not success)
+    assert(type(actual) == "string")
+    assert(string.find(actual, expected, 1, true))
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "expectfail", Language::Luau, 100).unwrap();
+
+        for needle in ["success", "actual", "string.find"] {
+            assert!(
+                !report
+                    .preconditions
+                    .iter()
+                    .any(|p| p.constraint.contains(needle) || p.variable.contains(needle)),
+                "facet (b): body-local assert referencing `{}` must leave preconditions[]; got {:?}",
+                needle,
+                report.preconditions
+            );
+        }
+    }
+
+    /// Facet (b) precision must not over-fire: a DIRECT-body assert on a pure
+    /// PARAM stays a high-confidence precondition (no recall regression).
+    #[test]
+    fn rc2_luau_direct_param_assert_still_high() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("d.luau");
+        let src = r#"
+local function d(component)
+    assert(component ~= nil)
+    return component
+end
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "d", Language::Luau, 100).unwrap();
+
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.constraint.contains("component ~= nil")
+                    && p.confidence == Confidence::High),
+            "facet (b) no-over-fire: direct param assert must stay high; got {:?}",
+            report.preconditions
+        );
     }
 }
