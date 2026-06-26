@@ -8338,6 +8338,26 @@ fn scala_decl_flavor(node: &Node, is_object: bool, is_trait: bool) -> Option<Str
     }
 }
 
+/// RC2-META Stage 3 (scala): the canonical `ClassInfo.kind` for a Scala
+/// container/type node. The pre-existing `scala_decl_flavor` markers
+/// (`case_object` / `sealed_trait` / `sealed_class`) are a REFINEMENT that the
+/// smells `lazy_element` exemption depends on (`smells.rs` matches those exact
+/// strings), so they take precedence; a PLAIN class/object/trait — which
+/// formerly carried `kind: None` — now falls back to the canonical base kind
+/// from [`crate::ast::entity::classify_node`] (`"class"` / `"object"` /
+/// `"trait"` / `"enum"` / `"type"`). Additive: no existing flavor value changes.
+fn scala_class_kind(
+    node: &Node,
+    source: &str,
+    is_object: bool,
+    is_trait: bool,
+) -> Option<String> {
+    scala_decl_flavor(node, is_object, is_trait).or_else(|| {
+        crate::ast::entity::classify_node(*node, Language::Scala, source)
+            .map(|k| k.as_str().to_string())
+    })
+}
+
 fn extract_scala_classes_detailed(node: &Node, source: &str, classes: &mut Vec<ClassInfo>) {
     let mut cursor = node.walk();
 
@@ -8355,10 +8375,63 @@ fn extract_scala_classes_detailed(node: &Node, source: &str, classes: &mut Vec<C
                 let info = extract_scala_trait_info(&child, source);
                 classes.push(info);
             }
+            // RC2-META Stage 3 (scala): `enum_definition` (`enum Color { case
+            // Red }`) and `type_definition` (`type X = Int`) are first-class
+            // named Scala entities that `structure`'s `definitions[]` already
+            // surfaces (kind:"enum"/"type"), but `extract` historically DROPPED
+            // them (no arm here). Emit them as carrier `ClassInfo`s with the
+            // canonical `kind` so extract agrees with structure/interface.
+            // Type aliases / enums have no method body, so methods stay empty.
+            "enum_definition" | "type_definition" => {
+                let info = extract_scala_simple_type_info(&child, source);
+                if !info.name.is_empty() {
+                    classes.push(info);
+                }
+            }
             _ => {
                 extract_scala_classes_detailed(&child, source, classes);
             }
         }
+    }
+}
+
+/// RC2-META Stage 3 (scala): build a `ClassInfo` for a bodyless named Scala
+/// type entity (`enum_definition` / `type_definition`). The name comes from the
+/// grammar `name` field (a `type_identifier` for `type X = ...`); the kind is
+/// the canonical [`crate::ast::entity::classify_node`] answer (`"enum"` /
+/// `"type"`). No bases / methods are extracted (these constructs have none in
+/// the carrier sense — enum cases are not methods).
+fn extract_scala_simple_type_info(node: &Node, source: &str) -> ClassInfo {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_else(|| {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                    return get_node_text(&child, source);
+                }
+            }
+            String::new()
+        });
+
+    let line_number = decl_keyword_line_from_node(node);
+    let line_end = node.end_position().row as u32 + 1;
+
+    ClassInfo {
+        name,
+        bases: Vec::new(),
+        docstring: extract_scala_docstring(node, source),
+        methods: Vec::new(),
+        fields: Vec::new(),
+        decorators: Vec::new(),
+        line_number,
+        line_end,
+        kind: crate::ast::entity::classify_node(*node, Language::Scala, source)
+            .map(|k| k.as_str().to_string()),
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -8398,7 +8471,8 @@ fn extract_scala_class_info(node: &Node, source: &str) -> ClassInfo {
         line_end,
         // r7-cl9 (#206): record `sealed class` flavor so smells exempts
         // sealed ADT markers instead of flagging them lazy_element.
-        kind: scala_decl_flavor(node, false, false),
+        // RC2-META Stage 3 (scala): plain class falls back to kind:"class".
+        kind: scala_class_kind(node, source, false, false),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -8440,7 +8514,8 @@ fn extract_scala_object_info(node: &Node, source: &str) -> ClassInfo {
         line_end,
         // r7-cl9 (#206): record `case_object` flavor so smells exempts
         // idiomatic ADT-variant singletons instead of flagging them lazy.
-        kind: scala_decl_flavor(node, true, false),
+        // RC2-META Stage 3 (scala): plain object falls back to kind:"object".
+        kind: scala_class_kind(node, source, true, false),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -8482,7 +8557,8 @@ fn extract_scala_trait_info(node: &Node, source: &str) -> ClassInfo {
         line_end,
         // r7-cl9 (#206): record `sealed_trait` flavor so smells exempts
         // sealed trait markers instead of flagging them lazy_element.
-        kind: scala_decl_flavor(node, false, true),
+        // RC2-META Stage 3 (scala): plain trait falls back to kind:"trait".
+        kind: scala_class_kind(node, source, false, true),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -10115,8 +10191,11 @@ def bar():
     fn test_scala_decl_flavor_recorded_on_classinfo() {
         // r7-cl9 (#206): the Scala extractors must record the declaration
         // flavor (`case object` / `sealed trait` / `sealed class`) on
-        // `ClassInfo.kind` from the AST modifier tokens, while plain
-        // class/object/trait stay `kind == None`.
+        // `ClassInfo.kind` from the AST modifier tokens.
+        // RC2-META Stage 3 (scala): plain class/object/trait now ALSO carry a
+        // `kind` — the canonical base kind from `classify_node` (`"class"` /
+        // `"object"` / `"trait"`) — replacing the former `None`. The flavor
+        // markers still take precedence for case/sealed declarations.
         let mut file = NamedTempFile::with_suffix(".scala").unwrap();
         write!(
             file,
@@ -10143,20 +10222,26 @@ object Companion {{}}
         assert_eq!(by_name("Heap").as_deref(), Some("case_object"));
         assert_eq!(by_name("BenchQueueType").as_deref(), Some("sealed_trait"));
         assert_eq!(by_name("Color").as_deref(), Some("sealed_class"));
-        // plain class / plain object → flavor unchanged (None)
-        assert_eq!(by_name("Plain"), None, "plain class must stay kind == None");
+        // RC2-META Stage 3 (scala): plain class / plain object now carry the
+        // canonical base kind (additive — formerly None).
         assert_eq!(
-            by_name("Companion"),
-            None,
-            "plain object must stay kind == None"
+            by_name("Plain").as_deref(),
+            Some("class"),
+            "plain class now carries kind:\"class\""
+        );
+        assert_eq!(
+            by_name("Companion").as_deref(),
+            Some("object"),
+            "plain object now carries kind:\"object\""
         );
     }
 
     #[test]
-    fn test_scala_plain_class_kind_omitted_from_json() {
-        // r7-cl9 (#206): `skip_serializing_if = "Option::is_none"` must keep a
-        // plain Scala class's serialized shape byte-identical to pre-fix — the
-        // `kind` key is ABSENT for ordinary classes (only case/sealed gain it).
+    fn test_scala_plain_class_kind_emitted_in_json() {
+        // RC2-META Stage 3 (scala): a plain Scala class now serializes its
+        // canonical `kind:"class"` (additive — formerly the key was omitted via
+        // `skip_serializing_if`). `extract` thereby agrees with `structure`'s
+        // `definitions[]` and the `interface` command on the entity kind.
         let mut file = NamedTempFile::with_suffix(".scala").unwrap();
         write!(file, "class Plain {{}}\n").unwrap();
 
@@ -10167,10 +10252,47 @@ object Companion {{}}
             .find(|c| c.name == "Plain")
             .expect("plain class extracted");
         let v = serde_json::to_value(plain).unwrap();
-        assert!(
-            v.get("kind").is_none(),
-            "plain Scala class must NOT serialize a `kind` key; got {v}"
+        assert_eq!(
+            v.get("kind").and_then(|k| k.as_str()),
+            Some("class"),
+            "plain Scala class must serialize kind:\"class\"; got {v}"
         );
+    }
+
+    #[test]
+    fn test_scala_enum_and_type_alias_extracted_with_kind() {
+        // RC2-META Stage 3 (scala): `extract` must STOP dropping Scala
+        // `enum_definition` (`enum Color { case Red }`) and `type_definition`
+        // (`type MyInt = Int`) and surface them with the canonical kinds
+        // "enum" / "type" (matching structure/interface).
+        let mut file = NamedTempFile::with_suffix(".scala").unwrap();
+        write!(
+            file,
+            "type MyInt = Int\nenum Color {{ case Red, Green, Blue }}\nclass Plain {{}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let by_name = |n: &str| -> Option<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == n)
+                .and_then(|c| c.kind.clone())
+        };
+
+        assert_eq!(
+            by_name("MyInt").as_deref(),
+            Some("type"),
+            "scala type alias must extract with kind:\"type\"; classes={:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            by_name("Color").as_deref(),
+            Some("enum"),
+            "scala enum must extract with kind:\"enum\"; classes={:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert_eq!(by_name("Plain").as_deref(), Some("class"));
     }
 
     #[test]

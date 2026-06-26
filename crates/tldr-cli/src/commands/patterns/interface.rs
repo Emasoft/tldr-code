@@ -132,7 +132,18 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
             "interface_declaration",
             "struct_declaration",
         ],
-        Language::Scala => &["class_definition", "object_definition", "trait_definition"],
+        // RC2-META Stage 3 (scala): mirror the TS rc2-ts union — capture &
+        // kind-tag Scala `enum_definition` / `type_definition` (type aliases)
+        // as first-class members of the interface surface instead of silently
+        // dropping them. `structure` already surfaces both; this makes
+        // `interface` agree.
+        Language::Scala => &[
+            "class_definition",
+            "object_definition",
+            "trait_definition",
+            "enum_definition",
+            "type_definition",
+        ],
         Language::Php => &["class_declaration", "interface_declaration"],
         Language::Lua | Language::Luau => &[], // Lua doesn't have class syntax
         Language::Elixir => &["call"],         // defmodule is a call in elixir tree-sitter
@@ -1738,6 +1749,14 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
             };
             Some(kind.to_string())
         }
+        // RC2-META Stage 3 (scala): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth — same answer `extract`/`structure` use), so
+        // `interface` reports class/object/trait/enum/type instead of an
+        // undifferentiated class bucket. Node kinds reaching here are exactly
+        // the `class_node_kinds(Scala)` members.
+        Language::Scala => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
@@ -5320,6 +5339,54 @@ trait Clock {
                 method_names
             );
         }
+    }
+
+    /// RC2-META Stage 3 (scala): `interface` must populate `ClassInfo.kind`
+    /// for every Scala container/type via the canonical classifier
+    /// (`class`/`object`/`trait`/`enum`/`type`), and must STOP dropping
+    /// `enum_definition` / `type_definition` (type aliases) from the surface.
+    #[test]
+    fn test_interface_scala_kind_population_and_enum_type_emitted() {
+        let source = r#"
+class Plain {
+  def f(x: Int): Int = x
+}
+object Companion {}
+trait Greeter {
+  def hello: String
+}
+enum Color { case Red, Green, Blue }
+type MyInt = Int
+"#;
+        let info = extract_interface(Path::new("test.scala"), source).unwrap();
+        let kind_of = |n: &str| -> Option<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == n)
+                .and_then(|c| c.kind.clone())
+        };
+
+        assert_eq!(kind_of("Plain").as_deref(), Some("class"), "{:?}", info.classes);
+        assert_eq!(
+            kind_of("Companion").as_deref(),
+            Some("object"),
+            "{:?}",
+            info.classes
+        );
+        assert_eq!(kind_of("Greeter").as_deref(), Some("trait"), "{:?}", info.classes);
+        // formerly DROPPED by interface (absent from class_node_kinds(Scala)).
+        assert_eq!(
+            kind_of("Color").as_deref(),
+            Some("enum"),
+            "scala enum must surface in interface with kind:\"enum\"; got {:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            kind_of("MyInt").as_deref(),
+            Some("type"),
+            "scala type alias must surface in interface with kind:\"type\"; got {:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
     }
 
     // -------------------------------------------------------------------------

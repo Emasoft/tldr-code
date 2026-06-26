@@ -218,6 +218,38 @@ pub enum EntityKind {
 }
 
 impl EntityKind {
+    /// The canonical stable lowercase string for this kind — byte-identical to
+    /// the `serde` `rename_all = "lowercase"` (+ `TypeAlias` → `"type"`)
+    /// serialization. Used by the `extract` / `interface` `ClassInfo.kind`
+    /// producers so the populated JSON string matches the serialized enum
+    /// exactly (single source of truth; no per-language kind table).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntityKind::Module => "module",
+            EntityKind::Class => "class",
+            EntityKind::Struct => "struct",
+            EntityKind::Interface => "interface",
+            EntityKind::Enum => "enum",
+            EntityKind::EnumMember => "enummember",
+            EntityKind::Function => "function",
+            EntityKind::Method => "method",
+            EntityKind::Constructor => "constructor",
+            EntityKind::Field => "field",
+            EntityKind::Property => "property",
+            EntityKind::Constant => "constant",
+            EntityKind::Object => "object",
+            EntityKind::Trait => "trait",
+            EntityKind::TypeAlias => "type",
+            EntityKind::Macro => "macro",
+            EntityKind::Value => "value",
+            EntityKind::Contract => "contract",
+            EntityKind::Library => "library",
+            EntityKind::Modifier => "modifier",
+            EntityKind::Event => "event",
+            EntityKind::Error => "error",
+        }
+    }
+
     /// True for kinds that live on the FUNCTION axis (`is_func` in the legacy
     /// `classify_definition_node` (bool, bool) contract). Modifier/Event/Error
     /// are function-axis to match the Solidity rows of `classify_definition_node`.
@@ -643,6 +675,40 @@ mod classify_tests {
         ];
         for (ek, expected) in cases {
             assert_eq!(serde_json::to_string(&ek).unwrap(), expected, "{ek:?}");
+        }
+    }
+
+    // ---- as_str() must mirror the serde serialization exactly ---------------
+    // (the `extract`/`interface` `kind` producers use `as_str()`, so any drift
+    // from the serialized enum would put a wrong string in the JSON).
+    #[test]
+    fn entity_kind_as_str_matches_serde() {
+        for ek in [
+            EntityKind::Module,
+            EntityKind::Class,
+            EntityKind::Struct,
+            EntityKind::Interface,
+            EntityKind::Enum,
+            EntityKind::EnumMember,
+            EntityKind::Function,
+            EntityKind::Method,
+            EntityKind::Constructor,
+            EntityKind::Field,
+            EntityKind::Property,
+            EntityKind::Constant,
+            EntityKind::Object,
+            EntityKind::Trait,
+            EntityKind::TypeAlias,
+            EntityKind::Macro,
+            EntityKind::Value,
+            EntityKind::Contract,
+            EntityKind::Library,
+            EntityKind::Modifier,
+            EntityKind::Event,
+            EntityKind::Error,
+        ] {
+            let serde_str = serde_json::to_string(&ek).unwrap();
+            assert_eq!(format!("\"{}\"", ek.as_str()), serde_str, "{ek:?}");
         }
     }
 
