@@ -17,6 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::types::Language;
+use crate::walker::ProjectWalker;
 use crate::TldrError;
 
 // =============================================================================
@@ -77,36 +78,49 @@ pub fn walk_source_files(
         return Ok((vec![path.to_path_buf()], vec![]));
     }
 
-    // Directory walk using ignore::WalkBuilder (matches loc.rs pattern)
+    // Directory walk delegated to the canonical `ProjectWalker` so the
+    // metrics path consumes the SAME directory-pruning authority
+    // (`DEFAULT_EXCLUDE_DIRS`, the doxygen/generated-dir sentinels, and the
+    // JS/TS-preserved-dir gate) as every other directory command (structure,
+    // dead, smells, references, vuln, cohesion, …).
+    //
+    // rc5-walker-divergence (v0.5.0 CLOSEOUT): this function previously ran a
+    // second, independently-maintained `ignore::WalkBuilder` whose private
+    // `SKIP_DIRS` had drifted from `walker::DEFAULT_EXCLUDE_DIRS` (it lacked
+    // `vendor`/`dox`) and performed NO generated-dir sentinel detection at
+    // all. As a result `tldr cognitive`/`tldr halstead` over-counted
+    // functions under `vendor/` and under doxygen `docs/` output. Routing the
+    // enumeration through `ProjectWalker` makes re-drift structurally
+    // impossible — there is now exactly one `filter_entry` closure, and the
+    // `walkdir`/`ignore` never-descend contract guarantees pruned dirs are
+    // never even traversed. The post-walk responsibilities this function's
+    // two callers depend on (single-file passthrough above, the user
+    // `exclude` globs, the `lang` filter, `max_files` truncation, and the
+    // warnings vec) are retained below.
     let mut files = Vec::new();
     let mut warnings = Vec::new();
     let mut had_entries = false;
 
-    let mut builder = ignore::WalkBuilder::new(path);
-    builder.follow_links(false); // CM-1: Don't follow symlinks
-    builder.hidden(!options.include_hidden);
-
-    if options.gitignore {
-        builder.git_ignore(true);
-        builder.git_global(true);
-    } else {
-        builder.git_ignore(false);
-        builder.git_global(false);
+    let mut walker = ProjectWalker::new(path).respect_gitignore(options.gitignore);
+    if let Some(lang) = options.lang {
+        // Forward the language hint so the JS/TS-preserved-dir gate
+        // (`build`/`dist`/`out`/`bin`/`obj`) is honored from the single
+        // canonical source instead of this module's former duplicate list.
+        walker = walker.lang_hint(lang);
     }
+    // NOTE: `ProjectWalker` always filters hidden entries (`hidden(true)`).
+    // The legacy `include_hidden` toggle is intentionally not forwarded — no
+    // metrics caller relied on scanning hidden source, and unifying onto the
+    // canonical walker is the whole point of this re-route. A future caller
+    // that genuinely needs hidden traversal should add a
+    // `ProjectWalker::hidden(bool)` opt-in rather than re-forking the walk.
 
-    for entry in builder.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                warnings.push(format!("Walk error: {}", e));
-                continue;
-            }
-        };
-
+    for entry in walker.iter() {
         let entry_path = entry.path();
 
-        // Skip directories
-        if entry_path.is_dir() {
+        // `ProjectWalker` yields directory entries too (so it can descend);
+        // metrics only score files.
+        if !entry_path.is_file() {
             continue;
         }
 
@@ -121,26 +135,21 @@ pub fn walk_source_files(
             break;
         }
 
-        // Get relative path for pattern checking
+        // Get relative path for user-supplied exclude-glob checking.
         let relative_path = entry_path.strip_prefix(path).unwrap_or(entry_path);
 
-        // Skip paths matching skip patterns (node_modules, .git, etc.)
-        if should_skip_path(relative_path) {
-            continue;
-        }
-
-        // Skip paths matching user exclude patterns
+        // Skip paths matching user exclude patterns (retained responsibility).
         if should_exclude(relative_path, &options.exclude) {
             continue;
         }
 
-        // Detect language - skip unsupported files
+        // Detect language - skip unsupported files (extension gate, retained).
         let lang = match Language::from_path(entry_path) {
             Some(l) => l,
             None => continue,
         };
 
-        // Filter by language if specified
+        // Filter by language if specified (retained responsibility).
         if let Some(filter_lang) = options.lang {
             if lang != filter_lang {
                 continue;
@@ -904,6 +913,186 @@ mod tests {
         let result = walk_source_files(Path::new("/nonexistent/path/xyz"), &options);
 
         assert!(result.is_err(), "Nonexistent path should return error");
+    }
+
+    // -------------------------------------------------------------------------
+    // rc5-walker-divergence: the metrics walk is converged onto the canonical
+    // `ProjectWalker`. These pin that `walk_source_files` prunes vendored +
+    // generated directories identically to it (regression: a drifted private
+    // `SKIP_DIRS` with no sentinel detection over-counted `vendor/` and
+    // doxygen `docs/` for `tldr cognitive` / `tldr halstead`).
+    // -------------------------------------------------------------------------
+
+    /// Test strategy #1 — Vendor parity (the js-lodash case, in miniature).
+    /// Authored source is walked; a vendored copy under `vendor/` is pruned
+    /// by name, exactly as `structure` already prunes it.
+    #[test]
+    fn test_walk_source_files_prunes_vendor_dir() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("real.js"), "function real() { if (1) {} }").unwrap();
+        fs::create_dir_all(dir.path().join("vendor/dep")).unwrap();
+        fs::write(
+            dir.path().join("vendor/dep/dep.js"),
+            "function vend() { if (1) {} }",
+        )
+        .unwrap();
+
+        // gitignore=false so the only pruning under test is the name list.
+        let options = WalkOptions {
+            gitignore: false,
+            ..WalkOptions::default()
+        };
+        let (files, _warnings) = walk_source_files(dir.path(), &options).unwrap();
+
+        assert!(
+            files.iter().any(|f| f.ends_with("real.js")),
+            "authored real.js must be walked, got {:?}",
+            files
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.components().any(|c| c.as_os_str() == "vendor")),
+            "no walked file may live under vendor/, got {:?}",
+            files
+        );
+    }
+
+    /// Test strategy #2 — Doxygen sentinel parity (the cpp-tinyxml2 case).
+    /// A `docs/` dir holding a `doxygen.css` sentinel + a generated `.js` is
+    /// pruned by the sentinel mechanism the metrics path previously lacked
+    /// entirely.
+    #[test]
+    fn test_walk_source_files_prunes_doxygen_sentinel_dir() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.cpp"), "int f() { return 0; }").unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        // The sentinel that marks docs/ as doxygen output.
+        fs::write(dir.path().join("docs/doxygen.css"), "/* generated */").unwrap();
+        fs::write(
+            dir.path().join("docs/jquery.js"),
+            "function ajax() { if (1) {} }",
+        )
+        .unwrap();
+
+        let options = WalkOptions {
+            gitignore: false,
+            ..WalkOptions::default()
+        };
+        let (files, _warnings) = walk_source_files(dir.path(), &options).unwrap();
+
+        assert!(
+            files.iter().any(|f| f.ends_with("lib.cpp")),
+            "authored lib.cpp must be walked, got {:?}",
+            files
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.components().any(|c| c.as_os_str() == "docs")),
+            "the doxygen sentinel must prune docs/, got {:?}",
+            files
+        );
+        assert!(
+            !files.iter().any(|f| f.ends_with("jquery.js")),
+            "generated docs/jquery.js must not be walked, got {:?}",
+            files
+        );
+    }
+
+    /// Test strategy #3 — JS/TS-preserved-dirs non-regression. With a JS
+    /// language hint, a `build/` dir (a build sink for most languages but
+    /// authored source for JS/TS) is preserved — proving the re-route
+    /// forwards `lang_hint` to the single canonical gate. Guards the
+    /// fix-cl-3b-v1 / P18.X4 regression class.
+    #[test]
+    fn test_walk_source_files_forwards_js_ts_lang_hint() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/build")).unwrap();
+        fs::write(
+            dir.path().join("src/build/emitter.js"),
+            "function emit() { if (1) {} }",
+        )
+        .unwrap();
+
+        let options = WalkOptions {
+            lang: Some(Language::JavaScript),
+            gitignore: false,
+            ..WalkOptions::default()
+        };
+        let (files, _warnings) = walk_source_files(dir.path(), &options).unwrap();
+
+        assert!(
+            files.iter().any(|f| f.ends_with("emitter.js")),
+            "JS lang hint must preserve src/build/emitter.js, got {:?}",
+            files
+        );
+    }
+
+    /// Test strategy #4 — Single-file mode invariance. A single-file path
+    /// bypasses the walker entirely (the `is_file` guard), so even a path
+    /// literally under `vendor/` is returned unchanged. Pins the fix to
+    /// directory mode only.
+    #[test]
+    fn test_walk_source_files_single_file_under_vendor_unfiltered() {
+        let dir = tempdir().unwrap();
+        let vendored = dir.path().join("vendor/dep.js");
+        fs::create_dir_all(vendored.parent().unwrap()).unwrap();
+        fs::write(&vendored, "function v() {}").unwrap();
+
+        let options = WalkOptions::default();
+        let (files, warnings) = walk_source_files(&vendored, &options).unwrap();
+
+        assert_eq!(files, vec![vendored], "single-file path returned as-is");
+        assert!(warnings.is_empty(), "no warnings for single-file input");
+    }
+
+    /// Test strategy #5 — Drift guard. `walk_source_files` and the canonical
+    /// `ProjectWalker` MUST prune an identical fixture (vendor/ +
+    /// docs/doxygen.css) identically. Fails by construction if a second
+    /// pruning policy is ever reintroduced, permanently catching the RC5
+    /// drift class in CI.
+    #[test]
+    fn test_walk_source_files_matches_project_walker_pruning() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.py"), "def a():\n    pass\n").unwrap();
+        fs::create_dir_all(dir.path().join("vendor/x")).unwrap();
+        fs::write(dir.path().join("vendor/x/v.py"), "def v():\n    pass\n").unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/doxygen.css"), "/* gen */").unwrap();
+        fs::write(dir.path().join("docs/gen.py"), "def g():\n    pass\n").unwrap();
+
+        let rel = |p: &Path| -> PathBuf {
+            p.strip_prefix(dir.path()).unwrap_or(p).to_path_buf()
+        };
+
+        let options = WalkOptions {
+            gitignore: false,
+            ..WalkOptions::default()
+        };
+        let (metrics_files, _) = walk_source_files(dir.path(), &options).unwrap();
+        let metrics_set: HashSet<PathBuf> = metrics_files.iter().map(|p| rel(p)).collect();
+
+        // The same source-extension-filtered set, straight from the oracle.
+        let walker_set: HashSet<PathBuf> = ProjectWalker::new(dir.path())
+            .respect_gitignore(false)
+            .iter()
+            .map(|e| e.path().to_path_buf())
+            .filter(|p| p.is_file() && Language::from_path(p).is_some())
+            .map(|p| rel(&p))
+            .collect();
+
+        assert_eq!(
+            metrics_set, walker_set,
+            "metrics walk must prune identically to ProjectWalker"
+        );
+        // And concretely: neither walks vendor/ or the doxygen docs/.
+        assert_eq!(
+            metrics_set,
+            HashSet::from([PathBuf::from("a.py")]),
+            "only the authored a.py should survive pruning, got {:?}",
+            metrics_set
+        );
     }
 
     // -------------------------------------------------------------------------
