@@ -51,7 +51,10 @@ tree-sitter-ruby = "=0.23.1"
 # - tree-sitter-swift 0.7.1 grammar (ABI v15) - works with tree-sitter >=0.25.0
 #   See: https://github.com/alex-pinkus/tree-sitter-swift
 tree-sitter-swift = "=0.7.1"
-tree-sitter-kotlin-ng = "=1.1.0"
+# tldr vendored fork (B-kotlin-grammar): patches _reserved_identifier to admit
+# `suspend` + peer soft/modifier keywords as named-argument identifiers.
+# See docs/GRAMMAR_COMPATIBILITY.md. Regenerated at tree-sitter ABI 14.
+tree-sitter-kotlin-ng = { path = "vendor/tree-sitter-kotlin-ng" }
 # Phase 4: C#, Scala, PHP grammars
 tree-sitter-c-sharp = "=0.23.1"
 tree-sitter-scala = "=0.24.0"
