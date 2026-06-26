@@ -814,6 +814,16 @@ fn rename_variables_recursive(
                 let _use_version = state.current(&var_ref.name);
                 // Uses are recorded in def-use chains later
             }
+            RefType::WeakUpdate => {
+                // rc3: element/field write `xs[i] = …` / `p.f = …`. This is a
+                // USE of the current version plus a WEAK may-modify of its
+                // contents — it does NOT rebind the variable, so we record the
+                // read of the prior version but do NOT bump `state.current`
+                // (the binding still names the same object). Treating it as a
+                // pure use keeps the prior definition live (completes the
+                // half-correct USE-then-DEF the `Update` arm already does).
+                let _use_version = state.current(&var_ref.name);
+            }
         }
     }
 
@@ -1537,7 +1547,8 @@ pub fn process_var_ref_with_context(
                     });
                     Some(target)
                 }
-                RefType::Use => state.current(&scoped_name),
+                // rc3: a weak element/field write reads the current version.
+                RefType::Use | RefType::WeakUpdate => state.current(&scoped_name),
             }
         }
 
@@ -1558,7 +1569,8 @@ pub fn process_var_ref_with_context(
             RefType::Definition | RefType::Update => {
                 Some(state.new_name(&var_ref.name, block_id, var_ref.line))
             }
-            RefType::Use => state.current(&var_ref.name),
+            // rc3: a weak element/field write reads the current version.
+            RefType::Use | RefType::WeakUpdate => state.current(&var_ref.name),
         },
 
         Some(VarRefContext::OwnershipMove) => {
@@ -1653,6 +1665,13 @@ fn process_normal_var_ref(
             // Just record the use - no instruction emitted here
             state.current(&var_ref.name)
         }
+        RefType::WeakUpdate => {
+            // rc3: element/field write `xs[i] = …` / `p.f = …` reads the base
+            // and may-modifies its contents but does NOT rebind the variable —
+            // record the use of the current version, do not create a new one
+            // (keeps the prior definition live).
+            state.current(&var_ref.name)
+        }
     }
 }
 
@@ -1687,7 +1706,8 @@ pub fn process_statement_group(
                 {
                     match var_ref.ref_type {
                         RefType::Definition | RefType::Update => definitions.push(id),
-                        RefType::Use => uses.push(id),
+                        // rc3: a weak element/field write is a use, not a def.
+                        RefType::Use | RefType::WeakUpdate => uses.push(id),
                     }
                 }
             }

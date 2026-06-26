@@ -110,6 +110,15 @@ pub fn compute_live_variables(
                         use_set.insert(var_ref.name.clone());
                     }
                 }
+                RefType::WeakUpdate => {
+                    // rc3: element/field write `xs[i] = …` reads the base and
+                    // may-modifies its contents but does NOT rebind it — it is a
+                    // USE for liveness (keeps the prior def live) and is NOT a
+                    // killing DEF.
+                    if !def_set.contains(&var_ref.name) {
+                        use_set.insert(var_ref.name.clone());
+                    }
+                }
                 RefType::Definition => {
                     def_set.insert(var_ref.name.clone());
                 }

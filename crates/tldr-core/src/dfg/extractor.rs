@@ -2434,7 +2434,9 @@ impl<'a> DfgBuilder<'a> {
             "attribute" => {
                 if let Some(obj) = target.child_by_field_name("object") {
                     if obj.kind() == "identifier" {
-                        self.add_ref_from_node(obj, RefType::Update);
+                        // rc3: field write `x.attr = …` is a WEAK (non-killing)
+                        // update of the container — it does not rebind `x`.
+                        self.add_ref_from_node(obj, RefType::WeakUpdate);
                     }
                 }
             }
@@ -2456,7 +2458,8 @@ impl<'a> DfgBuilder<'a> {
                         obj
                     };
                     if obj_inner.kind() == "identifier" {
-                        self.add_ref_from_node(obj_inner, RefType::Update);
+                        // rc3: field write `x.field = …` — weak (non-killing).
+                        self.add_ref_from_node(obj_inner, RefType::WeakUpdate);
                     } else if matches!(self.language, Language::Solidity) {
                         // Nested member/array on the LHS — recurse so the
                         // outermost identifier registers.
@@ -2468,7 +2471,8 @@ impl<'a> DfgBuilder<'a> {
             "selector_expression" => {
                 if let Some(operand) = target.child_by_field_name("operand") {
                     if operand.kind() == "identifier" {
-                        self.add_ref_from_node(operand, RefType::Update);
+                        // rc3: Go field write `x.field = …` — weak (non-killing).
+                        self.add_ref_from_node(operand, RefType::WeakUpdate);
                     }
                 }
             }
@@ -2476,7 +2480,8 @@ impl<'a> DfgBuilder<'a> {
             "field_expression" => {
                 if let Some(value) = target.child_by_field_name("value") {
                     if value.kind() == "identifier" {
-                        self.add_ref_from_node(value, RefType::Update);
+                        // rc3: Rust field write `x.field = …` — weak (non-killing).
+                        self.add_ref_from_node(value, RefType::WeakUpdate);
                     }
                 }
             }
@@ -2552,10 +2557,11 @@ impl<'a> DfgBuilder<'a> {
                         base
                     };
                     if base_inner.kind() == "identifier" {
-                        self.add_ref_from_node(base_inner, RefType::Update);
+                        // rc3: element write `a[i] = …` — weak (non-killing).
+                        self.add_ref_from_node(base_inner, RefType::WeakUpdate);
                     } else {
                         // Nested array_access / member_expression — recurse
-                        // so the outermost identifier gets the Update.
+                        // so the outermost identifier gets the (weak) update.
                         self.extract_assignment_targets(base_inner)?;
                     }
                 }
@@ -2592,7 +2598,10 @@ impl<'a> DfgBuilder<'a> {
     ) -> TldrResult<()> {
         if let Some(container) = target.child_by_field_name(container_field) {
             if container.kind() == "identifier" {
-                self.add_ref_from_node(container, RefType::Update);
+                // rc3: element write `container[index] = …` is a WEAK
+                // (non-killing) update — it reads + may-modify the contents but
+                // does not rebind `container`.
+                self.add_ref_from_node(container, RefType::WeakUpdate);
             } else {
                 // Nested subscript / member access — recurse so the outermost
                 // identifier registers (and any inner index vars are walked).
@@ -2624,7 +2633,8 @@ impl<'a> DfgBuilder<'a> {
             .find_map(|f| target.child_by_field_name(f));
         if let Some(container) = container {
             if container.kind() == "identifier" {
-                self.add_ref_from_node(container, RefType::Update);
+                // rc3: element write — weak (non-killing) update of container.
+                self.add_ref_from_node(container, RefType::WeakUpdate);
             } else {
                 self.extract_assignment_targets(container)?;
             }
@@ -2654,6 +2664,13 @@ impl<'a> DfgBuilder<'a> {
                 // `Update` write-back.
                 self.add_ref_from_node(left, RefType::Use);
                 self.add_ref_from_node(left, RefType::Update);
+            } else {
+                // rc3: compound element/field write `xs[i] += …`, `p.f += …`.
+                // The LHS is a subscript/member node, not a bare identifier, so
+                // route through the assignment-target dispatcher — the container
+                // registers as a WeakUpdate (non-killing) and the index vars as
+                // uses, exactly like the plain `xs[i] = …` case.
+                self.extract_assignment_targets(left)?;
             }
         }
 
@@ -3181,6 +3198,13 @@ impl<'a> DfgBuilder<'a> {
                 // read.)
                 self.add_ref_from_node(left, RefType::Use);
                 self.add_ref_from_node(left, RefType::Update);
+            } else {
+                // rc3: compound element/field write `arr[i] += 1`, `obj.f += 1`.
+                // The LHS is a subscript/member node — route through the
+                // assignment-target dispatcher so the container registers as a
+                // WeakUpdate (non-killing) and the index vars as uses, mirroring
+                // the plain `arr[i] = …` case.
+                self.extract_assignment_targets(left)?;
             }
         }
 
@@ -4340,7 +4364,8 @@ impl<'a> DfgBuilder<'a> {
                             // segment is a static member name, never a use.
                             if let Some(table) = inner_child.child_by_field_name("table") {
                                 if table.kind() == "identifier" {
-                                    self.add_ref_from_node(table, RefType::Update);
+                                    // rc3: Lua field write `t.field = …` — weak.
+                                    self.add_ref_from_node(table, RefType::WeakUpdate);
                                 } else {
                                     // Nested base (`a.b.c = …`): recurse so the
                                     // outermost identifier and any bracket
@@ -4405,8 +4430,10 @@ impl<'a> DfgBuilder<'a> {
                             // break walk).
                             if let Some(table) = inner_child.child_by_field_name("table") {
                                 if table.kind() == "identifier" {
-                                    self.add_ref_from_node(table, RefType::Use);
-                                    self.add_ref_from_node(table, RefType::Update);
+                                    // rc3: `t[i] += …` — the container is a weak
+                                    // (non-killing) update; WeakUpdate already
+                                    // encodes the implicit read of the base.
+                                    self.add_ref_from_node(table, RefType::WeakUpdate);
                                 } else {
                                     self.extract_refs_from_node(table, 1)?;
                                 }
@@ -4420,8 +4447,9 @@ impl<'a> DfgBuilder<'a> {
                             // the `field` segment is a static member name.
                             if let Some(table) = inner_child.child_by_field_name("table") {
                                 if table.kind() == "identifier" {
-                                    self.add_ref_from_node(table, RefType::Use);
-                                    self.add_ref_from_node(table, RefType::Update);
+                                    // rc3: `t.field += …` — weak (non-killing)
+                                    // update; WeakUpdate encodes the base read.
+                                    self.add_ref_from_node(table, RefType::WeakUpdate);
                                 } else {
                                     self.extract_refs_from_node(table, 1)?;
                                 }
@@ -6177,7 +6205,9 @@ impl<'a> DfgBuilder<'a> {
                 RefType::Definition | RefType::Update => {
                     defs_by_var.entry(r.name.clone()).or_default().push(r);
                 }
-                RefType::Use => {
+                // rc3: a weak element/field write reads the base (a use) and
+                // does NOT rebind it — it is not a killing def.
+                RefType::Use | RefType::WeakUpdate => {
                     uses_by_var.entry(r.name.clone()).or_default().push(r);
                 }
             }
@@ -6232,7 +6262,8 @@ impl<'a> DfgBuilder<'a> {
                     RefType::Definition | RefType::Update => {
                         lhs_by_stmt.entry(sid).or_default().push(r);
                     }
-                    RefType::Use => {
+                    // rc3: weak element/field write is a use of the base.
+                    RefType::Use | RefType::WeakUpdate => {
                         uses_by_stmt.entry(sid).or_default().push(r);
                     }
                 }
@@ -9132,23 +9163,33 @@ end"#;
 
     #[test]
     fn c_subscript_lhs_container_is_update_not_def() {
-        // Guard: `a[i+len] = ...` writes an element of `a`, so `a` is an
-        // Update (read-then-write of the container), NOT a fresh Definition.
-        // (Mirrors Solidity array_access / Python subscript semantics.)
+        // Guard: `a[i+len] = ...` writes an element of `a`, so `a` is a
+        // WEAK (non-killing) update of the container — a USE + may-modify of its
+        // contents — NOT a fresh Definition and NOT a strong killing Update.
+        // (rc3-element-write-as-killing-redefinition: element writes were
+        // previously the same `Update` flavor as a whole-variable reassignment,
+        // which made reaching-defs kill the prior def. They are now `WeakUpdate`.
+        // Mirrors Solidity array_access / Python subscript semantics.)
         let source = "void f() {\n    a[i+len] = b[k];\n}";
         let dfg = get_dfg_context(source, "f", Language::C).unwrap();
-        let a_updates: Vec<_> = dfg
+        let a_weak: Vec<_> = dfg
             .refs
             .iter()
-            .filter(|r| r.name == "a" && r.ref_type == RefType::Update)
+            .filter(|r| r.name == "a" && r.ref_type == RefType::WeakUpdate)
             .collect();
         assert!(
-            !a_updates.is_empty(),
-            "C subscript container `a` should be an Update, got refs: {:?}",
+            !a_weak.is_empty(),
+            "C subscript container `a` should be a WeakUpdate, got refs: {:?}",
             dfg.refs
                 .iter()
                 .map(|r| (r.name.clone(), r.ref_type))
                 .collect::<Vec<_>>()
+        );
+        // It must NOT be a fresh Definition nor a strong killing Update.
+        assert!(
+            !dfg.refs.iter().any(|r| r.name == "a"
+                && matches!(r.ref_type, RefType::Definition | RefType::Update)),
+            "C subscript container `a` must not be a strong Definition/Update"
         );
     }
 

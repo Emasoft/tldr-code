@@ -157,7 +157,9 @@ fn find_defs_uses_in_range(dfg: &DfgInfo, lines: (u32, u32)) -> (Vec<String>, Ve
                 crate::types::RefType::Definition | crate::types::RefType::Update => {
                     defs.insert(r.name.clone());
                 }
-                crate::types::RefType::Use => {
+                // rc3: a weak element/field write reads the base (a use) and
+                // does not rebind it (not a def).
+                crate::types::RefType::Use | crate::types::RefType::WeakUpdate => {
                     uses.insert(r.name.clone());
                 }
             }

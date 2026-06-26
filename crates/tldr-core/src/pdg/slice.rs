@@ -268,7 +268,9 @@ pub fn get_slice_rich(
                         entry.definitions.push(r.name.clone());
                     }
                 }
-                crate::types::RefType::Use => {
+                // rc3: a weak element/field write `xs[i] = …` reads the base
+                // (a use); it does NOT rebind `xs`, so it is not a slice def.
+                crate::types::RefType::Use | crate::types::RefType::WeakUpdate => {
                     if !entry.uses.contains(&r.name) {
                         entry.uses.push(r.name.clone());
                     }

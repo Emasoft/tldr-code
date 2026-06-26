@@ -585,6 +585,8 @@ pub fn format_dfg_text(dfg: &tldr_core::DfgInfo) -> String {
             tldr_core::RefType::Definition => "def",
             tldr_core::RefType::Update => "upd",
             tldr_core::RefType::Use => "use",
+            // rc3: element/field write `xs[i] = …` — weak (non-killing) update.
+            tldr_core::RefType::WeakUpdate => "wupd",
         };
         table.add_row(vec![
             Cell::new(&var_ref.name),

@@ -1615,7 +1615,15 @@ pub fn extract_expressions_from_refs_with_source(
 
         // Build kill sets from definitions in DFG
         for var_ref in &dfg.refs {
-            if matches!(var_ref.ref_type, RefType::Definition | RefType::Update) {
+            // rc3 (R3 soundness): a weak element/field write `a[i] = …` /
+            // `p.f = …` MUST still CLOBBER available expressions over the base
+            // (a later `a[i] =` invalidates an available `a[j]` / `p.f`), even
+            // though it does NOT kill the variable's reaching definition. So
+            // `WeakUpdate` folds with `Definition | Update` for CSE kill.
+            if matches!(
+                var_ref.ref_type,
+                RefType::Definition | RefType::Update | RefType::WeakUpdate
+            ) {
                 // CLUSTER-M-009: strict block lookup for kill set, too.
                 if let Some(block_id) = find_block_for_line_strict(cfg, var_ref.line) {
                     if let Some(block_expr) = block_info.get_mut(&block_id) {
@@ -1755,7 +1763,13 @@ pub fn extract_expressions_full_with_lang(
 
     // Build defs_per_line from DFG
     for var_ref in &dfg.refs {
-        if matches!(var_ref.ref_type, RefType::Definition | RefType::Update) {
+        // rc3 (R3 soundness): a weak element/field write MUST still clobber
+        // available expressions over the base (`a[i] =` invalidates `a[j]`),
+        // so it folds with `Definition | Update` for CSE kill purposes here.
+        if matches!(
+            var_ref.ref_type,
+            RefType::Definition | RefType::Update | RefType::WeakUpdate
+        ) {
             result
                 .defs_per_line
                 .entry(var_ref.line as usize)

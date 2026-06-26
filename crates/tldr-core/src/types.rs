@@ -3410,6 +3410,15 @@ pub enum RefType {
     Update,
     /// Variable use (read)
     Use,
+    /// Element/field/deref write to the *container* identifier
+    /// (`xs[i] = v`, `xs.f = v`, `*p = v`).
+    ///
+    /// Semantically this is a USE of the base plus a WEAK (may-)modify of its
+    /// contents — it does **not** rebind / kill the named variable. It is
+    /// non-killing for reaching-defs / def-use / SSA / dead-stores / slice /
+    /// PDG, but **still clobbers** available-expressions (CSE), because a later
+    /// `a[i] =` invalidates an available `a[j]` / `p.f`.
+    WeakUpdate,
 }
 
 /// Data flow edge (def-use chain)

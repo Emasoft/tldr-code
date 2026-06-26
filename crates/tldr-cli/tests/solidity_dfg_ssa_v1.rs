@@ -214,18 +214,27 @@ fn dfg_update_expression_emits_update_use_and_def_pair() {
 }
 
 #[test]
-fn dfg_mapping_write_treats_base_as_update_and_index_as_use() {
+fn dfg_mapping_write_treats_base_as_weak_update_and_index_as_use() {
     let dfg = get_dfg_context(FULL_FIXTURE, "deposit", Language::Solidity)
         .expect("dfg ok");
 
-    // `balances[user] = y;` — balances is the Update target, user is a Use.
-    let balances_update = dfg.refs.iter().any(|r| {
-        r.name == "balances" && matches!(r.ref_type, RefType::Update)
+    // `balances[user] = y;` — an element/mapping write. rc3
+    // (element-write-as-killing-redefinition): `balances` is now a WeakUpdate
+    // (a USE + non-killing may-modify of the container), NOT a strong killing
+    // Update — so a prior whole-mapping binding keeps its def-use chain. `user`
+    // is a Use.
+    let balances_weak = dfg.refs.iter().any(|r| {
+        r.name == "balances" && matches!(r.ref_type, RefType::WeakUpdate)
     });
     assert!(
-        balances_update,
-        "LHS of `balances[user] = y;` must emit Update for balances; refs={:?}",
+        balances_weak,
+        "LHS of `balances[user] = y;` must emit WeakUpdate for balances; refs={:?}",
         dfg.refs
+    );
+    assert!(
+        !dfg.refs.iter().any(|r| r.name == "balances"
+            && matches!(r.ref_type, RefType::Definition | RefType::Update)),
+        "element write must not emit a strong Definition/Update for balances"
     );
 
     let user_use = dfg

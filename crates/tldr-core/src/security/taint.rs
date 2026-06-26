@@ -8002,9 +8002,13 @@ fn process_block(
             RefType::Use => {
                 // Uses don't change taint state directly
             }
-            RefType::Update => {
+            RefType::Update | RefType::WeakUpdate => {
                 // Update is use-then-def (e.g., x += y).
-                // If RHS uses a tainted variable, the result is tainted.
+                // rc3: a weak element/field write (`a[i] = tainted`, `p.f = …`)
+                // unions the written value's taint INTO the base and never
+                // clears the base's existing taint — the same non-clearing
+                // use-then-def rule. If RHS uses a tainted variable, the
+                // (may-aliased) base becomes tainted.
                 // VarRef-based per-line use lookup (v0.3.0 M1a VAL-001a).
                 let rhs_tainted = rhs_uses_tainted(var_ref.line, &current_taint, block_refs);
                 if rhs_tainted {

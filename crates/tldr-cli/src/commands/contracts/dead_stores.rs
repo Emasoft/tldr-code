@@ -342,9 +342,13 @@ pub fn find_dead_stores_dfg(
         // op-assign (`x += 1`), an increment, or a partial aggregate write
         // (`x.field = ...`, `arr[i] = ...`, Solidity `_roles[r].x = true`).
         let mut definitions: Vec<(u32, u32, u32, bool)> = Vec::new();
+        // rc3: a weak element/field write (`xs[i] = …`, `p.f = …`) READS the
+        // container before partially modifying it and does NOT rebind it — it is
+        // a read point (keeps a prior full store live), never a dead store of the
+        // binding. Count its line as a use here.
         let mut uses: Vec<u32> = var_refs
             .iter()
-            .filter(|r| matches!(r.ref_type, RefType::Use))
+            .filter(|r| matches!(r.ref_type, RefType::Use | RefType::WeakUpdate))
             .map(|r| r.line)
             .collect();
 
@@ -359,7 +363,8 @@ pub fn find_dead_stores_dfg(
                     let is_update = matches!(var_ref.ref_type, RefType::Update);
                     definitions.push((var_ref.line, block_id as u32, *version, is_update));
                 }
-                RefType::Use => {}
+                // rc3: weak element/field write is not a (killing) definition.
+                RefType::Use | RefType::WeakUpdate => {}
             }
         }
 
