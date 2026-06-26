@@ -1497,12 +1497,74 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                     });
                 }
             }
+            // RC15 (v0.5.0 R3): harvest IMPLICIT qualified value/constructor/
+            // type/field references (e.g. `Dune_lang.parse x`) that carry a
+            // leading `module_path` qualifier but are NOT introduced by an
+            // explicit `open`/`include`/`module =` directive. Without this the
+            // dependency graph only saw explicit import directives, so a file
+            // that uses `Dune_lang.X` 200 times but never `open`s it minted
+            // zero inbound edges (afferent coupling `ca=0`, `instability=1.0`).
+            //
+            // Per tree-sitter-ocaml `value_path = path(module_path, value_name)`
+            // (and the structurally identical `constructor_path` /
+            // `type_constructor_path` / `field_path`): the qualifier is
+            // `named_child(0)` iff its kind is `module_path`; a bare/local ref
+            // has no `module_path` child and is therefore NOT harvested. The
+            // emitted module is the full dotted qualifier; downstream
+            // `resolve_ocaml_import` (stdlib-gated, index-backed) maps it to a
+            // project file or drops it (stdlib/external).
+            "value_path" | "constructor_path" | "type_constructor_path" | "field_path" => {
+                if let Some(qualifier) = extract_ocaml_path_qualifier(&child, source) {
+                    let names = extract_ocaml_path_leaf(&child, source)
+                        .map(|leaf| vec![leaf])
+                        .unwrap_or_default();
+                    imports.push(ImportInfo {
+                        module: qualifier,
+                        names,
+                        is_from: Some(false),
+                        alias: None,
+                        line: stmt_line,
+                    });
+                }
+                // Path nodes contain only the qualifier + leaf — no further
+                // references to harvest, so we do not recurse.
+            }
             _ => {
                 // Recurse into other nodes
                 extract_ocaml_imports_recursive(&child, source, imports);
             }
         }
     }
+}
+
+/// Harvest the module qualifier of an OCaml path node (`value_path`,
+/// `constructor_path`, `type_constructor_path`, `field_path`).
+///
+/// These nodes carry an OPTIONAL leading `module_path` named child (the
+/// qualifier) followed by the trailing leaf name. Per tree-sitter-ocaml's
+/// grammar `value_path = path(module_path, value_name)` the qualifier is
+/// `named_child(0)` iff its kind is `module_path`; a bare/local reference has
+/// no `module_path` child. Returns the full dotted qualifier (e.g.
+/// `"Dune_lang.Blang"` for `Dune_lang.Blang.value`) or `None` when unqualified.
+fn extract_ocaml_path_qualifier(path_node: &Node, source: &str) -> Option<String> {
+    let first = path_node.named_child(0)?;
+    if first.kind() != "module_path" {
+        return None;
+    }
+    Some(extract_ocaml_module_path_text(&first, source))
+}
+
+/// Extract the trailing leaf name of an OCaml path node (the last named child
+/// that is not the leading `module_path` qualifier).
+fn extract_ocaml_path_leaf(path_node: &Node, source: &str) -> Option<String> {
+    let mut leaf = None;
+    let mut cursor = path_node.walk();
+    for ch in path_node.named_children(&mut cursor) {
+        if ch.kind() != "module_path" {
+            leaf = Some(get_node_text(&ch, source));
+        }
+    }
+    leaf
 }
 
 /// Extract module path from an OCaml node that contains a module_path child.

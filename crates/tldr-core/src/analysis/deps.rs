@@ -3544,6 +3544,27 @@ fn is_ocaml_stdlib(module_name: &str) -> bool {
             | "Uchar"
             | "Unit"
             | "Weak"
+            // RC15 (v0.5.0 R3): OCaml-5 standard-distribution modules the
+            // original list omitted. Without these, an implicit qualified ref
+            // such as `Mutex.lock`/`Atomic.get` (now harvested by
+            // `extract_ocaml_imports_recursive`) would fall through to the
+            // External arm and inflate `total_external_deps` — or, worse,
+            // fabricate a project edge if a same-named file happened to exist.
+            | "Mutex"
+            | "Condition"
+            | "Thread"
+            | "Domain"
+            | "Effect"
+            | "Either"
+            | "Result"
+            | "Option"
+            | "In_channel"
+            | "Out_channel"
+            | "Atomic"
+            | "Semaphore"
+            | "Bool"
+            | "Float"
+            | "Int"
     )
 }
 
@@ -6576,5 +6597,84 @@ mod tests {
             "Swift internal deps still zero: {}",
             report.stats.total_internal_deps
         );
+    }
+
+    // RC15 (v0.5.0 R3): an IMPLICIT qualified value reference (`Dune_lang.parse
+    // x`) with NO `open`/`include`/`module =` directive must still mint an
+    // inbound dependency edge. Pre-fix the OCaml import harvest only saw
+    // explicit import directives, so a file using `Dune_lang.X` 200 times but
+    // never `open`ing it produced zero inbound edges (afferent coupling
+    // `ca=0`, `instability=1.0`). Also asserts the stdlib gate: a
+    // `Stdlib.print_string`/`Mutex.lock` ref must NOT fabricate a project edge.
+    #[test]
+    fn test_ocaml_deps_harvests_implicit_qualified_ref() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Target module: dune_lang.ml -> module Dune_lang.
+        write_at(root, "dune_lang.ml", "let parse x = x\n");
+        // Consumer references Dune_lang.parse WITHOUT any `open`, plus stdlib
+        // refs that must be gated out.
+        write_at(
+            root,
+            "a.ml",
+            "let _ = Dune_lang.parse 1\nlet () = Stdlib.print_string \"hi\"\nlet _ = Mutex.lock guard\n",
+        );
+
+        let opts = DepsOptions {
+            language: Some("ocaml".to_string()),
+            ..Default::default()
+        };
+        let report = analyze_dependencies(root, &opts).unwrap();
+
+        let a_deps = report
+            .internal_dependencies
+            .get(&PathBuf::from("a.ml"))
+            .cloned()
+            .unwrap_or_default();
+        // The implicit qualified ref minted an inbound edge to dune_lang.ml.
+        assert!(
+            a_deps.iter().any(|p| p.ends_with("dune_lang.ml")),
+            "implicit `Dune_lang.parse` ref did not produce an edge: {a_deps:?}"
+        );
+        // Stdlib-gate: Stdlib.* / Mutex.* must NOT resolve to a project file.
+        assert_eq!(
+            a_deps.len(),
+            1,
+            "stdlib refs should not add project edges: {a_deps:?}"
+        );
+
+        // Martin metrics for the target: afferent coupling ca>0, and since
+        // dune_lang.ml imports nothing, instability = ce/(ca+ce) = 0 < 1.0.
+        let ca = report
+            .internal_dependencies
+            .values()
+            .filter(|deps| deps.iter().any(|p| p.ends_with("dune_lang.ml")))
+            .count();
+        assert!(ca > 0, "afferent coupling still zero for dune_lang.ml");
+        let ce = report
+            .internal_dependencies
+            .get(&PathBuf::from("dune_lang.ml"))
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let instability = ce as f64 / (ca + ce) as f64;
+        assert!(
+            instability < 1.0,
+            "instability should drop below 1.0, got {instability}"
+        );
+    }
+
+    // RC15 stdlib-gate unit: the OCaml-5 standard-distribution modules added to
+    // `is_ocaml_stdlib` must be recognised so an implicit `Mutex.lock` /
+    // `Atomic.get` ref is classified Stdlib, never a fabricated project edge.
+    #[test]
+    fn test_is_ocaml_stdlib_recognises_ocaml5_modules() {
+        for m in [
+            "Mutex", "Condition", "Thread", "Domain", "Effect", "Either", "Result", "Option",
+            "In_channel", "Out_channel", "Atomic", "Semaphore",
+        ] {
+            assert!(is_ocaml_stdlib(m), "{m} should be recognised as OCaml stdlib");
+            // Dotted form (qualified value ref) gates on the head segment.
+            assert!(is_ocaml_stdlib(&format!("{m}.lock")));
+        }
     }
 }

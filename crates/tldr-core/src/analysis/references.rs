@@ -2691,6 +2691,62 @@ fn is_elixir_def_call(call_node: &Node, source: &[u8]) -> bool {
 /// parent is `application_expression` with this `value_path` as the first
 /// child. Shadowing rebinding is another Definition (per OCaml semantics —
 /// `let x = ... let x = ...` is two separate bindings, not a Write).
+/// RC7 (v0.5.0 R3): return the HEAD module name of the qualifier of an OCaml
+/// reference occurrence, if any.
+///
+/// Given the matched leaf node (a `value_name`/`constructor_name`/… inside a
+/// `value_path`/`constructor_path`/`type_constructor_path`/`field_path`), this
+/// reads the OPTIONAL leading `module_path` qualifier (per tree-sitter-ocaml
+/// `value_path = path(module_path, value_name)`) and descends its
+/// left-recursive `module_path` chain to the LEFTMOST `module_name` — the head
+/// segment that disambiguates stdlib `Mutex.lock` from a project
+/// `Lwt_mutex.lock`. Returns `None` for a bare/local reference (no qualifier).
+///
+/// This is the discriminating AST node the legacy classifier ignored: it keyed
+/// references purely on the leaf text (`lock`), so a stdlib `Mutex.lock` call
+/// was indistinguishable from the project def.
+fn ocaml_reference_qualifier_head(leaf_node: &Node, source: &[u8]) -> Option<String> {
+    let parent = leaf_node.parent()?;
+    if !matches!(
+        parent.kind(),
+        "value_path" | "constructor_path" | "type_constructor_path" | "field_path"
+    ) {
+        return None;
+    }
+    // The qualifier is the first NAMED child iff it is a `module_path`.
+    let first = parent.named_child(0)?;
+    if first.kind() != "module_path" {
+        return None;
+    }
+    // Descend the left-recursive `module_path` chain to the leftmost
+    // `module_name` head. `module_path = path(module_path, module_name)` so the
+    // nested `module_path` (when present) is the prefix; recurse into it.
+    let mut current = first;
+    loop {
+        let mut next: Option<Node> = None;
+        let mut cursor = current.walk();
+        for ch in current.named_children(&mut cursor) {
+            if ch.kind() == "module_path" {
+                next = Some(ch);
+                break;
+            }
+        }
+        match next {
+            Some(inner) => current = inner,
+            None => break,
+        }
+    }
+    // `current` is now the leftmost `module_path`; its `module_name` child is
+    // the head segment.
+    let mut cursor = current.walk();
+    for ch in current.named_children(&mut cursor) {
+        if ch.kind() == "module_name" {
+            return ch.utf8_text(source).ok().map(|s| s.to_string());
+        }
+    }
+    None
+}
+
 fn classify_ocaml_reference(node: &Node, parent: &Node, _source: &[u8]) -> ReferenceKind {
     let parent_kind = parent.kind();
 
@@ -3952,6 +4008,21 @@ pub fn find_references(
         definitions.push(Definition::new(r.file.clone(), r.line, r.column, kind));
     }
 
+    // RC7 (v0.5.0 R3): exclude OCaml references whose MODULE QUALIFIER names a
+    // DIFFERENT module than the queried definition. A bare-name `references
+    // lock` query over `ocaml-lwt` previously reported six stdlib `Mutex.lock`
+    // call sites (and any other `Foo.lock`) as confident references to the
+    // project def `Lwt_mutex.lock`, because the verifier matched purely on the
+    // `value_name` leaf (`lock`) and never read the `module_path` qualifier.
+    //
+    // Discriminator (root-cause, AST): the leftmost `module_name` head of the
+    // qualifier must equal the owning module of one of the queried
+    // definitions (the file-stem-derived OCaml module name). A bare/local ref
+    // (no qualifier — opened or same-module) is always kept; a qualifier
+    // naming the def's own module (`Lwt_mutex.lock`) is kept; a qualifier
+    // naming stdlib/another module (`Mutex.lock`) is dropped.
+    filter_ocaml_foreign_qualified_refs(&mut references, &definitions, &mut file_parse_cache);
+
     let definition = definitions.first().cloned();
 
     // Apply kind filter if specified (Phase 13)
@@ -4346,6 +4417,81 @@ fn extract_calls_recursive(
 /// declaration node that contains the byte position at
 /// (`line`, `column`). Returns `None` if the file is unparseable, the
 /// language is unsupported, or no enclosing declaration node exists.
+/// RC7 (v0.5.0 R3): derive the OCaml module name that a file defines.
+///
+/// OCaml's compilation-unit convention maps `foo_bar.ml` to module `Foo_bar`
+/// (capitalize the FIRST character of the stem only). This is the owning
+/// module against which a reference's `module_path` qualifier head is compared.
+fn ocaml_module_name_from_path(file: &Path) -> Option<String> {
+    let stem = file.file_stem()?.to_string_lossy();
+    let mut chars = stem.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().collect::<String>() + chars.as_str())
+}
+
+/// RC7 (v0.5.0 R3): drop OCaml references whose qualifier names a module other
+/// than the queried definition's owning module.
+///
+/// See the call site in [`find_references`]. Bare/local references (no
+/// qualifier) and references qualified by the def's own module are retained;
+/// references qualified by stdlib/another module are removed. Non-OCaml files
+/// and references without a qualifier are never affected, so this is fully
+/// language-gated.
+fn filter_ocaml_foreign_qualified_refs(
+    references: &mut Vec<Reference>,
+    definitions: &[Definition],
+    cache: &mut HashMap<PathBuf, (tree_sitter::Tree, String, Language)>,
+) {
+    // Owning modules of the queried definition(s).
+    let def_modules: std::collections::HashSet<String> = definitions
+        .iter()
+        .filter_map(|d| ocaml_module_name_from_path(&d.file))
+        .collect();
+    if def_modules.is_empty() {
+        return;
+    }
+
+    references.retain(|r| {
+        // Only OCaml definitions are ever harvested into `def_modules`; gate on
+        // the file actually parsing as OCaml below. Keep every Definition.
+        if r.kind == ReferenceKind::Definition {
+            return true;
+        }
+        if !cache.contains_key(&r.file) {
+            match parse_file(&r.file) {
+                Ok(parsed) => {
+                    cache.insert(r.file.clone(), parsed);
+                }
+                Err(_) => return true, // unparseable — keep conservatively
+            }
+        }
+        let (tree, source, language) = match cache.get(&r.file) {
+            Some(p) => p,
+            None => return true,
+        };
+        if *language != Language::Ocaml {
+            return true;
+        }
+        let row = r.line.saturating_sub(1);
+        let col = r.column.saturating_sub(1);
+        let pt = tree_sitter::Point { row, column: col };
+        let leaf = match tree
+            .root_node()
+            .named_descendant_for_point_range(pt, pt)
+        {
+            Some(n) => n,
+            None => return true,
+        };
+        match ocaml_reference_qualifier_head(&leaf, source.as_bytes()) {
+            // Qualified by a foreign module (stdlib `Mutex`, another project
+            // module, an external opam package) — not a reference to THIS def.
+            Some(head) => def_modules.contains(&head),
+            // Bare/local reference — always kept.
+            None => true,
+        }
+    });
+}
+
 fn classify_promoted_definition_kind(
     file: &Path,
     line: usize,
@@ -5025,6 +5171,95 @@ let _ = print_string (greet "Alice")
 "#;
         let results = collect_reference_kinds_for(src, Language::Ocaml, "greet", &["value_name"]);
         assert_def_and_calls(&results, "OCaml");
+    }
+
+    // RC7 (v0.5.0 R3): the discriminating AST node — the `module_path`
+    // qualifier — must be read so a stdlib `Mutex.lock` is not reported as a
+    // reference to a project `Lwt_mutex.lock`.
+    #[test]
+    fn test_ocaml_reference_qualifier_head_reads_module_path() {
+        use crate::ast::parser::parse_file;
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("probe.ml");
+        // `Mutex.lock m` (qualified, stdlib head), `Lwt_mutex.lock m`
+        // (qualified, project head) and bare `lock m` (no qualifier).
+        let src = "let _ = Mutex.lock m\nlet _ = Lwt_mutex.lock m\nlet _ = lock m\n";
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(src.as_bytes())
+            .unwrap();
+        let (tree, source, _lang) = parse_file(&path).unwrap();
+        // Collect every `value_name` leaf whose text is `lock`.
+        let mut heads = Vec::new();
+        let root = tree.root_node();
+        let mut stack = vec![root];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "value_name" && n.utf8_text(source.as_bytes()).unwrap() == "lock" {
+                heads.push(ocaml_reference_qualifier_head(&n, source.as_bytes()));
+            }
+            let mut c = n.walk();
+            for ch in n.children(&mut c) {
+                stack.push(ch);
+            }
+        }
+        assert!(
+            heads.contains(&Some("Mutex".to_string())),
+            "expected a `Mutex`-qualified lock, got {heads:?}"
+        );
+        assert!(
+            heads.contains(&Some("Lwt_mutex".to_string())),
+            "expected a `Lwt_mutex`-qualified lock, got {heads:?}"
+        );
+        assert!(
+            heads.contains(&None),
+            "expected a bare (unqualified) lock, got {heads:?}"
+        );
+    }
+
+    // RC7 end-to-end: `references lock` must exclude the stdlib `Mutex.lock`
+    // call sites while keeping the project `Lwt_mutex.lock` and the bare
+    // `lock` reference.
+    #[test]
+    fn test_ocaml_references_excludes_stdlib_qualified_call() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Project module Lwt_mutex defining `lock`.
+        let mut f1 = std::fs::File::create(root.join("lwt_mutex.ml")).unwrap();
+        f1.write_all(b"let lock m = m\n").unwrap();
+        // A user site mixing stdlib `Mutex.lock`, project `Lwt_mutex.lock`,
+        // and a bare `lock`.
+        let mut f2 = std::fs::File::create(root.join("user.ml")).unwrap();
+        f2.write_all(
+            b"let _ = Mutex.lock guard\nlet _ = Lwt_mutex.lock m\nlet _ = lock m\n",
+        )
+        .unwrap();
+
+        let opts = ReferencesOptions::new()
+            .with_language("ocaml".to_string())
+            .with_scope(SearchScope::Workspace);
+        let report = find_references("lock", root, &opts).unwrap();
+
+        let contexts: Vec<&str> = report
+            .references
+            .iter()
+            .map(|r| r.context.as_str())
+            .collect();
+        // Stdlib `Mutex.lock` must be excluded.
+        assert!(
+            !contexts.iter().any(|c| c.contains("Mutex.lock")),
+            "stdlib Mutex.lock should be excluded, got refs: {contexts:?}"
+        );
+        // Project `Lwt_mutex.lock` and bare `lock` must be kept.
+        assert!(
+            contexts.iter().any(|c| c.contains("Lwt_mutex.lock")),
+            "project Lwt_mutex.lock should be kept, got refs: {contexts:?}"
+        );
+        assert!(
+            contexts.iter().any(|c| c.trim_start().starts_with("let _ = lock")),
+            "bare `lock` should be kept, got refs: {contexts:?}"
+        );
     }
 
     // =========================================================================
