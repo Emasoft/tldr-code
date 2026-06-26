@@ -858,6 +858,13 @@ enum CallReceiver {
     /// The receiver could not be determined (parse failure, position miss).
     /// Treated as compatible to avoid dropping a genuine caller.
     Unknown,
+    /// explain-r8-bare-name-resolution-inherited (v0.5.0 CLOSEOUT): a bare call
+    /// whose name resolves to a same-named LOCAL binding (parameter, closure
+    /// parameter, local `let`/`val`/`var`, or a closer same-named file-own
+    /// definition) that shadows the cross-file target. Decided purely
+    /// syntactically by an innermost-binding-wins scope walk (position-filtered,
+    /// recursion-guarded). Such a site does NOT call the target -> rejected.
+    ShadowedLocal,
 }
 
 impl CallReceiver {
@@ -868,7 +875,7 @@ impl CallReceiver {
             CallReceiver::Named(n) => Some(n.clone()),
             CallReceiver::SelfRef(Some(t)) => Some(t.clone()),
             CallReceiver::SelfRef(None) => Some("self".to_string()),
-            CallReceiver::Bare | CallReceiver::Unknown => None,
+            CallReceiver::Bare | CallReceiver::Unknown | CallReceiver::ShadowedLocal => None,
         }
     }
 }
@@ -925,6 +932,10 @@ fn receiver_compatible(
     _call_file: &Path,
 ) -> bool {
     match (receiver, target_qualifier) {
+        // explain-r8-bare-name-resolution-inherited: a bare name proven to bind
+        // a same-named local (param/let/val/closer file-own def) is NOT the
+        // cross-file target — reject regardless of the target's qualifier.
+        (CallReceiver::ShadowedLocal, _) => false,
         (CallReceiver::Unknown, _) => true,
         (CallReceiver::Bare, _) => true,
         (CallReceiver::Named(r), Some(q)) => names_equal_ignore_generics(r, q),
@@ -984,6 +995,16 @@ fn extract_call_receiver(
     }
 
     let receiver = receiver_for_call_name(&node, src, language);
+
+    // explain-r8-bare-name-resolution-inherited (v0.5.0 CLOSEOUT, Sub-fix B):
+    // a genuinely-bare call may still NOT reach the cross-file target if its
+    // name is shadowed by a same-named LOCAL binding (parameter / closure param
+    // / local `let`/`val`/`var`) or a closer same-named file-own definition in
+    // the caller's own scope. A bounded, innermost-binding-wins scope walk
+    // (position-filtered, recursion-guarded) decides this purely syntactically.
+    if matches!(receiver, CallReceiver::Bare) && shadows_bare_call(&node, src, bare_target) {
+        return CallReceiver::ShadowedLocal;
+    }
 
     // c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): cross-file member
     // upgrade. `receiver_for_call_name` / `receiver_from_expr` resolved the
@@ -1236,9 +1257,263 @@ fn receiver_for_call_name(
             CallReceiver::Bare
         }
 
+        // explain-r8-bare-name-resolution-inherited (v0.5.0 CLOSEOUT, Sub-fix A):
+        // OCaml qualified value callee. `Mutex.unlock m` parses as
+        // `application_expression` whose `function:` field is a `value_path`
+        // with named children `module_path` (the qualifier, holding
+        // `module_name` leaves) then `value_name` (the called name). A bare
+        // `unlock m` is the SAME `value_path` node-kind but with only the
+        // `value_name` child. `value_path` has NO fields — the qualifier vs the
+        // name differ ONLY by node-kind among the named children (verified
+        // against tree-sitter-ocaml v0.24.2 grammar.js / node-types.json and the
+        // codebase's own references.rs::classify_ocaml_reference). Recovering the
+        // qualifier into `Named(...)` lets `receiver_compatible` reject the
+        // stdlib homonym (`Mutex` != the bare project-local `unlock`).
+        "value_path" => {
+            let mut cursor = parent.walk();
+            for child in parent.children(&mut cursor) {
+                if !child.is_named() {
+                    continue;
+                }
+                if matches!(child.kind(), "module_path" | "extended_module_path") {
+                    // Prefer the trailing `module_name` segment so `A.B.unlock`
+                    // -> Named("B") (the immediately-enclosing module).
+                    if let Some(q) = last_module_segment_text(&child, src) {
+                        return CallReceiver::Named(q);
+                    }
+                }
+            }
+            // Only named child is the `value_name` itself -> genuine bare /
+            // self-recursive call.
+            CallReceiver::Bare
+        }
+
         // No qualifier node above the call name -> a bare call.
         _ => CallReceiver::Bare,
     }
+}
+
+/// explain-r8-bare-name-resolution-inherited (v0.5.0 CLOSEOUT): walk an OCaml
+/// `module_path` / `extended_module_path` subtree to its trailing `module_name`
+/// leaf (the innermost / immediately-enclosing module qualifier). For `A.B.f`
+/// the path is left-nested `(module_path (module_path (module_name A)) (module_name B))`
+/// so the LAST `module_name` by source position is `B`.
+fn last_module_segment_text(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    let mut best: Option<tree_sitter::Node> = None;
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "module_name" {
+            let take = match &best {
+                Some(b) => n.start_byte() > b.start_byte(),
+                None => true,
+            };
+            if take {
+                best = Some(n);
+            }
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    best.and_then(|b| b.utf8_text(src).ok())
+        .map(|s| s.to_string())
+}
+
+/// explain-r8-bare-name-resolution-inherited (v0.5.0 CLOSEOUT, Sub-fix B):
+/// decide whether a bare call to `bare_target` at `call_node` resolves to a
+/// same-named LOCAL binding that shadows the cross-file target, rather than to
+/// the target itself. Purely syntactic — no type inference.
+///
+/// Algorithm (innermost-binding-wins, mirroring the canonical lexical-lookup
+/// rule from the Scala spec / Crafting Interpreters / SwiftLexicalLookup /
+/// OCaml `Env`): walk up the enclosing scopes from the call site. At each
+/// scope, inspect ONLY the children that lexically PRECEDE the branch that
+/// contains the call (the position filter) for:
+///   - a parameter / closure-parameter binder named `bare_target`, or
+///   - a local `let`/`val`/`var`/`let_binding` value binding of `bare_target`.
+/// The first match wins -> shadowed. Because the branch containing the call is
+/// the cut-off, the enclosing *defining* binding of a self-recursive function
+/// (whose body contains the call) is never scanned — that is the recursion
+/// guard, so a legitimate bare self-call stays `Bare`.
+fn shadows_bare_call(call_node: &tree_sitter::Node, src: &[u8], bare_target: &str) -> bool {
+    let mut boundary = *call_node;
+    let mut scope = call_node.parent();
+    while let Some(s) = scope {
+        let mut cursor = s.walk();
+        for child in s.children(&mut cursor) {
+            if child.id() == boundary.id() {
+                // Reached the branch that contains the call: everything from
+                // here on is at-or-after the use site (position filter) and the
+                // recursion guard (the defining binding is exactly this branch).
+                break;
+            }
+            if subtree_binds_parameter(&child, src, bare_target) {
+                return true;
+            }
+            if binding_introduces_name(&child, src, bare_target) {
+                return true;
+            }
+        }
+        boundary = s;
+        scope = s.parent();
+    }
+    false
+}
+
+/// Parameter binder node-kinds across the 6 uncovered grammars (and the others,
+/// harmlessly): a `parameter` / `class_parameter` / `closure_parameter` /
+/// `lambda_parameter` whose bound identifier equals `target` shadows the call.
+/// A parameter can never be the recursive function itself, so it ALWAYS
+/// shadows. Search is bounded — it does not descend into nested function /
+/// closure bodies (those introduce their own, sibling scopes).
+fn subtree_binds_parameter(node: &tree_sitter::Node, src: &[u8], target: &str) -> bool {
+    const PARAM_KINDS: &[&str] = &[
+        "parameter",
+        "class_parameter",
+        "closure_parameter",
+        "lambda_parameter",
+    ];
+    const STOP_KINDS: &[&str] = &[
+        // Nested callable / closure scopes: their params belong to a deeper
+        // scope, not this one.
+        "function_declaration",
+        "function_definition",
+        "function_item",
+        "method_declaration",
+        "method_definition",
+        "lambda_literal",
+        "closure_expression",
+        "anonymous_function",
+    ];
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if PARAM_KINDS.contains(&n.kind()) && param_binds_name(&n, src, target) {
+            return true;
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            // Do not descend into a nested callable's body, but DO inspect the
+            // top `node` itself even if it is callable-shaped.
+            if ch.id() != n.id() && STOP_KINDS.contains(&ch.kind()) {
+                continue;
+            }
+            stack.push(ch);
+        }
+    }
+    false
+}
+
+/// Does parameter node `param` bind an identifier equal to `target`? Tries the
+/// `name` field first, then the first identifier-ish leaf (Swift/Scala/Kotlin
+/// `simple_identifier`/`identifier`; OCaml `value_name`/`value_pattern`).
+fn param_binds_name(param: &tree_sitter::Node, src: &[u8], target: &str) -> bool {
+    if let Some(name) = param.child_by_field_name("name") {
+        if name.utf8_text(src).map(|t| t == target).unwrap_or(false) {
+            return true;
+        }
+    }
+    let mut stack = vec![*param];
+    while let Some(n) = stack.pop() {
+        if matches!(
+            n.kind(),
+            "simple_identifier" | "identifier" | "value_name" | "value_pattern"
+        ) && n.utf8_text(src).map(|t| t == target).unwrap_or(false)
+        {
+            return true;
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    false
+}
+
+/// Does the (preceding) sibling/outer node `node` introduce a local value
+/// binding of `target` — an OCaml `let_binding`/`value_definition`, a
+/// Swift/Kotlin `property_declaration`, or a Scala `val`/`var` definition?
+/// This covers the "closer same-named file-own definition" case (lwt_io's own
+/// `let unlock`) and sequential local `let`/`val` shadowing.
+fn binding_introduces_name(node: &tree_sitter::Node, src: &[u8], target: &str) -> bool {
+    match node.kind() {
+        // OCaml top-level / let-in value bindings.
+        "value_definition" | "let_binding" => {
+            // The bound name is a `value_name` leaf that is NOT inside a
+            // `parameter` (parameters are separate binders already handled).
+            ocaml_binding_name_is(node, src, target)
+        }
+        // Swift / Kotlin local `let`/`var`.
+        "property_declaration" => first_binding_ident_is(node, src, target),
+        // Scala local `val`/`var`.
+        "val_definition" | "var_definition" | "val_declaration" | "var_declaration" => {
+            first_binding_ident_is(node, src, target)
+        }
+        _ => false,
+    }
+}
+
+/// OCaml: is the bound `value_name` of this `value_definition`/`let_binding`
+/// equal to `target`? Only the binding's OWN name counts — the name node is a
+/// direct `value_name` child of the `let_binding` (not one nested inside a
+/// `parameter`).
+fn ocaml_binding_name_is(node: &tree_sitter::Node, src: &[u8], target: &str) -> bool {
+    let binding = if node.kind() == "let_binding" {
+        Some(*node)
+    } else {
+        let mut found = None;
+        let mut c = node.walk();
+        for ch in node.children(&mut c) {
+            if ch.kind() == "let_binding" {
+                found = Some(ch);
+                break;
+            }
+        }
+        found
+    };
+    let Some(binding) = binding else {
+        return false;
+    };
+    let mut c = binding.walk();
+    for ch in binding.children(&mut c) {
+        if ch.kind() == "value_name" {
+            return ch.utf8_text(src).map(|t| t == target).unwrap_or(false);
+        }
+        // Stop before parameters / the `=` body so we only read the bound name.
+        if ch.kind() == "parameter" {
+            break;
+        }
+    }
+    false
+}
+
+/// Swift/Kotlin/Scala value binding: does the LEFTMOST bound identifier
+/// (`simple_identifier` / `identifier`, i.e. the binding pattern, which always
+/// precedes the `=` initializer) equal `target`? Only the bound name counts —
+/// an identifier appearing in the initializer must not be mistaken for the
+/// binder (so `let x = push` does NOT shadow a `push` call).
+fn first_binding_ident_is(node: &tree_sitter::Node, src: &[u8], target: &str) -> bool {
+    let mut leftmost: Option<tree_sitter::Node> = None;
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "simple_identifier" | "identifier") {
+            let take = match &leftmost {
+                Some(b) => n.start_byte() < b.start_byte(),
+                None => true,
+            };
+            if take {
+                leftmost = Some(n);
+            }
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    leftmost
+        .and_then(|b| b.utf8_text(src).ok())
+        .map(|t| t == target)
+        .unwrap_or(false)
 }
 
 /// Classify a receiver expression node into a [`CallReceiver`]. A leading
@@ -2293,5 +2568,196 @@ mod tests {
         assert_eq!(report.total_targets, 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // =====================================================================
+    // explain-r8-bare-name-resolution-inherited (v0.5.0 CLOSEOUT)
+    // Sub-fix A (OCaml module-qualifier homonym) + Sub-fix B (shadowing
+    // local-binding) characterization tests for `extract_call_receiver`.
+    // =====================================================================
+
+    /// Locate the 1-indexed (line, column) of the `name` token that appears
+    /// inside the unique substring `anchor` within `src`.
+    fn r8_locate(src: &str, anchor: &str, name: &str) -> (usize, usize) {
+        let aidx = src.find(anchor).expect("anchor present in source");
+        let rel = anchor.find(name).expect("name present in anchor");
+        // Point strictly INSIDE the token (second char when possible) so the
+        // zero-width descendant lookup cannot land on a token boundary / the
+        // enclosing block.
+        let inside = if name.len() > 1 { 1 } else { 0 };
+        let byte = aidx + rel + inside;
+        let mut line = 1usize;
+        let mut col = 1usize;
+        for (i, ch) in src.char_indices() {
+            if i == byte {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    fn r8_receiver(
+        slug: &str,
+        fname: &str,
+        src: &str,
+        anchor: &str,
+        name: &str,
+        lang: crate::Language,
+    ) -> CallReceiver {
+        let dir = std::env::temp_dir().join(format!("tldr_r8_{slug}"));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(fname);
+        std::fs::write(&path, src).unwrap();
+        let (line, col) = r8_locate(src, anchor, name);
+        let r = extract_call_receiver(&path, line, col, name, lang);
+        let _ = std::fs::remove_dir_all(&dir);
+        r
+    }
+
+    #[test]
+    fn r8_ocaml_module_qualifier_is_named_not_bare() {
+        // Sub-fix A: `Mutex.unlock a` -> Named("Mutex") (stdlib homonym rejected
+        // downstream), while a genuinely bare `unlock` is still Bare.
+        let src = "let unlock m = m\n\nlet run () =\n  Mutex.unlock a;\n  ignore b\n";
+        let r = r8_receiver(
+            "ocaml_qual",
+            "lwt_main.ml",
+            src,
+            "Mutex.unlock",
+            "unlock",
+            crate::Language::Ocaml,
+        );
+        assert_eq!(
+            r,
+            CallReceiver::Named("Mutex".to_string()),
+            "qualified `Mutex.unlock` must recover the module qualifier"
+        );
+    }
+
+    #[test]
+    fn r8_ocaml_nested_module_qualifier_takes_innermost() {
+        // `A.B.unlock x` -> Named("B"): the immediately-enclosing module.
+        let src = "let run () =\n  A.B.unlock x\n";
+        let r = r8_receiver(
+            "ocaml_nested",
+            "m.ml",
+            src,
+            "A.B.unlock",
+            "unlock",
+            crate::Language::Ocaml,
+        );
+        assert_eq!(r, CallReceiver::Named("B".to_string()));
+    }
+
+    #[test]
+    fn r8_ocaml_file_own_def_shadows_cross_file_target() {
+        // Sub-fix B: lwt_io-style — the file's OWN `let unlock` shadows the
+        // cross-file `Lwt_mutex.unlock` target for a later bare `unlock` call.
+        let src = "let unlock wrapper = wrapper\n\nlet atomic () =\n  unlock w\n";
+        let r = r8_receiver(
+            "ocaml_fileown",
+            "lwt_io.ml",
+            src,
+            "  unlock w",
+            "unlock",
+            crate::Language::Ocaml,
+        );
+        assert_eq!(
+            r,
+            CallReceiver::ShadowedLocal,
+            "bare `unlock` bound by the file's own `let unlock` is not the target"
+        );
+    }
+
+    #[test]
+    fn r8_ocaml_self_recursion_is_kept_bare() {
+        // Recursion guard: `let rec drain q = drain q'` — the bare self-call is
+        // a legitimate self-edge, NOT a shadow.
+        let src = "let rec drain q =\n  drain q\n";
+        let r = r8_receiver(
+            "ocaml_rec",
+            "q.ml",
+            src,
+            "  drain q",
+            "drain",
+            crate::Language::Ocaml,
+        );
+        assert_eq!(
+            r,
+            CallReceiver::Bare,
+            "self-recursive bare call must stay Bare (kept)"
+        );
+    }
+
+    #[test]
+    fn r8_swift_closure_parameter_shadows_toplevel() {
+        // Sub-fix B: `func withState(perform:...) { perform(s) }` — `perform`
+        // is the closure parameter, not the top-level `Session.perform`.
+        let src = "class Session {\n    func perform() {}\n}\n\nfunc withState(perform: (Int) -> Void) {\n    perform(3)\n}\n";
+        let r = r8_receiver(
+            "swift_param",
+            "Protected.swift",
+            src,
+            "    perform(3)",
+            "perform",
+            crate::Language::Swift,
+        );
+        assert_eq!(r, CallReceiver::ShadowedLocal);
+    }
+
+    #[test]
+    fn r8_kotlin_lambda_parameter_shadows() {
+        // Kotlin `block` closure parameter shadows any top-level `block`.
+        let src = "fun process(block: () -> Unit) {\n    block()\n}\n";
+        let r = r8_receiver(
+            "kotlin_block",
+            "P.kt",
+            src,
+            "    block()",
+            "block",
+            crate::Language::Kotlin,
+        );
+        assert_eq!(r, CallReceiver::ShadowedLocal);
+    }
+
+    #[test]
+    fn r8_scala_local_val_shadows_toplevel() {
+        // Scala local `val push` (a function value) shadows a top-level `push`.
+        let src = "object Stack {\n  def push(x: Int): Unit = ()\n  def run(): Unit = {\n    val push = (y: Int) => y\n    push(3)\n  }\n}\n";
+        let r = r8_receiver(
+            "scala_push",
+            "S.scala",
+            src,
+            "    push(3)",
+            "push",
+            crate::Language::Scala,
+        );
+        assert_eq!(r, CallReceiver::ShadowedLocal);
+    }
+
+    #[test]
+    fn r8_swift_position_filter_keeps_forward_local() {
+        // Position filter: a bare call BEFORE a same-named local `let` must NOT
+        // be classified as shadowed (mirrors SwiftLexicalLookup `d`-before-`let d`).
+        let src = "func handler() {}\n\nfunc run() {\n    handler()\n    let handler = 3\n}\n";
+        let r = r8_receiver(
+            "swift_posfilter",
+            "F.swift",
+            src,
+            "    handler()",
+            "handler",
+            crate::Language::Swift,
+        );
+        assert_eq!(
+            r,
+            CallReceiver::Bare,
+            "a call textually before its same-named local is not shadowed"
+        );
     }
 }
