@@ -1815,6 +1815,62 @@ fn tainted_ident_in_call_args(
     false
 }
 
+/// Canonical def/use exclusion (Use-define chains / SSA / IFDS gen-kill) —
+/// security-fp2 RC5 (v0.5.0 CLOSEOUT).
+///
+/// Returns `true` when `source_var` is the variable **defined by** a call on
+/// `sink_line` — i.e. `source_var` is that call's output/return, bound by the
+/// enclosing declarator/assignment — AND `source_var` is NOT also an operand
+/// (argument/receiver leaf) of that same call. Such a pair is an inverted
+/// self-edge: a call's own result cannot be an input that reaches it (a def's
+/// uses are strictly later; SSA assigns a fresh LHS version; reaching-defs put
+/// the def in OUT, never IN; CodeQL flows operand → result).
+///
+/// The `&& not an operand` clause preserves the SSA `x = f(x)` case: when the
+/// same name is genuinely read as an argument operand AND written as a fresh
+/// def, the read is a real use and the flow must survive.
+///
+/// This is a defense-in-depth gate at the flow-pairing site. It reuses only
+/// existing helpers and can only ever *drop* a provably-inverted pair; it never
+/// creates findings and never alters source/sink detection.
+fn source_defines_sink_call(
+    tree: Option<&tree_sitter::Tree>,
+    src: Option<&[u8]>,
+    language: Language,
+    sink_line: u32,
+    source_var: &str,
+) -> bool {
+    let (Some(tree), Some(src)) = (tree, src) else {
+        return false;
+    };
+    let root = tree.root_node();
+    let call_kinds = call_node_kinds(language);
+    let extra_kinds = extra_arg_bearing_call_kinds(language);
+    for node in walk_descendants(root) {
+        // Only calls that START on the sink line (the structural sink record's
+        // line) are candidates for "the call that defined source_var".
+        if node.start_position().row as u32 + 1 != sink_line {
+            continue;
+        }
+        if !call_kinds.contains(&node.kind()) && !extra_kinds.contains(&node.kind()) {
+            continue;
+        }
+        // Is this call the RHS/initializer of a declaration/assignment whose LHS
+        // binds `source_var`? If so, `source_var` is DEFINED BY this call.
+        if find_parent_assignment_var(&node, src, language).as_deref() == Some(source_var) {
+            // Keep ONLY if `source_var` is ALSO a genuine operand of the SAME
+            // call (scan the SINK LINE ONLY → block_lines = None). A pure
+            // inverted self-def (def but not operand) is dropped.
+            let is_operand =
+                tainted_ident_in_call_args(&root, src, language, sink_line, None, source_var);
+            if !is_operand {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Tree-sitter node kinds for argument-bearing **language constructs** that are
 /// sinks but are NOT call expressions (so [`call_node_kinds`] misses them).
 ///
@@ -7707,7 +7763,24 @@ pub fn compute_taint_with_tree_indexed(
                                 &sink_var,
                                 sink_statement.as_deref().unwrap_or(""),
                             );
-                        if !is_sanitized && causally_ordered && ssrf_ok {
+                        // security-fp2 RC5 (v0.5.0 CLOSEOUT): canonical def/use
+                        // exclusion. Drop pairs where `source.var` is the sink
+                        // call's OWN output (the variable it defines) and is not
+                        // also an operand of that call — an inverted self-edge a
+                        // call's result can never be an input to itself. Sits
+                        // alongside the causal-ordering / SSRF gates as a
+                        // defense-in-depth term (RC2 already provenance-scopes the
+                        // indirect arm; this guards the block-membership fallback
+                        // and any grammar where the open's own result is reused).
+                        let source_is_sink_output = source_defines_sink_call(
+                            ast_tree,
+                            src_bytes,
+                            language,
+                            sink_line,
+                            &source.var,
+                        );
+                        if !is_sanitized && causally_ordered && ssrf_ok && !source_is_sink_output
+                        {
                             let path = compute_flow_path(source_block, sink_block, &successors);
                             let flow = TaintFlow {
                                 source: source.clone(),
@@ -10349,6 +10422,251 @@ def handler():
         assert_eq!(
             source_keys, direct_source_keys,
             "cached per-file source index must match the uncached whole-tree walk"
+        );
+    }
+
+    // =====================================================================
+    // security-fp2 RC5 char test (v0.5.0 CLOSEOUT) — def/use exclusion.
+    //
+    // A taint "source" that is actually the DEFINITION (LHS) of the very
+    // call that is the sink — and is NOT also an operand of that call — is
+    // an inverted self-edge (a call's own result cannot be an input that
+    // reaches it). Such a pair must never be formed. The SSA `x = f(x)`
+    // case (the same name is genuinely read as an operand AND written as a
+    // fresh def) MUST still flow.
+    // =====================================================================
+
+    /// SUPPRESS: `let file = File::open(path)?;` binds the FileRead source
+    /// var `file` to the LHS of the very `File::open(...)` invocation that
+    /// is also the FileOpen sink. `file` is NOT an operand of `File::open`
+    /// (the operand is `path`), so the pair is a def/use inversion and must
+    /// not be reported. (Rust BUG-17 fixture: 1 -> 0.)
+    #[test]
+    fn rc5_def_use_inverted_self_pair_is_suppressed() {
+        use crate::ast::ParserPool;
+        use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType, RefType, VarRef};
+        let code = "use std::fs::File;\n\
+use std::path::Path;\n\
+\n\
+pub fn open_helper(path: &Path) -> std::io::Result<File> {\n\
+    let file = File::open(path)?;\n\
+    Ok(file)\n\
+}\n";
+        let cfg = CfgInfo {
+            function: "open_helper".to_string(),
+            blocks: vec![
+                CfgBlock {
+                    id: 0,
+                    block_type: BlockType::Entry,
+                    lines: (4, 4),
+                    calls: Vec::new(),
+                },
+                // Lines 5-6 in ONE block: `Ok(file)` on line 6 is what the
+                // block-window arg scan latches onto to (mis)mark the sink.
+                CfgBlock {
+                    id: 1,
+                    block_type: BlockType::Body,
+                    lines: (5, 6),
+                    calls: vec!["File::open".to_string()],
+                },
+            ],
+            edges: vec![CfgEdge {
+                from: 0,
+                to: 1,
+                edge_type: EdgeType::Unconditional,
+                condition: None,
+            }],
+            entry_block: 0,
+            exit_blocks: vec![1],
+            cyclomatic_complexity: 1,
+            nested_functions: HashMap::new(),
+        };
+        let refs = vec![VarRef {
+            name: "file".to_string(),
+            ref_type: RefType::Definition,
+            line: 5,
+            column: 0,
+            context: None,
+            group_id: None,
+        }];
+        let mut statements: HashMap<u32, String> = HashMap::new();
+        for (i, line) in code.lines().enumerate() {
+            statements.insert((i + 1) as u32, line.to_string());
+        }
+
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Rust).ok();
+        let result = compute_taint_with_tree(
+            &cfg,
+            &refs,
+            &statements,
+            tree.as_ref(),
+            Some(code.as_bytes()),
+            Language::Rust,
+            None,
+        )
+        .unwrap();
+
+        // Sanity: the engine DOES detect the FileRead source `file` and a
+        // FileOpen sink on line 5 — without the gate this is exactly the
+        // inverted self-pair. If either is absent the test is vacuous.
+        assert!(
+            result.sources.iter().any(|s| s.var == "file"
+                && s.source_type == TaintSourceType::FileRead
+                && s.line == 5),
+            "sanity: `file` must be a FileRead source on line 5; sources={:?}",
+            result.sources
+        );
+        assert!(
+            result
+                .sinks
+                .iter()
+                .any(|s| s.line == 5 && s.sink_type == TaintSinkType::FileOpen),
+            "sanity: File::open on line 5 must be a FileOpen sink; sinks={:?}",
+            result.sinks
+        );
+
+        // The def/use-inverted self-pair must NOT be reported: `file` is the
+        // sink call's own output, not an input that reaches it.
+        assert!(
+            result.flows.is_empty(),
+            "def/use-inverted self-pair (source.var=`file` defined by File::open, \
+             not an operand of it) must be suppressed; got {:?}",
+            result.flows
+        );
+    }
+
+    /// KEEP (genuine flow): a real HttpParam source flowing into
+    /// `open(p)` must still be reported. `p` is an operand of the FileOpen
+    /// sink (not the sink call's own def), so the def/use gate must NOT
+    /// suppress it. Guards against the gate over-dropping true positives.
+    #[test]
+    fn rc5_genuine_http_param_to_file_open_flow_is_kept() {
+        use crate::ast::ParserPool;
+        use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo, EdgeType, RefType, VarRef};
+        let code = "def vuln(request):\n\
+    p = request.args.get(\"x\")\n\
+    open(p)\n";
+        let cfg = CfgInfo {
+            function: "vuln".to_string(),
+            blocks: vec![
+                CfgBlock {
+                    id: 0,
+                    block_type: BlockType::Entry,
+                    lines: (1, 1),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 1,
+                    block_type: BlockType::Body,
+                    lines: (2, 3),
+                    calls: vec!["request.args.get".to_string(), "open".to_string()],
+                },
+            ],
+            edges: vec![CfgEdge {
+                from: 0,
+                to: 1,
+                edge_type: EdgeType::Unconditional,
+                condition: None,
+            }],
+            entry_block: 0,
+            exit_blocks: vec![1],
+            cyclomatic_complexity: 1,
+            nested_functions: HashMap::new(),
+        };
+        let refs = vec![VarRef {
+            name: "p".to_string(),
+            ref_type: RefType::Definition,
+            line: 2,
+            column: 0,
+            context: None,
+            group_id: None,
+        }];
+        let mut statements: HashMap<u32, String> = HashMap::new();
+        for (i, line) in code.lines().enumerate() {
+            statements.insert((i + 1) as u32, line.to_string());
+        }
+
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Python).ok();
+        let result = compute_taint_with_tree(
+            &cfg,
+            &refs,
+            &statements,
+            tree.as_ref(),
+            Some(code.as_bytes()),
+            Language::Python,
+            None,
+        )
+        .unwrap();
+
+        // `p` (tainted by request.args.get) is a genuine operand of the
+        // `open(...)` FileOpen sink — NOT that call's own def — so the
+        // path-traversal flow MUST be preserved. The def/use gate's parent
+        // check (`find_parent_assignment_var(open) == None`) does not even
+        // fire here; this asserts no collateral suppression.
+        assert!(
+            !result.flows.is_empty(),
+            "genuine HttpParam -> FileOpen flow (p is an operand of open, not its def) \
+             must be kept; the def/use gate must not over-suppress. flows={:?}",
+            result.flows
+        );
+    }
+
+    /// Direct predicate test of the new `source_defines_sink_call` gate
+    /// (the RED-before-GREEN unit for RC5; the helper does not compile until
+    /// implemented). Asserts the three branches that govern suppression.
+    #[test]
+    fn rc5_source_defines_sink_call_predicate() {
+        use crate::ast::ParserPool;
+        let pool = ParserPool::new();
+
+        // Inverted self-def: `let file = File::open(path)?;` on line 1. `file`
+        // is DEFINED BY File::open but is NOT an operand (operand is `path`)
+        // → suppress.
+        let rust = "    let file = File::open(path)?;\n";
+        let rtree = pool.parse(rust, Language::Rust).unwrap();
+        assert!(
+            source_defines_sink_call(
+                Some(&rtree),
+                Some(rust.as_bytes()),
+                Language::Rust,
+                1,
+                "file",
+            ),
+            "inverted self-def (`file` = File::open(path), not an operand) must gate"
+        );
+        // `path` is an operand/param, NOT defined by the call on line 1 → keep.
+        assert!(
+            !source_defines_sink_call(
+                Some(&rtree),
+                Some(rust.as_bytes()),
+                Language::Rust,
+                1,
+                "path",
+            ),
+            "an operand (`path`) is not the call's def — must NOT gate"
+        );
+
+        // SSA operand case: `p = open(p)` on line 1. `p` is BOTH the def and a
+        // genuine operand of `open` → the `&& not an operand` clause keeps it.
+        let py = "p = open(p)\n";
+        let ptree = pool.parse(py, Language::Python).unwrap();
+        assert!(
+            !source_defines_sink_call(
+                Some(&ptree),
+                Some(py.as_bytes()),
+                Language::Python,
+                1,
+                "p",
+            ),
+            "SSA `p = open(p)` — `p` is a genuine operand, must NOT gate"
+        );
+
+        // No tree → conservative false (never gates a flow without AST).
+        assert!(
+            !source_defines_sink_call(None, None, Language::Rust, 1, "file"),
+            "no-AST path must be a no-op (return false)"
         );
     }
 }
