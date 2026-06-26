@@ -924,7 +924,7 @@ fn extract_observation_from_call(
 fn extract_function_name(call_node: &Node, source: &str) -> Option<String> {
     let func_node = call_node.child_by_field_name("function")?;
 
-    match func_node.kind() {
+    let name = match func_node.kind() {
         "identifier" => Some(node_text(func_node, source)),
         "attribute" => {
             // For method calls like obj.method(), extract just the method name
@@ -933,7 +933,18 @@ fn extract_function_name(call_node: &Node, source: &str) -> Option<String> {
                 .map(|n| node_text(n, source))
         }
         _ => None,
+    }?;
+
+    // RC5 (Step 4): Python invariants path parity. This walk does NOT flow
+    // through `run_specs`, so it needs its own builtin gate: drop Python
+    // builtins and common str/dict method tails (`repr`, `sorted`, `encode`,
+    // `decode`, `lower`, `get`, …) so they are never attributed as the
+    // function-under-test. Shares the single static table in `specs`.
+    if super::specs::is_language_builtin(&name, Language::Python) {
+        return None;
     }
+
+    Some(name)
 }
 
 /// Extract arguments from a call node.

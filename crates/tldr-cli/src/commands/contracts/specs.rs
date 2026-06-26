@@ -1080,25 +1080,11 @@ fn extract_call_info(call: Node, source: &[u8]) -> Option<(String, Vec<serde_jso
         _ => return None,
     };
 
-    // Skip built-in functions that aren't function-under-test
-    if matches!(
-        func_name.as_str(),
-        "len"
-            | "str"
-            | "int"
-            | "float"
-            | "bool"
-            | "list"
-            | "dict"
-            | "set"
-            | "tuple"
-            | "isinstance"
-            | "hasattr"
-            | "getattr"
-            | "print"
-            | "range"
-            | "type"
-    ) {
+    // RC5: Skip built-in functions / str-dict method tails that are never the
+    // function-under-test. Was a short ad-hoc list (`len`/`str`/…) that leaked
+    // `repr`/`sorted`/`encode`/`decode`/`lower`/`get`/`getlist`; now derived
+    // from the single shared static Python builtin table (`is_language_builtin`).
+    if is_language_builtin(&func_name, Language::Python) {
         return None;
     }
 
@@ -2293,7 +2279,7 @@ fn try_extract_go_if_t_assertion(
         let inner_fut = collect_call_args(call_node)
             .into_iter()
             .find_map(first_callable_inside)
-            .and_then(|c| generic_extract_call_info(c, source, vocab));
+            .and_then(|c| generic_extract_call_info(c, source, Language::Go, vocab));
         match inner_fut {
             Some((inner_name, _)) if !is_go_comparison_helper(&inner_name) => inner_name,
             // No genuine FUT inside the comparison helper's args: drop the
@@ -2301,7 +2287,7 @@ fn try_extract_go_if_t_assertion(
             _ => return false,
         }
     } else {
-        match generic_extract_call_info(call_node, source, vocab) {
+        match generic_extract_call_info(call_node, source, Language::Go, vocab) {
             Some((n, _)) => n,
             None => return false,
         }
@@ -2459,7 +2445,7 @@ fn try_extract_java_mockmvc_assertion(
         .and_then(first_callable_inside);
 
     let (fut_name, fut_inputs): (String, Vec<serde_json::Value>) =
-        match endpoint_call_node.and_then(|c| generic_extract_call_info(c, source, vocab)) {
+        match endpoint_call_node.and_then(|c| generic_extract_call_info(c, source, Language::Java, vocab)) {
             Some(info) => info,
             None => {
                 // Fallback: synthesize a placeholder so we still emit a spec.
@@ -2710,7 +2696,7 @@ fn js_expect_inner(
     } else {
         first_callable_inside(fut_node)?
     };
-    let (fname, inputs) = generic_extract_call_info(fut, source, vocab)?;
+    let (fname, inputs) = generic_extract_call_info(fut, source, Language::JavaScript, vocab)?;
 
     let line = outer.start_position().row as u32 + 1;
     let fs = ensure_entry(specs, &fname);
@@ -2966,7 +2952,7 @@ fn try_extract_ruby_expect_assertion(
         Some(c) => c,
         None => return false,
     };
-    let (fname, inputs) = match generic_extract_call_info(fut, source, vocab) {
+    let (fname, inputs) = match generic_extract_call_info(fut, source, Language::Ruby, vocab) {
         Some(v) => v,
         None => return false,
     };
@@ -3290,7 +3276,7 @@ fn scala_actual_fut_name(
     vocab: &AssertionVocab,
 ) -> Option<String> {
     if let Some(c) = first_callable_inside(operand) {
-        if let Some((fname, _)) = generic_extract_call_info(c, source, vocab) {
+        if let Some((fname, _)) = generic_extract_call_info(c, source, Language::Scala, vocab) {
             return Some(fname);
         }
     }
@@ -3430,6 +3416,18 @@ fn scala_infix_expected_value<'a>(right: Node<'a>, source: &[u8]) -> Option<Node
 
 /// Tail identifier of the callable expression.
 fn generic_callee_name(call: &Node, source: &[u8]) -> Option<String> {
+    // RC5 (Step 2): literal reflective-dispatch unwrap. `obj.__send__(:m)`,
+    // `getattr(obj,'m')()`, and `call_user_func('Class::method')` carry the
+    // REAL callee in a literal argument, never in the syntactic tail. Resolve
+    // it from the AST argument BEFORE any tail-scraping. A runtime-computed
+    // dispatch target (`send(method_var)`, `getattr(o,name_var)`) is left
+    // UNRESOLVED -> we emit nothing (matching Pyright/mypy/PHPStan/Sorbet,
+    // which never guess runtime dispatch), rather than reporting the wrapper.
+    match classify_dynamic_dispatch(call, source) {
+        DynDispatch::Resolved(name) => return Some(name),
+        DynDispatch::Unresolved => return None,
+        DynDispatch::NotDispatch => {}
+    }
     if let Some(f) = call.child_by_field_name("function") {
         return Some(get_node_text(f, source).to_string());
     }
@@ -3466,6 +3464,261 @@ fn generic_callee_name(call: &Node, source: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// RC5 (Step 2): result of inspecting a call for literal reflective dispatch.
+enum DynDispatch {
+    /// A reflective-dispatch wrapper with a LITERAL target argument; the
+    /// resolved real callee name (symbol/string stripped of `:`/quotes/`::`).
+    Resolved(String),
+    /// A reflective-dispatch wrapper whose target is runtime-computed (not a
+    /// literal). No analyzer resolves this -> the caller must emit nothing.
+    Unresolved,
+    /// Not a reflective-dispatch wrapper; proceed with normal extraction.
+    NotDispatch,
+}
+
+/// RC5 (Step 2): detect literal reflective dispatch and resolve the real
+/// callee from the AST argument. Covers Ruby `send`/`__send__`/`public_send`,
+/// Python `getattr(obj,'m')()`, and PHP `call_user_func[_array]`. Purely
+/// field/argument-addressed — no text heuristics on the call spine.
+fn classify_dynamic_dispatch(call: &Node, source: &[u8]) -> DynDispatch {
+    // Ruby: `recv.__send__(:method, ...)` — `call` node with a `method` field.
+    if call.kind() == "call" {
+        if let Some(m) = call.child_by_field_name("method") {
+            let mt = get_node_text(m, source);
+            if matches!(mt, "send" | "__send__" | "public_send") {
+                let args = collect_call_args(*call);
+                return match args.first().and_then(|n| literal_method_name(*n, source)) {
+                    Some(name) => DynDispatch::Resolved(name),
+                    None => DynDispatch::Unresolved,
+                };
+            }
+        }
+    }
+
+    if let Some(f) = call.child_by_field_name("function") {
+        // Python: `getattr(obj, 'm')()` — the outer call's `function` is itself
+        // a `getattr(...)` call whose 2nd argument is the method name literal.
+        if looks_like_call(f) {
+            if simple_callee_tail(&f, source).as_deref() == Some("getattr") {
+                let gargs = collect_call_args(f);
+                return match gargs.get(1).and_then(|n| string_literal_text(*n, source)) {
+                    Some(name) => DynDispatch::Resolved(name),
+                    None => DynDispatch::Unresolved,
+                };
+            }
+        }
+        // PHP: `call_user_func('Class::method', ...)` / `call_user_func([$o,'m'])`.
+        if let Some(fname) = simple_callee_tail(&f, source) {
+            if matches!(fname.as_str(), "call_user_func" | "call_user_func_array") {
+                let cargs = collect_call_args(*call);
+                if let Some(first) = cargs.first() {
+                    if let Some(s) = string_literal_text(*first, source) {
+                        let tail = s.rsplit("::").next().unwrap_or(&s).trim().to_string();
+                        if !tail.is_empty() {
+                            return DynDispatch::Resolved(tail);
+                        }
+                    }
+                    if let Some(name) = php_array_callable_method(*first, source) {
+                        return DynDispatch::Resolved(name);
+                    }
+                }
+                return DynDispatch::Unresolved;
+            }
+        }
+    }
+    DynDispatch::NotDispatch
+}
+
+/// RC5: text of a literal method-name argument (Ruby symbol/string), stripped
+/// of a leading `:` and surrounding quotes. Returns `None` for non-literals.
+fn literal_method_name(node: Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "simple_symbol" => {
+            let t = get_node_text(node, source).trim_start_matches(':').trim();
+            (!t.is_empty()).then(|| t.to_string())
+        }
+        "delimited_symbol" => {
+            // `:"name"` — strip the `:` then the quotes; prefer an inner content node.
+            let raw = get_node_text(node, source)
+                .trim_start_matches(':')
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim();
+            (!raw.is_empty()).then(|| raw.to_string())
+        }
+        _ => string_literal_text(node, source),
+    }
+}
+
+/// RC5: inner text of a string-literal node (any grammar whose kind contains
+/// `string`), preferring a `*_content` child, else stripping the delimiters.
+/// Returns `None` when `node` is not a string literal.
+fn string_literal_text(node: Node, source: &[u8]) -> Option<String> {
+    if !node.kind().contains("string") {
+        return None;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind().ends_with("content") {
+            let t = get_node_text(child, source).trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    let raw = get_node_text(node, source)
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string();
+    (!raw.is_empty()).then_some(raw)
+}
+
+/// RC5: callee tail of an IDENTIFIER-shaped function spine (`identifier`,
+/// `name`, `scoped_identifier`, …). Returns `None` for call/member nodes so the
+/// dispatch classifier does not mistake a chained call for a bare function.
+fn simple_callee_tail(node: &Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "name" | "simple_identifier" | "constant" | "scoped_identifier"
+        | "qualified_name" => {
+            let raw = get_node_text(*node, source);
+            let tail = raw.rsplit('.').next().unwrap_or(raw);
+            let tail = tail.rsplit("::").next().unwrap_or(tail);
+            let tail = tail.rsplit('\\').next().unwrap_or(tail).trim();
+            (!tail.is_empty()).then(|| tail.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// RC5: for a PHP `[$obj, 'method']` array callable, return `'method'`.
+fn php_array_callable_method(node: Node, source: &[u8]) -> Option<String> {
+    if !matches!(node.kind(), "array_creation_expression" | "array") {
+        return None;
+    }
+    // The method name is the LAST string-literal element of the 2-tuple.
+    let mut last: Option<String> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        // array_element_initializer wraps each element in tree-sitter-php.
+        let element = if child.kind() == "array_element_initializer" {
+            child.named_child(child.named_child_count().saturating_sub(1))
+        } else {
+            Some(child)
+        };
+        if let Some(e) = element {
+            if let Some(s) = string_literal_text(e, source) {
+                last = Some(s.rsplit("::").next().unwrap_or(&s).to_string());
+            }
+        }
+    }
+    last
+}
+
+/// RC5 (Q1, Step-3 fallback): static per-language builtin / BIF / stdlib-method
+/// denylist used when NO project symbol index is supplied. These names are
+/// never the function-under-test. Mirrors how mature analyzers (ruff, the Go
+/// type checker) ship builtins as static tables. This is the FALLBACK gate; a
+/// project-membership oracle (when wired via `--source`) is strictly better.
+pub(crate) fn is_language_builtin(name: &str, language: Language) -> bool {
+    match language {
+        Language::Elixir => matches!(
+            name,
+            // Kernel BIFs and guard macros (auto-imported into every module).
+            "byte_size" | "bit_size" | "length" | "map_size" | "tuple_size"
+                | "is_binary" | "is_bitstring" | "is_integer" | "is_float"
+                | "is_number" | "is_list" | "is_map" | "is_tuple" | "is_atom"
+                | "is_boolean" | "is_nil" | "is_struct" | "is_function" | "is_pid"
+                | "is_port" | "is_reference" | "is_exception" | "hd" | "tl" | "elem"
+                | "abs" | "ceil" | "floor" | "round" | "trunc" | "div" | "rem"
+                | "max" | "min" | "not" | "self" | "node" | "make_ref"
+        ),
+        Language::Python => matches!(
+            name,
+            // Builtins. NOTE (Step-3 fallback caveat): this is a CONSERVATIVE
+            // table — names that are common project-function identifiers
+            // (`add`, `get`, `find`, `count`, `index`, `pop`, `update`,
+            // `insert`, `remove`, `append`, `split`, `join`, `replace`, `map`,
+            // `filter`) are DELIBERATELY excluded so the no-index fallback never
+            // drops a genuine FUT. Disambiguating those is the project-
+            // membership oracle's job, not a static denylist's.
+            "len" | "repr" | "sorted" | "str" | "int" | "float" | "bool" | "list"
+                | "dict" | "set" | "frozenset" | "tuple" | "bytes" | "bytearray"
+                | "print" | "range" | "enumerate" | "zip"
+                | "isinstance" | "issubclass" | "type" | "getattr" | "setattr"
+                | "hasattr" | "delattr" | "abs" | "sum" | "any" | "all" | "next"
+                | "iter" | "ord" | "chr" | "hex" | "bin" | "oct" | "divmod"
+                | "vars" | "dir" | "hash" | "callable" | "reversed" | "complex"
+                // Distinctive str / dict method tails (very rarely project FUTs).
+                | "encode" | "decode" | "lower" | "upper" | "lstrip" | "rstrip"
+                | "splitlines" | "startswith" | "endswith" | "keys" | "values"
+                | "items" | "getlist" | "setdefault" | "popitem" | "format_map"
+                | "capitalize" | "casefold" | "zfill" | "ljust" | "rjust" | "title"
+        ),
+        Language::Php => matches!(
+            name,
+            // A representative slice of PHP internal functions seen in tests.
+            // (Ambiguous common verbs like `count`/`trim` are omitted — the
+            // membership oracle disambiguates those.)
+            "strlen" | "array_keys" | "array_values" | "array_merge"
+                | "array_map" | "array_filter" | "array_reduce" | "in_array"
+                | "implode" | "explode" | "str_replace" | "substr" | "strpos"
+                | "strtolower" | "strtoupper" | "trim" | "ltrim" | "rtrim"
+                | "sprintf" | "printf" | "json_encode" | "json_decode" | "is_array"
+                | "is_string" | "is_int" | "is_null" | "is_bool" | "is_callable"
+                | "gettype" | "intval" | "floatval" | "strval" | "stream_get_contents"
+                | "fopen" | "fclose" | "fwrite" | "fread" | "preg_match"
+                | "preg_replace" | "array_key_exists" | "isset" | "empty" | "unset"
+        ),
+        Language::Ruby => matches!(
+            name,
+            // Kernel / Object methods that are never the FUT.
+            "puts" | "print" | "p" | "pp" | "require" | "require_relative"
+                | "raise" | "loop" | "lambda" | "proc" | "freeze" | "frozen?"
+                | "dup" | "clone" | "tap" | "to_s" | "to_a" | "to_h" | "to_i"
+                | "to_sym" | "inspect" | "instance_of?" | "is_a?"
+                | "kind_of?" | "respond_to?" | "nil?" | "send" | "__send__"
+                | "public_send"
+        ),
+        Language::Go => matches!(
+            name,
+            // Predeclared builtin functions (go/types universe).
+            "len" | "cap" | "make" | "new" | "append" | "copy" | "delete"
+                | "complex" | "real" | "imag" | "close" | "panic" | "recover"
+                | "print" | "println" | "min" | "max" | "clear"
+        ),
+        _ => false,
+    }
+}
+
+/// RC5 (Q1, Step-3 fallback): true when `raw_callee` is a `pkg.Func(...)`
+/// qualified call whose leading segment is a known standard-library package, so
+/// `strings.HasPrefix` / `regexp.MatchString` / `testing.Short` are dropped and
+/// the descent recovers the real project call in the arguments. Only the FIRST
+/// dotted segment is treated as a package, matched against a conservative
+/// stdlib set (project-shadowing packages like Go's `path`/`filepath` are
+/// deliberately omitted — the membership oracle handles those).
+fn is_qualified_stdlib(raw_callee: &str, language: Language) -> bool {
+    let head = raw_callee.split('(').next().unwrap_or(raw_callee);
+    let first = match head.split('.').next() {
+        Some(f) if f != head => f.trim(),
+        _ => return false,
+    };
+    if first.is_empty() {
+        return false;
+    }
+    match language {
+        Language::Go => matches!(
+            first,
+            "strings" | "regexp" | "testing" | "bytes" | "reflect" | "fmt" | "sort"
+                | "strconv" | "errors" | "io" | "os" | "time" | "math" | "sync"
+                | "context" | "json" | "http" | "net" | "bufio" | "utf8" | "unicode"
+                | "rand" | "atomic" | "binary" | "hex" | "base64" | "url" | "bits"
+        ),
+        _ => false,
+    }
 }
 
 /// language-specific-bugs-v1 (P14.AGG14-9): Rust-macro-aware argument
@@ -3925,7 +4178,7 @@ fn swift_operand_fut(
         // navigation_expression branch above (the subscript is the receiver
         // of a `.member` read), so by the time we reach here a bare call is a
         // real function call.
-        if let Some((fname, inputs)) = generic_extract_call_info(c, source, vocab) {
+        if let Some((fname, inputs)) = generic_extract_call_info(c, source, Language::Swift, vocab) {
             return Some((fname, inputs));
         }
     }
@@ -4219,7 +4472,7 @@ fn classify_assertion_call(
                 ))
                 .filter(|(n, _)| !n.is_empty())
             } else {
-                generic_extract_call_info(c, source, vocab)
+                generic_extract_call_info(c, source, language, vocab)
             };
             if let Some((fname, _)) = fname_inputs {
                 let fs = ensure(specs, &fname);
@@ -4247,7 +4500,7 @@ fn classify_assertion_call(
     if (is_null || is_not_null) && !args.is_empty() {
         let call_arg = first_callable_inside(args[0]);
         if let Some(c) = call_arg {
-            if let Some((fname, _)) = generic_extract_call_info(c, source, vocab) {
+            if let Some((fname, _)) = generic_extract_call_info(c, source, language, vocab) {
                 let fs = ensure(specs, &fname);
                 fs.property_specs.push(PropertySpec {
                     function: fname,
@@ -4274,7 +4527,7 @@ fn classify_assertion_call(
         // Pick the lambda/closure argument and find a call inside it.
         for arg in &args {
             if let Some(c) = first_callable_inside(*arg) {
-                if let Some((fname, inputs)) = generic_extract_call_info(c, source, vocab) {
+                if let Some((fname, inputs)) = generic_extract_call_info(c, source, language, vocab) {
                     let exc = guess_exception_type(call, source);
                     let fs = ensure(specs, &fname);
                     fs.exception_specs.push(ExceptionSpec {
@@ -4302,6 +4555,7 @@ fn classify_assertion_call(
 fn generic_extract_call_info(
     call: Node,
     source: &[u8],
+    language: Language,
     vocab: &AssertionVocab,
 ) -> Option<(String, Vec<serde_json::Value>)> {
     // Skip macros that wrap the FUT (Rust): assert!(actual_call(...)) — we
@@ -4311,7 +4565,10 @@ fn generic_extract_call_info(
     let head = raw_callee.split('<').next().unwrap_or(&raw_callee);
     let tail = head.rsplit('.').next().unwrap_or(head);
     let tail = tail.rsplit("::").next().unwrap_or(tail);
-    let func_name = tail.trim().to_string();
+    // RC5: PHP fully-qualified internal calls keep a leading namespace
+    // separator (`\strlen`); strip it so the builtin gate matches and we never
+    // emit raw `\`-prefixed source text as a function-under-test name.
+    let func_name = tail.trim().trim_start_matches('\\').to_string();
     if func_name.is_empty() {
         return None;
     }
@@ -4321,6 +4578,27 @@ fn generic_extract_call_info(
     // DERIVED from the per-language vocab (`is_known_callee`), so it cannot
     // drift from the equality/throws/… classification groups.
     if vocab.is_known_callee(&func_name) {
+        return None;
+    }
+
+    // RC5 (Step-3 fallback, no project index): a language builtin / BIF /
+    // stdlib-method tail (`byte_size`, `repr`, `strlen`, `len`) or a
+    // qualified stdlib-package call (`strings.HasPrefix`, `testing.Short`) is
+    // never the function-under-test. Rather than report the wrapper (or drop
+    // the assertion entirely), DESCEND into its arguments for the innermost
+    // genuine project call — so `strings.HasPrefix(CleanPath(p), x)` attributes
+    // `CleanPath`, not `HasPrefix`. This generalizes the old Go-only
+    // `is_go_comparison_helper` descent to every language via a single rule.
+    if is_language_builtin(&func_name, language) || is_qualified_stdlib(&raw_callee, language) {
+        for arg in collect_call_args(call) {
+            if let Some(inner) = first_callable_inside(arg) {
+                if inner.id() != call.id() {
+                    if let Some(found) = generic_extract_call_info(inner, source, language, vocab) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
         return None;
     }
 
@@ -4426,7 +4704,7 @@ fn extract_call_info_for_lang(
         // `(` and the matching `)` into literals.
         return Some((fname, Vec::new()));
     }
-    generic_extract_call_info(node, source, vocab)
+    generic_extract_call_info(node, source, language, vocab)
 }
 
 /// Best-effort: does `n` look like a function call we can extract a name from?
@@ -6768,6 +7046,224 @@ end)
         assert!(
             ready.input_output_specs.is_empty(),
             "RC6 blast: a non-equality assert must not invent an input_output spec"
+        );
+    }
+
+    // =====================================================================
+    // RC5: FUT attribution must filter language builtins / qualified stdlib,
+    // recover the inner project call over the wrapper, and unwrap literal
+    // reflective dispatch. (no-builtin/source-membership-filter fork)
+    // =====================================================================
+
+    /// RC5 unit (Q1 fallback tables): the static builtin / qualified-stdlib
+    /// gates classify the live-leaked names correctly and never reject a
+    /// genuine project symbol.
+    #[test]
+    fn rc5_builtin_and_stdlib_tables_classify() {
+        // Builtins / BIFs / stdlib-method tails -> rejected.
+        assert!(is_language_builtin("byte_size", Language::Elixir));
+        assert!(is_language_builtin("is_binary", Language::Elixir));
+        assert!(is_language_builtin("map_size", Language::Elixir));
+        assert!(is_language_builtin("repr", Language::Python));
+        assert!(is_language_builtin("sorted", Language::Python));
+        assert!(is_language_builtin("encode", Language::Python));
+        assert!(is_language_builtin("getlist", Language::Python));
+        assert!(is_language_builtin("strlen", Language::Php));
+        assert!(is_language_builtin("array_keys", Language::Php));
+        // Project symbols -> NOT builtins.
+        assert!(!is_language_builtin("CleanPath", Language::Go));
+        assert!(!is_language_builtin("compute_total", Language::Ruby));
+        assert!(!is_language_builtin("make_widget", Language::Python));
+        // Qualified stdlib package calls -> rejected; project receivers kept.
+        assert!(is_qualified_stdlib("strings.HasPrefix", Language::Go));
+        assert!(is_qualified_stdlib("regexp.MatchString", Language::Go));
+        assert!(is_qualified_stdlib("testing.Short", Language::Go));
+        assert!(!is_qualified_stdlib("router.Handle", Language::Go));
+        assert!(!is_qualified_stdlib("CleanPath", Language::Go));
+        // Project-shadowing packages (path/filepath) deliberately NOT treated
+        // as stdlib so a project `path.CleanPath` is never dropped.
+        assert!(!is_qualified_stdlib("path.CleanPath", Language::Go));
+    }
+
+    /// RC5 headline (Step 3): the qualified stdlib wrapper `strings.HasPrefix`
+    /// must NOT be the FUT — the descent recovers the inner project call
+    /// `CleanPath` from its arguments.
+    #[test]
+    fn rc5_go_recovers_inner_project_call_over_stdlib_wrapper() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("path_test.go");
+        let src = r#"
+package router
+
+import (
+    "strings"
+    "testing"
+)
+
+func TestCleanPathWrapper(t *testing.T) {
+    p := "/x"
+    if strings.HasPrefix(CleanPath(p), "/") {
+        t.Errorf("bad: %q", p)
+    }
+}
+"#;
+        fs::write(&path, src).unwrap();
+        let report = run_specs(&path, None).unwrap();
+        let names: Vec<&str> = report
+            .functions
+            .iter()
+            .map(|f| f.function_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"CleanPath"),
+            "RC5: inner project call CleanPath must be the FUT, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"HasPrefix"),
+            "RC5: the strings.HasPrefix stdlib wrapper must NOT be a FUT, got {names:?}"
+        );
+    }
+
+    /// RC5 (Step 3 fallback): a `testing.Short()` if-guard is qualified stdlib —
+    /// never a FUT.
+    #[test]
+    fn rc5_go_testing_short_not_attributed() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("short_test.go");
+        let src = r#"
+package router
+
+import "testing"
+
+func TestShortGuard(t *testing.T) {
+    if testing.Short() {
+        t.Errorf("short")
+    }
+}
+"#;
+        fs::write(&path, src).unwrap();
+        let report = run_specs(&path, None).unwrap();
+        assert!(
+            !report.functions.iter().any(|f| f.function_name == "Short"),
+            "RC5: testing.Short stdlib guard must not be a FUT"
+        );
+    }
+
+    /// RC5 (Step 3 fallback): Python builtins and str/dict method tails
+    /// (`repr`, `sorted`, `encode`) are never the FUT; a genuine project call
+    /// in the same test survives.
+    #[test]
+    fn rc5_python_builtins_not_attributed() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("test_builtins.py");
+        let src = r#"
+def test_builtins_are_not_futs():
+    assert repr(make_widget()) == "w"
+    assert sorted(get_values()) == [1, 2]
+    assert payload.encode() == b"x"
+    assert real_handler(3) == 9
+"#;
+        fs::write(&path, src).unwrap();
+        let report = run_specs(&path, None).unwrap();
+        let names: Vec<&str> = report
+            .functions
+            .iter()
+            .map(|f| f.function_name.as_str())
+            .collect();
+        for b in ["repr", "sorted", "encode"] {
+            assert!(
+                !names.contains(&b),
+                "RC5: Python builtin/method `{b}` must not be a FUT, got {names:?}"
+            );
+        }
+        assert!(
+            names.contains(&"real_handler"),
+            "RC5: the genuine project call real_handler must survive, got {names:?}"
+        );
+    }
+
+    /// RC5 (Step 1 BIFs): Elixir Kernel BIFs/guards (`byte_size`) are never the
+    /// FUT.
+    #[test]
+    fn rc5_elixir_bif_not_attributed() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("size_test.exs");
+        let src = r#"
+defmodule SizeTest do
+  use ExUnit.Case
+
+  test "byte size" do
+    assert byte_size(encode_payload(input)) == 3
+  end
+end
+"#;
+        fs::write(&path, src).unwrap();
+        let report = run_specs(&path, None).unwrap();
+        assert!(
+            !report
+                .functions
+                .iter()
+                .any(|f| f.function_name == "byte_size"),
+            "RC5: Elixir BIF byte_size must not be a FUT"
+        );
+    }
+
+    /// RC5 (Step 2): a literal reflective dispatch `obj.__send__(:compute_total)`
+    /// is attributed to `compute_total`, never the `__send__` wrapper.
+    #[test]
+    fn rc5_ruby_send_literal_dispatch_unwrapped() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("dispatch_spec.rb");
+        let src = r#"
+RSpec.describe "dispatch" do
+  it "unwraps __send__" do
+    expect(obj.__send__(:compute_total)).to eq(42)
+  end
+end
+"#;
+        fs::write(&path, src).unwrap();
+        let report = run_specs(&path, None).unwrap();
+        let names: Vec<&str> = report
+            .functions
+            .iter()
+            .map(|f| f.function_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"compute_total"),
+            "RC5: __send__(:compute_total) must attribute compute_total, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"__send__") && !names.contains(&"send"),
+            "RC5: the reflective-dispatch wrapper must never be a FUT, got {names:?}"
+        );
+    }
+
+    /// RC5 (Step 5 regression guard): an equality whose RHS is a constructor
+    /// (`Some(\"bar\")`) must NOT select the constructor — the real accessor
+    /// `get_long` stays the FUT.
+    #[test]
+    fn rc5_constructor_is_not_fut() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("ctor_test.rs");
+        let src = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t() {
+        assert_eq!(arg.get_long(), Some("bar"));
+    }
+}
+"#;
+        fs::write(&path, src).unwrap();
+        let report = run_specs(&path, None).unwrap();
+        let names: Vec<&str> = report
+            .functions
+            .iter()
+            .map(|f| f.function_name.as_str())
+            .collect();
+        assert!(
+            !names.contains(&"Some") && !names.contains(&"None"),
+            "RC5: a constructor must not be selected as the FUT, got {names:?}"
         );
     }
 }
