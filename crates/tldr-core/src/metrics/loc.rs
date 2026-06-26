@@ -613,10 +613,6 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
     let mut by_directory: HashMap<PathBuf, LocInfo> = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut files_processed = 0;
-    // fix-C5-6: per-parent-directory memo of "does this directory hold C++
-    // siblings?" so `.h` headers are attributed to C++ without re-reading the
-    // directory for every header. Keyed by parent dir, value = is-cpp.
-    let mut h_is_cpp_cache: HashMap<PathBuf, bool> = HashMap::new();
 
     // cross-cutting-and-clear-fix-bugs-v1 (P18.X4): when no language filter
     // is supplied, detect the dominant language by scanning extensions
@@ -625,31 +621,6 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
     // the ONLY source file lives under a "build" directory). The hint is
     // passed to `should_skip_path_with_lang` so JS/TS projects opt out of
     // skipping `build/`, `dist/`, etc.
-    // fix-C5-6 (v0.5.0 AUDIT-FIX): does the project contain ANY unambiguous
-    // C++ source/header anywhere? Used as the project-level fallback for
-    // attributing `.h` headers that live in a headers-only directory (e.g.
-    // `include/fmt/*.h` in cpp-fmt — a pure-header tree with no `.cc`/`.cpp`
-    // sibling in the SAME directory; the translation units live under
-    // `src/`). Without this fallback the per-directory sibling check leaves
-    // those `.h` files mis-bucketed as C even though the project is plainly
-    // C++. Set during the same single walk that computes `lang_hint`.
-    // fix-R7 (cluster[11] loc fork, Option B): instead of a boolean "any C++ TU
-    // anywhere", count C vs C++ translation units. The project-level `.h → C++`
-    // fallback fires only when C++ is the DOMINANT TU language, so a C-dominant
-    // project with a stray `.cpp` (c-redis: 472 `.c`, 7 `.cpp`) keeps its `.h`
-    // headers as C while a header-only C++ lib (`.cc` TUs, no `.c`) still
-    // attributes its headers to C++ (the fix-C5-6 target). `.h`/`.hpp` headers
-    // are EXCLUDED from the TU tally — they are the ambiguous artifact being
-    // classified, not evidence of a language.
-    let mut cpp_tu_count = 0usize;
-    let mut c_tu_count = 0usize;
-    let tally_tu = |ext_lc: &str, cpp: &mut usize, c: &mut usize| {
-        match ext_lc {
-            "cpp" | "cc" | "cxx" | "c++" => *cpp += 1,
-            "c" => *c += 1,
-            _ => {}
-        }
-    };
     let lang_hint: Option<Language> = options.lang.or_else(|| {
         let mut counts: HashMap<Language, usize> = HashMap::new();
         let mut detect = ignore::WalkBuilder::new(path);
@@ -658,9 +629,6 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
             let p = entry.path();
             if !p.is_file() {
                 continue;
-            }
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                tally_tu(&ext.to_ascii_lowercase(), &mut cpp_tu_count, &mut c_tu_count);
             }
             if let Some(lang) = Language::from_path(p) {
                 *counts.entry(lang).or_insert(0) += 1;
@@ -671,26 +639,6 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
             .max_by_key(|(_, n)| *n)
             .map(|(l, _)| l)
     });
-    // When an explicit `--lang` is supplied the `lang_hint` closure is not run,
-    // so compute the TU tally directly for the `.h` fallback (only needed when
-    // the filter itself is C/C++; otherwise `.h` files are filtered out before
-    // language resolution anyway).
-    if options.lang.is_some() && matches!(options.lang, Some(Language::C) | Some(Language::Cpp)) {
-        let mut detect = ignore::WalkBuilder::new(path);
-        detect.follow_links(false).hidden(true);
-        for entry in detect.build().flatten() {
-            let p = entry.path();
-            if p.is_file() {
-                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                    tally_tu(&ext.to_ascii_lowercase(), &mut cpp_tu_count, &mut c_tu_count);
-                }
-            }
-        }
-    }
-    // C++ is "dominant" when it has strictly more translation units than C. A
-    // tie (or zero-vs-zero) is NOT dominant, so the per-directory sibling check
-    // remains the only positive signal in ambiguous cases.
-    let cpp_is_dominant = cpp_tu_count > c_tu_count;
 
     // Build walker with options
     let mut builder = ignore::WalkBuilder::new(path);
@@ -794,16 +742,16 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
 
         // Detect language.
         //
-        // fix-C5-6 (v0.5.0 AUDIT-FIX): `Language::from_path` maps `.h`
-        // unconditionally to C, so C++ projects that keep their public
-        // headers as `.h` next to `.cpp`/`.cc` translation units (the common
-        // case — e.g. cpp-fmt `include/fmt/*.h`) had every header
-        // mis-bucketed under "c". Use sibling-aware detection for `.h`: if a
-        // C++ source/header sibling exists in the same directory, attribute
-        // the header to C++. The per-directory decision is memoised in
-        // `h_is_cpp_cache` so we read each parent directory at most once
-        // during the walk. Non-`.h` files defer to the canonical classifier.
-        let lang = match resolve_loc_language(entry_path, cpp_is_dominant, &mut h_is_cpp_cache) {
+        // fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): the C-vs-C++ identity of a `.h` is
+        // a per-file semantic fact. `Language::from_path` maps `.h`
+        // unconditionally to C; the previous `loc`-local fallback derived the
+        // header's language from filesystem-extension proxies (same-dir
+        // siblings + a project-wide TU dominance count) and never opened the
+        // header, so any directory whose truth diverged from the project
+        // majority was mis-bucketed at any threshold. Defer to the single,
+        // shared, AST-driven resolver that opens the header and keys on its own
+        // C++-exclusive node-kinds.
+        let lang = match Language::resolve_header_language(entry_path) {
             Some(l) => l,
             None => continue, // Skip unsupported files
         };
@@ -940,92 +888,6 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         by_directory: by_directory_vec,
         warnings,
     })
-}
-
-/// C++ source / richer-header extensions whose presence next to a `.h` file
-/// is positive evidence that the `.h` is a C++ header. fix-C5-6.
-const CPP_SIBLING_EXTS: &[&str] = &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"];
-
-/// fix-C5-6 (v0.5.0 AUDIT-FIX): resolve the language for a single file during
-/// the LOC directory walk, attributing ambiguous `.h` headers to C++ when the
-/// containing directory holds C++ siblings.
-///
-/// For every extension other than `.h` this is exactly `Language::from_path`.
-/// For `.h` the header is attributed to C++ when EITHER:
-///   1. the SAME directory contains a C++ source/header sibling
-///      (`.cpp/.cc/.cxx/.c++/.hpp/.hh/.hxx/.h++`) — memoised per parent
-///      directory so a project with N headers reads each directory once; OR
-///   2. `cpp_is_dominant` is set — C++ translation units OUTNUMBER C
-///      translation units in the project, so a `.h` sitting in a headers-only
-///      directory (`include/fmt/*.h`) is a C++ header.
-/// Otherwise the header stays C. This extends
-/// [`crate::types::Language::from_path_with_siblings`] (same-dir only) with
-/// the project-level fallback that a whole-directory LOC report needs.
-///
-/// fix-R7 (cluster[11] loc fork, Option B): the project-level fallback used to
-/// fire on "any C++ TU anywhere", which flipped every `.h` in a C-dominant
-/// project (c-redis: 472 `.c`, 7 `.cpp`) to C++. Gating on C++ DOMINANCE keeps
-/// those headers C while preserving the header-only-C++-lib case (`.cc` TUs, no
-/// `.c`). See `decisions/r7-cl11-loc-header-cpp-project-fallback.md`.
-fn resolve_loc_language(
-    path: &Path,
-    cpp_is_dominant: bool,
-    cache: &mut HashMap<PathBuf, bool>,
-) -> Option<Language> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase());
-
-    // Only `.h` is ambiguous; everything else uses the canonical classifier.
-    if ext.as_deref() != Some("h") {
-        return Language::from_path(path);
-    }
-
-    // Same-directory sibling check FIRST (positive local signal): a `.h` next
-    // to a `.cpp`/`.cc` is C++ regardless of project-wide dominance.
-    let parent_is_cpp = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|parent| dir_has_cpp_sibling(parent, cache))
-        .unwrap_or(false);
-    if parent_is_cpp {
-        return Some(Language::Cpp);
-    }
-
-    // Project-level fallback: C++ headers in a headers-only dir, but ONLY when
-    // C++ is the dominant TU language (so a stray `.cpp` in a C project does not
-    // flip C headers). The same-directory sibling check already ran above.
-    if cpp_is_dominant {
-        return Some(Language::Cpp);
-    }
-
-    // No positive C++ evidence (no sibling, C++ not dominant) → canonical (C).
-    Language::from_path(path)
-}
-
-/// fix-R7 (cluster[11] loc fork): true when `parent` directory contains a C++
-/// source/header sibling (`.cpp/.cc/.cxx/.c++/.hpp/.hh/.hxx/.h++`). Memoised per
-/// directory in `cache` so a tree with N headers reads each directory once.
-fn dir_has_cpp_sibling(parent: &Path, cache: &mut HashMap<PathBuf, bool>) -> bool {
-    if let Some(&hit) = cache.get(parent) {
-        return hit;
-    }
-    let hit = match std::fs::read_dir(parent) {
-        Ok(rd) => rd.flatten().any(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|sib_ext| {
-                    CPP_SIBLING_EXTS.contains(&sib_ext.to_ascii_lowercase().as_str())
-                })
-                .unwrap_or(false)
-        }),
-        Err(_) => false,
-    };
-    cache.insert(parent.to_path_buf(), hit);
-    hit
 }
 
 /// Analyze a path (file or directory).
@@ -1359,12 +1221,11 @@ def foo():
         );
     }
 
-    /// fix-R7 (cluster[11] loc fork, Option B): a C-DOMINANT project that
-    /// merely contains a stray `.cpp` must keep its own `.h` headers as C. The
-    /// project-level `.h → C++` fallback (fix-C5-6) was unconditional on "any
-    /// C++ TU anywhere", so c-redis (472 `.c`, 7 `.cpp`) bucketed all 311 of its
-    /// C headers as C++. The fallback must now require C++ to be the DOMINANT
-    /// translation-unit language. Reproduces c-redis.
+    /// fix-R3-r7-cl11: a C-dominant project with a stray `.cpp` keeps its own
+    /// plain-C `.h` headers as C — now because the headers' OWN content carries
+    /// no C++-exclusive node-kind (the project-wide TU-dominance proxy is
+    /// deleted). Reproduces c-redis (472 `.c`, 7 `.cpp`): its 311 plain headers
+    /// stay C on content, independent of TU counts.
     #[test]
     fn test_loc_h_header_stays_c_when_c_dominant_with_stray_cpp() {
         use tempfile::TempDir;
@@ -1439,5 +1300,107 @@ def foo():
         );
         let c = report.by_language.get("c").expect("c bucket must exist");
         assert_eq!(c.files, 2, "both util.c and util.h must be counted as C");
+    }
+
+    /// fix-R3-r7-cl11 FALSE-POSITIVE integration: a C++-dominant tree (5 `.cc`)
+    /// + a genuinely-C header alone in `cinc/` → `loc --by-file` buckets
+    /// `cinc/cfg.h` as C (content has no C++-exclusive kind). The deleted
+    /// dominance proxy bucketed it cpp.
+    #[test]
+    fn test_loc_by_file_pure_c_header_in_cpp_dominant_tree_is_c() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("a{i}.cc")),
+                format!("int f{i}(){{return {i};}}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("cinc")).unwrap();
+        std::fs::write(
+            dir.path().join("cinc").join("cfg.h"),
+            "struct cfg;\nint cfg_init(struct cfg*);\n",
+        )
+        .unwrap();
+
+        let mut opts = LocOptions::new();
+        opts.by_file = true;
+        let report = analyze_directory(dir.path(), &opts).unwrap();
+        let by_file = report.by_file.expect("by_file requested");
+        let cfg = by_file
+            .iter()
+            .find(|e| e.path.ends_with("cfg.h"))
+            .expect("cfg.h must appear");
+        assert_eq!(
+            cfg.language, "c",
+            "pure-C cfg.h in a C++-dominant tree must bucket as C"
+        );
+    }
+
+    /// fix-R3-r7-cl11 FALSE-NEGATIVE integration: a C-dominant tree (6 `.c`) +
+    /// a genuine C++ header alone in `cpphdr/` → `loc --by-file` buckets
+    /// `cpphdr/widget.h` as cpp (namespace + template + class). The deleted
+    /// same-dir/dominance proxies bucketed it c → garbage AST downstream.
+    #[test]
+    fn test_loc_by_file_cpp_header_in_c_dominant_tree_is_cpp() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        for i in 0..6 {
+            std::fs::write(
+                dir.path().join(format!("b{i}.c")),
+                format!("int g{i}(void){{return {i};}}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("cpphdr")).unwrap();
+        std::fs::write(
+            dir.path().join("cpphdr").join("widget.h"),
+            "namespace lib { template<class T> class Widget {}; }\n",
+        )
+        .unwrap();
+
+        let mut opts = LocOptions::new();
+        opts.by_file = true;
+        let report = analyze_directory(dir.path(), &opts).unwrap();
+        let by_file = report.by_file.expect("by_file requested");
+        let widget = by_file
+            .iter()
+            .find(|e| e.path.ends_with("widget.h"))
+            .expect("widget.h must appear");
+        assert_eq!(
+            widget.language, "cpp",
+            "C++ widget.h in a C-dominant tree must bucket as cpp"
+        );
+    }
+
+    /// fix-R3-r7-cl11 perf smoke: `loc` over 400 trivial `.h` files completes
+    /// well under the per-command budget (sanity, not a microbench).
+    #[test]
+    fn test_loc_perf_smoke_400_headers() {
+        use std::time::Instant;
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("anchor.c"), "int a(void){return 0;}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("inc")).unwrap();
+        for i in 0..400 {
+            std::fs::write(
+                dir.path().join("inc").join(format!("h{i}.h")),
+                format!("int decl_{i}(int);\n"),
+            )
+            .unwrap();
+        }
+        let start = Instant::now();
+        let report = analyze_directory(dir.path(), &LocOptions::new()).unwrap();
+        let elapsed = start.elapsed();
+        assert!(
+            report.by_language.contains_key("c"),
+            "the 400 plain headers must bucket as C"
+        );
+        assert!(
+            elapsed.as_secs() < 20,
+            "400-header loc must finish well under budget, took {:?}",
+            elapsed
+        );
     }
 }

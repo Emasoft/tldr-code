@@ -80,6 +80,144 @@ pub enum Language {
     Solidity,
 }
 
+/// fix-R3-r7-cl11: C++-**exclusive** tree-sitter node-kinds — present in the
+/// tree-sitter-cpp grammar, absent from idiomatic C. Hitting any one inside a
+/// `.h` parsed with the C++ grammar is authoritative evidence the header is
+/// C++ (verified against tree-sitter-cpp `node-types.json` and GitHub Linguist
+/// PR #5357's `cpp` heuristic).
+///
+/// Deliberately EXCLUDED because they also parse as C11 (tree-sitter-c#287) or
+/// are shared rules: `static_assert_declaration` (`_Static_assert`),
+/// `generic_expression` (`_Generic`), `alignof_expression` (`_Alignof`),
+/// `sized_type_specifier`, `enum_specifier`, `struct_specifier`,
+/// `primitive_type`, and `linkage_specification` (`extern "C"` — a
+/// tree-sitter-c rule shared by both grammars, so a C++ header exporting a C
+/// ABI is NOT mis-keyed by it).
+const CPP_EXCLUSIVE_KINDS: &[&str] = &[
+    "namespace_definition",
+    "class_specifier",
+    "template_declaration",
+    "using_declaration",
+    "alias_declaration",
+    "qualified_identifier",
+    "reference_declarator",
+    "base_class_clause",
+    "access_specifier",
+    "lambda_expression",
+    "new_expression",
+    "delete_expression",
+    "try_statement",
+    "catch_clause",
+    "throw_statement",
+    "for_range_loop",
+    "destructor_name",
+    "operator_cast",
+    "structured_binding_declarator",
+    "concept_definition",
+    "requires_clause",
+    "friend_declaration",
+    "user_defined_literal",
+    "co_await_expression",
+];
+
+/// fix-R3-r7-cl11: C++ source / richer-header extensions whose presence next to
+/// a `.h` file corroborates that the `.h` is a C++ header (tier-2 prior).
+const CPP_HEADER_SIBLING_EXTS: &[&str] =
+    &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "tcc"];
+
+/// Maximum bytes of a header read for the content sniff. Headers are single-
+/// digit KB in practice; the C++-exclusive evidence (`namespace`/`class`/
+/// `template`) appears near the top, so a bounded prefix is sufficient and
+/// keeps the sniff cheap.
+const MAX_SNIFF_BYTES: usize = 64 * 1024;
+
+/// Skip the content sniff entirely above this size (generated mega-headers):
+/// fall back to the sibling/extension tiers rather than read a huge file.
+const MAX_SNIFF_FILE_SIZE: u64 = 1024 * 1024;
+
+/// Per-path memo for [`Language::resolve_header_language`] so each unique `.h`
+/// is parsed at most once per process, no matter how many commands consult it.
+fn header_lang_cache(
+) -> &'static std::sync::Mutex<HashMap<PathBuf, Option<Language>>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, Option<Language>>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn header_lang_cache_get(path: &Path) -> Option<Option<Language>> {
+    header_lang_cache()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(path).copied())
+}
+
+fn header_lang_cache_put(path: &Path, lang: Option<Language>) {
+    if let Ok(mut m) = header_lang_cache().lock() {
+        m.insert(path.to_path_buf(), lang);
+    }
+}
+
+/// Read a bounded UTF-8 prefix of `path` for the content sniff. Returns `None`
+/// when the file is unreadable or larger than [`MAX_SNIFF_FILE_SIZE`] (in which
+/// case the resolver falls back to the cheaper tiers).
+fn read_header_prefix(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    if let Ok(meta) = file.metadata() {
+        if meta.len() > MAX_SNIFF_FILE_SIZE {
+            return None;
+        }
+    }
+    let mut buf = Vec::with_capacity(MAX_SNIFF_BYTES.min(8 * 1024));
+    file.take(MAX_SNIFF_BYTES as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Parse `src` with the tree-sitter-cpp grammar and return `true` on the first
+/// C++-exclusive node-kind (depth-bounded pre-order walk, early-exit). The
+/// global `PARSER_POOL` is reused, so no parser is constructed per file.
+fn header_src_has_cpp_exclusive_kind(src: &str) -> bool {
+    let tree = match crate::ast::parser::PARSER_POOL.parse(src, Language::Cpp) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if CPP_EXCLUSIVE_KINDS.contains(&node.kind()) {
+            return true;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+/// `true` when `path`'s parent directory holds a C++ source/header sibling.
+/// Early-exits on the first hit; a read error is treated as "no sibling".
+fn header_dir_has_cpp_sibling(path: &Path) -> bool {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => return false,
+    };
+    let read_dir = match std::fs::read_dir(parent) {
+        Ok(rd) => rd,
+        Err(_) => return false,
+    };
+    for entry in read_dir.flatten() {
+        let p = entry.path();
+        if let Some(sib_ext) = p.extension().and_then(|e| e.to_str()) {
+            if CPP_HEADER_SIBLING_EXTS.contains(&sib_ext.to_ascii_lowercase().as_str()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 impl Language {
     /// Get file extensions for this language
     pub fn extensions(&self) -> &'static [&'static str] {
@@ -246,45 +384,88 @@ impl Language {
     /// [`Self::matches_for_scan`] / [`Self::scan_extensions`] for the same
     /// widening.
     pub fn from_path_with_siblings(path: &std::path::Path) -> Option<Self> {
-        // Only the C/C++ `.h` header is ambiguous. Everything else: defer
-        // to the canonical single-bucket classifier.
+        // fix-R3-r7-cl11: the `.h` C-vs-C++ decision is now a single,
+        // per-file, AST-driven resolver shared by every header consumer
+        // (`structure`/`extract`/`health`/`inheritance`/`interface`, and —
+        // via `resolve_loc_language` — `loc`). Routing this long-standing
+        // entry point through it gives every existing caller the per-file
+        // content sniff for free, with no call-site changes.
+        Self::resolve_header_language(path)
+    }
+
+    /// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): the single source of truth for the
+    /// C-vs-C++ identity of a `.h` header.
+    ///
+    /// The C-vs-C++ identity of a `.h` is a **per-file semantic fact**. Every
+    /// earlier classifier derived it from filesystem-extension *proxies*
+    /// (same-directory siblings, project-wide TU counts) and *never opened the
+    /// header*, so any project whose per-directory truth diverged from the
+    /// project majority was mis-classified regardless of the threshold. Worse,
+    /// routing a C++ header through the C grammar produces silent garbage AST
+    /// in `structure`/`extract`/`inheritance`/`interface`/`health` (the
+    /// `class Foo {` → `kind:function` hazard documented above).
+    ///
+    /// This resolver opens the header and keys the decision on the header's own
+    /// AST, in Linguist's precedence order (PR #5357 "classify `.h` as C by
+    /// default", `heuristics.yml`):
+    ///
+    /// 0. **Hard extension facts** — `.hpp/.hh/.hxx/.h++/.tcc` (and the C++
+    ///    source spellings) are unambiguously C++; any non-`.h` extension
+    ///    defers verbatim to [`Self::from_path`].
+    /// 1. **Content sniff (authoritative, per-file)** — parse a bounded prefix
+    ///    of *this* header with the tree-sitter-cpp grammar; if it contains any
+    ///    C++-**exclusive** node-kind (`namespace_definition`,
+    ///    `class_specifier`, `template_declaration`, …) the header is C++.
+    /// 2. **Same-dir C++ sibling** — a cheap corroborating prior, consulted
+    ///    *only* when the sniff is inconclusive.
+    /// 3. **Default C** — terminal fallback (matches Linguist; the project-wide
+    ///    dominance proxy is deleted, not demoted).
+    pub fn resolve_header_language(path: &std::path::Path) -> Option<Self> {
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|s| s.to_ascii_lowercase());
-        if ext.as_deref() != Some("h") {
-            return Self::from_path(path);
-        }
 
-        // `.h` next to any C++ sibling → Cpp; otherwise C.
-        let parent = match path.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p,
-            _ => return Self::from_path(path),
-        };
-
-        // Read up to a bounded number of entries to keep this cheap on
-        // pathological directories. The decision only needs *one* positive
-        // C++ sibling, so we early-return on the first hit.
-        let read_dir = match std::fs::read_dir(parent) {
-            Ok(rd) => rd,
-            Err(_) => return Self::from_path(path),
-        };
-
-        const CPP_SIBLING_EXTS: &[&str] =
-            &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"];
-
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-            let Some(sib_ext) = p.extension().and_then(|e| e.to_str()) else {
-                continue;
-            };
-            let sib_ext_lc = sib_ext.to_ascii_lowercase();
-            if CPP_SIBLING_EXTS.contains(&sib_ext_lc.as_str()) {
+        match ext.as_deref() {
+            // Tier 0 — hard C++ facts (richer header spellings + C++ sources).
+            // `.tcc` (template implementation) is C++ but not in `from_path`.
+            Some("hpp") | Some("hh") | Some("hxx") | Some("h++") | Some("tcc")
+            | Some("cpp") | Some("cc") | Some("cxx") | Some("c++") => {
                 return Some(Language::Cpp);
             }
+            // Only `.h` is ambiguous; resolve it per-file below.
+            Some("h") => {}
+            // Everything else: canonical single-bucket classifier.
+            _ => return Self::from_path(path),
         }
 
-        // No C++ sibling found → canonical (C).
+        // Per-path memo: each unique header is resolved at most once per run no
+        // matter how many commands consult it.
+        if let Some(cached) = header_lang_cache_get(path) {
+            return cached;
+        }
+        let resolved = Self::resolve_h_uncached(path);
+        header_lang_cache_put(path, resolved);
+        resolved
+    }
+
+    /// The ordered tiers for an ambiguous `.h` (cache miss). See
+    /// [`Self::resolve_header_language`].
+    fn resolve_h_uncached(path: &std::path::Path) -> Option<Self> {
+        // Tier 1 — content sniff of THIS header (authoritative).
+        if let Some(src) = read_header_prefix(path) {
+            if header_src_has_cpp_exclusive_kind(&src) {
+                return Some(Language::Cpp);
+            }
+            // Parsed clean as plain declarations → inconclusive, fall through.
+        }
+
+        // Tier 2 — same-dir C++ sibling (cheap corroborating prior).
+        if header_dir_has_cpp_sibling(path) {
+            return Some(Language::Cpp);
+        }
+
+        // Tier 3 — default C (terminal fallback; `.h` → C via from_path).
         Self::from_path(path)
     }
 
@@ -3719,6 +3900,127 @@ pub struct VulnSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------
+    // fix-R3-r7-cl11: per-file, AST-driven `.h` header resolution.
+    // `resolve_header_language` opens the header and keys the C-vs-C++
+    // decision on the header's own C++-exclusive node-kinds, instead of any
+    // filesystem-extension proxy (same-dir siblings / project-wide TU counts).
+    // ---------------------------------------------------------------------
+
+    /// FALSE-POSITIVE counterexample: a genuinely-C header alone in a
+    /// headers-only dir, even when the project is C++-dominant, must resolve
+    /// to C (its own content has no C++-exclusive kind). The old project-wide
+    /// dominance proxy mis-classified it as C++.
+    #[test]
+    fn test_resolve_header_pure_c_header_is_c() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let h = dir.path().join("cfg.h");
+        std::fs::write(&h, "struct cfg;\nint cfg_init(struct cfg*);\n").unwrap();
+        assert_eq!(Language::resolve_header_language(&h), Some(Language::C));
+    }
+
+    /// FALSE-NEGATIVE counterexample: a genuine C++ public header (namespace +
+    /// template + class) alone in a headers-only dir, even in a C-dominant
+    /// project, must resolve to C++ on content alone. The old same-dir/dominance
+    /// proxies mis-classified it as C → garbage AST through the C grammar.
+    #[test]
+    fn test_resolve_header_cpp_namespace_template_is_cpp() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let h = dir.path().join("widget.h");
+        std::fs::write(
+            &h,
+            "namespace lib { template<class T> class Widget {}; }\n",
+        )
+        .unwrap();
+        assert_eq!(Language::resolve_header_language(&h), Some(Language::Cpp));
+    }
+
+    /// `extern "C"` inverse trap: a header wrapping prototypes in
+    /// `extern "C"` (parses to the SHARED `linkage_specification` rule) but
+    /// also declaring a `class`/`namespace` must classify as C++ on the
+    /// exclusive kind — the `linkage_specification` must NOT veto it.
+    #[test]
+    fn test_resolve_header_extern_c_with_class_is_cpp() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let h = dir.path().join("c_abi.h");
+        std::fs::write(
+            &h,
+            "extern \"C\" { int f(int); }\nnamespace n { class Widget {}; }\n",
+        )
+        .unwrap();
+        assert_eq!(Language::resolve_header_language(&h), Some(Language::Cpp));
+    }
+
+    /// `extern "C"`-ONLY prototype header (no class/namespace): no
+    /// C++-exclusive kind and no C++ sibling → falls through to the terminal C
+    /// default. A pure-C-ABI header is not mis-keyed C++ by a keyword scan.
+    #[test]
+    fn test_resolve_header_extern_c_only_falls_through_to_c() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let h = dir.path().join("abi.h");
+        std::fs::write(&h, "extern \"C\" { int f(int); }\n").unwrap();
+        assert_eq!(Language::resolve_header_language(&h), Some(Language::C));
+    }
+
+    /// C11 false-positive guard: a pure-C header using `_Static_assert`,
+    /// `_Generic`, `_Alignof`, `enum`, `struct`, and designated initializers
+    /// must stay C — none of those node-kinds are in `CPP_EXCLUSIVE_KINDS`.
+    #[test]
+    fn test_resolve_header_c11_constructs_stay_c() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let h = dir.path().join("c11.h");
+        std::fs::write(
+            &h,
+            concat!(
+                "_Static_assert(sizeof(int) >= 4, \"int too small\");\n",
+                "enum color { RED, GREEN };\n",
+                "struct point { int x, y; };\n",
+                "#define TYPENAME(x) _Generic((x), int: \"int\", default: \"?\")\n",
+                "static const struct point ORIGIN = { .x = 0, .y = 0 };\n",
+                "_Alignas(16) extern char buf[64];\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(Language::resolve_header_language(&h), Some(Language::C));
+    }
+
+    /// Tier-0 hard extension facts: richer C++ header spellings resolve to C++
+    /// with no file open; `.tcc` (template impl) too.
+    #[test]
+    fn test_resolve_header_hard_extension_facts() {
+        assert_eq!(
+            Language::resolve_header_language(std::path::Path::new("a/b.hpp")),
+            Some(Language::Cpp)
+        );
+        assert_eq!(
+            Language::resolve_header_language(std::path::Path::new("a/b.tcc")),
+            Some(Language::Cpp)
+        );
+        // Non-header extension defers verbatim to from_path.
+        assert_eq!(
+            Language::resolve_header_language(std::path::Path::new("a/b.rs")),
+            Some(Language::Rust)
+        );
+    }
+
+    /// Tier-2 corroborating prior: an inconclusive `.h` (parses clean as plain
+    /// declarations) next to a `.cpp` sibling resolves to C++.
+    #[test]
+    fn test_resolve_header_inconclusive_with_cpp_sibling_is_cpp() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("widget.cpp"), "int f(){return 0;}\n").unwrap();
+        let h = dir.path().join("widget.h");
+        // No C++-exclusive kind in the header itself; sibling decides.
+        std::fs::write(&h, "void widget_run(void);\n").unwrap();
+        assert_eq!(Language::resolve_header_language(&h), Some(Language::Cpp));
+    }
 
     #[test]
     fn test_language_from_extension() {
