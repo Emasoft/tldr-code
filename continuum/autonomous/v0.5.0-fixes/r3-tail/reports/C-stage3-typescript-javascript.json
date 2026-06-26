@@ -1,0 +1,32 @@
+{
+  "milestone": "fix-R3-rc2-meta-stage3-typescript-javascript",
+  "language": "typescript-javascript",
+  "result": "success",
+  "status": "closed",
+  "implemented": "STAGE 3 family-1 reconciliation for TypeScript/JavaScript. rc2-ts (59cce85) already populated `kind` for TS/JS in the extract (families 2/4) and interface paths, but families 1 & 3 still diverged: `extractor.rs::classify_definition_node` (the (is_func,is_class) table that drives the `structure`/`definition` collection path via `collect_definitions`) did NOT recognise TS `type_alias_declaration` or `enum_declaration` on the class axis, so `structure` DROPPED every TS type alias and enum from `definitions[]`. Added a language-gated `TypeScript | JavaScript` arm to `classify_definition_node` setting `is_class=true` for those two node kinds (the canonical `entity::classify_node_kind` maps them to EntityKind::TypeAlias / EntityKind::Enum, both class-axis — used as the single source of truth), and added `\"type_alias_declaration\" => \"type\"` to the `collect_definitions` entry-kind switch (`enum_declaration => \"enum\"` already existed). JS is gated together but never produces these node kinds, so it is a no-op for JS. No new kind table was written; the change is sourced from classify_node_kind.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_typescript_v1.rs"
+  ],
+  "json_delta": "`tldr structure <ts-file>` `files[].definitions[]` now EMITS the previously-dropped TS type aliases with `kind:\"type\"` and TS enums with `kind:\"enum\"` (e.g. for /tmp/rc2_ts.ts: Bar/Baz now present as kind:\"type\", Color now present as kind:\"enum\"). Same for the `definition` command which shares `collect_definitions`. Purely ADDITIVE: previously these entries were absent entirely (a drop bug); no existing definition's name/line/kind changed; interface/extract output unchanged (those paths do not call classify_definition_node and were already populated by rc2-ts). structure now AGREES with extract/interface on the type-alias kind.",
+  "char_tests": [
+    "crates/tldr-cli/tests/rc2_meta_stage3_typescript_v1.rs::structure_emits_ts_type_aliases_as_kind_type (RED pre-fix: Bar/Baz absent from structure.definitions; GREEN: present, kind=type)",
+    "crates/tldr-cli/tests/rc2_meta_stage3_typescript_v1.rs::structure_emits_ts_enum_as_kind_enum (RED: Color dropped; GREEN: present, kind=enum)",
+    "crates/tldr-cli/tests/rc2_meta_stage3_typescript_v1.rs::structure_interface_class_method_unchanged (regression guard: Foo=interface, Qux=class, m=method)",
+    "crates/tldr-cli/tests/rc2_meta_stage3_typescript_v1.rs::structure_agrees_with_extract_on_ts_type_aliases",
+    "crates/tldr-cli/tests/rc2_meta_stage3_typescript_v1.rs::structure_agrees_with_interface_on_exported_ts_types (uses exported fixture; interface is the public-surface projection per rc2-ts export gate)",
+    "crates/tldr-core/src/ast/extractor.rs::tests::classify_definition_node_classes_ts_type_alias_and_enum (unit: family-1 now class-axis for the two node kinds, agreeing with classify_node_kind.is_class_axis)"
+  ],
+  "lib_test": "cargo test -p tldr-core --lib => 5266 passed; 0 failed; 342 ignored (includes the new unit test + the Stage-2 fourth-table guard `classify_definition_node_agrees_with_classify_node_on_fixtures` which now exercises the new TS type/enum rows)",
+  "cli_tests": "New suite rc2_meta_stage3_typescript_v1: 5 passed / 0 failed. Targeted structure suites all green: b3_structure_polyglot_bound_scala_classify_v1, structure_functions_projection_v1, structure_method_infos_all_langs_v1, cl15_polyglot_v1, cl6_interface_v1, cli_basic_tests, rc2_meta_stage1_signature_v1.",
+  "goldens_rebaselined": [],
+  "goldens_note": "NONE. The change is additive (un-dropping previously-absent entries); no snapshot files exist for TS structure (all assertions are inline, per Lane-B3) and no inline assertion pinned an exact TS definition set/count that would shift. No golden weakened.",
+  "preexisting_failures": [
+    "language_command_matrix::test_imports_on_ocaml — OCaml `imports` count 1 != expected 0. The `imports` command does NOT call classify_definition_node; my diff does not touch any imports code. PRE-EXISTING, unrelated.",
+    "bench_cli_multilang::interface::test_interface_javascript — 'JavaScript interface should find some items' returns empty for a CommonJS (module.exports) fixture. Caused by the rc2-ts (59cce85) interface export-visibility gate which only recognises ES `export`, two commits before this one. The `interface` command does NOT call classify_definition_node; my diff does not touch interface.rs. PRE-EXISTING, unrelated."
+  ],
+  "isolation_proof": "grep confirms classify_definition_node is invoked at exactly one production site: extractor.rs:2747 inside collect_definitions (structure/definition path). interface and imports commands use independent tables. My diff is +54 lines in extractor.rs only (plus a new test file). The two failing tests have byte-identical production paths to pre-change HEAD, so their pass/fail status is unchanged by this commit.",
+  "committed": true,
+  "commit_message": "fix-R3-rc2-meta-stage3-typescript-javascript: populate EntityKind via classify_node for typescript-javascript (additive) — v0.5.0 CLOSEOUT",
+  "notes": "Did not run cargo build --release; did not push; did not cargo publish. Full `cargo test -p tldr-cli` could not complete in one 590s window (suite spawns the binary thousands of times) but isolation is proven and all TS-structure-relevant suites pass."
+}

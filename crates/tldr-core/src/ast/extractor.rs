@@ -2859,6 +2859,15 @@ fn collect_definitions(
                     // `type_definition` never reaches this switch with a name,
                     // so it is unaffected.)
                     "type_definition" if matches!(language, Language::Scala) => "type",
+                    // RC2-META Stage 3 (typescript-javascript): TS type alias
+                    // `type X = ...`. `type_alias_declaration` is a TS-only node
+                    // kind (no cross-grammar collision), reached as class-LIKE
+                    // only via the TypeScript/JavaScript gate in
+                    // `classify_definition_node`. Emit kind:"type" to match the
+                    // canonical `EntityKind::TypeAlias` (serialized "type") that
+                    // extract/interface already report. `enum_declaration` is
+                    // already mapped to "enum" below.
+                    "type_alias_declaration" => "type",
                     "object_definition" => "object",
                     "trait_definition" => "trait",
                     "enum_definition" => "enum",
@@ -3814,6 +3823,26 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
                 is_func = false;
             }
         }
+        Language::TypeScript | Language::JavaScript => {
+            // RC2-META Stage 3 (typescript-javascript): TS `type X = ...`
+            // (`type_alias_declaration`) and `enum E { ... }`
+            // (`enum_declaration`) are top-level TYPE-DEFINING constructs that
+            // the canonical `classify_node_kind` maps to
+            // `EntityKind::TypeAlias` / `EntityKind::Enum` (both class-axis,
+            // see `EntityKind::is_class_axis`). They were ABSENT from the
+            // shared `is_class` list above, so `structure`'s `definitions[]`
+            // DROPPED every TS type alias and enum even though the `extract`
+            // and `interface` families (rc2-ts, 59cce85) already report them.
+            // Surface them here (Scala/Solidity precedent: language-gated so
+            // the names cannot collide with another grammar — `enum_declaration`
+            // also exists in Java/C#/PHP/Solidity and stays routed through their
+            // own paths). The reported kind string is refined to "type"/"enum"
+            // by the entry-kind switch in `collect_definitions`. Additive:
+            // structure now AGREES with extract/interface instead of dropping.
+            if matches!(kind, "type_alias_declaration" | "enum_declaration") {
+                is_class = true;
+            }
+        }
         Language::Ocaml => {
             if kind == "type_definition" {
                 is_class = true;
@@ -4191,6 +4220,31 @@ fn is_inside_impl(node: &Node) -> bool {
 mod tests {
     use super::*;
     use crate::ast::parser::parse;
+
+    /// RC2-META Stage 3 (typescript-javascript): the family-1 table that drives
+    /// `structure` must now place TS `type_alias_declaration` / `enum_declaration`
+    /// on the class axis (they were absent, so `structure` DROPPED them). The
+    /// kind axis is sourced from the canonical `classify_node_kind`
+    /// (`TypeAlias`/`Enum`, both class-axis). JS is gated together but never
+    /// produces these node kinds, so it is unaffected.
+    #[test]
+    fn classify_definition_node_classes_ts_type_alias_and_enum() {
+        use crate::ast::entity::classify_node_kind;
+        for kind in ["type_alias_declaration", "enum_declaration"] {
+            let (is_func, is_class) = classify_definition_node(kind, Language::TypeScript);
+            assert!(
+                is_class && !is_func,
+                "TS {kind:?} must be class-axis in classify_definition_node so `structure` stops dropping it"
+            );
+            // The canonical discriminator must agree this is a class-axis kind.
+            let ek = classify_node_kind(kind, Language::TypeScript)
+                .unwrap_or_else(|| panic!("classify_node_kind must recognise TS {kind:?}"));
+            assert!(
+                ek.is_class_axis(),
+                "TS {kind:?} canonical EntityKind {ek:?} must be class-axis"
+            );
+        }
+    }
 
     /// RC2-META Stage 2 fourth-table guard: `classify_definition_node` (the
     /// `(is_func, is_class)` table that drives `structure`) must AGREE with the
