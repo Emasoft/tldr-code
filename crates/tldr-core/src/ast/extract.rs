@@ -5626,10 +5626,28 @@ fn ocaml_binding_has_params(node: &Node) -> bool {
 }
 
 fn extract_ocaml_function_info(binding: &Node, definition: &Node, source: &str) -> FunctionInfo {
-    // Name: the pattern field of the let_binding (value_name)
+    // Name: the pattern field of the let_binding (value_name).
+    //
+    // For operator definitions like `let ( >>= ) a b = ...`, the `pattern`
+    // field is a `parenthesized_operator` node spanning the outer parens, so
+    // its raw text is the literal slice `( >>= )` (parens + interior spaces).
+    // That can never string-match the bare use token `>>=` at an
+    // `infix_expression.operator`, so def and use never unify in the refcount
+    // tally (RC6, Half B). Descend to the single inner named child — the bare
+    // operator token (`rel_operator '>>='`, `let_operator 'let+'`, …) — and
+    // register THAT as the canonical name. This is spacing-robust and uses no
+    // string heuristics.
     let name = binding
         .child_by_field_name("pattern")
-        .map(|n| get_node_text(&n, source))
+        .map(|n| {
+            if n.kind() == "parenthesized_operator" {
+                n.named_child(0)
+                    .map(|inner| get_node_text(&inner, source))
+                    .unwrap_or_else(|| get_node_text(&n, source))
+            } else {
+                get_node_text(&n, source)
+            }
+        })
         .unwrap_or_default();
 
     let params = extract_ocaml_params(binding, source);
@@ -10030,6 +10048,38 @@ def bar():
         assert_eq!(info.functions.len(), 2);
         assert!(info.functions.iter().any(|f| f.name == "foo"));
         assert!(info.call_graph.calls.contains_key("foo"));
+    }
+
+    #[test]
+    fn test_extract_ocaml_operator_name_normalized() {
+        // RC6 Fix 3 Half B: `let ( >>= ) a b = ...` must register the canonical
+        // bare operator name `>>=`, NOT the source slice `( >>= )`, so def/use
+        // unify in the refcount tally and call graph.
+        let mut file = NamedTempFile::with_suffix(".ml").unwrap();
+        write!(
+            file,
+            "let ( >>= ) a b = a + b\nlet ( let+ ) x f = f x\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        assert_eq!(info.language, Language::Ocaml);
+        assert!(
+            info.functions.iter().any(|f| f.name == ">>="),
+            "expected operator def registered as '>>=', got {:?}",
+            info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            info.functions.iter().any(|f| f.name == "let+"),
+            "expected operator def registered as 'let+', got {:?}",
+            info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        // The parenthesized source slice must NOT leak through as the name.
+        assert!(
+            !info.functions.iter().any(|f| f.name.contains('(')),
+            "operator name should be normalized, found parenthesized form: {:?}",
+            info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]

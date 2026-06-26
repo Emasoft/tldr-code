@@ -42,13 +42,149 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         Language::Scala => &["identifier"],
         Language::Elixir => &["identifier"],
         Language::Lua | Language::Luau => &["identifier"],
-        Language::Ocaml => &["value_name", "type_constructor"],
+        Language::Ocaml => &[
+            "value_name",
+            "type_constructor",
+            // Operator USE/DEF leaf tokens (tree-sitter-ocaml 0.24.2, verified
+            // against node-types.json). `a >>= b` exposes the operator at
+            // `infix_expression.operator` as one of the `*_operator` leaves, and
+            // `let+`/`and+`/`let*` appear as bare `let_operator`/`let_and_operator`
+            // under `value_definition`. Without these, every operator USE is
+            // invisible to the refcount tally (RC6). We add ONLY the concrete
+            // leaf tokens — NOT the `parenthesized_operator` DEF wrapper (which
+            // would re-introduce the `( >>= )` source-slice form) nor the hidden
+            // `_infix_operator` alias / `indexing_operator_path` path wrapper.
+            "prefix_operator",
+            "sign_operator",
+            "hash_operator",
+            "pow_operator",
+            "mult_operator",
+            "add_operator",
+            "concat_operator",
+            "rel_operator",
+            "and_operator",
+            "or_operator",
+            "assign_operator",
+            "indexing_operator",
+            "let_operator",
+            "let_and_operator",
+            "match_operator",
+        ],
         // v0.5.0 SOL-001 Solidity foundation. Solidity uses a plain
         // `identifier` for variable/function names and
         // `type_identifier` for declared type names (verified via
         // node-types.json on tree-sitter-solidity 1.2.13).
         Language::Solidity => &["identifier", "type_identifier"],
     }
+}
+
+/// Elixir-specific structural recognizer: if `atom_node` is the function token
+/// of a canonical MFA reference, return the bare function name to credit.
+///
+/// We deliberately do NOT add `atom` to the blanket Elixir identifier set —
+/// that would import the much larger map-key / tag-atom collision surface and
+/// re-rescue genuinely dead functions that merely share a name with a config
+/// atom or message tag. Instead we credit an `atom` as a runtime reference ONLY
+/// when the surrounding shape is an unambiguous Module/Function/Args form:
+///
+///   * MFA tuple   `{Mod, :fun, [args]}` / `{__MODULE__, :fun, [args]}` /
+///                 `{Mod, :fun}` — atom is the 2nd named child, the 1st is an
+///                 `alias` (module) or the `__MODULE__` identifier, the tuple has
+///                 2 or 3 named children, and (when 3) the 3rd is a `list`.
+///   * apply/spawn `apply(Mod, :fun, [args])` / `spawn(Mod, :fun, [args])` etc.
+///                 — same shape inside an `arguments` node whose enclosing
+///                 `call` targets `apply`/`spawn`/`spawn_link`/`spawn_monitor`.
+///
+/// All node-kinds verified against tree-sitter-elixir 0.3.4 node-types.json.
+/// This excludes `{:via, Registry, name}` (1st named child is an atom),
+/// `{state, :fun, []}` (1st is a plain variable identifier), keyword-shorthand
+/// map/list keys (which are `keyword`, not `atom`), and standalone `:tag`
+/// atoms (parent is `binary_operator`/`list`/`pair`, not a qualifying shape).
+fn elixir_mfa_atom_credit(atom_node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // Bare function name = atom text with exactly one leading ':' stripped.
+    let start = atom_node.start_byte();
+    let end = atom_node.end_byte();
+    if start > end || end > source.len() {
+        return None;
+    }
+    let raw = std::str::from_utf8(&source[start..end]).ok()?;
+    let bare = raw.strip_prefix(':')?;
+    if bare.is_empty() || bare.starts_with('"') {
+        return None;
+    }
+
+    let parent = atom_node.parent()?;
+
+    // Helper: among `container`'s NAMED children, validate the MFA shape and
+    // confirm `atom_node` is the 2nd (index 1) named child.
+    let shape_ok = |container: &tree_sitter::Node| -> bool {
+        let named: Vec<tree_sitter::Node> = {
+            let mut c = container.walk();
+            container.named_children(&mut c).collect()
+        };
+        if named.len() != 2 && named.len() != 3 {
+            return false;
+        }
+        // atom must be the 2nd named child.
+        if named.get(1).map(|n| n.id()) != Some(atom_node.id()) {
+            return false;
+        }
+        // 1st named child: alias (module) OR `__MODULE__` identifier.
+        let head = match named.first() {
+            Some(h) => h,
+            None => return false,
+        };
+        let head_ok = match head.kind() {
+            "alias" => true,
+            "identifier" => {
+                let hs = head.start_byte();
+                let he = head.end_byte();
+                hs <= he
+                    && he <= source.len()
+                    && std::str::from_utf8(&source[hs..he]).ok() == Some("__MODULE__")
+            }
+            _ => false,
+        };
+        if !head_ok {
+            return false;
+        }
+        // If 3 named children, the 3rd must be the args `list`.
+        if named.len() == 3 && named[2].kind() != "list" {
+            return false;
+        }
+        true
+    };
+
+    match parent.kind() {
+        "tuple" => {
+            if shape_ok(&parent) {
+                return Some(bare.to_string());
+            }
+        }
+        "arguments" => {
+            // enclosing call must target apply/spawn/spawn_link/spawn_monitor
+            if let Some(call) = parent.parent() {
+                if call.kind() == "call" {
+                    if let Some(target) = call.child_by_field_name("target") {
+                        let ts = target.start_byte();
+                        let te = target.end_byte();
+                        if ts <= te && te <= source.len() {
+                            if let Ok(t) = std::str::from_utf8(&source[ts..te]) {
+                                if matches!(t, "apply" | "spawn" | "spawn_link" | "spawn_monitor")
+                                    && shape_ok(&parent)
+                                {
+                                    return Some(bare.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    None
 }
 
 /// Walk the tree-sitter AST and count all identifier occurrences.
@@ -86,6 +222,16 @@ pub fn count_identifiers_in_tree(
                         *counts.entry(text.to_string()).or_insert(0) += 1;
                     }
                 }
+            }
+        }
+
+        // Elixir MFA runtime references: `{Mod, :fun, [args]}` and
+        // `apply(Mod, :fun, [args])` reference `fun` via an `atom` node-kind,
+        // which is intentionally NOT in the blanket identifier set. Credit it
+        // only when the strict MFA shape holds (RC6, Fix 2).
+        if language == Language::Elixir && node.kind() == "atom" {
+            if let Some(fun) = elixir_mfa_atom_credit(&node, source) {
+                *counts.entry(fun).or_insert(0) += 1;
             }
         }
 
@@ -372,6 +518,145 @@ func setup() {
             mgr_count >= 2,
             "Expected MyManager refcount >= 2 (class def + type annotation or constructor), got {}",
             mgr_count
+        );
+    }
+
+    /// RC6 Fix 3 (OCaml operators) — POS: a defined-and-used infix operator is
+    /// tallied at both its `parenthesized_operator` DEF and its
+    /// `infix_expression.operator` USE, so its count reaches >= 2 and it is
+    /// rescued.
+    #[test]
+    fn test_ocaml_operator_refcount_rescued() {
+        let source = "let ( >>= ) a b = a + b\nlet r = 1 >>= 2\n";
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let counts = count_identifiers_in_tree(&tree, source.as_bytes(), Language::Ocaml);
+        let c = counts.get(">>=").copied().unwrap_or(0);
+        assert!(
+            c >= 2,
+            "Expected '>>=' refcount >= 2 (def + use), got {} (counts: {:?})",
+            c,
+            counts
+        );
+        assert!(
+            is_rescued_by_refcount(">>=", &counts),
+            "'>>=' with count {} should be rescued (len 3 >= 3 => min_refs 2)",
+            c
+        );
+    }
+
+    /// RC6 Fix 3 (OCaml) — let-operator (`let+`) USE appears as a bare
+    /// `let_operator` under a `value_definition` let-header; it must be tallied.
+    #[test]
+    fn test_ocaml_let_operator_refcount() {
+        let source = "let ( let+ ) x f = f x\nlet result =\n  let+ y = 1 in\n  y\n";
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let counts = count_identifiers_in_tree(&tree, source.as_bytes(), Language::Ocaml);
+        let c = counts.get("let+").copied().unwrap_or(0);
+        assert!(
+            c >= 2,
+            "Expected 'let+' refcount >= 2 (def + use), got {} (counts: {:?})",
+            c,
+            counts
+        );
+    }
+
+    /// RC6 Fix 3 (OCaml) — NEG FP-guard: an operator that is DEFINED but never
+    /// USED stays at count 1 and is NOT rescued.
+    #[test]
+    fn test_ocaml_operator_defined_unused_not_rescued() {
+        let source = "let ( <?> ) a b = a + b\n";
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let counts = count_identifiers_in_tree(&tree, source.as_bytes(), Language::Ocaml);
+        assert_eq!(
+            counts.get("<?>").copied().unwrap_or(0),
+            1,
+            "defined-but-unused operator should have count 1, counts: {:?}",
+            counts
+        );
+        assert!(
+            !is_rescued_by_refcount("<?>", &counts),
+            "defined-but-unused '<?>' must NOT be rescued"
+        );
+    }
+
+    /// RC6 Fix 2 (Elixir MFA-atom) — POS: `{__MODULE__, :start_pooled, [a]}`
+    /// and `apply(Mod, :start_pooled, [a])` each credit the function atom.
+    #[test]
+    fn test_elixir_mfa_tuple_atom_credited() {
+        let source = "def go(ref, i) do\n  {__MODULE__, :start_pooled, [ref, i]}\nend\n";
+        let tree = parse(source, Language::Elixir).unwrap();
+        let counts = count_identifiers_in_tree(&tree, source.as_bytes(), Language::Elixir);
+        assert!(
+            counts.get("start_pooled").copied().unwrap_or(0) >= 1,
+            "MFA-tuple atom :start_pooled should credit 'start_pooled', counts: {:?}",
+            counts
+        );
+    }
+
+    #[test]
+    fn test_elixir_apply_atom_credited() {
+        let source = "def go(a) do\n  apply(MyMod, :start_pooled, [a])\nend\n";
+        let tree = parse(source, Language::Elixir).unwrap();
+        let counts = count_identifiers_in_tree(&tree, source.as_bytes(), Language::Elixir);
+        assert!(
+            counts.get("start_pooled").copied().unwrap_or(0) >= 1,
+            "apply/3 atom :start_pooled should credit 'start_pooled', counts: {:?}",
+            counts
+        );
+    }
+
+    /// RC6 Fix 2 (Elixir) — NEG FP-guards: the structural gate must NOT credit
+    /// atoms outside the strict MFA shape.
+    #[test]
+    fn test_elixir_mfa_atom_fp_guards() {
+        // {:via, Registry, name} — 1st named child is an atom, not alias/__MODULE__.
+        let src_via = "def f(name) do\n  {:via, Registry, name}\nend\n";
+        let t = parse(src_via, Language::Elixir).unwrap();
+        let c = count_identifiers_in_tree(&t, src_via.as_bytes(), Language::Elixir);
+        assert_eq!(
+            c.get("via").copied().unwrap_or(0),
+            0,
+            "{{:via, Registry, name}} must NOT credit 'via', counts: {:?}",
+            c
+        );
+        assert_eq!(
+            c.get("Registry").copied().unwrap_or(0),
+            0,
+            "atom rule must NOT credit 'Registry', counts: {:?}",
+            c
+        );
+
+        // {state, :start_pooled, []} — 1st named child is a variable identifier.
+        let src_var = "def f(state) do\n  {state, :start_pooled, []}\nend\n";
+        let t = parse(src_var, Language::Elixir).unwrap();
+        let c = count_identifiers_in_tree(&t, src_var.as_bytes(), Language::Elixir);
+        assert_eq!(
+            c.get("start_pooled").copied().unwrap_or(0),
+            0,
+            "variable head must NOT credit 'start_pooled', counts: {:?}",
+            c
+        );
+
+        // %{start_pooled: 1} — keyword key, not an atom node.
+        let src_map = "def f do\n  %{start_pooled: 1}\nend\n";
+        let t = parse(src_map, Language::Elixir).unwrap();
+        let c = count_identifiers_in_tree(&t, src_map.as_bytes(), Language::Elixir);
+        assert_eq!(
+            c.get("start_pooled").copied().unwrap_or(0),
+            0,
+            "keyword key must NOT credit 'start_pooled', counts: {:?}",
+            c
+        );
+
+        // standalone atom assignment — parent is binary_operator, not a tuple.
+        let src_tag = "def f do\n  x = :start_pooled\n  x\nend\n";
+        let t = parse(src_tag, Language::Elixir).unwrap();
+        let c = count_identifiers_in_tree(&t, src_tag.as_bytes(), Language::Elixir);
+        assert_eq!(
+            c.get("start_pooled").copied().unwrap_or(0),
+            0,
+            "standalone atom must NOT credit 'start_pooled', counts: {:?}",
+            c
         );
     }
 }

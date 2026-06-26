@@ -124,6 +124,15 @@ impl OcamlHandler {
     fn extract_value_path(&self, node: &Node, source: &[u8]) -> Option<String> {
         match node.kind() {
             "value_name" | "value_pattern" => Some(get_node_text(node, source).to_string()),
+            // Operator definitions/uses: `let ( >>= ) a b = ...` registers its
+            // name via a `parenthesized_operator` wrapper whose raw text is the
+            // source slice `( >>= )`. Normalize to the bare inner operator token
+            // (`rel_operator '>>='`, …) so def and use unify on the call-graph
+            // path too (RC6, Half B). Verified against tree-sitter-ocaml 0.24.2.
+            "parenthesized_operator" => node
+                .named_child(0)
+                .map(|inner| get_node_text(&inner, source).to_string())
+                .or_else(|| Some(get_node_text(node, source).to_string())),
             "value_path" => {
                 let mut parts: Vec<String> = Vec::new();
                 for i in 0..node.child_count() {
