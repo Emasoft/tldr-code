@@ -51,9 +51,10 @@ pub use super::resolution::{
 };
 pub use super::scanner::{filter_tldrignored, scan_project_files, should_skip_path, ScannedFile};
 pub use super::types::{
-    BuildConfig, BuildDiagnostics, BuildError, BuildResult, ClassEntry, ClassIndex, FuncEntry,
-    FuncIndex, ParseDiagnostic, ResolutionWarning, SkipReason,
+    BuildConfig, BuildDiagnostics, BuildError, BuildResult, ClassEntry, ClassIndex, ClassScope,
+    FuncEntry, FuncIndex, ParseDiagnostic, ResolutionWarning, SkipReason,
 };
+use super::types::sourceset_of_path;
 
 // --- Internal imports from sub-modules ---
 use super::module_path::{extract_definitions, normalize_path_relative_to_root};
@@ -205,14 +206,28 @@ pub fn build_indices_parallel(
 
         // Add classes to FileIR and index
         for class in parse_result.classes {
-            // Add to class index
+            // Add to class index.
+            //
+            // fix-R3-callgraph-arbitrary-same-name-survivor: attach the
+            // package/module + sourceset qualifier that was previously discarded
+            // at insert. `module` (path/AST-derived, line 139) is the package
+            // qualifier; `sourceset_of_path` classifies the cross-build
+            // platform + test segment from the relative path (same mechanism as
+            // `is_test_path`). Both are in hand here; the qualifier lets the
+            // multi-valued index disambiguate same-named classes at lookup
+            // instead of keeping an arbitrary survivor.
+            let scope = ClassScope {
+                module: module.clone(),
+                sourceset: sourceset_of_path(&relative_path),
+            };
             let entry = ClassEntry::new(
                 relative_path.clone(),
                 class.line,
                 class.end_line,
                 class.methods.clone(),
                 class.bases.clone(),
-            );
+            )
+            .with_scope(scope);
             class_index.insert(&class.name, entry);
 
             // Add to FileIR

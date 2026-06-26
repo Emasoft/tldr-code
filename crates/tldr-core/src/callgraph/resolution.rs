@@ -16,7 +16,9 @@ use crate::types::Language;
 // From new sibling modules:
 use super::imports::{ImportMap, ModuleImports};
 use super::module_path::path_to_module;
-use super::types::{capitalize_first, ClassEntry, ClassIndex, FuncEntry, FuncIndex};
+use super::types::{
+    capitalize_first, sourceset_of_path, ClassEntry, ClassIndex, FuncEntry, FuncIndex,
+};
 
 // =============================================================================
 // Phase 14e: Call Extraction and Resolution (Spec Section 14.6)
@@ -620,8 +622,12 @@ pub fn resolve_call(
                 });
             }
 
-            // Also check if it's a class name (calling constructor)
-            if let Some(class_entry) = class_index.get(target) {
+            // Also check if it's a class name (calling constructor).
+            // fix-R3: disambiguate same-named classes against the caller's
+            // module + sourceset scope instead of binding an arbitrary survivor.
+            if let Some(class_entry) =
+                pick_disambiguated_class(class_index.get_all(target), current_file, language)
+            {
                 // Constructor call - resolve to the actual constructor method (__init__, initialize, etc.)
                 if let Some(ctor) =
                     resolve_constructor_target(target, class_entry, func_index, language)
@@ -739,8 +745,13 @@ pub fn resolve_call(
                     return Some(resolved);
                 }
 
-                // It might be a class (constructor call via import)
-                if let Some(class_entry) = class_index.get(original_name) {
+                // It might be a class (constructor call via import).
+                // fix-R3: disambiguate against the caller's module + sourceset.
+                if let Some(class_entry) = pick_disambiguated_class(
+                    class_index.get_all(original_name),
+                    current_file,
+                    language,
+                ) {
                     // Try resolving to actual constructor method (__init__, initialize, etc.)
                     if let Some(ctor) =
                         resolve_constructor_target(original_name, class_entry, func_index, language)
@@ -768,8 +779,11 @@ pub fn resolve_call(
                 }
             }
 
-            // Check if target is a class name for constructor call
-            if let Some(class_entry) = class_index.get(target) {
+            // Check if target is a class name for constructor call.
+            // fix-R3: disambiguate against the caller's module + sourceset.
+            if let Some(class_entry) =
+                pick_disambiguated_class(class_index.get_all(target), current_file, language)
+            {
                 if let Some(ctor_target) =
                     resolve_constructor_target(target, class_entry, func_index, language)
                 {
@@ -1782,6 +1796,93 @@ fn pick_disambiguated_entry<'a>(
     None
 }
 
+/// Disambiguate a same-named class against the caller's module + sourceset
+/// scope, mirroring [`pick_disambiguated_entry`] for the (now multi-valued)
+/// [`ClassIndex`].
+///
+/// fix-R3-callgraph-arbitrary-same-name-survivor: the prior single-valued index
+/// discarded all-but-one candidate at insert (last-write-wins / prefer-non-test),
+/// so a class name defined in N files bound to an order-dependent survivor —
+/// often a different module entirely (clap `examples/demo.rs::Args` shadowing the
+/// caller's own `clap_bench` `Args`; retrofit `rxjava -> rxjava3` cross-sourceset).
+/// With every candidate preserved, this ranks them by the compiler-canonical
+/// precedence ladder relative to the reference site:
+///
+/// 0. cardinality 1                              -> that entry (file-unique keys unchanged)
+/// 1. same file as caller                        -> bind (intra)
+/// 2. same module AND same sourceset             -> bind (caller's own variant)
+/// 3. same module, sourceset visible via dependsOn -> most-specific (jvm caller -> jvm-native, never js)
+/// 3b. any module, sourceset visible             -> unique visible candidate
+/// 4. single non-test production candidate       -> bind
+/// 5. otherwise                                  -> DECLINE (None) [genuine ambiguity, no edge]
+///
+/// DECLINE-on-unknown bounds the worst case to a missing edge (matching current
+/// decline behavior), never a NEW wrong cross-module edge.
+pub(crate) fn pick_disambiguated_class<'a>(
+    entries: &'a [ClassEntry],
+    caller_file: &Path,
+    language: &str,
+) -> Option<&'a ClassEntry> {
+    match entries.len() {
+        0 => return None,
+        1 => return entries.first(),
+        _ => {}
+    }
+    // (1) Same-file binding wins outright.
+    if let Some(e) = entries.iter().find(|e| e.file_path == caller_file) {
+        return Some(e);
+    }
+    // All entries point at a single distinct file -> not actually ambiguous.
+    let first_file = &entries[0].file_path;
+    if entries.iter().all(|e| &e.file_path == first_file) {
+        return entries.first();
+    }
+
+    let caller_module = path_to_module(caller_file, language);
+    let caller_ss = sourceset_of_path(caller_file);
+
+    // (2) Same module AND same sourceset as the caller.
+    let r2: Vec<&ClassEntry> = entries
+        .iter()
+        .filter(|e| e.scope.module == caller_module && e.scope.sourceset == caller_ss)
+        .collect();
+    if r2.len() == 1 {
+        return Some(r2[0]);
+    }
+
+    // (3) Same module, sourceset visible from the caller via the default
+    // dependsOn lattice (jvm caller sees jvm-native/common, never js).
+    let r3: Vec<&ClassEntry> = entries
+        .iter()
+        .filter(|e| e.scope.module == caller_module && caller_ss.can_see(&e.scope.sourceset))
+        .collect();
+    if r3.len() == 1 {
+        return Some(r3[0]);
+    }
+
+    // (3b) Any module, sourceset visible from the caller (handles cross-build
+    // variants whose package qualifier is identical but path platform differs).
+    let r3b: Vec<&ClassEntry> = entries
+        .iter()
+        .filter(|e| caller_ss.can_see(&e.scope.sourceset))
+        .collect();
+    if r3b.len() == 1 {
+        return Some(r3b[0]);
+    }
+
+    // (4) A unique non-test production candidate.
+    let prod: Vec<&ClassEntry> = entries
+        .iter()
+        .filter(|e| !e.scope.sourceset.is_test)
+        .collect();
+    if prod.len() == 1 {
+        return Some(prod[0]);
+    }
+
+    // (5) Genuinely ambiguous -> decline.
+    None
+}
+
 /// Build a [`ResolvedTarget`] from a disambiguated `(module, name)` lookup,
 /// declining when the key holds an unresolvable multi-file collision. Shared by
 /// the cross-file fallbacks that previously called `func_index.get().first()`.
@@ -2210,6 +2311,110 @@ mod tests {
         assert!(!target.is_method);
         assert!(target.class_name.is_none());
         assert_eq!(target.qualified_name(), "process");
+    }
+
+    // fix-R3-callgraph-arbitrary-same-name-survivor: unit tests for the
+    // class-disambiguation ladder mirroring `pick_disambiguated_entry`.
+    use super::super::types::{ClassScope, SourceSet};
+
+    fn class_at(path: &str, module: &str, sourceset: SourceSet) -> ClassEntry {
+        ClassEntry::new(PathBuf::from(path), 1, 5, vec![], vec![]).with_scope(ClassScope {
+            module: module.to_string(),
+            sourceset,
+        })
+    }
+
+    /// Cardinality-1 keys return the sole entry unchanged (file-unique-key
+    /// languages stay byte-for-byte identical).
+    #[test]
+    fn pick_class_cardinality_one_returns_entry() {
+        let entries = vec![ClassEntry::new(
+            PathBuf::from("a/Foo.rs"),
+            1,
+            5,
+            vec![],
+            vec![],
+        )];
+        let got = pick_disambiguated_class(&entries, Path::new("z/other.rs"), "rust").unwrap();
+        assert_eq!(got.file_path, PathBuf::from("a/Foo.rs"));
+    }
+
+    /// #195 mechanism: when the caller's own file is among the candidates it
+    /// binds intra-file, never an arbitrary cross-module survivor.
+    #[test]
+    fn pick_class_same_file_wins() {
+        let entries = vec![
+            class_at("examples/demo.rs", "demo", SourceSet::default()),
+            class_at(
+                "clap_bench/benches/complex.rs",
+                "complex",
+                SourceSet::default(),
+            ),
+        ];
+        let got = pick_disambiguated_class(
+            &entries,
+            Path::new("clap_bench/benches/complex.rs"),
+            "rust",
+        )
+        .unwrap();
+        assert_eq!(
+            got.file_path,
+            PathBuf::from("clap_bench/benches/complex.rs"),
+            "caller must bind its own Args, never examples/demo.rs"
+        );
+    }
+
+    /// A caller that is not itself a definer binds the candidate in its own
+    /// module over an other-module candidate.
+    #[test]
+    fn pick_class_same_module_beats_other_module() {
+        let caller = PathBuf::from("src/foo/caller.rs");
+        let caller_mod = path_to_module(&caller, "rust");
+        let entries = vec![
+            class_at("src/bar/Other.rs", "some::other::module", SourceSet::default()),
+            class_at("src/foo/Def.rs", &caller_mod, SourceSet::default()),
+        ];
+        let got = pick_disambiguated_class(&entries, &caller, "rust").unwrap();
+        assert_eq!(got.file_path, PathBuf::from("src/foo/Def.rs"));
+    }
+
+    /// #205 mechanism: a JVM-tree caller binds the `jvm-native` cross-build
+    /// variant via the dependsOn lattice, never the `js` variant — regardless
+    /// of candidate order.
+    #[test]
+    fn pick_class_sourceset_visibility_jvm_picks_jvm_native_not_js() {
+        let caller = PathBuf::from("core/jvm/src/main/scala/bench/Bench.scala");
+        let jvm_native_path = "core/jvm-native/src/main/scala/cats/effect/ArrayStack.scala";
+        let js_path = "core/js/src/main/scala/cats/effect/ArrayStack.scala";
+        let entries = vec![
+            class_at(js_path, "cats.effect", sourceset_of_path(Path::new(js_path))),
+            class_at(
+                jvm_native_path,
+                "cats.effect",
+                sourceset_of_path(Path::new(jvm_native_path)),
+            ),
+        ];
+        let got = pick_disambiguated_class(&entries, &caller, "scala").unwrap();
+        assert_eq!(
+            got.file_path,
+            PathBuf::from(jvm_native_path),
+            "jvm caller must bind jvm-native via dependsOn, never js"
+        );
+    }
+
+    /// Genuine ambiguity (two production candidates, neither in the caller's
+    /// scope) declines rather than emitting an order-dependent edge.
+    #[test]
+    fn pick_class_genuine_tie_declines() {
+        let entries = vec![
+            class_at("p1/A.rs", "mod_one", SourceSet::default()),
+            class_at("p2/A.rs", "mod_two", SourceSet::default()),
+        ];
+        let got = pick_disambiguated_class(&entries, Path::new("p3/caller.rs"), "rust");
+        assert!(
+            got.is_none(),
+            "two same-tier production candidates, neither visible -> decline"
+        );
     }
 
     /// Test: ResolvedTarget::method creates a method target

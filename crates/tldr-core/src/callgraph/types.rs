@@ -403,6 +403,110 @@ fn path_is_test(p: &Path) -> bool {
     })
 }
 
+/// Cross-build sourceset membership of a definition, derived purely from the
+/// file path (no source parse), mirroring the `is_test` segment the existing
+/// `path_is_test` already inspects.
+///
+/// fix-R3-callgraph-arbitrary-same-name-survivor: the platform/sourceset
+/// dimension is encoded as a directory segment in every cross-build toolchain
+/// (Scala.js/Native/JVM via sbt-crossproject; Kotlin MPP `src/{common,jvm,js}{Main,Test}`;
+/// plain Gradle `<subproject>/src/{main,test}/`). The same logical class appears
+/// once per variant with an identical fully-qualified name, so this tag is the
+/// only discriminator at resolution time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceSet {
+    /// Platform target-set: "" (unknown / not cross-built), "jvm", "js",
+    /// "native", "jvm-native", "js-native", "common", "shared".
+    pub platform: String,
+    /// Whether the definition lives under a test sourceset.
+    pub is_test: bool,
+}
+
+impl SourceSet {
+    /// True when a caller in `self`'s sourceset can see a definition in `def`'s
+    /// sourceset, per the default Kotlin/Gradle `dependsOn` lattice:
+    /// `common`/`shared` are ancestors of every platform; `jvm-native` ⊇
+    /// {jvm, native}; `js-native` ⊇ {js, native}; `test` depends on `main`.
+    pub fn can_see(&self, def: &SourceSet) -> bool {
+        // A main caller cannot see a test-only definition; a test caller can
+        // see main definitions (test depends on main).
+        if def.is_test && !self.is_test {
+            return false;
+        }
+        platform_visible(&self.platform, &def.platform)
+    }
+}
+
+/// Default `dependsOn` platform visibility: can a caller on `caller` platform
+/// see a definition on `def` platform?
+fn platform_visible(caller: &str, def: &str) -> bool {
+    if def.is_empty() || caller == def || def == "common" || def == "shared" {
+        return true;
+    }
+    match caller {
+        "jvm" => def == "jvm-native",
+        "native" => def == "jvm-native" || def == "js-native",
+        "js" => def == "js-native",
+        // Intermediate sourcesets / unknown callers fall back to "see common
+        // only" which is already handled above; anything else declines.
+        _ => false,
+    }
+}
+
+/// Classify a path's sourceset (platform + test) from its directory segments.
+///
+/// Pure path arithmetic (no source parse, no regex over source text) — the same
+/// mechanism as `path_is_test`. Recognizes:
+/// - sbt-crossproject / Scala.js dirs: `jvm`, `js`, `native`, `jvm-native`, `js-native`, `shared`
+/// - Kotlin MPP sourcesets: `commonMain`, `jvmMain`, `jsMain`, `nativeMain`, `commonTest`, ...
+pub(crate) fn sourceset_of_path(path: &Path) -> SourceSet {
+    let mut platform = String::new();
+    for comp in path.components() {
+        let seg = comp.as_os_str().to_string_lossy();
+        let lc = seg.to_ascii_lowercase();
+        // sbt-crossproject / Scala.js leaf dirs (exact directory names).
+        match lc.as_str() {
+            "jvm-native" | "js-native" => {
+                platform = lc.clone();
+            }
+            "jvm" | "js" | "native" | "common" | "shared" => {
+                if platform.is_empty() {
+                    platform = lc.clone();
+                }
+            }
+            _ => {}
+        }
+        // Kotlin MPP sourceset dirs: <target>Main / <target>Test.
+        for suffix in ["main", "test"] {
+            if let Some(target) = lc.strip_suffix(suffix) {
+                if !target.is_empty()
+                    && matches!(target, "common" | "jvm" | "js" | "native" | "shared")
+                {
+                    platform = target.to_string();
+                }
+            }
+        }
+    }
+    SourceSet {
+        platform,
+        is_test: path_is_test(path),
+    }
+}
+
+/// The package/module + sourceset qualifier attached to a class definition so
+/// that same-named classes across files/modules can be disambiguated at lookup
+/// against the reference site's scope (instead of keeping an arbitrary survivor
+/// at insert time).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClassScope {
+    /// Package/module qualifier (Java/Kotlin package, Scala `package_clause`,
+    /// Rust mod chain, OCaml `Foo`) — derived from the AST package node where
+    /// the parser surfaces it, otherwise from the directory-derived module.
+    pub module: String,
+    /// Cross-build sourceset membership (platform target-set + test flag).
+    pub sourceset: SourceSet,
+}
+
 /// Entry in the class index.
 ///
 /// Stores metadata about a class definition for cross-file resolution.
@@ -422,10 +526,15 @@ pub struct ClassEntry {
 
     /// Base class names (for inheritance tracking).
     pub bases: Vec<String>,
+
+    /// Package/module + sourceset qualifier used for cross-module
+    /// disambiguation. Defaults to empty (no qualifier) so cardinality-1 keys
+    /// behave byte-for-byte as before.
+    pub scope: ClassScope,
 }
 
 impl ClassEntry {
-    /// Creates a new ClassEntry.
+    /// Creates a new ClassEntry with an empty scope qualifier.
     pub fn new(
         file_path: PathBuf,
         line: u32,
@@ -439,7 +548,14 @@ impl ClassEntry {
             end_line,
             methods,
             bases,
+            scope: ClassScope::default(),
         }
+    }
+
+    /// Attaches a scope qualifier (builder pattern).
+    pub fn with_scope(mut self, scope: ClassScope) -> Self {
+        self.scope = scope;
+        self
     }
 }
 
@@ -686,8 +802,20 @@ impl FuncIndex {
 /// ```
 #[derive(Debug, Default)]
 pub struct ClassIndex {
-    /// Maps class_name -> ClassEntry
-    entries: HashMap<String, ClassEntry>,
+    /// Maps class_name -> all entries sharing that bare name.
+    ///
+    /// fix-R3-callgraph-arbitrary-same-name-survivor: this was previously
+    /// `HashMap<String, ClassEntry>` (single-valued), which discarded all but
+    /// one candidate at INSERT time via last-write-wins. When the same class
+    /// name is defined in N files (e.g. `struct Args` in 7 clap files,
+    /// `ObservableTest` in 3 Gradle sourcesets, `ArrayStack` in jvm-native + js
+    /// Scala variants), the surviving entry decided where `calls`/`impact`/etc.
+    /// resolved it — an order-dependent, often-wrong cross-module bind. Mirroring
+    /// `FuncIndex`, the index is now multi-valued: every candidate survives to
+    /// lookup, where `pick_disambiguated_class` ranks them against the caller's
+    /// module + sourceset scope (same-file > same-module/sourceset > visible
+    /// sourceset > single production > decline).
+    entries: HashMap<String, Vec<ClassEntry>>,
 }
 
 impl ClassIndex {
@@ -705,45 +833,64 @@ impl ClassIndex {
         }
     }
 
-    /// Inserts a class entry.
+    /// Inserts a class entry, preserving every candidate.
     ///
-    /// fix-R7 (cluster[11], Swift research-needed): `ClassIndex` is
-    /// single-valued, so when a class name is defined in more than one file the
-    /// surviving entry decides where `calls`/`hubs`/`impact` etc. resolve it.
-    /// Plain `HashMap::insert` was last-write-wins (order-dependent), which made
-    /// `Session` (production `Source/Core/Session.swift` + `extension Session`
-    /// in `Tests/...`) resolve to a TEST file. We apply the same prefer-
-    /// production tiebreak the FuncIndex resolver uses: a production definition
-    /// is never overwritten by a colliding test-file definition. A test-only
-    /// class is still stored (the rule is a tiebreak among collisions, not an
-    /// exclusion). Distinct definitions that are both production keep the
-    /// last-write-wins behaviour (genuine collision the index cannot
-    /// disambiguate without module scope — see the design-fork doc).
+    /// fix-R3-callgraph-arbitrary-same-name-survivor: the index is multi-valued,
+    /// so distinct definitions of the same class name no longer clobber one
+    /// another (the prior last-write-wins / prefer-non-test tiebreak is gone —
+    /// test vs production is now a `sourceset` dimension ranked at lookup). Inserts
+    /// are deduplicated by `(file_path, line)` so the same definition reached via
+    /// more than one shard does not inflate the candidate count.
     pub fn insert(&mut self, class_name: impl Into<String>, entry: ClassEntry) {
-        let class_name = class_name.into();
-        if let Some(existing) = self.entries.get(&class_name) {
-            let existing_is_test = path_is_test(&existing.file_path);
-            let new_is_test = path_is_test(&entry.file_path);
-            // Keep the existing PRODUCTION def when the incoming one is a test
-            // def — do not let a test file clobber the canonical definition.
-            if !existing_is_test && new_is_test {
-                return;
-            }
+        let v = self.entries.entry(class_name.into()).or_default();
+        if !v
+            .iter()
+            .any(|e| e.file_path == entry.file_path && e.line == entry.line)
+        {
+            v.push(entry);
         }
-        self.entries.insert(class_name, entry);
     }
 
-    /// Looks up a class by name.
+    /// Looks up a single class entry by name (back-compat API for callers that
+    /// do not disambiguate against caller scope).
+    ///
+    /// Returns a production-preferred entry: the first non-test definition if
+    /// any exists, else the first entry. This preserves the prior
+    /// prefer-production read behaviour (fix-R7 Swift `Session`) for the lookup
+    /// sites that have no caller context, without keeping the single-valued
+    /// storage. Sites that DO have caller scope use [`ClassIndex::get_all`] +
+    /// `pick_disambiguated_class` for full module/sourceset disambiguation.
     pub fn get(&self, class_name: &str) -> Option<&ClassEntry> {
-        self.entries.get(class_name)
+        let v = self.entries.get(class_name)?;
+        Some(
+            v.iter()
+                .find(|e| !path_is_test(&e.file_path))
+                .unwrap_or(&v[0]),
+        )
     }
 
-    /// Looks up a mutable class entry by name.
+    /// Returns every candidate entry sharing `class_name` (empty slice if none).
+    pub fn get_all(&self, class_name: &str) -> &[ClassEntry] {
+        self.entries
+            .get(class_name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Looks up a mutable, production-preferred class entry by name.
     pub fn get_mut(&mut self, class_name: &str) -> Option<&mut ClassEntry> {
-        self.entries.get_mut(class_name)
+        let v = self.entries.get_mut(class_name)?;
+        if v.is_empty() {
+            return None;
+        }
+        let idx = v
+            .iter()
+            .position(|e| !path_is_test(&e.file_path))
+            .unwrap_or(0);
+        Some(&mut v[idx])
     }
 
-    /// Returns the number of entries in the index.
+    /// Returns the number of distinct class names in the index.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -753,33 +900,39 @@ impl ClassIndex {
         self.entries.is_empty()
     }
 
-    /// Merges another ClassIndex into this one.
-    ///
-    /// Used to combine results from parallel processing. fix-R7 (cluster[11]):
-    /// routes every merged entry through [`ClassIndex::insert`] so the
-    /// prefer-production tiebreak applies to cross-shard collisions too (a
-    /// test-file shard merged after a production shard must not clobber the
-    /// canonical def). Previously `HashMap::extend` was last-write-wins and
-    /// shard-order-dependent.
+    /// Merges another ClassIndex into this one, preserving every candidate.
     pub fn merge(&mut self, other: ClassIndex) {
-        for (name, entry) in other.entries {
-            self.insert(name, entry);
+        for (name, entries) in other.entries {
+            for entry in entries {
+                self.insert(name.clone(), entry);
+            }
         }
     }
 
-    /// Returns an iterator over all entries.
+    /// Returns an iterator over all entries (every candidate, flattened).
     pub fn iter(&self) -> impl Iterator<Item = (&str, &ClassEntry)> {
-        self.entries.iter().map(|(n, e)| (n.as_str(), e))
+        self.entries
+            .iter()
+            .flat_map(|(n, v)| v.iter().map(move |e| (n.as_str(), e)))
     }
 
     /// Convert to path map for TypeAwareCallResolver compatibility.
-    /// Note: ClassIndex uses single-key (class_name), but TypeAwareCallResolver expects (module, class).
-    /// We use ("", class_name) as the key since we don't track module per class.
+    ///
+    /// fix-R3-callgraph-arbitrary-same-name-survivor: now that each entry
+    /// carries its package/module qualifier, key on `(scope.module, class_name)`
+    /// instead of the previous empty `("", name)` placeholder — a net improvement
+    /// for `TypeAwareCallResolver`, which expects `(module, class)` keys.
     pub fn to_path_map(&self) -> std::collections::HashMap<(String, String), std::path::PathBuf> {
-        self.entries
-            .iter()
-            .map(|(name, e)| (("".to_string(), name.clone()), e.file_path.clone()))
-            .collect()
+        let mut map = std::collections::HashMap::new();
+        for (name, entries) in &self.entries {
+            for e in entries {
+                map.insert(
+                    (e.scope.module.clone(), name.clone()),
+                    e.file_path.clone(),
+                );
+            }
+        }
+        map
     }
 }
 
@@ -978,6 +1131,117 @@ mod tests {
             Some(PathBuf::from("Source/Session.swift")),
             "merge must keep the production def over a test def"
         );
+    }
+
+    /// fix-R3-callgraph-arbitrary-same-name-survivor: the multi-valued
+    /// `ClassIndex` must PRESERVE every same-named class definition (the prior
+    /// single-valued map kept only an arbitrary survivor). #195 clap `Args` is
+    /// defined in 7 files; all must survive to lookup so the resolver can pick
+    /// the caller's own variant.
+    #[test]
+    fn class_index_preserves_all_same_name_candidates() {
+        let mut idx = ClassIndex::new();
+        idx.insert(
+            "Args",
+            ClassEntry::new(PathBuf::from("examples/demo.rs"), 1, 5, vec![], vec![]),
+        );
+        idx.insert(
+            "Args",
+            ClassEntry::new(
+                PathBuf::from("clap_bench/benches/complex.rs"),
+                1,
+                5,
+                vec![],
+                vec![],
+            ),
+        );
+        // Re-inserting the same (file,line) must dedup, not inflate.
+        idx.insert(
+            "Args",
+            ClassEntry::new(PathBuf::from("examples/demo.rs"), 1, 5, vec![], vec![]),
+        );
+        let all = idx.get_all("Args");
+        assert_eq!(all.len(), 2, "both distinct Args definitions must survive");
+    }
+
+    /// fix-R3: `to_path_map` must carry the real package/module qualifier
+    /// (the prior `("", name)` placeholder admitted "we don't track module per
+    /// class"). Consumed by `TypeAwareCallResolver`, which expects `(module,
+    /// class)` keys.
+    #[test]
+    fn to_path_map_carries_module_qualifier() {
+        let mut idx = ClassIndex::new();
+        idx.insert(
+            "User",
+            ClassEntry::new(PathBuf::from("src/User.java"), 1, 5, vec![], vec![]).with_scope(
+                ClassScope {
+                    module: "com.example".to_string(),
+                    sourceset: SourceSet::default(),
+                },
+            ),
+        );
+        let map = idx.to_path_map();
+        assert!(
+            map.contains_key(&("com.example".to_string(), "User".to_string())),
+            "to_path_map must key on the real module, not an empty placeholder"
+        );
+        assert!(
+            !map.contains_key(&("".to_string(), "User".to_string())),
+            "the empty-module placeholder key must be gone"
+        );
+    }
+
+    /// fix-R3: `sourceset_of_path` is a pure path-segment classifier (same
+    /// mechanism as `path_is_test`) for the cross-build platform + test
+    /// dimension.
+    #[test]
+    fn sourceset_of_path_classifies_platform_and_test() {
+        assert_eq!(
+            sourceset_of_path(Path::new(
+                "core/jvm-native/src/main/scala/cats/effect/ArrayStack.scala"
+            ))
+            .platform,
+            "jvm-native"
+        );
+        assert_eq!(
+            sourceset_of_path(Path::new("core/js/src/main/scala/cats/effect/ArrayStack.scala"))
+                .platform,
+            "js"
+        );
+        let test_ss =
+            sourceset_of_path(Path::new("rxjava/src/test/java/retrofit2/ObservableTest.java"));
+        assert!(test_ss.is_test, "src/test/ path must be flagged is_test");
+    }
+
+    /// fix-R3: the default dependsOn visibility lattice — a `jvm` caller sees
+    /// `jvm-native` and `common`, never `js`.
+    #[test]
+    fn sourceset_dependson_visibility() {
+        let jvm = SourceSet {
+            platform: "jvm".to_string(),
+            is_test: false,
+        };
+        let jvm_native = SourceSet {
+            platform: "jvm-native".to_string(),
+            is_test: false,
+        };
+        let js = SourceSet {
+            platform: "js".to_string(),
+            is_test: false,
+        };
+        let common = SourceSet {
+            platform: "common".to_string(),
+            is_test: false,
+        };
+        assert!(jvm.can_see(&jvm_native));
+        assert!(jvm.can_see(&common));
+        assert!(!jvm.can_see(&js));
+        // A main caller must not see a test-only definition.
+        let test_def = SourceSet {
+            platform: "jvm".to_string(),
+            is_test: true,
+        };
+        assert!(!jvm.can_see(&test_def));
     }
 
     #[test]
