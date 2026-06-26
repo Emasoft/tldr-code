@@ -29,7 +29,7 @@ use tldr_core::walker::walk_project;
 use tree_sitter::Node;
 
 use super::error::{PatternsError, PatternsResult};
-use super::types::{ClassInfo, FunctionInfo, InterfaceInfo, MethodInfo};
+use super::types::{ClassInfo, FunctionInfo, InterfaceInfo, MethodInfo, ValueInfo};
 use super::validation::{read_file_safe, validate_directory_path, validate_file_path};
 use crate::output::OutputFormat;
 use tldr_core::ast::ParserPool;
@@ -2298,6 +2298,7 @@ fn extract_ocaml_mli_interface(path: &Path, source: &str) -> PatternsResult<Inte
         all_exports: names,
         functions,
         classes,
+        values: Vec::new(),
     })
 }
 
@@ -2423,7 +2424,7 @@ pub fn extract_interface_with_lang(
     let decorator_kinds = decorator_node_kinds(lang);
 
     // Extract public functions and classes
-    let (functions, classes) = collect_top_level_definitions(
+    let (mut functions, classes) = collect_top_level_definitions(
         root,
         source_bytes,
         lang,
@@ -2432,12 +2433,36 @@ pub fn extract_interface_with_lang(
         decorator_kinds,
     );
 
+    let mut values: Vec<ValueInfo> = Vec::new();
+
+    // rc2-lua-interface-return-table-convention: a Lua/Luau module's public
+    // surface is exactly the field set of the table it `return`s at end of
+    // file — NOT the underscore-convention union of every collected function.
+    // When a terminal `return {…}` / `return M` table is present, read the
+    // export set from it (the authoritative module contract per
+    // Programming-in-Lua §15.2, LuaLS, Teal, LDoc): this fixes both the
+    // over-report (non-exported `local function` helpers) and the under-report
+    // (branch-nested defs + non-function `local`s that the function-only
+    // walker never collected). `None` (dynamic / `return require(...)` / no
+    // return-table) falls back to the legacy union heuristic below.
+    let lua_exports = if matches!(lang, Language::Lua | Language::Luau) {
+        collect_lua_module_exports(root, source_bytes, lang)
+    } else {
+        None
+    };
+
     // schema-cleanup-v1 BUG-22: populate `all_exports` as a non-null
     // array. Prefer the explicit `__all__` (Python only); otherwise
     // fall back to the union of public function and class names —
     // mirroring "import *" semantics. Empty modules → `[]`.
     let all_exports = if let Some(explicit) = explicit_all_exports {
         explicit
+    } else if let Some(exports) = lua_exports {
+        // Override with the return-table contract. Build the authoritative
+        // export name set, reconcile `functions[]` against it (filter
+        // over-reported helpers, synthesize branch-nested / missing exported
+        // functions), and route non-function exports to `values[]`.
+        reconcile_lua_exports(&exports, &mut functions, &mut values)
     } else {
         let mut names: Vec<String> = functions
             .iter()
@@ -2454,7 +2479,570 @@ pub fn extract_interface_with_lang(
         all_exports,
         functions,
         classes,
+        values,
     })
+}
+
+// =============================================================================
+// Lua / Luau return-table export model
+// (rc2-lua-interface-return-table-convention)
+// =============================================================================
+
+/// A single export read from a Lua/Luau module's terminal `return` table.
+///
+/// `name` is the exported KEY (the return-table field name / accumulator
+/// field). `lineno` is the alias-resolved definition site (the local/function
+/// def the value points at), falling back to the value/field site when the
+/// value is an inline literal or unresolved. `is_function` decides whether the
+/// export is reconciled into `functions[]` or routed to `values[]`.
+struct LuaExport {
+    name: String,
+    lineno: u32,
+    is_function: bool,
+    signature: String,
+    value_kind: Option<String>,
+}
+
+/// A definition discovered while scanning a Lua/Luau chunk: used to alias-resolve
+/// a return-table value identifier back to its def site.
+#[derive(Clone)]
+struct LuaDef {
+    lineno: u32,
+    is_function: bool,
+    signature: String,
+    value_kind: Option<String>,
+}
+
+/// Read a Lua/Luau module's public export set from its terminal `return` table.
+///
+/// Returns `Some(exports)` when the chunk ends in a recognizable export shape
+/// (a `table_constructor` literal, a `return M` accumulator identifier, or a
+/// `setmetatable(M, …)` wrapper around either). Returns `None` for dynamic
+/// tails (`return require('x')`, a computed expression, or no return at all),
+/// in which case the caller falls back to the legacy heuristic.
+///
+/// The Lua and Luau grammars are byte-for-byte identical on every node used
+/// here (`return_statement` → `expression_list` → `table_constructor` →
+/// `field{name,value}`; `function_declaration{name,parameters}`;
+/// `variable_declaration` → `assignment_statement` → `variable_list` +
+/// `expression_list`), so a single shared path serves both languages.
+fn collect_lua_module_exports(
+    root: Node,
+    source: &[u8],
+    lang: Language,
+) -> Option<Vec<LuaExport>> {
+    // Locate the LAST top-level `return_statement` (a chunk may have only one,
+    // but be defensive).
+    let mut ret: Option<Node> = None;
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "return_statement" {
+            ret = Some(child);
+        }
+    }
+    let ret = ret?;
+
+    // `return_statement` has a single optional `expression_list` child.
+    let expr_list = {
+        let mut c = ret.walk();
+        let found = ret.children(&mut c).find(|n| n.kind() == "expression_list");
+        found
+    }?;
+
+    // The exported value is the last expression in the list (`return a, M`).
+    let tail = {
+        let mut last = None;
+        let mut c = expr_list.walk();
+        for n in expr_list.children(&mut c) {
+            if n.is_named() {
+                last = Some(n);
+            }
+        }
+        last
+    }?;
+
+    let symbols = build_lua_symbol_table(root, source, lang);
+    resolve_lua_export_tail(tail, root, source, lang, &symbols)
+}
+
+/// Resolve a return-tail expression into an export set, unwrapping
+/// `setmetatable(...)` and dispatching on the literal-table vs accumulator
+/// shapes. Recursive to handle `return setmetatable(M, mt)`.
+fn resolve_lua_export_tail(
+    tail: Node,
+    root: Node,
+    source: &[u8],
+    lang: Language,
+    symbols: &std::collections::HashMap<String, LuaDef>,
+) -> Option<Vec<LuaExport>> {
+    match tail.kind() {
+        // SHAPE 1 — literal: `return { a = a, b = ... }`.
+        "table_constructor" => Some(collect_lua_table_exports(tail, source, lang, symbols)),
+        // SHAPE 2 — accumulator: `return M` where `M.x = …` / `function M.y()`.
+        "identifier" | "variable" => {
+            let name = node_text(tail, source).trim();
+            // A bare identifier that names a local table = accumulator.
+            // If we can't see any fields written onto it, still return an
+            // empty/derived set rather than the union (the contract is "M's
+            // fields", even if zero) — but only when M is a known local table.
+            let m = lua_base_identifier(tail, source)?;
+            Some(collect_lua_accumulator_exports(root, source, lang, &m, symbols, name))
+        }
+        // SHAPE 4 — `return setmetatable(M, mt)`: unwrap to first argument.
+        "function_call" => {
+            let callee = {
+                let mut c = tail.walk();
+                let found = tail.children(&mut c).find(|n| n.is_named());
+                found
+            }?;
+            if node_text(callee, source).trim() != "setmetatable" {
+                return None;
+            }
+            let args = {
+                let mut c = tail.walk();
+                let found = tail.children(&mut c).find(|n| n.kind() == "arguments");
+                found
+            }?;
+            let first = {
+                let mut c = args.walk();
+                let found = args.children(&mut c).find(|n| n.is_named());
+                found
+            }?;
+            resolve_lua_export_tail(first, root, source, lang, symbols)
+        }
+        _ => None,
+    }
+}
+
+/// SHAPE 1: collect exports from a `table_constructor` literal. Each `field`
+/// whose `name` is an identifier is an export key; its `value` is alias-resolved
+/// to a def site.
+fn collect_lua_table_exports(
+    table: Node,
+    source: &[u8],
+    _lang: Language,
+    symbols: &std::collections::HashMap<String, LuaDef>,
+) -> Vec<LuaExport> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor = table.walk();
+    for field in table.children(&mut cursor) {
+        if field.kind() != "field" {
+            continue;
+        }
+        // Three field shapes (grammar.js): `[expr] = expr` (computed key,
+        // `name` is an expression — skip), `Name = expr` (identifier key — the
+        // export case), and bare `expr` (positional — no `name` field, skip).
+        let key = match field.child_by_field_name("name") {
+            Some(k) if k.kind() == "identifier" => k,
+            _ => continue,
+        };
+        let key_text = node_text(key, source).trim().to_string();
+        if key_text.is_empty() || !seen.insert(key_text.clone()) {
+            continue;
+        }
+        let value = field.child_by_field_name("value");
+        let export = lua_export_from_value(key_text, key, value, source, symbols);
+        out.push(export);
+    }
+    out
+}
+
+/// SHAPE 2: collect exports for an accumulator table `M` — every `M.x = …`
+/// assignment and `function M.y() … end` declaration anywhere in the chunk
+/// (descending if/else, do, for, while bodies). A table key is a set, so the
+/// result is deduped by name.
+fn collect_lua_accumulator_exports(
+    root: Node,
+    source: &[u8],
+    lang: Language,
+    m: &str,
+    symbols: &std::collections::HashMap<String, LuaDef>,
+    _tail_name: &str,
+) -> Vec<LuaExport> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_lua_accumulator_walk(root, source, lang, m, symbols, &mut out, &mut seen);
+    out
+}
+
+fn collect_lua_accumulator_walk(
+    node: Node,
+    source: &[u8],
+    lang: Language,
+    m: &str,
+    symbols: &std::collections::HashMap<String, LuaDef>,
+    out: &mut Vec<LuaExport>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    // `function M.foo() … end` — function_declaration whose `name` is a
+    // dot_index_expression rooted at M.
+    if function_node_kinds(lang).contains(&node.kind()) {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if name_node.kind() == "dot_index_expression" {
+                if let Some((base, field)) = lua_dot_parts(name_node, source) {
+                    if base == m && seen.insert(field.clone()) {
+                        out.push(LuaExport {
+                            name: field,
+                            lineno: node.start_position().row as u32 + 1,
+                            is_function: true,
+                            signature: lua_params_text(node, source),
+                            value_kind: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // `M.x = …` / `M["x"] = …` assignment_statement.
+    if node.kind() == "assignment_statement" {
+        if let Some((targets, values)) = lua_assignment_parts(node) {
+            for (i, target) in targets.iter().enumerate() {
+                if let Some(field) = lua_member_field_of(*target, source, m) {
+                    if seen.insert(field.clone()) {
+                        let value = values.get(i).copied();
+                        out.push(lua_export_from_value(
+                            field,
+                            *target,
+                            value,
+                            source,
+                            symbols,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_lua_accumulator_walk(child, source, lang, m, symbols, out, seen);
+    }
+}
+
+/// Build an export entry from a return-table / accumulator value expression,
+/// alias-resolving identifiers back to their chunk-level definitions.
+fn lua_export_from_value(
+    name: String,
+    key_node: Node,
+    value: Option<Node>,
+    source: &[u8],
+    symbols: &std::collections::HashMap<String, LuaDef>,
+) -> LuaExport {
+    let key_line = key_node.start_position().row as u32 + 1;
+    let value = match value {
+        Some(v) => v,
+        None => {
+            return LuaExport {
+                name,
+                lineno: key_line,
+                is_function: false,
+                signature: String::new(),
+                value_kind: Some("value".to_string()),
+            }
+        }
+    };
+    match value.kind() {
+        // Inline anonymous function: `name = function(...) … end`.
+        k if k == "function_definition"
+            || k == "function_definition_statement"
+            || function_node_kinds(Language::Lua).contains(&k) =>
+        {
+            LuaExport {
+                name,
+                lineno: value.start_position().row as u32 + 1,
+                is_function: true,
+                signature: lua_params_text(value, source),
+                value_kind: None,
+            }
+        }
+        // Alias to a local/function: `name = otherName` — resolve to its def.
+        "identifier" | "variable" => {
+            let target = node_text(value, source).trim();
+            if let Some(def) = symbols.get(target) {
+                LuaExport {
+                    name,
+                    lineno: def.lineno,
+                    is_function: def.is_function,
+                    signature: def.signature.clone(),
+                    value_kind: if def.is_function {
+                        None
+                    } else {
+                        def.value_kind.clone().or_else(|| Some("value".to_string()))
+                    },
+                }
+            } else {
+                // LDoc's dynamic case: record at the field/assignment site
+                // rather than dropping — never revert to the name-union.
+                LuaExport {
+                    name,
+                    lineno: value.start_position().row as u32 + 1,
+                    is_function: false,
+                    signature: String::new(),
+                    value_kind: Some("value".to_string()),
+                }
+            }
+        }
+        // Inline literal (boolean/number/string/table/...): a non-function field.
+        other => LuaExport {
+            name,
+            lineno: value.start_position().row as u32 + 1,
+            is_function: false,
+            signature: String::new(),
+            value_kind: Some(lua_value_kind(other).to_string()),
+        },
+    }
+}
+
+/// Build a name → definition map for a Lua/Luau chunk by deep-walking it
+/// (descending into branch/loop bodies), so a return-table value identifier
+/// can be alias-resolved to the local/function it names. First definition of a
+/// name wins (so a multi-branch `function getPrefix` collapses to one).
+fn build_lua_symbol_table(
+    root: Node,
+    source: &[u8],
+    lang: Language,
+) -> std::collections::HashMap<String, LuaDef> {
+    let mut map = std::collections::HashMap::new();
+    build_lua_symbol_table_walk(root, source, lang, &mut map);
+    map
+}
+
+fn build_lua_symbol_table_walk(
+    node: Node,
+    source: &[u8],
+    lang: Language,
+    map: &mut std::collections::HashMap<String, LuaDef>,
+) {
+    // Named function declarations: `function f()` / `local function f()`.
+    if function_node_kinds(lang).contains(&node.kind()) {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if name_node.kind() == "identifier" {
+                let name = node_text(name_node, source).trim().to_string();
+                map.entry(name).or_insert_with(|| LuaDef {
+                    lineno: node.start_position().row as u32 + 1,
+                    is_function: true,
+                    signature: lua_params_text(node, source),
+                    value_kind: None,
+                });
+            }
+        }
+    }
+
+    // `local a, b = x, y` / `local t = {}` — variable_declaration wrapping an
+    // assignment_statement (with values) or a bare variable_list (forward decl).
+    if node.kind() == "variable_declaration" {
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if child.kind() == "assignment_statement" {
+                if let Some((targets, values)) = lua_assignment_parts(child) {
+                    for (i, target) in targets.iter().enumerate() {
+                        if target.kind() == "variable" || target.kind() == "identifier" {
+                            let name = lua_base_identifier(*target, source);
+                            if let Some(name) = name {
+                                let value = values.get(i).copied();
+                                let (is_fn, sig, kind) = lua_value_classify(value, source);
+                                map.entry(name).or_insert(LuaDef {
+                                    lineno: child.start_position().row as u32 + 1,
+                                    is_function: is_fn,
+                                    signature: sig,
+                                    value_kind: kind,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        build_lua_symbol_table_walk(child, source, lang, map);
+    }
+}
+
+/// Classify a value expression for symbol-table purposes.
+fn lua_value_classify(
+    value: Option<Node>,
+    source: &[u8],
+) -> (bool, String, Option<String>) {
+    match value {
+        Some(v)
+            if v.kind() == "function_definition"
+                || v.kind() == "function_definition_statement" =>
+        {
+            (true, lua_params_text(v, source), None)
+        }
+        Some(v) => (false, String::new(), Some(lua_value_kind(v.kind()).to_string())),
+        None => (false, String::new(), Some("value".to_string())),
+    }
+}
+
+/// Map a value node kind to a coarse export `kind` discriminator.
+fn lua_value_kind(kind: &str) -> &'static str {
+    match kind {
+        "table_constructor" => "table",
+        "string" => "string",
+        "number" => "number",
+        "true" | "false" | "boolean" => "boolean",
+        "nil" => "nil",
+        "function_definition" | "function_definition_statement" => "function",
+        _ => "value",
+    }
+}
+
+/// Extract the parameter text (`(a, b)`) of a function-bearing node.
+fn lua_params_text(node: Node, source: &[u8]) -> String {
+    if let Some(params) = node.child_by_field_name("parameters") {
+        return node_text(params, source).to_string();
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameters" {
+            return node_text(child, source).to_string();
+        }
+    }
+    String::new()
+}
+
+/// Split an `assignment_statement` into (target nodes, value nodes), paired by
+/// position. The node has a `variable_list` and an `expression_list` child.
+fn lua_assignment_parts<'a>(node: Node<'a>) -> Option<(Vec<Node<'a>>, Vec<Node<'a>>)> {
+    let mut var_list = None;
+    let mut expr_list = None;
+    let mut c = node.walk();
+    for child in node.children(&mut c) {
+        match child.kind() {
+            "variable_list" => var_list = Some(child),
+            "expression_list" => expr_list = Some(child),
+            _ => {}
+        }
+    }
+    let var_list = var_list?;
+    let targets: Vec<Node> = {
+        let mut vc = var_list.walk();
+        var_list
+            .children(&mut vc)
+            .filter(|n| n.is_named() && n.kind() != "attribute")
+            .collect()
+    };
+    let values: Vec<Node> = match expr_list {
+        Some(el) => {
+            let mut ec = el.walk();
+            el.children(&mut ec).filter(|n| n.is_named()).collect()
+        }
+        None => Vec::new(),
+    };
+    Some((targets, values))
+}
+
+/// If `target` is a `dot_index_expression` / `bracket_index_expression` rooted
+/// at `m` (`m.x` / `m["x"]`), return the field name `x`.
+fn lua_member_field_of(target: Node, source: &[u8], m: &str) -> Option<String> {
+    // `variable` may wrap the index expression; descend one level.
+    let inner = if target.kind() == "variable" {
+        let mut c = target.walk();
+        let found = target.children(&mut c).find(|n| n.is_named());
+        found.unwrap_or(target)
+    } else {
+        target
+    };
+    match inner.kind() {
+        "dot_index_expression" => {
+            let (base, field) = lua_dot_parts(inner, source)?;
+            if base == m {
+                Some(field)
+            } else {
+                None
+            }
+        }
+        "bracket_index_expression" => {
+            let base = inner.child_by_field_name("table")?;
+            if lua_base_identifier(base, source)? != m {
+                return None;
+            }
+            let key = inner.child_by_field_name("field")?;
+            let text = node_text(key, source).trim();
+            // Only string-literal keys yield a stable field name.
+            let unq = text.trim_matches(|c| c == '"' || c == '\'');
+            if unq.is_empty() || unq == text {
+                // Not a quoted string literal — skip computed keys.
+                None
+            } else {
+                Some(unq.to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Split a `dot_index_expression` (`base.field`) into `(base_identifier, field)`.
+fn lua_dot_parts(node: Node, source: &[u8]) -> Option<(String, String)> {
+    let table = node.child_by_field_name("table")?;
+    let field = node.child_by_field_name("field")?;
+    let base = lua_base_identifier(table, source)?;
+    let field_text = node_text(field, source).trim().to_string();
+    Some((base, field_text))
+}
+
+/// Resolve a node to its leading identifier text (unwrapping `variable`).
+fn lua_base_identifier(node: Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(node_text(node, source).trim().to_string()),
+        "variable" => {
+            let mut c = node.walk();
+            let first = node.children(&mut c).find(|n| n.is_named())?;
+            lua_base_identifier(first, source)
+        }
+        _ => None,
+    }
+}
+
+/// Reconcile the return-table export set against the collected `functions[]`:
+/// filter over-reported helpers (kept only if exported), synthesize exported
+/// functions the walker never collected (branch-nested defs), and route
+/// non-function exports to `values[]`. Returns the sorted/deduped `all_exports`.
+fn reconcile_lua_exports(
+    exports: &[LuaExport],
+    functions: &mut Vec<FunctionInfo>,
+    values: &mut Vec<ValueInfo>,
+) -> Vec<String> {
+    use std::collections::HashSet;
+    let export_names: HashSet<&str> = exports.iter().map(|e| e.name.as_str()).collect();
+
+    // 1. Drop over-reported helpers — keep only functions that are exported.
+    functions.retain(|f| export_names.contains(f.name.as_str()));
+
+    // 2. Synthesize exported functions the walker missed (branch-nested /
+    //    accumulator-member defs) and route non-function exports to values[].
+    let present: HashSet<String> = functions.iter().map(|f| f.name.clone()).collect();
+    for export in exports {
+        if export.is_function {
+            if !present.contains(&export.name) {
+                functions.push(FunctionInfo {
+                    name: export.name.clone(),
+                    signature: export.signature.clone(),
+                    docstring: None,
+                    lineno: export.lineno,
+                    is_async: false,
+                });
+            }
+        } else {
+            values.push(ValueInfo {
+                name: export.name.clone(),
+                lineno: export.lineno,
+                kind: export.value_kind.clone(),
+            });
+        }
+    }
+
+    // 3. all_exports = the authoritative key set, sorted & deduped.
+    let mut names: Vec<String> = exports.iter().map(|e| e.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// Container node kinds whose children should be treated as top-level for
@@ -3607,6 +4195,20 @@ pub fn format_interface_text(info: &InterfaceInfo) -> String {
         lines.push(String::new());
     }
 
+    // Values (Lua/Luau non-function exports — rc2-lua-interface-return-table-convention)
+    if !info.values.is_empty() {
+        lines.push("Values:".to_string());
+        for value in &info.values {
+            let kind = value
+                .kind
+                .as_deref()
+                .map(|k| format!("{} ", k))
+                .unwrap_or_default();
+            lines.push(format!("  {}{}  [line {}]", kind, value.name, value.lineno));
+        }
+        lines.push(String::new());
+    }
+
     // Classes
     if !info.classes.is_empty() {
         lines.push("Classes:".to_string());
@@ -4058,6 +4660,7 @@ class Child(Parent, Mixin):
                 }],
                 private_method_count: 2,
             }],
+            values: vec![],
         };
 
         let text = format_interface_text(&info);
@@ -4655,5 +5258,233 @@ trait Clock {
                 method_names
             );
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // rc2-lua-interface-return-table-convention: exports = terminal return table
+    // -------------------------------------------------------------------------
+
+    /// querystring.lua shape: SHAPE 1 literal `return { a = a, ... }` whose
+    /// values alias top-level `local function`s. Two non-exported helpers
+    /// (`charToHex`, `hexToChar`) must NOT leak in (the over-report).
+    const QUERYSTRING_LUA: &str = r#"
+local function hexToChar(hex)
+  return string.char(tonumber(hex, 16))
+end
+
+local function charToHex(c)
+  return string.format("%%%02X", string.byte(c))
+end
+
+local function urldecode(str)
+  return str
+end
+
+local function urlencode(str)
+  return str
+end
+
+local function stringify(tbl, sep, eq)
+  return ""
+end
+
+local function parse(str, sep, eq)
+  return {}
+end
+
+return {
+  urldecode = urldecode,
+  urlencode = urlencode,
+  stringify = stringify,
+  parse = parse,
+}
+"#;
+
+    /// pathjoin.lua shape: SHAPE 1 literal whose values reference a non-function
+    /// `local` (`isWindows`) and functions defined ONLY inside `if/else`
+    /// branches (`getPrefix`/`splitPath`/`joinParts`) — the under-report.
+    const PATHJOIN_LUA: &str = r#"
+local getPrefix, splitPath, joinParts
+
+local isWindows = false
+
+if isWindows then
+  function getPrefix(path)
+    return path
+  end
+  function splitPath(path)
+    return {}
+  end
+  function joinParts(prefix, parts, i, j)
+    return ""
+  end
+else
+  function getPrefix(path)
+    return path
+  end
+  function splitPath(path)
+    return {}
+  end
+  function joinParts(prefix, parts, i, j)
+    return ""
+  end
+end
+
+local function pathJoin(...)
+  return ""
+end
+
+return {
+  isWindows = isWindows,
+  getPrefix = getPrefix,
+  splitPath = splitPath,
+  joinParts = joinParts,
+  pathJoin = pathJoin,
+}
+"#;
+
+    fn sorted_exports(info: &InterfaceInfo) -> Vec<String> {
+        let mut v = info.all_exports.clone();
+        v.sort();
+        v
+    }
+
+    /// TEST 1 — OVER-REPORT fixed (SHAPE 1 literal + alias).
+    #[test]
+    fn test_interface_lua_overreport_return_table_only() {
+        let info = extract_interface(Path::new("querystring.lua"), QUERYSTRING_LUA).unwrap();
+        assert_eq!(
+            sorted_exports(&info),
+            vec!["parse", "stringify", "urldecode", "urlencode"],
+            "all_exports must be exactly the return-table keys"
+        );
+        // Non-exported helpers must be absent from BOTH all_exports and functions[].
+        for leaked in ["charToHex", "hexToChar"] {
+            assert!(
+                !info.all_exports.iter().any(|n| n == leaked),
+                "{} must not leak into all_exports",
+                leaked
+            );
+            assert!(
+                !info.functions.iter().any(|f| f.name == leaked),
+                "{} must not leak into functions[]",
+                leaked
+            );
+        }
+    }
+
+    /// TEST 2 — UNDER-REPORT fixed (branch-nested + non-function exports).
+    #[test]
+    fn test_interface_lua_underreport_branch_nested_and_value() {
+        let info = extract_interface(Path::new("pathjoin.lua"), PATHJOIN_LUA).unwrap();
+        assert_eq!(
+            sorted_exports(&info),
+            vec!["getPrefix", "isWindows", "joinParts", "pathJoin", "splitPath"],
+            "all_exports must be the full return-table key set"
+        );
+        // isWindows is a non-function local → must appear in all_exports AND values[].
+        assert!(info.all_exports.iter().any(|n| n == "isWindows"));
+        assert!(
+            info.values.iter().any(|v| v.name == "isWindows"),
+            "isWindows must get a values[] detail entry, got {:?}",
+            info.values
+        );
+        // getPrefix is defined in BOTH if/else branches → set-deduped to ONE.
+        assert_eq!(
+            info.all_exports.iter().filter(|n| *n == "getPrefix").count(),
+            1,
+            "branch-duplicated getPrefix must collapse to one export"
+        );
+        // Branch-nested exported functions are surfaced as functions[].
+        assert!(
+            info.functions.iter().any(|f| f.name == "getPrefix"),
+            "branch-nested getPrefix must surface in functions[]"
+        );
+    }
+
+    /// TEST 3 — SHAPE 2 accumulator `local M = {}; function M.x() … ; M.y = z; return M`,
+    /// including a member function defined inside a `do … end` block.
+    #[test]
+    fn test_interface_lua_accumulator_return_m() {
+        let source = r#"
+local M = {}
+
+function M.foo(a)
+  return a
+end
+
+do
+  function M.nested(b)
+    return b
+  end
+end
+
+local function helper()
+  return 1
+end
+
+M.bar = helper
+M.version = "1.0"
+
+local function privateNotExported()
+  return 0
+end
+
+return M
+"#;
+        let info = extract_interface(Path::new("accum.lua"), source).unwrap();
+        assert_eq!(
+            sorted_exports(&info),
+            vec!["bar", "foo", "nested", "version"],
+            "accumulator exports = M's field set"
+        );
+        assert!(
+            !info.all_exports.iter().any(|n| n == "privateNotExported"),
+            "non-member local must not be exported"
+        );
+        assert!(
+            info.values.iter().any(|v| v.name == "version"),
+            "string field M.version must be a values[] entry"
+        );
+    }
+
+    /// TEST 4 — SHAPE 4 unwrap + fallback boundary.
+    #[test]
+    fn test_interface_lua_setmetatable_unwrap_and_fallback() {
+        // setmetatable(M, mt) unwraps to M.
+        let wrapped = r#"
+local M = {}
+function M.go() end
+return setmetatable(M, { __index = {} })
+"#;
+        let info = extract_interface(Path::new("wrapped.lua"), wrapped).unwrap();
+        assert_eq!(sorted_exports(&info), vec!["go"]);
+
+        // Dynamic tail `return require('x')` → analyzer returns None, falls back
+        // to the heuristic (no panic, sensible non-empty output).
+        let dynamic = r#"
+local function exported()
+  return 1
+end
+return require("other")
+"#;
+        let info = extract_interface(Path::new("dyn.lua"), dynamic).unwrap();
+        assert!(
+            info.all_exports.iter().any(|n| n == "exported"),
+            "dynamic tail must fall back to the function-union heuristic"
+        );
+    }
+
+    /// TEST 5 — cross-grammar parity: the same fixtures as `.luau` yield identical
+    /// export sets (the export-table grammar path is byte-identical).
+    #[test]
+    fn test_interface_luau_parity() {
+        let lua = extract_interface(Path::new("querystring.lua"), QUERYSTRING_LUA).unwrap();
+        let luau = extract_interface(Path::new("querystring.luau"), QUERYSTRING_LUA).unwrap();
+        assert_eq!(sorted_exports(&lua), sorted_exports(&luau));
+
+        let lua_pj = extract_interface(Path::new("pathjoin.lua"), PATHJOIN_LUA).unwrap();
+        let luau_pj = extract_interface(Path::new("pathjoin.luau"), PATHJOIN_LUA).unwrap();
+        assert_eq!(sorted_exports(&lua_pj), sorted_exports(&luau_pj));
     }
 }

@@ -552,6 +552,37 @@ pub struct InterfaceInfo {
     pub functions: Vec<FunctionInfo>,
     /// Public classes
     pub classes: Vec<ClassInfo>,
+    /// Non-function / non-class exports (Lua/Luau).
+    ///
+    /// rc2-lua-interface-return-table-convention: a Lua module's public
+    /// surface is exactly the field set of the table it `return`s at end of
+    /// file — and that set can include plain `local` scalars (e.g.
+    /// `isWindows = isWindows`, a boolean) that have no home in `functions[]`
+    /// or `classes[]`. This additive slot (LDoc's `@field` kind) carries the
+    /// name + def line of those exports so the detail view can describe them.
+    /// `#[serde(default, skip_serializing_if = "Vec::is_empty")]` keeps the
+    /// JSON byte-identical for every non-Lua language and for Lua files with
+    /// no non-function exports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<ValueInfo>,
+}
+
+/// A non-function, non-class export (Lua/Luau return-table scalar/table field).
+///
+/// rc2-lua-interface-return-table-convention: e.g. `return { isWindows = isWindows }`
+/// where `isWindows` is a `local` boolean. Mirrors `FunctionInfo`'s name+line
+/// detail so consumers can locate the definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueInfo {
+    /// Exported key name (the return-table field name).
+    pub name: String,
+    /// Line number of the definition (alias-resolved to the local's def site,
+    /// or the return-table field site when the value is an inline literal).
+    pub lineno: u32,
+    /// AST-derived value kind discriminator ("boolean", "table", "string",
+    /// "number", "value", …). `None` keeps the field optional/additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 // =============================================================================
@@ -1208,6 +1239,7 @@ mod tests {
                 is_async: false,
             }],
             classes: vec![],
+            values: vec![],
         };
 
         let json = serde_json::to_string(&info).unwrap();
