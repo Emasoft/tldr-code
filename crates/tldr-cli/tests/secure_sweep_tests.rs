@@ -682,3 +682,118 @@ fn test_secure_clean_input_has_no_skip_fields() {
         stdout
     );
 }
+
+/// Read `summary.leak_count` from a `tldr secure --format json` run.
+fn secure_leak_count(file: &std::path::Path, lang: &str) -> i64 {
+    let output = tldr_cmd()
+        .arg("secure")
+        .arg("--lang")
+        .arg(lang)
+        .arg(file.to_str().unwrap())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("secure must execute");
+    assert!(
+        output.status.success(),
+        "tldr secure should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("secure output not valid JSON: {e}\n{stdout}"));
+    parsed
+        .get("summary")
+        .and_then(|s| s.get("leak_count"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+}
+
+/// Read `summary.leaks_found` from a `tldr resources --format json` run.
+fn resources_leaks_found(file: &std::path::Path) -> i64 {
+    let output = tldr_cmd()
+        .arg("resources")
+        .arg(file.to_str().unwrap())
+        .arg("--format")
+        .arg("json")
+        .output()
+        .expect("resources must execute");
+    assert!(
+        output.status.success(),
+        "tldr resources should exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("resources output not valid JSON: {e}\n{stdout}"));
+    parsed
+        .get("summary")
+        .and_then(|s| s.get("leaks_found"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+}
+
+/// RC7 char-test: `tldr secure` must NOT emit a Python-specific
+/// `resource_leak` finding on a TypeScript file. Before the parser-dispatch
+/// fix, `secure` parsed every non-`.rs` file with the Python grammar; the
+/// error-recovered Python `assignment`→`call` misparse matched the
+/// Python-only `RESOURCE_CREATORS` walk and reported `leak_count == 1`,
+/// directly contradicting the authoritative `tldr resources` (0 leaks).
+/// With the canonical per-grammar parse, the Python node-kinds never appear
+/// in a real TS tree, so the walk is a no-op → 0, matching `resources`.
+#[test]
+fn test_secure_no_python_resource_leak_fp_on_typescript() {
+    let dir = tempdir().unwrap();
+
+    // Variant 1: `cursor = db.cursor();` — fired pre-fix.
+    let f1 = create_test_file(
+        dir.path(),
+        "cursor.ts",
+        "function f(db){\n  cursor = db.cursor();\n}\n",
+    );
+    assert_eq!(
+        secure_leak_count(&f1, "typescript"),
+        0,
+        "secure must report 0 resource_leak on TS (was a Python-misparse FP)"
+    );
+    assert_eq!(
+        resources_leaks_found(&f1),
+        0,
+        "resources is authoritative and reports 0 for this TS file"
+    );
+
+    // Variant 2: `const x = net.socket(opts)` — also fired pre-fix.
+    let f2 = create_test_file(
+        dir.path(),
+        "socket.ts",
+        "function g(net, opts){\n  const x = net.socket(opts);\n  return x;\n}\n",
+    );
+    assert_eq!(
+        secure_leak_count(&f2, "typescript"),
+        0,
+        "secure must report 0 resource_leak on TS socket variant"
+    );
+    assert_eq!(
+        resources_leaks_found(&f2),
+        0,
+        "resources reports 0 for the TS socket variant"
+    );
+}
+
+/// RC7 coverage-preservation char-test: the parser-dispatch fix must NOT
+/// weaken genuine Python resource-leak detection. A Python `open()` call
+/// outside a `with` block is still flagged (`.py` resolves to the same
+/// Python grammar as before — byte-identical behavior).
+#[test]
+fn test_secure_still_flags_python_open_without_with() {
+    let dir = tempdir().unwrap();
+    let f = create_test_file(
+        dir.path(),
+        "leak.py",
+        "def read_it(name):\n    f = open(name)\n    return f.read()\n",
+    );
+    assert!(
+        secure_leak_count(&f, "python") >= 1,
+        "Python open() outside `with` must still be flagged as a resource leak"
+    );
+}

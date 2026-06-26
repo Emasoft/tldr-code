@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use tree_sitter::{Parser, Tree};
+use tree_sitter::Tree;
+
+use tldr_core::Language;
 
 use super::error::{RemainingError, RemainingResult};
 
@@ -69,8 +71,20 @@ impl AstCache {
         }
     }
 
-    /// Get or parse a file, caching the result
-    pub fn get_or_parse(&mut self, path: &Path, source: &str) -> RemainingResult<&Tree> {
+    /// Get or parse a file, caching the result.
+    ///
+    /// `lang` is the language the caller has already resolved (e.g. honoring
+    /// an explicit `--lang` flag). When `None`, the language is detected from
+    /// the file extension. This is threaded all the way to the parse so that
+    /// every AST-walk runs on a correctly-parsed tree (RC7: the previous
+    /// extension-only dispatch defaulted every non-`.rs` file to the Python
+    /// grammar, producing misparses for TS/JS/Go/Java/etc.).
+    pub fn get_or_parse(
+        &mut self,
+        path: &Path,
+        source: &str,
+        lang: Option<Language>,
+    ) -> RemainingResult<&Tree> {
         let key = AstCacheKey::new(path);
 
         // Check if we have a valid cached entry
@@ -84,8 +98,8 @@ impl AstCache {
 
         self.stats.misses += 1;
 
-        // Parse the file using extension-aware language selection.
-        let tree = self.parse_source(source, path)?;
+        // Parse the file through the canonical, dialect-aware parser pool.
+        let tree = self.parse_source(source, path, lang)?;
 
         // Evict if at capacity
         while self.cache.len() >= self.capacity {
@@ -99,40 +113,24 @@ impl AstCache {
         Ok(&self.cache.get(path).unwrap().1)
     }
 
-    /// Parse source code using a language selected from file extension.
-    fn parse_source(&self, source: &str, path: &Path) -> RemainingResult<Tree> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or_default();
-        match ext {
-            "rs" => self.parse_rust(source, path),
-            _ => self.parse_python(source, path),
-        }
-    }
-
-    /// Parse Python source code.
-    fn parse_python(&self, source: &str, path: &Path) -> RemainingResult<Tree> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_python::LANGUAGE.into())
-            .map_err(|e| RemainingError::parse_error(path, e.to_string()))?;
-
-        parser
-            .parse(source, None)
-            .ok_or_else(|| RemainingError::parse_error(path, "Failed to parse"))
-    }
-
-    /// Parse Rust source code.
-    fn parse_rust(&self, source: &str, path: &Path) -> RemainingResult<Tree> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .map_err(|e| RemainingError::parse_error(path, e.to_string()))?;
-
-        parser
-            .parse(source, None)
-            .ok_or_else(|| RemainingError::parse_error(path, "Failed to parse"))
+    /// Parse source code through the canonical parser pool.
+    ///
+    /// The language is taken from the caller's hint when present, otherwise
+    /// detected from the file path. This delegates to the same
+    /// dialect-aware (`TSX`/`JSX`) `parse_with_path` path used by
+    /// `tldr resources`/`parse_file`, so `secure`'s AST walks see real
+    /// per-grammar node-kinds instead of a Python-default misparse.
+    fn parse_source(
+        &self,
+        source: &str,
+        path: &Path,
+        lang: Option<Language>,
+    ) -> RemainingResult<Tree> {
+        let lang = lang
+            .or_else(|| Language::from_path(path))
+            .ok_or_else(|| RemainingError::parse_error(path, "unsupported language"))?;
+        tldr_core::ast::parser::parse_with_path(source, lang, Some(path))
+            .map_err(|e| RemainingError::parse_error(path, e.to_string()))
     }
 
     /// Update access order for LRU
@@ -207,12 +205,12 @@ mod tests {
         let mut cache = AstCache::new(10);
 
         // First access - miss
-        let _ = cache.get_or_parse(&path, &source).unwrap();
+        let _ = cache.get_or_parse(&path, &source, None).unwrap();
         assert_eq!(cache.stats().misses, 1);
         assert_eq!(cache.stats().hits, 0);
 
         // Second access - hit
-        let _ = cache.get_or_parse(&path, &source).unwrap();
+        let _ = cache.get_or_parse(&path, &source, None).unwrap();
         assert_eq!(cache.stats().misses, 1);
         assert_eq!(cache.stats().hits, 1);
     }
@@ -225,7 +223,7 @@ mod tests {
 
         let mut cache = AstCache::new(10);
 
-        let _ = cache.get_or_parse(&path, &source).unwrap();
+        let _ = cache.get_or_parse(&path, &source, None).unwrap();
         assert_eq!(cache.len(), 1);
 
         cache.invalidate(&path);
@@ -241,7 +239,7 @@ mod tests {
         for i in 0..3 {
             let path = create_test_file(&temp, &format!("test{}.py", i), "def foo(): pass");
             let source = fs::read_to_string(&path).unwrap();
-            let _ = cache.get_or_parse(&path, &source).unwrap();
+            let _ = cache.get_or_parse(&path, &source, None).unwrap();
         }
 
         // Should have evicted one entry
@@ -256,7 +254,76 @@ mod tests {
         let source = fs::read_to_string(&path).unwrap();
 
         let mut cache = AstCache::new(10);
-        let tree = cache.get_or_parse(&path, &source).unwrap();
+        let tree = cache.get_or_parse(&path, &source, None).unwrap();
         assert_eq!(tree.root_node().kind(), "source_file");
+    }
+
+    /// Count `ERROR` nodes anywhere in the tree (parse-health probe).
+    fn count_error_nodes(node: tree_sitter::Node) -> usize {
+        let mut count = if node.is_error() { 1 } else { 0 };
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            count += count_error_nodes(child);
+        }
+        count
+    }
+
+    /// Does any node in the tree have the given kind?
+    fn tree_has_kind(node: tree_sitter::Node, kind: &str) -> bool {
+        if node.kind() == kind {
+            return true;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if tree_has_kind(child, kind) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// RC7 root-cause guard: a `.ts` snippet parsed with an explicit
+    /// TypeScript hint must produce a real TS tree — exposing TS node-kinds
+    /// (`call_expression`/`member_expression`) and containing NONE of the
+    /// Python node-kinds (`assignment`/`call`) that the old Python-default
+    /// dispatch manufactured via error recovery. Locks the dispatch against
+    /// silently regressing to a fixed grammar.
+    #[test]
+    fn test_cache_dispatches_typescript_not_python() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_file(
+            &temp,
+            "x.ts",
+            "function f(db){\n  let cur = db.cursor();\n}\n",
+        );
+        let source = fs::read_to_string(&path).unwrap();
+
+        let mut cache = AstCache::new(10);
+        let tree = cache
+            .get_or_parse(&path, &source, Some(Language::TypeScript))
+            .unwrap();
+        let root = tree.root_node();
+
+        // Real TS grammar exposes call_expression / member_expression.
+        assert!(
+            tree_has_kind(root, "call_expression"),
+            "expected TS call_expression in correctly-parsed tree"
+        );
+        assert!(
+            tree_has_kind(root, "member_expression"),
+            "expected TS member_expression in correctly-parsed tree"
+        );
+        // Python node-kinds must NOT appear — their presence is the misparse
+        // signature that drove the resource_leak false positive.
+        assert!(
+            !tree_has_kind(root, "assignment"),
+            "Python 'assignment' kind leaked into TS parse (misparse regression)"
+        );
+        // A clean TS parse of this snippet has no ERROR nodes.
+        assert_eq!(
+            count_error_nodes(root),
+            0,
+            "TS snippet should parse without ERROR nodes"
+        );
     }
 }

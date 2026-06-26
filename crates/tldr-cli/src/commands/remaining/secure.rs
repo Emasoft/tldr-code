@@ -307,7 +307,8 @@ pub fn run(args: SecureArgs, format: OutputFormat) -> anyhow::Result<()> {
         } else {
             &files
         };
-        let (findings, raw_result) = run_security_analysis(*analysis, analysis_files, &mut cache)?;
+        let (findings, raw_result) =
+            run_security_analysis(*analysis, analysis_files, effective_lang, &mut cache)?;
 
         // Collect findings
         all_findings.extend(findings);
@@ -572,6 +573,7 @@ fn partition_utf8_clean(candidates: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>, u
 fn run_security_analysis(
     analysis: SecurityAnalysis,
     files: &[PathBuf],
+    lang: Option<Language>,
     cache: &mut AstCache,
 ) -> RemainingResult<(Vec<SecureFinding>, Value)> {
     let mut findings = Vec::new();
@@ -590,8 +592,10 @@ fn run_security_analysis(
             ReadOutcome::NonUtf8 { .. } => continue,
         };
 
-        // Get or parse the AST
-        let tree = cache.get_or_parse(file, &source)?;
+        // Get or parse the AST. `lang` (the already-resolved language,
+        // honoring --lang) is threaded through so the parse uses the real
+        // per-file grammar instead of defaulting non-.rs files to Python.
+        let tree = cache.get_or_parse(file, &source, lang)?;
 
         // Run analysis
         let file_findings = match analysis {
