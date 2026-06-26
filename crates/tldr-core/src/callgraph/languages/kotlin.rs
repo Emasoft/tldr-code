@@ -30,6 +30,23 @@ use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
+/// Syntactic signature of a same-file Kotlin function definition.
+///
+/// Captures the two cheap, pure-AST discriminators needed to tell same-name
+/// overloads apart at call-classification time: the parameter count (`arity`)
+/// and the first parameter's type-reference text (`first_param_type`). No type
+/// inference is performed — `first_param_type` is the literal `user_type` /
+/// `type_identifier` text read straight from the `parameter` node, matching the
+/// way Kotlin's own Analysis API name-keys a candidate set and disambiguates
+/// with a coarse syntactic selector afterward.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KotlinDef {
+    /// Number of declared parameters (`function_value_parameters` arity).
+    pub arity: usize,
+    /// Text of the first parameter's declared type, if any (e.g. `Job`).
+    pub first_param_type: Option<String>,
+}
+
 // =============================================================================
 // Kotlin Handler
 // =============================================================================
@@ -150,12 +167,20 @@ impl KotlinHandler {
     }
 
     /// Collect all class, object, and function definitions.
+    ///
+    /// The method store maps each defined name to the list of its same-file
+    /// overload signatures (`KotlinDef`). Keeping the full overload SET (rather
+    /// than collapsing to a bare-name `HashSet`) is what lets call
+    /// classification decline an `Intra` self-bind when a delegating call's
+    /// argument shape does not match the enclosing same-name overload — e.g.
+    /// `runInterruptible(context as CoroutineContext, ...)` inside the
+    /// `runInterruptible(context: Job, ...)` overload.
     fn collect_definitions(
         &self,
         tree: &Tree,
         source: &[u8],
-    ) -> (HashSet<String>, HashSet<String>) {
-        let mut methods = HashSet::new();
+    ) -> (HashMap<String, Vec<KotlinDef>>, HashSet<String>) {
+        let mut methods: HashMap<String, Vec<KotlinDef>> = HashMap::new();
         let mut classes = HashSet::new();
 
         for node in walk_tree(tree.root_node()) {
@@ -163,14 +188,21 @@ impl KotlinHandler {
                 "function_declaration" => {
                     // Get function name from identifier child
                     if let Some(name) = self.get_identifier(&node, source) {
-                        methods.insert(name);
+                        let sig = self.function_signature(&node, source);
+                        methods.entry(name).or_default().push(sig);
                     }
                 }
                 "class_declaration" => {
                     if let Some(name) = self.get_identifier(&node, source) {
                         classes.insert(name.clone());
-                        // Constructor can be called with class name
-                        methods.insert(name);
+                        // Constructor can be called with class name. Arity is
+                        // not extracted from the primary constructor here, so
+                        // record it with no signature (won't trigger overload
+                        // decline — only affects same-name function overloads).
+                        methods.entry(name).or_default().push(KotlinDef {
+                            arity: 0,
+                            first_param_type: None,
+                        });
                     }
                 }
                 "object_declaration" => {
@@ -184,6 +216,135 @@ impl KotlinHandler {
         }
 
         (methods, classes)
+    }
+
+    /// Read the syntactic signature (arity + first parameter type) of a
+    /// `function_declaration` node from its `function_value_parameters` child.
+    ///
+    /// Per the `tree-sitter-kotlin-ng` grammar, `function_value_parameters`
+    /// holds zero or more `parameter` named children; arity is their count
+    /// (`named_child_count` filtered to `parameter`). The first parameter's
+    /// type is the named child following its `identifier` name.
+    fn function_signature(&self, node: &Node, source: &[u8]) -> KotlinDef {
+        let mut arity = 0usize;
+        let mut first_param_type = None;
+        for i in 0..node.named_child_count() {
+            if let Some(c) = node.named_child(i) {
+                if c.kind() == "function_value_parameters" {
+                    for j in 0..c.named_child_count() {
+                        if let Some(p) = c.named_child(j) {
+                            if p.kind() == "parameter" {
+                                if arity == 0 {
+                                    first_param_type = self.param_type(&p, source);
+                                }
+                                arity += 1;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        KotlinDef {
+            arity,
+            first_param_type,
+        }
+    }
+
+    /// Extract the declared type text of a `parameter` node.
+    ///
+    /// A `parameter` is `identifier ':' <type>`; the type is the first named
+    /// child after the parameter-name `identifier`. Returns the raw type text
+    /// (e.g. `Job`, `CoroutineContext`) — pure syntax, no inference.
+    fn param_type(&self, param: &Node, source: &[u8]) -> Option<String> {
+        let mut seen_name = false;
+        for i in 0..param.named_child_count() {
+            if let Some(c) = param.named_child(i) {
+                if c.kind() == "identifier" && !seen_name {
+                    seen_name = true;
+                    continue;
+                }
+                return Some(get_node_text(&c, source).trim().to_string());
+            }
+        }
+        None
+    }
+
+    /// Decide whether a same-file call to `candidates` should be DECLINED as
+    /// `Intra` (and fall through to cross-file resolution as `Direct`).
+    ///
+    /// Returns `true` only on positive syntactic evidence that the call binds a
+    /// *different* same-name overload than any local definition:
+    ///
+    /// 1. **Arity over-supply:** the call passes more arguments than every
+    ///    same-file overload declares (defaults can only reduce required args,
+    ///    never increase the maximum) — so no local overload can accept it.
+    /// 2. **First-argument cast mismatch:** the first argument is an
+    ///    `as_expression` whose cast type (field `right`) differs from the
+    ///    first parameter type of *every* arity-compatible local overload.
+    ///
+    /// In all other cases it returns `false`, preserving the prior behaviour of
+    /// classifying a same-file-name call as `Intra`. This is deliberately
+    /// conservative: it never blanket-suppresses self-edges (genuine recursion
+    /// has matching arity and no discriminating cast), it only reclassifies a
+    /// delegating call whose argument shape proves it targets a sibling
+    /// overload.
+    fn declines_intra(&self, call_node: &Node, source: &[u8], candidates: &[KotlinDef]) -> bool {
+        // Locate the `value_arguments` child of the call_expression.
+        let mut value_args = None;
+        for i in 0..call_node.named_child_count() {
+            if let Some(c) = call_node.named_child(i) {
+                if c.kind() == "value_arguments" {
+                    value_args = Some(c);
+                    break;
+                }
+            }
+        }
+        let value_args = match value_args {
+            Some(v) => v,
+            None => return false,
+        };
+
+        // Arity = number of `value_argument` named children.
+        let call_arity = (0..value_args.named_child_count())
+            .filter_map(|i| value_args.named_child(i))
+            .filter(|c| c.kind() == "value_argument")
+            .count();
+
+        // (1) Arity over-supply: call passes more args than any local overload.
+        if !candidates.is_empty() && candidates.iter().all(|d| call_arity > d.arity) {
+            return true;
+        }
+
+        // (2) First-argument cast-type mismatch.
+        let first_arg = (0..value_args.named_child_count())
+            .filter_map(|i| value_args.named_child(i))
+            .find(|c| c.kind() == "value_argument");
+        if let Some(first_arg) = first_arg {
+            // value_argument may be `name = expr`; the expression is its last
+            // named child. For a positional cast it is the sole named child.
+            let expr = first_arg
+                .named_child(first_arg.named_child_count().saturating_sub(1))
+                .unwrap_or(first_arg);
+            if expr.kind() == "as_expression" {
+                if let Some(ty) = expr.child_by_field_name("right") {
+                    let token = get_node_text(&ty, source).trim().to_string();
+                    let matching: Vec<&KotlinDef> = candidates
+                        .iter()
+                        .filter(|d| call_arity <= d.arity)
+                        .collect();
+                    if !matching.is_empty()
+                        && matching.iter().all(|d| {
+                            matches!(&d.first_param_type, Some(t) if t.trim() != token)
+                        })
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     /// Get the identifier from a declaration node.
@@ -209,7 +370,7 @@ impl KotlinHandler {
         &self,
         node: &Node,
         source: &[u8],
-        defined_methods: &HashSet<String>,
+        defined_methods: &HashMap<String, Vec<KotlinDef>>,
         _defined_classes: &HashSet<String>,
         caller: &str,
     ) -> Vec<CallSite> {
@@ -269,12 +430,21 @@ impl KotlinHandler {
                             receiver,
                             None,
                         ));
-                    } else if defined_methods.contains(&target) {
-                        // Same-file call
+                    } else if let Some(candidates) = defined_methods.get(&target) {
+                        // Same-file name match. Classify as `Intra` only when the
+                        // call's argument shape is compatible with a local
+                        // overload; otherwise decline so the delegating call to a
+                        // sibling overload falls through to cross-file resolution
+                        // (`CallType::Direct`) instead of self-binding.
+                        let call_type = if self.declines_intra(&child, source, candidates) {
+                            CallType::Direct
+                        } else {
+                            CallType::Intra
+                        };
                         calls.push(CallSite::new(
                             caller.to_string(),
                             target,
-                            CallType::Intra,
+                            call_type,
                             Some(line),
                             None,
                             None,
@@ -341,7 +511,7 @@ impl CallGraphLanguageSupport for KotlinHandler {
         fn process_node(
             node: Node,
             source: &[u8],
-            defined_methods: &HashSet<String>,
+            defined_methods: &HashMap<String, Vec<KotlinDef>>,
             defined_classes: &HashSet<String>,
             calls_by_func: &mut HashMap<String, Vec<CallSite>>,
             current_class: &mut Option<String>,
@@ -637,6 +807,7 @@ mod tests {
             .extract_calls(Path::new("Test.kt"), source, &tree)
             .unwrap()
     }
+
 
     // -------------------------------------------------------------------------
     // Import Parsing Tests
@@ -1060,6 +1231,116 @@ fun doWork() {
             assert!(
                 module_calls.iter().any(|c| c.target == "Config"),
                 "Should find Config() inside lazy block"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Overload-aware Intra classification tests (rc11 / #109)
+    // -------------------------------------------------------------------------
+
+    mod overload_tests {
+        use super::*;
+
+        fn collect(source: &str) -> HashMap<String, Vec<KotlinDef>> {
+            let handler = KotlinHandler::new();
+            let tree = handler.parse_source(source).unwrap();
+            handler.collect_definitions(&tree, source.as_bytes()).0
+        }
+
+        /// `collect_definitions` records per-overload arity and first-param type
+        /// (the AST discriminators), not just a bare name. (Test strategy #5.)
+        #[test]
+        fn test_collect_definitions_records_arity_and_first_param_type() {
+            let source = r#"
+fun runInterruptible(context: Job, block: () -> Unit) = block()
+fun runInterruptible(context: CoroutineContext, block: () -> Unit) = block()
+"#;
+            let methods = collect(source);
+            let sigs = methods.get("runInterruptible").expect("name recorded");
+            assert_eq!(sigs.len(), 2, "both overloads recorded as a candidate set");
+            assert!(sigs.iter().all(|d| d.arity == 2), "arity read from params");
+            let types: HashSet<_> = sigs
+                .iter()
+                .filter_map(|d| d.first_param_type.clone())
+                .collect();
+            assert!(types.contains("Job"), "first-param type Job captured");
+            assert!(
+                types.contains("CoroutineContext"),
+                "first-param type CoroutineContext captured"
+            );
+        }
+
+        /// The delegating call inside the `Job` overload (single same-name
+        /// definition in this file, mirroring GuidanceJvm.kt) casts its first
+        /// argument to `CoroutineContext`, so it must be classified `Direct`
+        /// (fall through to cross-file resolution), NOT `Intra` (self-bind).
+        /// (Test strategy #2 / self-edge, #5 / reads cast.)
+        #[test]
+        fn test_delegating_overload_call_declines_intra() {
+            // Only the `Job` overload is present locally — the real
+            // `CoroutineContext` implementation lives in another file.
+            let source = r#"
+fun runInterruptible(context: Job, block: () -> Unit) =
+    runInterruptible(context as CoroutineContext, block)
+"#;
+            let calls = extract_calls(source);
+            let body = calls.get("runInterruptible").expect("caller recorded");
+            let delegated = body
+                .iter()
+                .find(|c| c.target == "runInterruptible")
+                .expect("delegating call captured");
+            assert_eq!(
+                delegated.call_type,
+                CallType::Direct,
+                "cast to a non-local first-param type must decline Intra self-bind"
+            );
+        }
+
+        /// Genuine self-recursion (matching arity, no discriminating cast) MUST
+        /// still be classified `Intra` — proves the fix declines only on
+        /// signature mismatch, never blanket self-edge suppression.
+        /// (Test strategy #4, negative guard.)
+        #[test]
+        fn test_genuine_recursion_still_intra() {
+            let source = r#"
+fun f(x: Int): Int = f(x - 1)
+"#;
+            let calls = extract_calls(source);
+            let body = calls.get("f").expect("caller recorded");
+            let recur = body
+                .iter()
+                .find(|c| c.target == "f")
+                .expect("recursive call captured");
+            assert_eq!(
+                recur.call_type,
+                CallType::Intra,
+                "matching-arity self call must remain Intra (real recursion)"
+            );
+        }
+
+        /// When the local file DOES contain the matching overload (same first
+        /// param type as the cast), the call legitimately binds locally and
+        /// stays `Intra` — the decline is mismatch-driven, not cast-driven.
+        /// (Uses a distinctly-named caller to avoid the bare-name overwrite of
+        /// two same-name top-level definitions in `calls_by_func`.)
+        #[test]
+        fn test_local_matching_overload_stays_intra() {
+            let source = r#"
+fun runInterruptible(context: Job, block: () -> Unit) = block()
+fun runInterruptible(context: CoroutineContext, block: () -> Unit) = block()
+fun caller(j: Job, block: () -> Unit) = runInterruptible(j as CoroutineContext, block)
+"#;
+            let calls = extract_calls(source);
+            let body = calls.get("caller").expect("caller recorded");
+            let delegated = body
+                .iter()
+                .find(|c| c.target == "runInterruptible")
+                .expect("delegating call captured");
+            assert_eq!(
+                delegated.call_type,
+                CallType::Intra,
+                "a locally-present matching overload keeps the call Intra"
             );
         }
     }

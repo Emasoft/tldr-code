@@ -464,9 +464,23 @@ fn find_function_in_graph(
     }
 
     // Verify each candidate by extracting the module and checking the function
-    // actually has a definition there. Prefer non-test candidates first.
+    // actually has a definition there. Prefer non-test candidates first, then
+    // apply a TOTAL lexicographic order on (file, func) as the secondary key.
+    //
+    // rc11/#109: the candidate list is collected by iterating a random-seeded
+    // `HashSet<CallEdge>`, so same-name overloads (e.g. two `runInterruptible`
+    // definitions) arrived in arbitrary per-process order. `is_test_path` ties
+    // for two production overloads, and Rust's stable sort then preserved the
+    // HashSet order — making the chosen BFS entry (and thus the whole context
+    // expansion) non-deterministic. Adding (file, func) as a secondary total
+    // order yields a single reproducible entry regardless of hash seed.
     let mut sorted = candidates.clone();
-    sorted.sort_by_key(|(f, _)| is_test_path(f));
+    sorted.sort_by(|(fa, na), (fb, nb)| {
+        is_test_path(fa)
+            .cmp(&is_test_path(fb))
+            .then_with(|| fa.cmp(fb))
+            .then_with(|| na.cmp(nb))
+    });
     for (file, func) in &sorted {
         let full_path = if file.is_relative() {
             project.join(file)
@@ -480,9 +494,9 @@ fn find_function_in_graph(
         }
     }
 
-    // No candidate verified — fall back to the first edge match (preserves
-    // previous behaviour for cases where extraction fails for some reason).
-    if let Some(first) = candidates.into_iter().next() {
+    // No candidate verified — fall back to the first match in the total
+    // (deterministic) order, so the fallback is reproducible too.
+    if let Some(first) = sorted.into_iter().next() {
         return Ok(first);
     }
 
@@ -694,6 +708,15 @@ fn build_forward_graph(
         let dst_key = (edge.dst_file.clone(), edge.dst_func.clone());
 
         forward.entry(src_key).or_default().push(dst_key);
+    }
+
+    // rc11/#109: edges arrive from a random-seeded HashSet, so callee lists
+    // were in arbitrary per-process order — making BFS visitation order (and,
+    // at a depth cutoff, the collected set) non-deterministic. Sort each
+    // callee list by the total (dst_file, dst_func) order for reproducible BFS.
+    for callees in forward.values_mut() {
+        callees.sort();
+        callees.dedup();
     }
 
     forward
