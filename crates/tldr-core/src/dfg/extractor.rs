@@ -284,6 +284,23 @@ struct DfgBuilder<'a> {
     /// `return_statement` we synthesize a `Use` of each name here. Empty for
     /// non-Go functions and for Go functions with unnamed results.
     go_named_results: Vec<String>,
+    /// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): names
+    /// bound DIRECTLY in the analyzed Lua/Luau function F's OWN lexical scope —
+    /// its parameters, `local x = …` declarations, `local function g` names, and
+    /// numeric/generic for-loop binders. This is the genuinely-missing
+    /// "is-a-local-of-F" binder set for Lua/Luau (the `collect_t5_local_names`
+    /// `_ => {}` arm previously built nothing for these languages, so an upvalue
+    /// write could not be told apart from a true-local write and was wrongly
+    /// flagged dead — luau-roact `createSignal`/`fire` `firing`). Because no
+    /// tree-sitter node-kind distinguishes a local re-assignment from an upvalue
+    /// or a global write (all are `assignment_statement > variable_list >
+    /// identifier`), this set is the fast path for the common case where the
+    /// write sits directly in F; the full upvalue/global classification is done
+    /// per-write by `is_lua_upvalue_write`, which continues the ancestor walk
+    /// past F up to the chunk so a write physically inside a NESTED closure of F
+    /// is recognized as an upvalue write even though its name IS a local of F.
+    /// Empty for non-Lua/Luau functions.
+    lua_local_names: HashSet<String>,
 }
 
 impl<'a> DfgBuilder<'a> {
@@ -301,6 +318,7 @@ impl<'a> DfgBuilder<'a> {
             ocaml_local_names: HashSet::new(),
             generic_local_names: HashSet::new(),
             go_named_results: Vec::new(),
+            lua_local_names: HashSet::new(),
         }
     }
 
@@ -333,6 +351,19 @@ impl<'a> DfgBuilder<'a> {
             | Language::CSharp
             | Language::Java => {
                 self.collect_generic_local_names(func_node);
+            }
+            // rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT):
+            // build the genuinely-missing Lua/Luau "is-a-local-of-F" binder set.
+            // Q1 (grammar sources) proves no node-kind distinguishes a local
+            // re-assignment from an upvalue or a global write — all surface as
+            // `assignment_statement > variable_list > identifier` — so the only
+            // sound classifier is a lexical binder-resolution pass. This records
+            // F's OWN direct bindings (params, `local x`, `local function g`,
+            // for-binders), stopping at nested function boundaries so an inner
+            // helper's locals are not mis-attributed to F.
+            Language::Lua | Language::Luau => {
+                let src = self.source;
+                collect_lua_scope_bindings(func_node, src, &mut self.lua_local_names);
             }
             _ => {}
         }
@@ -4122,7 +4153,34 @@ impl<'a> DfgBuilder<'a> {
                 for inner_child in child.children(&mut inner) {
                     match inner_child.kind() {
                         "identifier" => {
-                            self.add_ref_from_node(inner_child, RefType::Definition);
+                            // rc6-deadstores-closure-write-across-siblings
+                            // (v0.5.0 CLOSEOUT): a bare-identifier write whose
+                            // target is an UPVALUE captured from an enclosing
+                            // function scope (not a local of the write's own
+                            // function, and not a true global) is observed by
+                            // sibling/nested closures through the shared cell, so
+                            // it is conservatively LIVE — never a dead store
+                            // intraprocedurally. Tag it `ClosureCapture` so the
+                            // decision site (`find_dead_stores_dfg`) suppresses it
+                            // (the flat DFG is intraprocedural-by-construction and
+                            // carries no cross-closure def-use edge). True locals
+                            // of F and true globals are emitted normally
+                            // (`context: None`) so genuine dead stores still
+                            // surface.
+                            let nm = inner_child
+                                .utf8_text(self.source.as_bytes())
+                                .unwrap_or("");
+                            let is_upvalue =
+                                !nm.is_empty() && self.is_lua_upvalue_write(inner_child, nm);
+                            if is_upvalue {
+                                self.add_ref_with_context(
+                                    inner_child,
+                                    RefType::Definition,
+                                    VarRefContext::ClosureCapture,
+                                );
+                            } else {
+                                self.add_ref_from_node(inner_child, RefType::Definition);
+                            }
                         }
                         // fix-R7-cl6-lua-index-use (v0.5.0 CLOSEOUT): a
                         // table-element write reads the container (Update) and,
@@ -4247,6 +4305,74 @@ impl<'a> DfgBuilder<'a> {
             }
         }
         Ok(())
+    }
+
+    /// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): classify
+    /// a Lua/Luau write to the bare `identifier` `name` at `write_node` by
+    /// LEXICAL SCOPE — the only sound signal, since Q1 (the grammar sources)
+    /// proves a local re-assignment, an upvalue write and a true-global write
+    /// are all the identical `assignment_statement > variable_list >
+    /// identifier`. Walks the physical ancestor chain of the write:
+    ///
+    /// * the FIRST enclosing function scope `G` is the write's OWN scope. If
+    ///   `name` is bound there, the write is a LOCAL write → `false`
+    ///   (eligible for normal dead-store detection).
+    /// * otherwise, if `name` is bound in any scope ENCLOSING `G` (an outer
+    ///   function, or the file `chunk`), the write targets a captured UPVALUE →
+    ///   `true`. An intraprocedural dead-store analysis must treat such a write
+    ///   as conservatively LIVE: the shared closure cell may be read by a
+    ///   sibling/nested closure that the intraprocedural DFG never sees (LLVM's
+    ///   >30-year canonical rule for address-taken / escaping variables — a
+    ///   missed dead-store report is benign, a wrongly-reported one is unsound).
+    /// * if no enclosing scope binds `name`, it is a true GLOBAL write →
+    ///   `false` (a genuine dead global write stays flaggable).
+    ///
+    /// Keying on the PHYSICAL AST location (not on which function is being
+    /// analyzed) is what makes a write inside a NESTED closure of F correctly
+    /// classified as an upvalue write even though `name` is a local of F — the
+    /// cross-check-(1) `createSignal`/`fire` case the flat-DFG model cannot
+    /// bridge with a def-use edge.
+    fn is_lua_upvalue_write(&self, write_node: Node, name: &str) -> bool {
+        let mut innermost_scope_seen = false;
+        let mut node = write_node.parent();
+        while let Some(n) = node {
+            let is_fn = matches!(
+                n.kind(),
+                "function_declaration" | "function_definition" | "local_function"
+            );
+            if is_fn || n.kind() == "chunk" {
+                if !innermost_scope_seen {
+                    // `G`: the write's own innermost function (or chunk) scope.
+                    // Reuse the precomputed `lua_local_names` when `G` IS the
+                    // analyzed function F (the common case — write sits directly
+                    // in F); otherwise resolve the nested closure's bindings.
+                    let is_analyzed_fn = is_fn
+                        && self.analyzed_fn_span.is_some_and(|(s, e)| {
+                            s == n.start_byte() && e == n.end_byte()
+                        });
+                    let local_of_g = if is_analyzed_fn {
+                        self.lua_local_names.contains(name)
+                    } else {
+                        let mut g_names = HashSet::new();
+                        collect_lua_scope_bindings(n, self.source, &mut g_names);
+                        g_names.contains(name)
+                    };
+                    if local_of_g {
+                        return false; // local of the write's own scope
+                    }
+                    innermost_scope_seen = true;
+                } else {
+                    // A scope ENCLOSING `G` (outer function or the chunk).
+                    let mut enc_names = HashSet::new();
+                    collect_lua_scope_bindings(n, self.source, &mut enc_names);
+                    if enc_names.contains(name) {
+                        return true; // bound outside G → captured upvalue
+                    }
+                }
+            }
+            node = n.parent();
+        }
+        false // no enclosing binder anywhere → true global → keep flaggable
     }
 
     // =====================================================================
@@ -6245,6 +6371,172 @@ fn collect_ts_js_variable_names(
                 // child of the pattern subtree.
                 collect_ts_js_param_names(name, source, out);
             }
+        }
+    }
+}
+
+/// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): insert a
+/// Lua/Luau `identifier` node's text into a binder set (trimmed, non-empty).
+fn insert_lua_identifier(node: Node, source: &str, out: &mut std::collections::HashSet<String>) {
+    if node.kind() == "identifier" {
+        if let Ok(t) = node.utf8_text(source.as_bytes()) {
+            let t = t.trim();
+            if !t.is_empty() {
+                out.insert(t.to_string());
+            }
+        }
+    }
+}
+
+/// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): true iff a
+/// Lua/Luau function node introduces a LOCAL binding for its own name in the
+/// ENCLOSING scope — `local function f` (a `function_declaration` carrying a
+/// `local` token) or the dedicated `local_function` node-kind. A bare
+/// `function f()` / `function t.m()` binds a global / table field (not a local)
+/// and an anonymous `function_definition` binds no name at all.
+fn lua_function_is_local(func_node: Node) -> bool {
+    if func_node.kind() == "local_function" {
+        return true;
+    }
+    let mut cursor = func_node.walk();
+    for child in func_node.children(&mut cursor) {
+        if child.kind() == "local" {
+            return true;
+        }
+    }
+    false
+}
+
+/// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): collect the
+/// parameter identifiers of a Lua/Luau `parameters` node. tree-sitter-lua lists
+/// param identifiers directly; tree-sitter-luau wraps each in a `parameter`
+/// node whose identifier sits one level deeper (`parameter > type? >
+/// identifier`) — mirror `extract_lua_param`.
+fn collect_lua_param_binder_names(
+    params: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let mut cursor = params.walk();
+    for child in params.children(&mut cursor) {
+        match child.kind() {
+            "identifier" => insert_lua_identifier(child, source, out),
+            "parameter" => {
+                if let Some(id) = first_descendant_identifier_under(child, "identifier") {
+                    insert_lua_identifier(id, source, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): collect the
+/// names introduced by ONE Lua/Luau `variable_declaration` (`local x = …`).
+/// Only the LHS `variable_list` identifiers are bindings; the RHS
+/// `expression_list` may contain function literals with their OWN scopes, so it
+/// is intentionally NOT descended into.
+fn collect_lua_decl_binder_names(
+    decl: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        match child.kind() {
+            // `local x` (no initializer) — bare identifier child.
+            "identifier" => insert_lua_identifier(child, source, out),
+            // `local x, y` (no initializer) — a `variable_list` child.
+            "variable_list" => {
+                let mut vc = child.walk();
+                for v in child.children(&mut vc) {
+                    insert_lua_identifier(v, source, out);
+                }
+            }
+            // `local x = …` / `local a, b = …` — the inner assignment's LHS.
+            "assignment_statement" => {
+                let mut ac = child.walk();
+                for a in child.children(&mut ac) {
+                    if a.kind() == "variable_list" {
+                        let mut vc = a.walk();
+                        for v in a.children(&mut vc) {
+                            insert_lua_identifier(v, source, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): collect the
+/// identifiers bound DIRECTLY in one Lua/Luau lexical scope `scope_node` — a
+/// function node (`function_declaration` / `function_definition` /
+/// `local_function`) or the file `chunk`. Records the scope's `parameters`,
+/// every `local x = …` (`variable_declaration`), every `local function g`
+/// name, and numeric/generic for-loop binders. Recursion STOPS at nested
+/// function boundaries: an inner helper's own locals belong to the inner scope
+/// (the grammar authors' `@local.scope` model — Luau LOCALS_QUERY), so they are
+/// never mis-attributed to `scope_node`. A bare `assignment_statement` target
+/// is NOT a binding (it re-assigns an existing local / upvalue / global) and is
+/// deliberately not collected — Q1 proves the `local` declaration wrapper is the
+/// only node-kind binding marker.
+fn collect_lua_scope_bindings(
+    scope_node: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    // A function scope binds its parameters (the chunk has none).
+    if let Some(params) = scope_node.child_by_field_name("parameters") {
+        collect_lua_param_binder_names(params, source, out);
+    }
+    // Walk the scope's statements, descending through block / control-flow
+    // scopes but never into a nested function body.
+    let mut stack: Vec<Node> = Vec::new();
+    let mut cursor = scope_node.walk();
+    for child in scope_node.children(&mut cursor) {
+        stack.push(child);
+    }
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            // Nested function: record its name when it is a `local function`
+            // (the name binds in THIS scope), but do NOT descend.
+            "function_declaration" | "function_definition" | "local_function" => {
+                if lua_function_is_local(n) {
+                    if let Some(name) = n.child_by_field_name("name") {
+                        insert_lua_identifier(name, source, out);
+                    }
+                }
+                continue;
+            }
+            // `local x = …`: collect LHS names only; do not descend into the RHS.
+            "variable_declaration" => {
+                collect_lua_decl_binder_names(n, source, out);
+                continue;
+            }
+            // for-loop binders (numeric `for i = …` / generic `for a, b in …`).
+            "for_numeric_clause" => {
+                if let Some(name) = n.child_by_field_name("name") {
+                    insert_lua_identifier(name, source, out);
+                }
+            }
+            "for_generic_clause" => {
+                let mut cc = n.walk();
+                for c in n.children(&mut cc) {
+                    if c.kind() == "variable_list" {
+                        let mut vc = c.walk();
+                        for v in c.children(&mut vc) {
+                            insert_lua_identifier(v, source, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut inner = n.walk();
+        for child in n.children(&mut inner) {
+            stack.push(child);
         }
     }
 }

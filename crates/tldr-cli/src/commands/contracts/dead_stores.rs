@@ -285,6 +285,28 @@ pub fn find_dead_stores_dfg(
         .map(|r| r.line)
         .min();
 
+    // fix-R3-rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): the
+    // function's SIGNATURE line — the first source line covered by the CFG, where
+    // the entry block opens at the declaration and parameters are bound. The
+    // earliest `Definition` (`first_def_line`) is the parameter line ONLY when it
+    // coincides with this signature line. In a PARAMETER-LESS function the
+    // earliest `Definition` is the first BODY statement (strictly after the
+    // signature line) — a genuine store that must stay eligible for dead-store
+    // detection, NOT be silently exempted as a phantom "parameter". Without this
+    // guard, a dead first statement in a no-arg function — `local function f()
+    // G = 1 … end` (a never-read global write) or `local function f() local x =
+    // 1; x = 2; … end` (a local overwritten before use) — was never flagged,
+    // because `first_def_line` landed on the body and the variable was treated
+    // as a parameter. Parameters genuinely on the signature line (incl. Go named
+    // results, unused params) keep their exemption since there `first_def_line ==
+    // signature_line`. (Verified across Lua/Luau, Python, Go: params/named
+    // results are always emitted on the CFG's minimum line; body defs are after.)
+    let signature_line = cfg.blocks.iter().map(|b| b.lines.0).min();
+    let parameter_line = match (first_def_line, signature_line) {
+        (Some(fdl), Some(sig)) if fdl == sig => Some(fdl),
+        _ => None,
+    };
+
     // Group refs by variable name
     let mut refs_by_var: HashMap<String, Vec<&tldr_core::types::VarRef>> = HashMap::new();
     for var_ref in refs {
@@ -302,8 +324,10 @@ pub fn find_dead_stores_dfg(
         // Sort by line number
         var_refs.sort_by_key(|r| r.line);
 
-        // Check if this is a function parameter (defined on function definition line)
-        let is_parameter = first_def_line
+        // Check if this is a function parameter (defined on the function
+        // SIGNATURE line — see `parameter_line` above; a body definition in a
+        // parameter-less function is NOT a parameter and stays flaggable).
+        let is_parameter = parameter_line
             .map(|line| {
                 var_refs
                     .first()
@@ -361,6 +385,27 @@ pub fn find_dead_stores_dfg(
             uses.extend(&update_lines);
         }
 
+        // rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): a
+        // write tagged `VarRefContext::ClosureCapture` by the Lua/Luau extractor
+        // targets a captured UPVALUE — a variable bound in an enclosing function
+        // scope and shared by reference with sibling/nested closures. The DFG is
+        // intraprocedural-by-construction, so the cross-closure READ of that
+        // shared cell is never in `refs` and the write looks dead (luau-roact
+        // `createSignal`/`fire` `firing`). Treat such a write as conservatively
+        // LIVE — the canonical soundness floor for captured/escaping variables —
+        // and never report it as a dead store, in EITHER the never-used branch
+        // or the same-block overwrite branch below. (True locals of the analyzed
+        // function and true globals are emitted with `context: None`, so genuine
+        // dead stores are unaffected.)
+        let closure_capture_def_lines: std::collections::HashSet<u32> = var_refs
+            .iter()
+            .filter(|r| {
+                matches!(r.ref_type, RefType::Definition)
+                    && r.context == Some(tldr_core::types::VarRefContext::ClosureCapture)
+            })
+            .map(|r| r.line)
+            .collect();
+
         // If there are no uses of this variable at all, all non-parameter
         // definitions are dead — EXCEPT read-modify-write `Update` stores.
         //
@@ -378,6 +423,10 @@ pub fn find_dead_stores_dfg(
         if uses.is_empty() && !definitions.is_empty() && !is_parameter {
             for (def_line, block_id, version, is_update) in &definitions {
                 if *is_update {
+                    continue;
+                }
+                // rc6 (v0.5.0 CLOSEOUT): a captured-upvalue write is live.
+                if closure_capture_def_lines.contains(def_line) {
                     continue;
                 }
                 dead_stores.push(DeadStore {
@@ -404,6 +453,16 @@ pub fn find_dead_stores_dfg(
             // Solidity mapping write) consumes the prior value and is an
             // observable partial update — it is never a dead store.
             if is_update {
+                continue;
+            }
+
+            // rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT): a
+            // captured-upvalue write is conservatively live even when a later
+            // write in the SAME block overwrites it (the cross-closure read of
+            // the shared cell lives in a sibling block the heuristic cannot
+            // bridge — luau-roact `createSignal` `firing = true; …; firing =
+            // false`). Never flag it here either.
+            if closure_capture_def_lines.contains(&def_line) {
                 continue;
             }
 
@@ -1054,6 +1113,191 @@ function f(p) {
             flagged.iter().any(|(v, _)| *v == "x"),
             "`var x = 1` (fully overwritten by `x = 2` before use) must STILL be \
              flagged dead after the Update-kill fix; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    // =====================================================================
+    // rc6-deadstores-closure-write-across-siblings (v0.5.0 CLOSEOUT):
+    // a write to a captured UPVALUE that is read only in a SIBLING/nested
+    // closure must not be flagged dead. Mirrors luau-roact `createSignal`
+    // (`local firing` read in `subscribe`, written in `fire`).
+    // =====================================================================
+
+    /// Repro (the reported FP): `firing` is declared in the enclosing
+    /// `createSignal`, READ in the sibling `subscribe`, and WRITTEN in `fire`.
+    /// Analyzing `fire`, the intraprocedural DFG never sees the cross-closure
+    /// read, so both writes looked dead. They must NOT be flagged.
+    #[test]
+    fn test_lua_upvalue_write_read_in_sibling_closure_not_dead() {
+        let source = r#"
+local function createSignal()
+	local firing = false
+	local function subscribe()
+		if firing then
+			return true
+		end
+		return false
+	end
+	local function fire()
+		firing = true
+		broadcast()
+		firing = false
+	end
+	return subscribe, fire
+end
+"#;
+        let report = run_on_source(source, "fire", Language::Lua);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"firing"),
+            "`firing` is a captured upvalue read in the sibling `subscribe`; its \
+             writes in `fire` must NOT be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Luau variant of the repro, additionally exercising the Luau-only
+    /// `update_statement` (`ticks += 1`) node-kind on a captured upvalue.
+    #[test]
+    fn test_luau_upvalue_write_read_in_sibling_closure_not_dead() {
+        let source = r#"
+local function createSignal()
+	local firing = false
+	local ticks = 0
+	local function subscribe()
+		if firing then
+			return ticks
+		end
+		return 0
+	end
+	local function fire()
+		firing = true
+		ticks += 1
+		firing = false
+	end
+	return subscribe, fire
+end
+"#;
+        let report = run_on_source(source, "fire", Language::Luau);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"firing"),
+            "Luau: captured upvalue `firing` (read in sibling `subscribe`) must \
+             NOT be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+        assert!(
+            !flagged.contains(&"ticks"),
+            "Luau: captured upvalue `ticks` written via `+=` (update_statement) \
+             must NOT be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Over-suppression guard: a genuine F-LOCAL that is overwritten before use
+    /// (`local x = 1; x = 2`), and a genuine unused F-local (`local c = 30`),
+    /// must STILL be flagged. Pins that the binder set correctly classifies
+    /// F-locals as locals (so the `ClosureCapture` tag never blanket-suppresses
+    /// real dead stores).
+    #[test]
+    fn test_lua_genuine_dead_local_still_flagged() {
+        let source = r#"
+local function f()
+	local x = 1
+	x = 2
+	local c = 30
+	return x
+end
+"#;
+        let report = run_on_source(source, "f", Language::Lua);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            flagged.contains(&"x"),
+            "`local x = 1` overwritten by `x = 2` before use must STILL be flagged \
+             dead (it is a true F-local, not an upvalue); flagged={:?}",
+            report.dead_stores_ssa
+        );
+        assert!(
+            flagged.contains(&"c"),
+            "`local c = 30` (never used) must STILL be flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Three-way classification guard: a write to a name with NO `local` binder
+    /// anywhere (`G = 1`, a true GLOBAL, never read) is genuinely dead
+    /// intraprocedurally and must STILL be flagged. Pins that the upvalue tag
+    /// suppresses only ENCLOSING-scope captures, never true globals.
+    #[test]
+    fn test_lua_global_write_still_dead() {
+        let source = r#"
+local function f()
+	G = 1
+	return 0
+end
+"#;
+        let report = run_on_source(source, "f", Language::Lua);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            flagged.contains(&"G"),
+            "`G = 1` (a true global, no `local` binder, never read) must STILL be \
+             flagged dead; flagged={:?}",
+            report.dead_stores_ssa
+        );
+    }
+
+    /// Same-block overwrite path (cross-check (1)): analyzing the ENCLOSING
+    /// function, the captured-upvalue read lives in the sibling `subscribe` so
+    /// `firing` HAS a use (the never-used branch does not fire), and its two
+    /// writes `firing = true; firing = false` sit in one block of `fire`. The
+    /// same-block overwrite heuristic would flag the first write; the upvalue
+    /// guard must suppress it there too.
+    #[test]
+    fn test_lua_upvalue_write_then_overwrite_same_block_not_dead() {
+        let source = r#"
+local function outer()
+	local firing = false
+	local function subscribe()
+		if firing then
+			return true
+		end
+		return false
+	end
+	local function fire()
+		firing = true
+		firing = false
+	end
+	return subscribe, fire
+end
+"#;
+        let report = run_on_source(source, "outer", Language::Lua);
+        let flagged: Vec<&str> = report
+            .dead_stores_ssa
+            .iter()
+            .map(|d| d.variable.as_str())
+            .collect();
+        assert!(
+            !flagged.contains(&"firing"),
+            "captured upvalue `firing` (read in sibling `subscribe`, written \
+             `true` then `false` in one block of `fire`) must NOT be flagged \
+             dead via the same-block overwrite heuristic; flagged={:?}",
             report.dead_stores_ssa
         );
     }
