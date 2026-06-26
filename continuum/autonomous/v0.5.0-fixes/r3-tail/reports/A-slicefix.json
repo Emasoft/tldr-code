@@ -1,0 +1,12 @@
+{
+  "assertion": "A-slicefix",
+  "result": "success",
+  "what_changed": "Re-synced hardcoded fixture line numbers in crates/tldr-cli/tests/fix_cl2_slice_v1.rs for the two detect_cycles slice tests to the current crates/tldr-core/src/analysis/deps.rs fixture (drift +8). cycles def 855->863, visited def 858->866, start_node def 861->869, criterion 862->870, block_hi 879->887.",
+  "justification": "The fixture detect_cycles function defs had drifted. Verified actual current lines in deps.rs: cycles HashSet def @863, visited @866, `for start_node in deps.keys()` @869, `if visited.contains(start_node)` criterion @870. Test logic/assertions unchanged (same semantic invariant: backward slice from criterion excludes unrelated cycles def, includes visited+start_node). Both tests GREEN at corrected lines, confirming the slice engine is correct and this was pure line drift, not an engine bug.",
+  "files_changed": ["crates/tldr-cli/tests/fix_cl2_slice_v1.rs"],
+  "test_cmd": "cargo test -p tldr-cli --test fix_cl2_slice_v1 -- rust_detect_cycles_backward_excludes_unrelated_def",
+  "test_result": "ok. 1 passed; 0 failed (sibling rust_detect_cycles_backward_not_full_block also passes)",
+  "committed": true,
+  "status": "closed",
+  "notes": "Also re-synced the sibling test rust_detect_cycles_backward_not_full_block (shares same fixture/drift) for consistency. No engine bug found."
+}
