@@ -8258,6 +8258,45 @@ fn extract_scala_docstring(node: &Node, source: &str) -> Option<String> {
     None
 }
 
+/// r7-cl9 (#206): derive the Scala declaration flavor (`case object`,
+/// `sealed trait`, `sealed class`) from the tree-sitter-scala anonymous
+/// modifier tokens. NOT a source-text heuristic — it reads the AST node
+/// children directly, mirroring [`extract_scala_bases`]. `case` is an
+/// anonymous direct child of `object_definition`/`class_definition` and
+/// can follow a leading `access_modifier` (e.g. `private case object`),
+/// so ALL direct children are scanned, not just the first; `sealed` is an
+/// anonymous token INSIDE the named `modifiers` child. Traits cannot be
+/// `case`. Returns `None` for a plain class/object/trait so the JSON
+/// schema is unchanged (`skip_serializing_if = "Option::is_none"`).
+fn scala_decl_flavor(node: &Node, is_object: bool, is_trait: bool) -> Option<String> {
+    let mut has_case = false;
+    let mut has_sealed = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // anonymous token, sibling before the `object`/`class` keyword
+            "case" => has_case = true,
+            // named child; `sealed` is an anonymous token inside it
+            "modifiers" => {
+                let mut mc = child.walk();
+                for m in child.children(&mut mc) {
+                    if m.kind() == "sealed" {
+                        has_sealed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    match (is_object, is_trait, has_case, has_sealed) {
+        (true, _, true, _) => Some("case_object".into()),
+        (_, true, _, true) => Some("sealed_trait".into()),
+        (false, false, _, true) => Some("sealed_class".into()),
+        // plain object / plain class / plain trait → unchanged (None)
+        _ => None,
+    }
+}
+
 fn extract_scala_classes_detailed(node: &Node, source: &str, classes: &mut Vec<ClassInfo>) {
     let mut cursor = node.walk();
 
@@ -8316,7 +8355,9 @@ fn extract_scala_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // r7-cl9 (#206): record `sealed class` flavor so smells exempts
+        // sealed ADT markers instead of flagging them lazy_element.
+        kind: scala_decl_flavor(node, false, false),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -8356,7 +8397,9 @@ fn extract_scala_object_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // r7-cl9 (#206): record `case_object` flavor so smells exempts
+        // idiomatic ADT-variant singletons instead of flagging them lazy.
+        kind: scala_decl_flavor(node, true, false),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -8396,7 +8439,9 @@ fn extract_scala_trait_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // r7-cl9 (#206): record `sealed_trait` flavor so smells exempts
+        // sealed trait markers instead of flagging them lazy_element.
+        kind: scala_decl_flavor(node, false, true),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -9991,6 +10036,68 @@ def bar():
     fn test_extract_handles_file_not_found() {
         let result = extract_file(Path::new("/nonexistent/file.py"), None);
         assert!(matches!(result, Err(TldrError::PathNotFound(_))));
+    }
+
+    #[test]
+    fn test_scala_decl_flavor_recorded_on_classinfo() {
+        // r7-cl9 (#206): the Scala extractors must record the declaration
+        // flavor (`case object` / `sealed trait` / `sealed class`) on
+        // `ClassInfo.kind` from the AST modifier tokens, while plain
+        // class/object/trait stay `kind == None`.
+        let mut file = NamedTempFile::with_suffix(".scala").unwrap();
+        write!(
+            file,
+            r#"
+sealed trait BenchQueueType
+case object RingBufferPow2Type extends BenchQueueType
+private case object Heap extends BenchQueueType
+sealed abstract class Color(val rgb: Int)
+class Plain {{}}
+object Companion {{}}
+"#
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let by_name = |n: &str| -> Option<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == n)
+                .and_then(|c| c.kind.clone())
+        };
+
+        assert_eq!(by_name("RingBufferPow2Type").as_deref(), Some("case_object"));
+        assert_eq!(by_name("Heap").as_deref(), Some("case_object"));
+        assert_eq!(by_name("BenchQueueType").as_deref(), Some("sealed_trait"));
+        assert_eq!(by_name("Color").as_deref(), Some("sealed_class"));
+        // plain class / plain object → flavor unchanged (None)
+        assert_eq!(by_name("Plain"), None, "plain class must stay kind == None");
+        assert_eq!(
+            by_name("Companion"),
+            None,
+            "plain object must stay kind == None"
+        );
+    }
+
+    #[test]
+    fn test_scala_plain_class_kind_omitted_from_json() {
+        // r7-cl9 (#206): `skip_serializing_if = "Option::is_none"` must keep a
+        // plain Scala class's serialized shape byte-identical to pre-fix — the
+        // `kind` key is ABSENT for ordinary classes (only case/sealed gain it).
+        let mut file = NamedTempFile::with_suffix(".scala").unwrap();
+        write!(file, "class Plain {{}}\n").unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let plain = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Plain")
+            .expect("plain class extracted");
+        let v = serde_json::to_value(plain).unwrap();
+        assert!(
+            v.get("kind").is_none(),
+            "plain Scala class must NOT serialize a `kind` key; got {v}"
+        );
     }
 
     #[test]

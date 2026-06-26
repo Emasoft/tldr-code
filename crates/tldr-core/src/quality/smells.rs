@@ -1799,12 +1799,43 @@ pub fn detect_lazy_elements_with_path(
 /// [`crate::types::ClassInfo`] list. Mirrors the threshold of
 /// [`find_classes_and_check_lazy`] (<= 1 method AND <= 1 field).
 fn lazy_element_findings_from_classes(classes: &[crate::types::ClassInfo]) -> Vec<SmellFinding> {
+    // r7-cl9 (#206): names of `sealed trait`/`sealed class` parents declared
+    // in this module. A zero-member type that merely *extends* a sealed marker
+    // (the marker-interface analog — SonarQube S2094 PR #6926) is exempt even
+    // when it carries no flavor of its own. `case object`/`sealed_*` declarations
+    // are exempt directly by their own flavor (see below).
+    let sealed_names: std::collections::HashSet<&str> = classes
+        .iter()
+        .filter(|c| matches!(c.kind.as_deref(), Some("sealed_trait") | Some("sealed_class")))
+        .map(|c| c.name.as_str())
+        .collect();
+
     let mut findings = Vec::new();
     for class in classes {
         let field_count = class.fields.len();
         let method_count = class.methods.len();
 
         if method_count <= 1 && field_count <= 1 {
+            // r7-cl9 (#206): case objects are always intentional singletons /
+            // ADT markers (every mature Scala analyzer treats them so); sealed
+            // markers mirror SonarQube S2094's "empty class implementing a
+            // marker interface" exemption (PR #6926). The flavor is recorded
+            // at extraction from the AST modifier tokens (`scala_decl_flavor`),
+            // so this is not a text heuristic. Plain `object`/`class`/`trait`
+            // (kind == None) stay flagged, preserving the smell for genuinely
+            // anaemic ordinary types.
+            if matches!(
+                class.kind.as_deref(),
+                Some("case_object") | Some("sealed_trait") | Some("sealed_class")
+            ) {
+                continue;
+            }
+            // also exempt any (near-)zero-member type whose bases include a
+            // sealed parent declared in this module (sealed-hierarchy
+            // membership = marker-interface analog).
+            if class.bases.iter().any(|b| sealed_names.contains(b.as_str())) {
+                continue;
+            }
             findings.push(SmellFinding {
                 smell_type: SmellType::LazyElement,
                 file: PathBuf::from("<source>"),
@@ -7987,6 +8018,82 @@ class Stack[A] {
         assert!(
             findings.iter().all(|f| f.name != "Stack"),
             "Scala class with template_body methods must NOT be lazy; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    // r7-cl9 (#206): a zero-member Scala `case object` / sealed marker is an
+    // idiomatic ADT-variant singleton, NOT an anaemic class. Once the member
+    // count is correctly 0/0, the `lazy_element` smell must exempt these via
+    // the `ClassInfo.kind` flavor recorded by `scala_decl_flavor`.
+
+    #[test]
+    fn test_scala_case_object_not_lazy_element() {
+        // `case object` (incl. `private case object`) is an enum-like singleton
+        // whose value is its identity; member-count is the wrong signal for it.
+        let src = r#"
+sealed trait BenchQueueType
+case object RingBufferPow2Type extends BenchQueueType
+private case object Heap extends BenchQueueType { override val label: String = "heap" }
+"#;
+        let (_dir, path) = write_tmp("CaseObj.scala", src);
+        let findings = detect_lazy_elements_with_path(src, "scala", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "RingBufferPow2Type"),
+            "Scala `case object` must NOT be a lazy_element; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+        assert!(
+            findings.iter().all(|f| f.name != "Heap"),
+            "Scala `private case object` must NOT be a lazy_element; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_scala_sealed_trait_marker_not_lazy_element() {
+        // A `sealed trait` marker (zero members) is the root of an ADT; it is
+        // the marker-interface analog SonarQube S2094 exempts, not a smell.
+        let src = r#"
+sealed trait BenchQueueType
+"#;
+        let (_dir, path) = write_tmp("SealedTrait.scala", src);
+        let findings = detect_lazy_elements_with_path(src, "scala", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "BenchQueueType"),
+            "Scala `sealed trait` marker must NOT be a lazy_element; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_scala_sealed_abstract_class_marker_not_lazy_element() {
+        // A `sealed abstract class` parent of an ADT is likewise a marker.
+        let src = r#"
+sealed abstract class Color(val rgb: Int)
+"#;
+        let (_dir, path) = write_tmp("Color.scala", src);
+        let findings = detect_lazy_elements_with_path(src, "scala", Some(&path));
+        assert!(
+            findings.iter().all(|f| f.name != "Color"),
+            "Scala `sealed abstract class` marker must NOT be a lazy_element; got {:?}",
+            findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_scala_plain_anaemic_class_still_lazy() {
+        // Negative guard: the exemption is flavor-scoped, NOT a blanket Scala
+        // suppression. A plain `class Empty {}` (kind == None) MUST still flag,
+        // proving genuinely anaemic ordinary classes are still caught.
+        let src = r#"
+class Empty {}
+"#;
+        let (_dir, path) = write_tmp("Empty.scala", src);
+        let findings = detect_lazy_elements_with_path(src, "scala", Some(&path));
+        assert!(
+            findings.iter().any(|f| f.name == "Empty"),
+            "Plain anaemic Scala class MUST still be a lazy_element; got {:?}",
             findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
         );
     }
