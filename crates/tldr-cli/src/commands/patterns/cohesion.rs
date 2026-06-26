@@ -405,6 +405,7 @@ fn analyze_single_file_core(path: &Path, args: &CohesionArgs) -> PatternsResult<
             verdict: match c.verdict {
                 core_cohesion::CohesionVerdict::Cohesive => CohesionVerdict::Cohesive,
                 core_cohesion::CohesionVerdict::SplitCandidate => CohesionVerdict::SplitCandidate,
+                core_cohesion::CohesionVerdict::NotApplicable => CohesionVerdict::NotApplicable,
             },
             split_suggestion: c.split_suggestion,
             components: c
@@ -545,6 +546,9 @@ fn analyze_directory(
                             core_cohesion::CohesionVerdict::Cohesive => CohesionVerdict::Cohesive,
                             core_cohesion::CohesionVerdict::SplitCandidate => {
                                 CohesionVerdict::SplitCandidate
+                            }
+                            core_cohesion::CohesionVerdict::NotApplicable => {
+                                CohesionVerdict::NotApplicable
                             }
                         },
                         split_suggestion: c.split_suggestion,
@@ -1015,9 +1019,27 @@ fn compute_summary(classes: &[ClassCohesion]) -> CohesionSummary {
         .filter(|c| c.verdict == CohesionVerdict::Cohesive)
         .count() as u32;
 
-    let split_candidates = total - cohesive;
+    // fix-R3-r7-cl11 (Fix 4): a `NotApplicable` class (genuinely fieldless type)
+    // is counted as NEITHER cohesive nor a split candidate, and is excluded from
+    // the LCOM4 average — never as `total - cohesive`, which would wrongly fold
+    // it into `split_candidates`. `split_candidates` is now exactly the
+    // `SplitCandidate` population (mirrors the core summary), and the average is
+    // taken over applicable classes only.
+    let split_candidates = classes
+        .iter()
+        .filter(|c| c.verdict == CohesionVerdict::SplitCandidate)
+        .count() as u32;
 
-    let avg_lcom4 = classes.iter().map(|c| c.lcom4 as f64).sum::<f64>() / total as f64;
+    let applicable: Vec<f64> = classes
+        .iter()
+        .filter(|c| c.verdict != CohesionVerdict::NotApplicable)
+        .map(|c| c.lcom4 as f64)
+        .collect();
+    let avg_lcom4 = if applicable.is_empty() {
+        0.0
+    } else {
+        applicable.iter().sum::<f64>() / applicable.len() as f64
+    };
 
     CohesionSummary {
         total_classes: total,

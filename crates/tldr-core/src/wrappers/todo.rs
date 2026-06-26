@@ -399,8 +399,17 @@ fn build_todo_items(report: &TodoReport) -> Vec<TodoItem> {
                         let lcom4 = cls.get("lcom4").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                         let name = cls.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let file = cls.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                        // fix-R3-r7-cl11 (Fix 4): a `NotApplicable` class (genuinely
+                        // fieldless type) carries no measurable cohesion — never
+                        // emit a "consider splitting" item for it, mirroring its
+                        // exclusion from the low-cohesion count below.
+                        let applicable = cls
+                            .get("verdict")
+                            .and_then(|v| v.as_str())
+                            .map(|v| v != "not_applicable")
+                            .unwrap_or(true);
 
-                        if lcom4 > 2 {
+                        if applicable && lcom4 > 2 {
                             items.push(TodoItem::new(
                                 "cohesion",
                                 3,
@@ -541,13 +550,23 @@ fn build_todo_summary(report: &TodoReport) -> TodoSummary {
         if coh_r.success {
             if let Some(data) = &coh_r.data {
                 if let Some(classes) = data.get("classes").and_then(|v| v.as_array()) {
+                    // fix-R3-r7-cl11 (Fix 4): exclude `NotApplicable` classes so
+                    // `todo.low_cohesion_count` stays equal to the core/`health`
+                    // count (both are exactly the `SplitCandidate` population),
+                    // preserving BUG-04's `health == todo` invariant.
                     summary.low_cohesion_count = classes
                         .iter()
                         .filter(|c| {
-                            c.get("lcom4")
-                                .and_then(|v| v.as_u64())
-                                .map(|v| v > 2)
-                                .unwrap_or(false)
+                            let applicable = c
+                                .get("verdict")
+                                .and_then(|v| v.as_str())
+                                .map(|v| v != "not_applicable")
+                                .unwrap_or(true);
+                            applicable
+                                && c.get("lcom4")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v > 2)
+                                    .unwrap_or(false)
                         })
                         .count();
                 }

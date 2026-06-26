@@ -69,6 +69,18 @@ pub enum CohesionVerdict {
     Cohesive,
     /// Class should be considered for splitting (LCOM4 > threshold)
     SplitCandidate,
+    /// LCOM4 is not applicable to this type. fix-R3-r7-cl11 (v0.5.0 CLOSEOUT):
+    /// a *genuinely* fieldless type — one that DECLARES no fields (unit struct /
+    /// ZST / marker / utility namespace) AND whose methods access no fields AND
+    /// form no call connectivity (every method is its own component) — has no
+    /// data-cohesion to measure. Following the canonical LCOM4 literature
+    /// (Hitz & Montazeri 1995; NDepend's nullable `LCOM`; Mäkelä & Leppänen
+    /// "not applicable when a class has no locally defined variables") such a
+    /// type is reported `NotApplicable` and EXCLUDED from the low-cohesion count
+    /// and the LCOM4 average — never relabelled "Cohesive" while its
+    /// `lcom4 == method_count` is still counted. See
+    /// decisions/r7-cl11-cohesion-fieldless-lcom4.md.
+    NotApplicable,
 }
 
 /// Cohesion analysis for a single class
@@ -420,6 +432,7 @@ pub fn analyze_cohesion_with_options(
                             &ext.file_path,
                             ext.line,
                             ext.methods,
+                            ext.is_fieldless,
                             &options,
                         ));
                     }
@@ -489,6 +502,9 @@ pub fn analyze_cohesion_with_options(
                 first_file: ext.file_path.clone(),
                 first_line: ext.line,
                 methods: Vec::new(),
+                // fix-R3-r7-cl11: start fieldless; a single field-bearing part
+                // (below) flips the whole logical class field-bearing.
+                is_fieldless: true,
             });
         if ext.line < bucket.first_line
             || (ext.line == bucket.first_line && ext.file_path < bucket.first_file)
@@ -496,6 +512,8 @@ pub fn analyze_cohesion_with_options(
             bucket.first_file = ext.file_path.clone();
             bucket.first_line = ext.line;
         }
+        // fix-R3-r7-cl11: the merged class declares fields if ANY part does.
+        bucket.is_fieldless = bucket.is_fieldless && ext.is_fieldless;
         bucket.methods.extend(ext.methods);
     }
 
@@ -514,6 +532,7 @@ pub fn analyze_cohesion_with_options(
             &bucket.first_file,
             bucket.first_line,
             methods,
+            bucket.is_fieldless,
             &options,
         ));
     }
@@ -534,17 +553,31 @@ pub fn analyze_cohesion_with_options(
             .then_with(|| a.line.cmp(&b.line))
     });
 
-    // Calculate summary statistics
+    // Calculate summary statistics.
+    //
+    // fix-R3-r7-cl11 (Fix 4): a `NotApplicable` class (genuinely fieldless type)
+    // is EXCLUDED from the low-cohesion count, the split-candidate count, AND the
+    // LCOM4 average — it carries no measurable cohesion, so counting its
+    // `lcom4 == method_count` would re-introduce the Option A split-brain
+    // (`cohesion` calls it Cohesive/excluded while the count consumers still saw
+    // `lcom4 == N`). `split_candidates == low_cohesion_count` is preserved (both
+    // are exactly the `SplitCandidate` population), keeping BUG-04's
+    // `health == todo` invariant intact.
     let total_classes = all_classes.len();
-    let total_lcom4: usize = all_classes.iter().map(|c| c.lcom4).sum();
-    let avg_lcom4 = if total_classes > 0 {
-        Some(total_lcom4 as f64 / total_classes as f64)
-    } else {
+    let applicable_lcom4: Vec<usize> = all_classes
+        .iter()
+        .filter(|c| c.verdict != CohesionVerdict::NotApplicable)
+        .map(|c| c.lcom4)
+        .collect();
+    let avg_lcom4 = if applicable_lcom4.is_empty() {
         None
+    } else {
+        let total: usize = applicable_lcom4.iter().sum();
+        Some(total as f64 / applicable_lcom4.len() as f64)
     };
     let low_cohesion_count = all_classes
         .iter()
-        .filter(|c| c.lcom4 > options.low_cohesion_threshold)
+        .filter(|c| c.verdict == CohesionVerdict::SplitCandidate)
         .count();
     let cohesive_count = all_classes
         .iter()
@@ -659,6 +692,12 @@ fn analyze_file_cohesion(
 struct MethodFields {
     name: String,
     fields: HashSet<String>,
+    /// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): the set of intra-class method names
+    /// this method invokes via a `self`/`Self`-qualified call. Resolved against
+    /// the class's method set in the LCOM4 graph to add the canonical call edge
+    /// (Hitz & Montazeri 1995). Empty for languages whose call-edge dimension is
+    /// not yet wired (Rust is the primary target of this fork).
+    calls: HashSet<String>,
 }
 
 /// A single class extraction from a single file, with field-access
@@ -677,6 +716,11 @@ struct MethodFieldsExtraction {
     /// namespaces. Forms the qualified partial-class aggregation key together
     /// with `name`.
     namespace_path: Vec<String>,
+    /// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): true iff the class DECLARES no fields
+    /// (unit struct / ZST / marker / namespace type). DISTINCT from "fields
+    /// declared but unused" — the latter has `is_fieldless == false`. Drives the
+    /// `NotApplicable` verdict (Fix 4) for genuinely fieldless types.
+    is_fieldless: bool,
 }
 
 /// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet B1'): normalized qualified key for
@@ -700,6 +744,10 @@ struct PartialClassBucket {
     first_file: PathBuf,
     first_line: usize,
     methods: Vec<MethodFields>,
+    /// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): the merged class is fieldless iff EVERY
+    /// contributing partial extraction declared no fields (a single field-bearing
+    /// part makes the whole logical class field-bearing).
+    is_fieldless: bool,
 }
 
 /// Read+parse a file and extract per-method `(name, fields)` pairs for
@@ -805,12 +853,24 @@ fn extract_file_method_fields(
                         generic_bare_field_accesses(method_source, language, declared);
                     fields.extend(bare);
                 }
+                // fix-R3-r7-cl11 (Fix 3): canonical LCOM4 call edges. Collect
+                // this method's self/`Self`-qualified intra-class calls (AST,
+                // never regex) so two field-disjoint methods are still connected
+                // when one calls the other. Empty for languages not yet wired.
+                let calls = extract_self_method_calls(method_source, file_path);
                 MethodFields {
                     name: m.name.clone(),
                     fields,
+                    calls,
                 }
             })
             .collect();
+        // fix-R3-r7-cl11 (Fix 1): a type is fieldless iff it DECLARES no fields.
+        // For Rust this is now populated from the struct/union AST body (unit
+        // struct ⇔ no `body`); the other bare-member languages already populate
+        // `declared_fields`; field-less-by-omission languages (Python/Java/Go)
+        // leave it empty, so they fall back to the access+connectivity signal.
+        let is_fieldless = class_info.declared_fields.is_empty();
         out.push(MethodFieldsExtraction {
             name: class_info.name,
             file_path: file_path.to_path_buf(),
@@ -818,6 +878,7 @@ fn extract_file_method_fields(
             is_partial: class_info.is_partial,
             methods,
             namespace_path: class_info.namespace_path,
+            is_fieldless,
         });
     }
     Ok(out)
@@ -1304,7 +1365,13 @@ fn collect_solidity_method_fields(
                                     source,
                                     &state_var_names,
                                 );
-                                methods.push(MethodFields { name, fields });
+                                // fix-R3-r7-cl11: Solidity call edges are a
+                                // documented follow-on; keep field-only edges.
+                                methods.push(MethodFields {
+                                    name,
+                                    fields,
+                                    calls: HashSet::new(),
+                                });
                             }
                         }
                     }
@@ -1315,6 +1382,9 @@ fn collect_solidity_method_fields(
                         is_partial: info.is_partial,
                         methods,
                         namespace_path: Vec::new(),
+                        // fix-R3-r7-cl11: a contract with no state variables is
+                        // genuinely fieldless for LCOM4 purposes.
+                        is_fieldless: state_var_names.is_empty(),
                     });
                 }
             }
@@ -1331,39 +1401,52 @@ fn collect_solidity_method_fields(
 /// preserved so output stays deterministic.
 fn dedup_methods_by_name(methods: Vec<MethodFields>) -> Vec<MethodFields> {
     let mut order: Vec<String> = Vec::new();
-    let mut by_name: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut fields_by_name: HashMap<String, HashSet<String>> = HashMap::new();
+    // fix-R3-r7-cl11: union the per-method call sets too, so a method whose body
+    // is defined in one source and declared in another keeps its call edges.
+    let mut calls_by_name: HashMap<String, HashSet<String>> = HashMap::new();
     for m in methods {
-        let entry = by_name.entry(m.name.clone()).or_insert_with(|| {
+        let entry = fields_by_name.entry(m.name.clone()).or_insert_with(|| {
             order.push(m.name.clone());
             HashSet::new()
         });
         entry.extend(m.fields);
+        calls_by_name.entry(m.name.clone()).or_default().extend(m.calls);
     }
     order
         .into_iter()
         .map(|name| {
-            let fields = by_name.remove(&name).unwrap_or_default();
-            MethodFields { name, fields }
+            let fields = fields_by_name.remove(&name).unwrap_or_default();
+            let calls = calls_by_name.remove(&name).unwrap_or_default();
+            MethodFields { name, fields, calls }
         })
         .collect()
 }
 
-/// Compute the LCOM4 result for a class given its precomputed method
-/// `(name, fields)` set. Mirrors the algorithm in
-/// `compute_class_cohesion` but operates on data that has already been
-/// unioned across files (partial-class case) or that came from a
-/// single file (the non-partial path).
-fn cohesion_from_method_fields(
+/// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): the canonical LCOM4 core, shared by the
+/// production aggregator (`cohesion_from_method_fields`) and the per-file test
+/// path (`compute_class_cohesion`) so both decide field-edge ∪ call-edge
+/// connectivity and the `NotApplicable` verdict identically.
+///
+/// `method_calls[i]` is the set of intra-class method names that method `i`
+/// invokes through a `self`/`Self`-qualified call (the Hitz & Montazeri 1995 /
+/// Aivosto call edge). `is_fieldless` is true iff the type DECLARES no fields
+/// (unit struct / ZST / marker) — which, combined with an empty field-access
+/// set and zero method-graph connectivity, is exactly what makes LCOM4 not
+/// applicable.
+#[allow(clippy::too_many_arguments)]
+fn lcom4_from_graph(
     name: &str,
     file_path: &Path,
     line: usize,
-    methods: Vec<MethodFields>,
+    method_names: &[String],
+    method_fields: &[HashSet<String>],
+    method_calls: &[HashSet<String>],
+    is_fieldless: bool,
     options: &CohesionOptions,
 ) -> ClassCohesion {
-    let method_count = methods.len();
+    let method_count = method_names.len();
 
-    // Degenerate / singleton method handling identical to
-    // `compute_class_cohesion`.
     if method_count == 0 {
         return ClassCohesion {
             name: name.to_string(),
@@ -1379,12 +1462,10 @@ fn cohesion_from_method_fields(
     }
 
     if method_count == 1 {
-        let m = &methods[0];
         // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): sort the lone component's
-        // field list — it is collected from a `HashSet` and would otherwise be
-        // emitted in a non-deterministic order across runs.
+        // field list — collected from a `HashSet`, otherwise non-deterministic.
         let field_vec: Vec<String> = {
-            let mut v: Vec<String> = m.fields.iter().cloned().collect();
+            let mut v: Vec<String> = method_fields[0].iter().cloned().collect();
             v.sort();
             v
         };
@@ -1396,7 +1477,7 @@ fn cohesion_from_method_fields(
             field_count: field_vec.len(),
             lcom4: 1,
             components: vec![ComponentInfo {
-                methods: vec![m.name.clone()],
+                methods: vec![method_names[0].clone()],
                 fields: field_vec,
             }],
             verdict: CohesionVerdict::Cohesive,
@@ -1404,73 +1485,59 @@ fn cohesion_from_method_fields(
         };
     }
 
-    let method_fields: Vec<&HashSet<String>> =
-        methods.iter().map(|m| &m.fields).collect();
     let all_fields: HashSet<String> =
         method_fields.iter().flat_map(|s| s.iter().cloned()).collect();
     let field_count = all_fields.len();
 
-    if all_fields.is_empty() {
-        let lcom4 = method_count;
-        let components: Vec<ComponentInfo> = methods
-            .iter()
-            .map(|m| ComponentInfo {
-                methods: vec![m.name.clone()],
-                fields: vec![],
-            })
-            .collect();
-        // fix-R7 (cluster[11] cohesion fork, Option A): LCOM4 is UNDEFINED
-        // without fields — with zero fields every method is its own component,
-        // so `lcom4 == method_count` and any method-only type (idiomatic Rust
-        // unit struct / trait impl, Java/Go utility "namespace" type) would be
-        // mechanically and wrongly flagged "split into N classes". Report
-        // `Cohesive` with no split suggestion for fieldless types; the numeric
-        // `lcom4`/`method_count` are still surfaced for transparency. See
-        // decisions/r7-cl11-cohesion-fieldless-lcom4.md.
-        return ClassCohesion {
-            name: name.to_string(),
-            file: file_path.to_path_buf(),
-            line,
-            method_count,
-            field_count: 0,
-            lcom4,
-            components,
-            verdict: CohesionVerdict::Cohesive,
-            split_suggestion: None,
-        };
-    }
-
+    // fix-R3-r7-cl11 (Fix 3 — canonical call edges): two methods are connected
+    // if they SHARE A FIELD *or* one CALLS the other (Hitz & Montazeri 1995, as
+    // implemented by every shipping LCOM4 tool — Aivosto, Analizo, ROSE). The
+    // old field-only graph is why a cohesive fieldless utility type (methods
+    // calling each other) exploded to `lcom4 == N` and tripped the split rule.
     let mut uf = UnionFind::new(method_count);
+    // Field-share edges.
     for i in 0..method_count {
         for j in (i + 1)..method_count {
-            if !method_fields[i].is_disjoint(method_fields[j]) {
+            if !method_fields[i].is_disjoint(&method_fields[j]) {
                 uf.union(i, j);
             }
         }
     }
+    // Self/`Self`-qualified call edges, resolved against the class's own method
+    // set: a call to a free function / foreign method has no matching index and
+    // so adds no edge (no false connectivity).
+    let index_of: HashMap<&str, usize> = method_names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    for (i, calls) in method_calls.iter().enumerate() {
+        for callee in calls {
+            if let Some(&j) = index_of.get(callee.as_str()) {
+                if i != j {
+                    uf.union(i, j);
+                }
+            }
+        }
+    }
+
     let lcom4 = uf.count_components();
     let component_ids = uf.get_components();
-    // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): use a `BTreeMap` keyed on the
-    // stable Union-Find component id so the component LIST ORDER is
-    // deterministic across runs (a `HashMap` iterates in a randomized order —
-    // CONFIRMED LIVE: 8 runs of an 8-island fixture produced 8 different
-    // component orderings). Counts (`lcom4`, `field_count`) are unaffected;
-    // this is a pure output-ordering fix and so also stabilizes the C++ /
-    // Solidity output without touching their field/method LOGIC.
+    // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): deterministic component order via
+    // a `BTreeMap` keyed on the stable Union-Find component id; sorted inner
+    // field lists. Call edges only ADD unions, never reorder the keys.
     let mut component_map: BTreeMap<usize, (Vec<String>, HashSet<String>)> = BTreeMap::new();
     for (i, &comp_id) in component_ids.iter().enumerate() {
         let entry = component_map
             .entry(comp_id)
             .or_insert_with(|| (Vec::new(), HashSet::new()));
-        entry.0.push(methods[i].name.clone());
+        entry.0.push(method_names[i].clone());
         entry.1.extend(method_fields[i].iter().cloned());
     }
     let components: Vec<ComponentInfo> = component_map
         .into_values()
         .map(|(methods, fields)| ComponentInfo {
             methods,
-            // Sort the inner field list so a component's `fields` are emitted in
-            // a deterministic order (a `HashSet` has no stable iteration order).
             fields: {
                 let mut v: Vec<String> = fields.into_iter().collect();
                 v.sort();
@@ -1479,7 +1546,20 @@ fn cohesion_from_method_fields(
         })
         .collect();
 
-    let verdict = if lcom4 > options.low_cohesion_threshold {
+    // fix-R3-r7-cl11 (Fix 4 — honest NotApplicable, replacing Option A): a type
+    // is genuinely fieldless iff it DECLARES no fields AND its methods access
+    // none. If on top of that the method graph has zero edges (`lcom4 ==
+    // method_count`) there is no cohesion signal at all, so LCOM4 is not
+    // applicable — exclude it from the counts/average rather than relabel it
+    // "Cohesive" (the Option A semantic lie that still left every count consumer
+    // reading `lcom4 == N`). A declared-but-unused-field type (R3) keeps a real
+    // verdict because `is_fieldless` is false; a fieldless type whose methods
+    // call each other collapses to `lcom4 == 1` via the call edges above and is
+    // honestly `Cohesive`.
+    let genuinely_fieldless = is_fieldless && all_fields.is_empty();
+    let verdict = if genuinely_fieldless && lcom4 == method_count {
+        CohesionVerdict::NotApplicable
+    } else if lcom4 > options.low_cohesion_threshold {
         CohesionVerdict::SplitCandidate
     } else {
         CohesionVerdict::Cohesive
@@ -1504,6 +1584,36 @@ fn cohesion_from_method_fields(
         verdict,
         split_suggestion,
     }
+}
+
+/// Compute the LCOM4 result for a class given its precomputed method
+/// `(name, fields, calls)` set. Mirrors `compute_class_cohesion` but operates
+/// on data already unioned across files (partial-class case) or from a single
+/// file (the non-partial path). `is_fieldless` is true iff the class DECLARES
+/// no fields (drives the `NotApplicable` verdict for genuinely fieldless types).
+fn cohesion_from_method_fields(
+    name: &str,
+    file_path: &Path,
+    line: usize,
+    methods: Vec<MethodFields>,
+    is_fieldless: bool,
+    options: &CohesionOptions,
+) -> ClassCohesion {
+    let method_names: Vec<String> = methods.iter().map(|m| m.name.clone()).collect();
+    let method_fields: Vec<HashSet<String>> =
+        methods.iter().map(|m| m.fields.clone()).collect();
+    let method_calls: Vec<HashSet<String>> =
+        methods.iter().map(|m| m.calls.clone()).collect();
+    lcom4_from_graph(
+        name,
+        file_path,
+        line,
+        &method_names,
+        &method_fields,
+        &method_calls,
+        is_fieldless,
+        options,
+    )
 }
 
 /// Extract classes from the AST based on language
@@ -2729,9 +2839,11 @@ fn extract_file_method_fields_cpp(
                     &source[*start..*end],
                     &declared,
                 );
+                // fix-R3-r7-cl11: C++ call edges are a documented follow-on.
                 MethodFields {
                     name: name.clone(),
                     fields,
+                    calls: HashSet::new(),
                 }
             })
             .collect();
@@ -2760,6 +2872,9 @@ fn extract_file_method_fields_cpp(
                     is_partial: true,
                     methods,
                     namespace_path,
+                    // fix-R3-r7-cl11: C++ declared-field set (header members,
+                    // unioned across translation units) decides fieldlessness.
+                    is_fieldless: declared.is_empty(),
                 });
             }
         }
@@ -2840,6 +2955,9 @@ fn collect_cpp_inbody_class_fields(
                             is_partial: true,
                             methods,
                             namespace_path: namespace_path.to_vec(),
+                            // fix-R3-r7-cl11: in-body declared fields decide
+                            // fieldlessness (empty ⇔ marker / pure-method class).
+                            is_fieldless: declared.is_empty(),
                         });
                     }
                     // Recurse into the body for nested classes.
@@ -2907,6 +3025,9 @@ fn collect_cpp_inbody_class_fields(
                             is_partial: true,
                             methods,
                             namespace_path: namespace_path.to_vec(),
+                            // fix-R3-r7-cl11: in-body declared fields decide
+                            // fieldlessness (empty ⇔ marker / pure-method class).
+                            is_fieldless: declared.is_empty(),
                         });
                     }
                     // Recurse into the captured body and each spilled sibling
@@ -3328,7 +3449,7 @@ fn cpp_visit_inbody_method_node(
             let method_text = &source[child.start_byte()..child.end_byte()];
             let fields = cpp_method_field_accesses(method_text, declared);
             if seen.insert(name.clone()) {
-                methods.push(MethodFields { name, fields });
+                methods.push(MethodFields { name, fields, calls: HashSet::new() });
             } else if let Some(existing) = methods.iter_mut().find(|m| m.name == name) {
                 // An inline definition supersedes a prior declared-only
                 // signature: union its (richer) field set in.
@@ -3365,7 +3486,7 @@ fn cpp_visit_inbody_method_node(
                             HashSet::new()
                         };
                         if seen.insert(name.clone()) {
-                            methods.push(MethodFields { name, fields });
+                            methods.push(MethodFields { name, fields, calls: HashSet::new() });
                         } else if !fields.is_empty() {
                             if let Some(existing) =
                                 methods.iter_mut().find(|m| m.name == name)
@@ -4412,10 +4533,19 @@ fn collect_rust_structs(
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
-        if child.kind() == "struct_item" {
+        // fix-R3-r7-cl11 (Fix 1): a `struct_item`/`union_item` now contributes
+        // its DECLARED field set, read straight from the AST body. A unit struct
+        // (`struct U;`) has no `body` → empty set → genuinely fieldless; a brace
+        // struct/union exposes named `field_declaration`s; a tuple struct exposes
+        // positional fields synthesized as "0","1",…. This is what lets the LCOM4
+        // verdict distinguish a true marker type (`NotApplicable`) from a
+        // field-bearing type whose methods merely never touch the fields
+        // (`SplitCandidate`) — the R3 "no fields" ≠ "fields unused" distinction.
+        if matches!(child.kind(), "struct_item" | "union_item") {
             if let Some(name_node) = child.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
                     let line = child.start_position().row + 1;
+                    let declared_fields = rust_declared_fields(&child, source);
                     structs.insert(
                         name.to_string(),
                         ClassInfo {
@@ -4424,9 +4554,7 @@ fn collect_rust_structs(
                             methods: Vec::new(),
                             is_partial: false,
                             namespace_path: Vec::new(),
-                            // fix-FixA-bare-field-v1: Rust uses `self.`-qualified
-                            // access.
-                            declared_fields: HashSet::new(),
+                            declared_fields,
                         },
                     );
                 }
@@ -4435,6 +4563,54 @@ fn collect_rust_structs(
         // Recurse
         collect_rust_structs(child, source, structs);
     }
+}
+
+/// fix-R3-r7-cl11 (Fix 1): enumerate the DECLARED fields of a Rust
+/// `struct_item`/`union_item` from its AST `body`. Pure tree-sitter — no regex,
+/// no source-text heuristic.
+///
+/// - No `body` (unit struct `struct U;`) → empty set (genuinely fieldless).
+/// - `field_declaration_list` (brace struct / union) → each `field_declaration`'s
+///   `name` (`field_identifier`).
+/// - `ordered_field_declaration_list` (tuple struct `struct T(A, B)`) →
+///   positional names "0","1",… synthesized per `type` child (tuple fields carry
+///   no identifier; `self.0` accesses them positionally).
+fn rust_declared_fields(item: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Some(body) = item.child_by_field_name("body") else {
+        return out; // unit struct → truly fieldless
+    };
+    match body.kind() {
+        "field_declaration_list" => {
+            let mut cursor = body.walk();
+            for f in body.children(&mut cursor) {
+                if f.kind() == "field_declaration" {
+                    if let Some(name) = f.child_by_field_name("name") {
+                        if let Ok(t) = name.utf8_text(source.as_bytes()) {
+                            out.insert(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        "ordered_field_declaration_list" => {
+            let mut idx = 0usize;
+            let mut cursor = body.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    if cursor.field_name() == Some("type") {
+                        out.insert(idx.to_string());
+                        idx += 1;
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 fn collect_rust_impl_methods(
@@ -5259,54 +5435,14 @@ fn compute_class_cohesion(
         .filter(|m| options.include_dunder || !is_dunder_method(&m.name))
         .collect();
 
-    let method_count = methods.len();
-
-    // Special cases (T9 mitigation):
-    // - 0 methods: LCOM4 = 0 (degenerate case, can't measure)
-    // - 1 method: LCOM4 = 1 (single method is trivially cohesive)
-    if method_count == 0 {
-        return ClassCohesion {
-            name: class_info.name.clone(),
-            file: file_path.to_path_buf(),
-            line: class_info.line,
-            method_count: 0,
-            field_count: 0,
-            lcom4: 0,
-            components: vec![],
-            verdict: CohesionVerdict::Cohesive,
-            split_suggestion: None,
-        };
-    }
-
-    if method_count == 1 {
-        let method = methods[0];
-        let method_source = &source[method.start_byte..method.end_byte];
-        let fields = extract_field_accesses(method_source, file_path);
-        // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): sort for deterministic field
-        // order (parity with the runtime `cohesion_from_method_fields`).
-        let field_vec: Vec<String> = {
-            let mut v: Vec<String> = fields.into_iter().collect();
-            v.sort();
-            v
-        };
-
-        return ClassCohesion {
-            name: class_info.name.clone(),
-            file: file_path.to_path_buf(),
-            line: class_info.line,
-            method_count: 1,
-            field_count: field_vec.len(),
-            lcom4: 1,
-            components: vec![ComponentInfo {
-                methods: vec![method.name.clone()],
-                fields: field_vec,
-            }],
-            verdict: CohesionVerdict::Cohesive,
-            split_suggestion: None,
-        };
-    }
-
-    // Extract field accesses for each method
+    // fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): build the (names, fields, calls) vectors
+    // and delegate to the shared `lcom4_from_graph` core so this test path and
+    // the production `cohesion_from_method_fields` path decide field-edge ∪
+    // call-edge connectivity and the `NotApplicable` verdict IDENTICALLY.
+    // `is_fieldless` comes straight from the class's AST-declared field set
+    // (`declared_fields`), so a unit struct (`NotApplicable`) is distinguished
+    // from a declared-but-unused-field struct (`SplitCandidate`) — R3.
+    let method_names: Vec<String> = methods.iter().map(|m| m.name.clone()).collect();
     let method_fields: Vec<HashSet<String>> = methods
         .iter()
         .map(|m| {
@@ -5314,115 +5450,94 @@ fn compute_class_cohesion(
             extract_field_accesses(method_source, file_path)
         })
         .collect();
-
-    // Collect all unique fields
-    let all_fields: HashSet<String> = method_fields.iter().flatten().cloned().collect();
-    let field_count = all_fields.len();
-
-    // If no methods access any fields, each method is its own component.
-    if all_fields.is_empty() {
-        let lcom4 = method_count;
-        let components: Vec<ComponentInfo> = methods
-            .iter()
-            .map(|m| ComponentInfo {
-                methods: vec![m.name.clone()],
-                fields: vec![],
-            })
-            .collect();
-
-        // fix-R7 (cluster[11] cohesion fork, Option A): a fieldless type has no
-        // defined LCOM4 — `lcom4 == method_count` here is an artifact, not low
-        // cohesion. Report `Cohesive`/no-suggestion rather than mechanically
-        // flagging idiomatic fieldless method-only types (Rust unit struct /
-        // trait impl, utility/static classes). Numbers preserved for
-        // transparency. See decisions/r7-cl11-cohesion-fieldless-lcom4.md.
-        return ClassCohesion {
-            name: class_info.name.clone(),
-            file: file_path.to_path_buf(),
-            line: class_info.line,
-            method_count,
-            field_count: 0,
-            lcom4,
-            components,
-            verdict: CohesionVerdict::Cohesive,
-            split_suggestion: None,
-        };
-    }
-
-    // Build Union-Find and connect methods that share fields
-    let mut uf = UnionFind::new(method_count);
-
-    for i in 0..method_count {
-        for j in (i + 1)..method_count {
-            // Check if methods i and j share any fields
-            if !method_fields[i].is_disjoint(&method_fields[j]) {
-                uf.union(i, j);
-            }
-        }
-    }
-
-    // Count connected components
-    let lcom4 = uf.count_components();
-
-    // Build component info
-    let component_ids = uf.get_components();
-    // fix-FixB-cohesion-v1 (v0.5.0 AUDIT-FIX): deterministic component order via
-    // a `BTreeMap` keyed on the stable Union-Find id + sorted inner field list
-    // (parity with the runtime `cohesion_from_method_fields`).
-    let mut component_map: BTreeMap<usize, (Vec<String>, HashSet<String>)> = BTreeMap::new();
-
-    for (i, &comp_id) in component_ids.iter().enumerate() {
-        let entry = component_map
-            .entry(comp_id)
-            .or_insert_with(|| (Vec::new(), HashSet::new()));
-        entry.0.push(methods[i].name.clone());
-        entry.1.extend(method_fields[i].iter().cloned());
-    }
-
-    let components: Vec<ComponentInfo> = component_map
-        .into_values()
-        .map(|(methods, fields)| ComponentInfo {
-            methods,
-            fields: {
-                let mut v: Vec<String> = fields.into_iter().collect();
-                v.sort();
-                v
-            },
+    let method_calls: Vec<HashSet<String>> = methods
+        .iter()
+        .map(|m| {
+            let method_source = &source[m.start_byte..m.end_byte];
+            extract_self_method_calls(method_source, file_path)
         })
         .collect();
 
-    let verdict = if lcom4 > options.low_cohesion_threshold {
-        CohesionVerdict::SplitCandidate
-    } else {
-        CohesionVerdict::Cohesive
-    };
-
-    let split_suggestion = if verdict == CohesionVerdict::SplitCandidate {
-        Some(format!(
-            "Consider splitting into {} classes based on {} disconnected method groups",
-            lcom4, lcom4
-        ))
-    } else {
-        None
-    };
-
-    ClassCohesion {
-        name: class_info.name.clone(),
-        file: file_path.to_path_buf(),
-        line: class_info.line,
-        method_count,
-        field_count,
-        lcom4,
-        components,
-        verdict,
-        split_suggestion,
-    }
+    lcom4_from_graph(
+        &class_info.name,
+        file_path,
+        class_info.line,
+        &method_names,
+        &method_fields,
+        &method_calls,
+        class_info.declared_fields.is_empty(),
+        options,
+    )
 }
 
 /// Extract field accesses based on file extension/language.
 ///
 /// Uses AST-based extraction when possible, falling back to regex for
 /// languages where tree-sitter parsing fails or returns no results.
+/// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT, Fix 3): collect the set of intra-class
+/// method names that `method_source` invokes through a `self.`/`Self::`
+/// receiver. These become the canonical LCOM4 *call edges* (Hitz & Montazeri
+/// 1995): two field-disjoint methods are still connected when one calls the
+/// other. Purely AST-driven (no regex). Rust is the primary target of this fork;
+/// other languages keep field-only edges (a documented per-language follow-on)
+/// and so return an empty set here.
+fn extract_self_method_calls(method_source: &str, file_path: &Path) -> HashSet<String> {
+    let mut calls = HashSet::new();
+    if !matches!(Language::from_path(file_path), Some(Language::Rust)) {
+        return calls;
+    }
+    let tree = match parse(method_source, Language::Rust) {
+        Ok(t) => t,
+        Err(_) => return calls,
+    };
+    collect_rust_self_calls(&tree.root_node(), method_source.as_bytes(), &mut calls);
+    calls
+}
+
+/// Walk a Rust method body collecting `self.foo(..)` and `Self::foo(..)` callee
+/// names (the `field`/`name` of the `call_expression`'s `function` child when
+/// that child's receiver is `self`/`Self`). A bare `foo(..)` is intentionally
+/// ignored: a Rust instance method is never callable without a `self`/`Self`
+/// receiver, so a bare call is a free function and must not create a false edge.
+fn collect_rust_self_calls(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    out: &mut HashSet<String>,
+) {
+    use crate::security::ast_utils::node_text;
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            match func.kind() {
+                // `self.method(..)` — field_expression { value: self, field }
+                "field_expression" => {
+                    if let Some(value) = func.child_by_field_name("value") {
+                        if node_text(&value, source) == "self" {
+                            if let Some(field) = func.child_by_field_name("field") {
+                                out.insert(node_text(&field, source).to_string());
+                            }
+                        }
+                    }
+                }
+                // `Self::method(..)` — scoped_identifier { path: Self, name }
+                "scoped_identifier" => {
+                    if let Some(path) = func.child_by_field_name("path") {
+                        if node_text(&path, source) == "Self" {
+                            if let Some(name) = func.child_by_field_name("name") {
+                                out.insert(node_text(&name, source).to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_rust_self_calls(&child, source, out);
+    }
+}
+
 fn extract_field_accesses(method_source: &str, file_path: &Path) -> HashSet<String> {
     let lang = Language::from_path(file_path);
 
@@ -5485,8 +5600,19 @@ pub fn extract_field_accesses_ast(
         &mut fields,
     );
 
-    // If AST found nothing but regex would have found something, fallback
-    if fields.is_empty() {
+    // If AST found nothing but regex would have found something, fallback.
+    //
+    // fix-R3-r7-cl11 (Fix 2): EXCLUDE Rust from this AST-empty→regex re-entry.
+    // For Rust the AST walk (`extract_field_with_named_receiver`) is
+    // authoritative — it already credits genuine `self.field` and correctly
+    // REJECTS `self.method()` (the field_expression that is the `function` child
+    // of a `call_expression`). An empty AST result therefore means "no
+    // `self.field`", which is the truth. The regex (`self\.(\w+)`) cannot make
+    // that distinction and re-captured `self.helper` from `self.helper(..)`,
+    // inventing a phantom `helper` field on every fieldless method-only type
+    // (the live R2 mis-count). Parse-failure still falls back to regex above
+    // (5467-ish), so a genuinely unparseable snippet is unaffected.
+    if fields.is_empty() && !matches!(language, Language::Rust) {
         let regex_fields = extract_field_accesses_regex(method_source, language, receiver_name);
         if !regex_fields.is_empty() {
             return regex_fields;
@@ -7661,12 +7787,12 @@ class Mixed {
         );
     }
 
-    /// fix-R7 (cluster[11] cohesion fork, Option A): a FIELDLESS Rust type
-    /// (unit struct / method-only impl) must NOT be reported as a
-    /// split_candidate. LCOM4 is undefined without fields — with zero fields
-    /// every method is its own component, so `lcom4 == method_count` and the
-    /// type is mechanically (and wrongly) flagged "split into N classes".
-    /// See decisions/r7-cl11-cohesion-fieldless-lcom4.md.
+    /// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): a GENUINELY fieldless Rust type (unit
+    /// struct, whose methods access no field and do not call each other) has no
+    /// measurable LCOM4 — it must be reported `NotApplicable`, NOT relabelled
+    /// "Cohesive" (the rejected Option A, which left every count consumer still
+    /// reading `lcom4 == method_count`). See
+    /// decisions/r7-cl11-cohesion-fieldless-lcom4.md.
     #[test]
     fn test_cohesion_fieldless_type_not_split_candidate() {
         let source = "\
@@ -7691,14 +7817,15 @@ impl Calculator {
         assert_eq!(calc.field_count, 0, "Calculator has no fields");
         assert_eq!(
             calc.verdict,
-            CohesionVerdict::Cohesive,
-            "a fieldless method-only type must be Cohesive, not a split_candidate \
-             (LCOM4 inapplicable without fields); got {:?}",
+            CohesionVerdict::NotApplicable,
+            "a genuinely fieldless method-only type (no fields, no call edges) \
+             must be NotApplicable, not a split_candidate and not relabelled \
+             Cohesive; got {:?}",
             calc.verdict
         );
         assert!(
             calc.split_suggestion.is_none(),
-            "no split suggestion for a fieldless type, got {:?}",
+            "no split suggestion for a NotApplicable type, got {:?}",
             calc.split_suggestion
         );
     }
@@ -7741,6 +7868,259 @@ impl Mixed {
              a split_candidate, got {:?} (lcom4={})",
             mixed.verdict,
             mixed.lcom4
+        );
+    }
+
+    /// fix-R3-r7-cl11 — R2: `self.method()` is NOT a field, and the call edge
+    /// collapses the cohesive fieldless utility type to `lcom4 == 1`. Before the
+    /// fix the regex fallback invented a phantom `helper` field (`field_count=1`)
+    /// and the field-only graph reported `lcom4=2`. Pins Fix 2 (regex gate) and
+    /// Fix 3 (call edges) on BOTH the per-file test path and the production
+    /// directory-walk path.
+    #[test]
+    fn test_cl11_self_method_call_is_not_a_field() {
+        let source = "\
+struct Calc;
+
+impl Calc {
+    fn add(&self, x: i32) -> i32 { self.helper(x) + 1 }
+    fn sub(&self, x: i32) -> i32 { self.helper(x) - 1 }
+    fn helper(&self, x: i32) -> i32 { x * 2 }
+}
+";
+        // Per-file path (`compute_class_cohesion`).
+        let test_dir = tempfile::tempdir().unwrap();
+        let file_path = test_dir.path().join("methodcalls.rs");
+        std::fs::write(&file_path, source).unwrap();
+        let options = CohesionOptions::default();
+        let results = analyze_file_cohesion(&file_path, &options).unwrap();
+        let calc = results
+            .iter()
+            .find(|c| c.name == "Calc")
+            .expect("Calc class must be analyzed");
+        assert_eq!(
+            calc.field_count, 0,
+            "`self.helper()` is a method CALL, not a field — no phantom `helper` \
+             field may be counted (got field_count={})",
+            calc.field_count
+        );
+        assert_eq!(
+            calc.lcom4, 1,
+            "add/sub/helper are connected by call edges -> canonical LCOM4 == 1 \
+             (got {})",
+            calc.lcom4
+        );
+        assert_eq!(calc.verdict, CohesionVerdict::Cohesive);
+
+        // Production directory-walk path (`cohesion_from_method_fields`).
+        let report = analyze_cohesion(test_dir.path(), Some(Language::Rust), 2).unwrap();
+        let calc2 = report
+            .classes
+            .iter()
+            .find(|c| c.name == "Calc")
+            .expect("Calc class must be analyzed (production path)");
+        assert_eq!(calc2.field_count, 0, "production path: no phantom field");
+        assert_eq!(calc2.lcom4, 1, "production path: call edges collapse to 1");
+        assert_eq!(calc2.verdict, CohesionVerdict::Cohesive);
+    }
+
+    /// fix-R3-r7-cl11 — R1: a genuinely fieldless type with no call connectivity
+    /// is `NotApplicable` and is EXCLUDED from `split_candidates`,
+    /// `low_cohesion_count`, and the LCOM4 average (it no longer inflates
+    /// `avg_lcom4` to `method_count`). This is the cross-command-consistency
+    /// fork: the per-class verdict and the count consumers now AGREE. Pins Fix 4
+    /// on the production summary that `health`/`todo` read.
+    #[test]
+    fn test_cl11_fieldless_excluded_from_counts() {
+        let source = "\
+struct Big;
+
+impl Big {
+    fn a(&self) -> i32 { 1 }
+    fn b(&self) -> i32 { 2 }
+    fn c(&self) -> i32 { 3 }
+    fn d(&self) -> i32 { 4 }
+}
+";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bigfieldless.rs"), source).unwrap();
+
+        let report = analyze_cohesion(dir.path(), Some(Language::Rust), 2).unwrap();
+        let big = report
+            .classes
+            .iter()
+            .find(|c| c.name == "Big")
+            .expect("Big class must be analyzed");
+        assert_eq!(
+            big.verdict,
+            CohesionVerdict::NotApplicable,
+            "a fieldless marker type with no call edges is NotApplicable, got {:?}",
+            big.verdict
+        );
+        // The same class must NOT be counted as low-cohesion / split (the Option
+        // A split-brain: `cohesion` said Cohesive while `health` counted it).
+        assert_eq!(
+            report.summary.split_candidates, 0,
+            "NotApplicable class excluded from split_candidates"
+        );
+        assert_eq!(
+            report.low_cohesion_count, 0,
+            "NotApplicable class excluded from low_cohesion_count"
+        );
+        // `avg_lcom4` must not include the sentinel `lcom4 == method_count`. Big
+        // is the only class and is NotApplicable, so the average is undefined.
+        assert_eq!(
+            report.summary.avg_lcom4, None,
+            "NotApplicable class excluded from avg_lcom4 (got {:?})",
+            report.summary.avg_lcom4
+        );
+    }
+
+    /// fix-R3-r7-cl11 — R3: "no fields accessed" ≠ "no fields declared". A struct
+    /// that DECLARES fields but whose methods never read them is field-*bearing*
+    /// (genuinely 3 disjoint groups -> `SplitCandidate`), and must be
+    /// distinguished from a true unit struct (`NotApplicable`). Pins Fix 1
+    /// (AST-declared field set) — the predicate keys on DECLARED fields, not on
+    /// the (here empty) access-derived set.
+    #[test]
+    fn test_cl11_declared_but_unused_fields_is_split_not_na() {
+        let source = "\
+struct Calculator { history: Vec<i32>, count: i32 }
+
+impl Calculator {
+    fn first(&self) -> i32 { 1 }
+    fn second(&self) -> i32 { 2 }
+    fn third(&self) -> i32 { 3 }
+}
+
+struct Unit;
+
+impl Unit {
+    fn ping(&self) -> i32 { 1 }
+    fn pong(&self) -> i32 { 2 }
+    fn pang(&self) -> i32 { 3 }
+}
+";
+        let test_dir = tempfile::tempdir().unwrap();
+        let file_path = test_dir.path().join("hasfields.rs");
+        std::fs::write(&file_path, source).unwrap();
+        let options = CohesionOptions::default();
+        let results = analyze_file_cohesion(&file_path, &options).unwrap();
+
+        let calc = results
+            .iter()
+            .find(|c| c.name == "Calculator")
+            .expect("Calculator must be analyzed");
+        assert_eq!(
+            calc.field_count, 0,
+            "no field is ACCESSED (the methods ignore history/count)"
+        );
+        assert_ne!(
+            calc.verdict,
+            CohesionVerdict::NotApplicable,
+            "a type that DECLARES fields is field-bearing, never NotApplicable"
+        );
+        assert_eq!(
+            calc.verdict,
+            CohesionVerdict::SplitCandidate,
+            "declared-but-unused fields + 3 disjoint method groups -> SplitCandidate, got {:?}",
+            calc.verdict
+        );
+
+        let unit = results
+            .iter()
+            .find(|c| c.name == "Unit")
+            .expect("Unit must be analyzed");
+        assert_eq!(
+            unit.verdict,
+            CohesionVerdict::NotApplicable,
+            "a true unit struct (no declared fields, no call edges) is NotApplicable, got {:?}",
+            unit.verdict
+        );
+    }
+
+    /// fix-R3-r7-cl11 — R4: the real-field path is unchanged (no regression). A
+    /// struct whose methods read `self.total` is detected via the AST extractor
+    /// and stays fully cohesive.
+    #[test]
+    fn test_cl11_real_fields_unchanged() {
+        let source = "\
+struct Acc { total: i32 }
+
+impl Acc {
+    fn add(&self, x: i32) -> i32 { self.total + x }
+    fn show(&self) -> i32 { self.total }
+}
+";
+        let test_dir = tempfile::tempdir().unwrap();
+        let file_path = test_dir.path().join("realfields.rs");
+        std::fs::write(&file_path, source).unwrap();
+        let options = CohesionOptions::default();
+        let results = analyze_file_cohesion(&file_path, &options).unwrap();
+        let acc = results
+            .iter()
+            .find(|c| c.name == "Acc")
+            .expect("Acc must be analyzed");
+        assert_eq!(acc.field_count, 1, "self.total is the one field");
+        assert_eq!(acc.lcom4, 1, "both methods share `total` -> lcom4 == 1");
+        assert_eq!(acc.verdict, CohesionVerdict::Cohesive);
+    }
+
+    /// fix-R3-r7-cl11 — tuple/unit AST enumeration (pins Fix 1 node-kinds). A
+    /// tuple struct's positional field `0` is recognized (so `self.0` forms a
+    /// field edge), while a unit struct is `NotApplicable`.
+    #[test]
+    fn test_cl11_tuple_field_recognized_and_unit_na() {
+        let source = "\
+struct T(i32, String);
+
+impl T {
+    fn first(&self) -> i32 { self.0 }
+    fn second(&self) -> i32 { self.0 + 1 }
+}
+
+struct U;
+
+impl U {
+    fn one(&self) -> i32 { 1 }
+    fn two(&self) -> i32 { 2 }
+}
+";
+        let test_dir = tempfile::tempdir().unwrap();
+        let file_path = test_dir.path().join("tuple.rs");
+        std::fs::write(&file_path, source).unwrap();
+        let options = CohesionOptions::default();
+        let results = analyze_file_cohesion(&file_path, &options).unwrap();
+
+        let t = results
+            .iter()
+            .find(|c| c.name == "T")
+            .expect("T must be analyzed");
+        assert!(
+            t.field_count >= 1,
+            "tuple field `0` must be recognized as a field access (got field_count={})",
+            t.field_count
+        );
+        assert_eq!(
+            t.lcom4, 1,
+            "both methods access self.0 -> one component (got {})",
+            t.lcom4
+        );
+        assert_ne!(
+            t.verdict,
+            CohesionVerdict::NotApplicable,
+            "a tuple struct DECLARES fields, so it is never NotApplicable"
+        );
+
+        let u = results
+            .iter()
+            .find(|c| c.name == "U")
+            .expect("U must be analyzed");
+        assert_eq!(
+            u.verdict,
+            CohesionVerdict::NotApplicable,
+            "a unit struct is genuinely fieldless -> NotApplicable, got {:?}",
+            u.verdict
         );
     }
 }

@@ -166,6 +166,12 @@ pub enum CohesionVerdict {
     Cohesive,
     /// Class could be split (LCOM4 > 1)
     SplitCandidate,
+    /// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT): LCOM4 not applicable — a genuinely
+    /// fieldless type (unit struct / ZST / marker / namespace) with no field
+    /// access and no method-call connectivity. Mirrors the core
+    /// `CohesionVerdict::NotApplicable`; excluded from the split-candidate count
+    /// and the LCOM4 average rather than relabelled "cohesive".
+    NotApplicable,
 }
 
 impl CohesionVerdict {
@@ -184,6 +190,7 @@ impl std::fmt::Display for CohesionVerdict {
         match self {
             Self::Cohesive => write!(f, "cohesive"),
             Self::SplitCandidate => write!(f, "split_candidate"),
+            Self::NotApplicable => write!(f, "not_applicable"),
         }
     }
 }
