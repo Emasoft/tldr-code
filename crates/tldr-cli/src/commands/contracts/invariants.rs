@@ -181,6 +181,14 @@ enum ObservedValue {
     None,
     List(Vec<ObservedValue>),
     Other(String), // Unparseable value represented as string
+    /// RC7: a Rust Option/Result constructor observed in a test, carrying its
+    /// constructor identity ({Some,None,Ok,Err}) and recursed payload. Lets the
+    /// type/optionality renderers decide presence from the CONSTRUCTOR rather
+    /// than from token text or a hardcoded `is Some`.
+    Optionish {
+        ctor: String,
+        payload: Option<Box<ObservedValue>>,
+    },
 }
 
 impl ObservedValue {
@@ -205,6 +213,7 @@ impl ObservedValue {
                 let _ = text.len();
                 "unknown"
             }
+            ObservedValue::Optionish { .. } => "optionish",
         }
     }
 
@@ -271,7 +280,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "str",
             V::Bool(_) => "bool",
             V::List(_) => "list",
-            V::None | V::Other(_) => "unknown",
+            V::None | V::Other(_) | V::Optionish { .. } => "unknown",
         },
         // C-family / JVM: Int/Double/String/Boolean/List.
         Language::Kotlin => match v {
@@ -280,7 +289,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "String",
             V::Bool(_) => "Boolean",
             V::List(_) => "List",
-            V::None | V::Other(_) => "Any",
+            V::None | V::Other(_) | V::Optionish { .. } => "Any",
         },
         Language::Java => match v {
             V::Int(_) => "int",
@@ -288,7 +297,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "String",
             V::Bool(_) => "boolean",
             V::List(_) => "List",
-            V::None | V::Other(_) => "Object",
+            V::None | V::Other(_) | V::Optionish { .. } => "Object",
         },
         Language::Scala => match v {
             V::Int(_) => "Int",
@@ -296,7 +305,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "String",
             V::Bool(_) => "Boolean",
             V::List(_) => "List",
-            V::None | V::Other(_) => "Any",
+            V::None | V::Other(_) | V::Optionish { .. } => "Any",
         },
         Language::CSharp => match v {
             V::Int(_) => "int",
@@ -304,7 +313,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "bool",
             V::List(_) => "List",
-            V::None | V::Other(_) => "object",
+            V::None | V::Other(_) | V::Optionish { .. } => "object",
         },
         Language::Swift => match v {
             V::Int(_) => "Int",
@@ -312,7 +321,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "String",
             V::Bool(_) => "Bool",
             V::List(_) => "Array",
-            V::None | V::Other(_) => "Any",
+            V::None | V::Other(_) | V::Optionish { .. } => "Any",
         },
         // TypeScript / JavaScript: number/string/boolean (TS structural names).
         Language::TypeScript | Language::JavaScript => match v {
@@ -320,7 +329,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "boolean",
             V::List(_) => "Array",
-            V::None | V::Other(_) => "unknown",
+            V::None | V::Other(_) | V::Optionish { .. } => "unknown",
         },
         // Go: int/float64/string/bool/slice.
         Language::Go => match v {
@@ -329,7 +338,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "bool",
             V::List(_) => "slice",
-            V::None | V::Other(_) => "any",
+            V::None | V::Other(_) | V::Optionish { .. } => "any",
         },
         // Rust: i64/f64/&str/bool/Vec.
         Language::Rust => match v {
@@ -338,7 +347,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "&str",
             V::Bool(_) => "bool",
             V::List(_) => "Vec",
-            V::None | V::Other(_) => "_",
+            V::None | V::Other(_) | V::Optionish { .. } => "_",
         },
         // OCaml: int/float/string/bool/list.
         Language::Ocaml => match v {
@@ -347,7 +356,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "bool",
             V::List(_) => "list",
-            V::None | V::Other(_) => "_",
+            V::None | V::Other(_) | V::Optionish { .. } => "_",
         },
         // Ruby: Integer/Float/String/bool/Array.
         Language::Ruby => match v {
@@ -356,7 +365,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "String",
             V::Bool(_) => "Boolean",
             V::List(_) => "Array",
-            V::None | V::Other(_) => "Object",
+            V::None | V::Other(_) | V::Optionish { .. } => "Object",
         },
         // PHP: int/float/string/bool/array.
         Language::Php => match v {
@@ -365,7 +374,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "bool",
             V::List(_) => "array",
-            V::None | V::Other(_) => "mixed",
+            V::None | V::Other(_) | V::Optionish { .. } => "mixed",
         },
         // Lua / Luau: number/string/boolean/table.
         Language::Lua | Language::Luau => match v {
@@ -373,7 +382,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "boolean",
             V::List(_) => "table",
-            V::None | V::Other(_) => "any",
+            V::None | V::Other(_) | V::Optionish { .. } => "any",
         },
         // Elixir: integer/float/binary/boolean/list.
         Language::Elixir => match v {
@@ -382,7 +391,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "binary",
             V::Bool(_) => "boolean",
             V::List(_) => "list",
-            V::None | V::Other(_) => "any",
+            V::None | V::Other(_) | V::Optionish { .. } => "any",
         },
         // Solidity: uint256/string/bool/array (no float type in Solidity).
         Language::Solidity => match v {
@@ -391,7 +400,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "bool",
             V::List(_) => "array",
-            V::None | V::Other(_) => "bytes",
+            V::None | V::Other(_) | V::Optionish { .. } => "bytes",
         },
         // C / C++: int/double/string/bool (best-effort; std types).
         Language::C | Language::Cpp => match v {
@@ -400,7 +409,7 @@ fn lang_type_word(lang: Language, v: &ObservedValue) -> &'static str {
             V::String(_) => "string",
             V::Bool(_) => "bool",
             V::List(_) => "vector",
-            V::None | V::Other(_) => "auto",
+            V::None | V::Other(_) | V::Optionish { .. } => "auto",
         },
     }
 }
@@ -438,6 +447,21 @@ fn non_null_expression(lang: Language, variable: &str) -> String {
         Language::Elixir => format!("{variable} != nil"),
         // Ruby: absence is `nil`.
         Language::Ruby => format!("{variable} != nil"),
+    }
+}
+
+/// RC7: constructor-specific presence expression for an observed Option/Result
+/// value. Unlike the hardcoded `is Some`, this dispatches on the OBSERVED
+/// constructor — `Result` → `is Ok`/`is Err`, `Option` → `is Some`/`is None` —
+/// matching how mature verifiers (Prusti/Flux/Creusot) gate the predicate on
+/// the sum-type's actual variant.
+fn optionish_presence_expression(variable: &str, ctor: &str) -> String {
+    match ctor {
+        "None" => format!("{variable} is None"),
+        "Ok" => format!("{variable} is Ok"),
+        "Err" => format!("{variable} is Err"),
+        // `Some` (and any defensive fallback) -> Option presence.
+        _ => format!("{variable} is Some"),
     }
 }
 
@@ -726,7 +750,21 @@ fn observed_value_from_json(v: &serde_json::Value) -> ObservedValue {
         serde_json::Value::Array(items) => {
             ObservedValue::List(items.iter().map(observed_value_from_json).collect())
         }
-        serde_json::Value::Object(_) => ObservedValue::Other(v.to_string()),
+        serde_json::Value::Object(map) => {
+            // RC7: decode the Option/Result constructor sentinel emitted by
+            // `specs::try_eval_literal`. All other objects stay `Other`.
+            if let Some(ctor) = map.get("$optionish").and_then(|c| c.as_str()) {
+                let payload = map
+                    .get("value")
+                    .map(|p| Box::new(observed_value_from_json(p)));
+                ObservedValue::Optionish {
+                    ctor: ctor.to_string(),
+                    payload,
+                }
+            } else {
+                ObservedValue::Other(v.to_string())
+            }
+        }
     }
 }
 
@@ -1195,7 +1233,25 @@ fn infer_type_invariant(
 
     // Localize the displayed type to the source language. If the lattice
     // element has no reportable type in this language, decline.
-    let type_word = values[0].lang_type_name(lang)?;
+    //
+    // RC7: an Option/Result observation renders its wrapper + payload type
+    // (e.g. `Option<i64>` / `Result<i64>`) rather than the payload's bare
+    // type or a mis-typed `&str`.
+    let type_word: String = match values[0] {
+        ObservedValue::Optionish { ctor, payload } => {
+            let wrapper = if matches!(ctor.as_str(), "Ok" | "Err") {
+                "Result"
+            } else {
+                "Option"
+            };
+            let inner = payload
+                .as_deref()
+                .and_then(|p| p.lang_type_name(lang))
+                .unwrap_or("_");
+            format!("{}<{}>", wrapper, inner)
+        }
+        other => other.lang_type_name(lang)?.to_string(),
+    };
     Some(Invariant {
         variable: variable.to_string(),
         kind: InvariantKind::Type,
@@ -1219,6 +1275,42 @@ fn infer_non_null_invariant(
     lang: Language,
 ) -> Option<Invariant> {
     if values.is_empty() {
+        return None;
+    }
+
+    // RC7: type-gated optionality. An Option/Result observation emits a
+    // constructor-specific presence fact, but only when every observation
+    // shares the SAME constructor (observing both `Some` and `None` proves the
+    // value is sometimes absent, so no presence invariant holds).
+    if values
+        .iter()
+        .any(|v| matches!(v, ObservedValue::Optionish { .. }))
+    {
+        let ctor = match values[0] {
+            ObservedValue::Optionish { ctor, .. } => ctor.as_str(),
+            _ => return None,
+        };
+        if !values
+            .iter()
+            .all(|v| matches!(v, ObservedValue::Optionish { ctor: c, .. } if c == ctor))
+        {
+            return None;
+        }
+        return Some(Invariant {
+            variable: variable.to_string(),
+            kind: InvariantKind::NonNull,
+            expression: optionish_presence_expression(variable, ctor),
+            confidence,
+            observations: obs_count,
+            counterexample_count: 0,
+        });
+    }
+
+    // RC7: a plain (non-Optionish) value in an Option/Maybe language
+    // (Rust/OCaml) is NOT nullable — `.is_some()` would not even typecheck on a
+    // plain `T` — so emit no presence invariant. Daikon/Prusti/Flux/Creusot all
+    // gate presence on the static type, never on a non-optional value.
+    if matches!(lang, Language::Rust | Language::Ocaml) {
         return None;
     }
 
@@ -1497,6 +1589,141 @@ def test_compute_ints():
             .filter(|i| i.kind == InvariantKind::Type)
             .collect();
         assert!(!type_invs.is_empty(), "Should detect type invariants");
+    }
+
+    /// RC7 end-to-end (the repro): a Rust test asserting a plain `i64`, an
+    /// `Option`, and a `Result` return must type each correctly and gate
+    /// optionality on the CONSTRUCTOR — never the pre-RC7 blanket `is Some` /
+    /// `&str`.
+    #[test]
+    fn rc7_rust_optionality_is_constructor_gated() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("lib.rs");
+        fs::write(
+            &src,
+            "pub fn get_id() -> i64 { 7 }\n\
+             pub fn maybe_id() -> Option<i64> { Some(3) }\n\
+             pub fn fallible_id() -> Result<i64, String> { Ok(7) }\n",
+        )
+        .unwrap();
+        let test = temp.path().join("lib_test.rs");
+        fs::write(
+            &test,
+            r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t_get() { assert_eq!(get_id(), 7); }
+    #[test]
+    fn t_maybe() { assert_eq!(maybe_id(), Some(3)); }
+    #[test]
+    fn t_fallible() { assert_eq!(fallible_id(), Ok(7)); }
+}
+"#,
+        )
+        .unwrap();
+
+        let report = run_invariants(&src, &test, None, 1).unwrap();
+        let exprs = |name: &str| -> Vec<String> {
+            report
+                .functions
+                .iter()
+                .find(|f| f.function_name == name)
+                .map(|f| {
+                    f.preconditions
+                        .iter()
+                        .chain(f.postconditions.iter())
+                        .map(|i| i.expression.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // get_id: plain `i64` -> typed `i64`, and NO presence claim (a plain
+        // Rust value is not nullable), never `&str`.
+        let g = exprs("get_id");
+        assert!(
+            g.iter().any(|e| e == "result: i64"),
+            "get_id should type result as i64: {g:?}"
+        );
+        assert!(
+            !g.iter().any(|e| e.contains("is Some")),
+            "get_id (plain i64) must NOT claim `is Some`: {g:?}"
+        );
+        assert!(
+            !g.iter().any(|e| e.contains("&str")),
+            "get_id must NOT be mis-typed `&str`: {g:?}"
+        );
+
+        // maybe_id: `Option` -> `is Some`, never `&str`.
+        let m = exprs("maybe_id");
+        assert!(
+            m.iter().any(|e| e == "result is Some"),
+            "maybe_id (Option) should claim `is Some`: {m:?}"
+        );
+        assert!(
+            !m.iter().any(|e| e.contains("&str")),
+            "maybe_id must NOT be mis-typed `&str`: {m:?}"
+        );
+
+        // fallible_id: `Result` -> `is Ok` (NOT `is Some`).
+        let f = exprs("fallible_id");
+        assert!(
+            f.iter().any(|e| e == "result is Ok"),
+            "fallible_id (Result) should claim `is Ok`: {f:?}"
+        );
+        assert!(
+            !f.iter().any(|e| e.contains("is Some")),
+            "fallible_id must claim `is Ok`, not `is Some`: {f:?}"
+        );
+    }
+
+    /// RC7 unit: the type-gated non-null inference. A plain Rust/OCaml value
+    /// emits no presence invariant; an `Optionish` observation emits its
+    /// constructor-specific presence; null-bearing languages keep `!= null`.
+    #[test]
+    fn rc7_non_null_is_type_gated() {
+        // Plain Rust value -> suppress.
+        let plain = [ObservedValue::Int(7)];
+        let refs: Vec<&ObservedValue> = plain.iter().collect();
+        assert!(
+            infer_non_null_invariant("result", &refs, 1, Confidence::Low, Language::Rust)
+                .is_none(),
+            "plain Rust value must not get a presence invariant"
+        );
+        // Optionish Some -> `is Some`.
+        let some = [ObservedValue::Optionish {
+            ctor: "Some".to_string(),
+            payload: Some(Box::new(ObservedValue::Int(3))),
+        }];
+        let refs: Vec<&ObservedValue> = some.iter().collect();
+        assert_eq!(
+            infer_non_null_invariant("result", &refs, 1, Confidence::Low, Language::Rust)
+                .unwrap()
+                .expression,
+            "result is Some"
+        );
+        // Optionish Ok -> `is Ok` (not `is Some`).
+        let ok = [ObservedValue::Optionish {
+            ctor: "Ok".to_string(),
+            payload: Some(Box::new(ObservedValue::Int(7))),
+        }];
+        let refs: Vec<&ObservedValue> = ok.iter().collect();
+        assert_eq!(
+            infer_non_null_invariant("result", &refs, 1, Confidence::Low, Language::Rust)
+                .unwrap()
+                .expression,
+            "result is Ok"
+        );
+        // Java plain value still nullable-checks with `!= null`.
+        let jplain = [ObservedValue::Int(7)];
+        let refs: Vec<&ObservedValue> = jplain.iter().collect();
+        assert_eq!(
+            infer_non_null_invariant("result", &refs, 1, Confidence::Low, Language::Java)
+                .unwrap()
+                .expression,
+            "result != null"
+        );
     }
 
     #[test]

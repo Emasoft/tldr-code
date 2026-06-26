@@ -1157,12 +1157,84 @@ fn try_eval_literal_inner(node: Node, source: &[u8], depth: usize) -> serde_json
         "true" | "True" => serde_json::Value::Bool(true),
         "false" | "False" => serde_json::Value::Bool(false),
         "none" | "None" => serde_json::Value::Null,
+        // --- RC7: grammar-aware literal evaluator (non-Python node-kinds) ---
+        // Numeric literals across the 10 pinned grammars. Python `integer` /
+        // `float` are matched above with exact parsing; every other grammar's
+        // numeric node routes through `parse_numeric` (separator/radix/type-
+        // suffix aware). Collision-safe per the cross-grammar audit.
+        "integer_literal" | "float_literal" | "negative_literal"
+        | "decimal_integer_literal" | "hex_integer_literal" | "octal_integer_literal"
+        | "binary_integer_literal" | "decimal_floating_point_literal"
+        | "hex_floating_point_literal" | "int_literal" | "imaginary_literal"
+        | "real_literal" | "floating_point_literal" | "number" | "number_literal"
+        | "hex_literal" | "oct_literal" | "bin_literal" => parse_numeric(text),
+        // Single-node / anon-token booleans (Rust/C#/Scala/Swift `boolean_literal`,
+        // PHP `boolean`). Named/anon `true`/`false` tokens hit the arm above.
+        "boolean_literal" | "boolean" => serde_json::Value::Bool(text.trim() == "true"),
+        // Null / nil / unit sentinels (anon `nil`/`null` tokens included by kind).
+        "null" | "null_literal" | "nil" | "nil_literal" | "unit" | "unit_expression" => {
+            serde_json::Value::Null
+        }
+        // String / char literals (per-quote-style stripping).
+        "string_literal" | "raw_string_literal" | "encapsed_string" | "heredoc"
+        | "nowdoc" | "interpreted_string_literal" | "line_string_literal"
+        | "multi_line_string_literal" | "multiline_string_literal" | "template_string"
+        | "interpolated_string" | "char_literal" | "character_literal" | "rune_literal" => {
+            serde_json::Value::String(strip_quotes_multi(text))
+        }
+        // RC7 Part 2: Rust Option/Result constructor in real-call position
+        // (`Ok(7)`, `Some(x)`, `Option::Some(7)`). Non-constructor calls fall
+        // back to source text (the pre-RC7 `_`-arm behaviour).
+        "call_expression" => eval_call_constructor(node, source, depth, text),
+        // Bare scoped constructor `Option::None`.
+        "scoped_identifier" => {
+            let name = node
+                .child_by_field_name("name")
+                .map(|n| get_node_text(n, source))
+                .unwrap_or("");
+            if name == "None" {
+                optionish_value("None", None)
+            } else {
+                serde_json::Value::String(text.to_string())
+            }
+        }
+        // Array / list / tuple literals (non-Python). Python `list` / `tuple` /
+        // `parenthesized_expression` keep their dedicated arms below.
+        "array" | "array_expression" | "array_literal" | "array_initializer"
+        | "array_creation_expression" | "implicit_array_creation_expression"
+        | "collection_expression" | "collection_literal" | "composite_literal"
+        | "tuple_expression" => {
+            serde_json::Value::Array(eval_seq_children(node, source, depth))
+        }
+        // Object / map / dictionary literals (non-Python). Python `dictionary`
+        // keeps its dedicated arm below.
+        "object" | "dictionary_literal" | "object_literal" | "initializer_expression" => {
+            eval_object_literal(node, source, depth)
+        }
         "identifier" => {
-            // Check for True, False, None
+            // Check for True, False, None plus Rust Option/Result constructors.
             match text {
                 "True" => serde_json::Value::Bool(true),
                 "False" => serde_json::Value::Bool(false),
-                "None" => serde_json::Value::Null,
+                // Python `None` is the `none` node-kind (matched above); this
+                // identifier branch only fires for Rust/macro contexts. A bare
+                // `None` (no following payload `token_tree`) is unit `None`.
+                "None" => match node.next_named_sibling() {
+                    Some(sib) if sib.kind() == "token_tree" => {
+                        serde_json::Value::String(text.to_string())
+                    }
+                    _ => optionish_value("None", None),
+                },
+                // RC7 Part 2: a bare `Ok`/`Err`/`Some` identifier immediately
+                // followed by a `token_tree` sibling carrying the payload (the
+                // dominant `assert_eq!(f(), Some(3))` token-soup case). The
+                // closed text set guards against tagging a user call `g(7)`.
+                "Ok" | "Err" | "Some" => match node.next_named_sibling() {
+                    Some(sib) if sib.kind() == "token_tree" => {
+                        optionish_value(text, macro_ctor_payload(sib, source, depth))
+                    }
+                    _ => serde_json::Value::String(text.to_string()),
+                },
                 _ => serde_json::Value::String(text.to_string()),
             }
         }
@@ -1283,6 +1355,211 @@ fn strip_string_quotes(s: &str) -> String {
     }
 
     s.to_string()
+}
+
+// =============================================================================
+// RC7: grammar-aware literal evaluation helpers
+// =============================================================================
+
+/// RC7: build the `{"$optionish": <ctor>, "value": <payload>}` sentinel that
+/// carries Rust constructor identity ({Some,None,Ok,Err}) across the untyped
+/// `serde_json` bridge to `invariants.rs::observed_value_from_json`.
+fn optionish_value(ctor: &str, payload: Option<serde_json::Value>) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "$optionish".to_string(),
+        serde_json::Value::String(ctor.to_string()),
+    );
+    if let Some(p) = payload {
+        m.insert("value".to_string(), p);
+    }
+    serde_json::Value::Object(m)
+}
+
+/// RC7: closed, case-sensitive Option/Result constructor name set. tree-sitter
+/// does zero name resolution, so the only safe constructor signal is this
+/// closed text set plus the call/payload SHAPE — never shape alone.
+fn is_optionish_ctor(name: &str) -> bool {
+    matches!(name, "Ok" | "Err" | "Some" | "None")
+}
+
+/// RC7 Part 2: recognise a Rust Option/Result constructor in real-call position
+/// (`Ok(7)`, `Some(x)`, `Option::Some(7)`). A non-constructor `call_expression`
+/// falls back to the call's source text (the pre-RC7 `_`-arm behaviour).
+fn eval_call_constructor(
+    node: Node,
+    source: &[u8],
+    depth: usize,
+    text: &str,
+) -> serde_json::Value {
+    if let Some(f) = node.child_by_field_name("function") {
+        let name = match f.kind() {
+            "identifier" => Some(get_node_text(f, source).to_string()),
+            "scoped_identifier" => f
+                .child_by_field_name("name")
+                .map(|n| get_node_text(n, source).to_string()),
+            _ => None,
+        };
+        if let Some(name) = name {
+            if is_optionish_ctor(&name) {
+                let payload = node.child_by_field_name("arguments").and_then(|args| {
+                    let mut c = args.walk();
+                    let first = args
+                        .children(&mut c)
+                        .find(|ch| !matches!(ch.kind(), "(" | ")" | ","));
+                    first.map(|p| try_eval_literal_inner(p, source, depth + 1))
+                });
+                return optionish_value(&name, payload);
+            }
+        }
+    }
+    serde_json::Value::String(text.to_string())
+}
+
+/// RC7 Part 2: descend into a macro `token_tree` payload (`(3)` following a
+/// bare `Some`/`Ok`/`Err` identifier) and evaluate its first real child.
+fn macro_ctor_payload(tt: Node, source: &[u8], depth: usize) -> Option<serde_json::Value> {
+    let mut c = tt.walk();
+    for ch in tt.children(&mut c) {
+        if !matches!(ch.kind(), "(" | ")" | "[" | "]" | "{" | "}" | ",") {
+            return Some(try_eval_literal_inner(ch, source, depth + 1));
+        }
+    }
+    None
+}
+
+/// RC7 Part 1: evaluate the element children of an array/list/tuple literal,
+/// skipping punctuation and the Go `composite_literal` type field, and
+/// descending one level through Go `literal_value` element wrappers.
+fn eval_seq_children(node: Node, source: &[u8], depth: usize) -> Vec<serde_json::Value> {
+    let type_field_id = node.child_by_field_name("type").map(|t| t.id());
+    let mut items = Vec::new();
+    let mut c = node.walk();
+    for ch in node.children(&mut c) {
+        let k = ch.kind();
+        if matches!(k, "(" | ")" | "[" | "]" | "{" | "}" | ",") {
+            continue;
+        }
+        if Some(ch.id()) == type_field_id {
+            continue;
+        }
+        if k == "literal_value" {
+            items.extend(eval_seq_children(ch, source, depth + 1));
+            continue;
+        }
+        items.push(try_eval_literal_inner(ch, source, depth + 1));
+    }
+    items
+}
+
+/// RC7 Part 1: best-effort evaluation of an object/map literal into a JSON
+/// object from its `pair` key/value children.
+fn eval_object_literal(node: Node, source: &[u8], depth: usize) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    let mut c = node.walk();
+    for ch in node.children(&mut c) {
+        if ch.kind() == "pair" {
+            if let (Some(k), Some(v)) =
+                (ch.child_by_field_name("key"), ch.child_by_field_name("value"))
+            {
+                let key = match try_eval_literal_inner(k, source, depth + 1) {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                obj.insert(key, try_eval_literal_inner(v, source, depth + 1));
+            }
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// RC7 Part 1: numeric literal parser tolerant of digit separators, radix
+/// prefixes (`0x`/`0o`/`0b`) and language type suffixes (`i32`/`u64`/`L`/`f`/
+/// `d`/`m`/...). Plain decimals take an exact fast path so Python/PHP/Ruby
+/// `integer`/`float` values stay byte-identical.
+fn parse_numeric(text: &str) -> serde_json::Value {
+    use serde_json::Value;
+    let t = text.trim();
+    if let Ok(i) = t.parse::<i64>() {
+        return Value::from(i);
+    }
+    if let Ok(f) = t.parse::<f64>() {
+        return serde_json::json!(f);
+    }
+    let (neg, rest0) = match t.strip_prefix('-') {
+        Some(r) => (true, r.trim_start()),
+        None => (
+            false,
+            t.strip_prefix('+').map(|r| r.trim_start()).unwrap_or(t),
+        ),
+    };
+    let rest: String = rest0.chars().filter(|c| *c != '_').collect();
+    let lower = rest.to_ascii_lowercase();
+
+    // Radix-prefixed integers.
+    let radix_pair = lower
+        .strip_prefix("0x")
+        .map(|d| (16u32, d))
+        .or_else(|| lower.strip_prefix("0o").map(|d| (8u32, d)))
+        .or_else(|| lower.strip_prefix("0b").map(|d| (2u32, d)));
+    if let Some((radix, digits)) = radix_pair {
+        let core: String = digits.chars().take_while(|c| c.is_digit(radix)).collect();
+        if let Ok(i) = i64::from_str_radix(&core, radix) {
+            return Value::from(if neg { -i } else { i });
+        }
+        return Value::String(text.to_string());
+    }
+
+    // Strip a trailing numeric type suffix, then retry a decimal parse.
+    const SUFFIXES: &[&str] = &[
+        "isize", "usize", "i128", "u128", "i64", "u64", "i32", "u32", "i16", "u16", "i8", "u8",
+        "f32", "f64", "ull", "llu", "ul", "lu", "ll", "n", "l", "u", "f", "d", "m",
+    ];
+    let mut core: &str = rest.as_str();
+    for suf in SUFFIXES {
+        if lower.ends_with(suf) && lower.len() > suf.len() {
+            core = &rest[..rest.len() - suf.len()];
+            break;
+        }
+    }
+    if let Ok(i) = core.parse::<i64>() {
+        return Value::from(if neg { -i } else { i });
+    }
+    if let Ok(f) = core.parse::<f64>() {
+        return serde_json::json!(if neg { -f } else { f });
+    }
+    Value::String(text.to_string())
+}
+
+/// RC7 Part 1: strip surrounding quotes for the quote styles across the pinned
+/// grammars (Rust raw strings, triple/backtick/single/double, char literals).
+fn strip_quotes_multi(s: &str) -> String {
+    let t = s.trim();
+    // Rust raw string: r#"..."# / r##"..."## (and the bare r"...").
+    if let Some(rest) = t.strip_prefix('r').or_else(|| t.strip_prefix('R')) {
+        let hashes = rest.chars().take_while(|c| *c == '#').count();
+        if rest[hashes..].starts_with('"') {
+            let open = 1 + hashes + 1; // 'r' + hashes + opening '"'
+            if t.len() >= open + hashes + 1 {
+                let close = t.len() - hashes - 1;
+                if close >= open {
+                    return t[open..close].to_string();
+                }
+            }
+        }
+    }
+    if t.starts_with("\"\"\"") && t.ends_with("\"\"\"") && t.len() >= 6 {
+        return t[3..t.len() - 3].to_string();
+    }
+    if t.starts_with('`') && t.ends_with('`') && t.len() >= 2 {
+        return t[1..t.len() - 1].to_string();
+    }
+    if ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
+        && t.len() >= 2
+    {
+        return t[1..t.len() - 1].to_string();
+    }
+    t.to_string()
 }
 
 // =============================================================================
@@ -5904,9 +6181,9 @@ end
 
     /// CHAR: OCaml structural equality `let%test _ = equal (f x) y`.
     ///
-    /// Pins CURRENT behavior: the FUT is `add`, inputs are the (string-typed,
-    /// since OCaml integer literals are not the Python `integer` node kind)
-    /// args, and the expected value is captured verbatim as `String("5")`.
+    /// Pins behavior: the FUT is `add`, inputs are the (RC7: now JSON-typed,
+    /// since the grammar-aware evaluator recognises OCaml `number` literals)
+    /// args, and the expected value is the JSON integer `5`.
     /// `equal` itself is never a FUT (per the known-assertion-callee filter
     /// that the A1 OCaml adapter table must preserve).
     #[test]
@@ -5930,18 +6207,17 @@ let%test "add" = equal (add 2 3) 5
             1,
             "ocaml equal => exactly one IO spec for add"
         );
-        // Non-Python integer literals are captured as their source text
-        // (current `try_eval_literal` only recognises the Python `integer`
-        // node kind). Pin that exact representation.
+        // RC7: the grammar-aware literal evaluator now types OCaml `number`
+        // literals as real JSON numbers (was source text "5"/"2"/"3").
         assert_eq!(
             add.input_output_specs[0].output,
-            serde_json::json!("5"),
-            "ocaml expected value captured as source text \"5\""
+            serde_json::json!(5),
+            "ocaml expected value typed as JSON integer 5 (RC7)"
         );
         assert_eq!(
             add.input_output_specs[0].inputs,
-            vec![serde_json::json!("2"), serde_json::json!("3")],
-            "ocaml inputs captured as source text"
+            vec![serde_json::json!(2), serde_json::json!(3)],
+            "ocaml inputs typed as JSON integers (RC7)"
         );
         // `equal` must never be a FUT.
         assert!(
@@ -6066,6 +6342,187 @@ mod tests {
         );
     }
 
+    // ====================================================================
+    // RC7: grammar-aware literal evaluator + Option/Result constructor
+    // recognition (fix-R3-rc7). Pins the now-TYPED literal extraction across
+    // the non-Python grammars and the `$optionish` constructor sentinel.
+    // ====================================================================
+
+    /// Recursively find the first descendant (including `node`) of `kind`.
+    fn find_node_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if let Some(n) = find_node_of_kind(child, kind) {
+                return Some(n);
+            }
+        }
+        None
+    }
+
+    /// RC7 Part 1: a minimal one-assertion fixture per non-Python grammar
+    /// records its literal as a TYPED JSON value (was source text).
+    #[test]
+    fn rc7_per_grammar_literals_are_typed() {
+        let cases: Vec<(&str, &str, &str, serde_json::Value)> = vec![
+            (
+                "calc_test.rs",
+                "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert_eq!(f(), 7); }\n}\n",
+                "f",
+                serde_json::json!(7),
+            ),
+            (
+                "flag_test.rs",
+                "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { assert_eq!(flag(), true); }\n}\n",
+                "flag",
+                serde_json::json!(true),
+            ),
+            (
+                "CalcTests.java",
+                "class CalcTests {\n    @Test\n    void testAdd() { assertEquals(5, add(2, 3)); }\n}\n",
+                "add",
+                serde_json::json!(5),
+            ),
+            (
+                "CalcTests.cs",
+                "public class CalcTests {\n    [Test]\n    public void TestAdd() { Assert.AreEqual(5, Add(2, 3)); }\n}\n",
+                "Add",
+                serde_json::json!(5),
+            ),
+            (
+                "CalcSuite.scala",
+                "class CalcSuite extends munit.FunSuite {\n  test(\"adds\") {\n    assertEquals(actual(), 7)\n  }\n}\n",
+                "actual",
+                serde_json::json!(7),
+            ),
+            (
+                "calc_spec.lua",
+                "describe('calc', function()\n  it('adds', function()\n    assert(add(1, 2) == 3)\n  end)\nend)\n",
+                "add",
+                serde_json::json!(3),
+            ),
+        ];
+        for (fname, src, fut, expected) in cases {
+            let temp = TempDir::new().unwrap();
+            let p = temp.path().join(fname);
+            fs::write(&p, src).unwrap();
+            let report = run_specs(&p, None).unwrap();
+            let f = report
+                .functions
+                .iter()
+                .find(|f| f.function_name == fut)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "RC7 {fname}: FUT `{fut}` not found; got {:?}",
+                        report
+                            .functions
+                            .iter()
+                            .map(|f| &f.function_name)
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert_eq!(f.input_output_specs.len(), 1, "RC7 {fname}: one IO spec");
+            assert_eq!(
+                f.input_output_specs[0].output, expected,
+                "RC7 {fname}: literal must be typed JSON, not source text"
+            );
+        }
+    }
+
+    /// RC7 Part 2: Rust Option/Result constructors inside `assert_eq!` macro
+    /// token soup are recognised and carried via the `$optionish` sentinel; an
+    /// ordinary user call is NOT tagged (closed-text-set + shape guard).
+    #[test]
+    fn rc7_rust_constructor_recognition_macro() {
+        let temp = TempDir::new().unwrap();
+        let p = temp.path().join("ctor_test.rs");
+        let src = r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn t_some() { assert_eq!(maybe_id(), Some(3)); }
+    #[test]
+    fn t_ok() { assert_eq!(fallible_id(), Ok(7)); }
+    #[test]
+    fn t_err() { assert_eq!(faulty(), Err(e)); }
+    #[test]
+    fn t_none() { assert_eq!(empty(), None); }
+}
+"#;
+        fs::write(&p, src).unwrap();
+        let report = run_specs(&p, None).unwrap();
+        let out = |name: &str| -> serde_json::Value {
+            report
+                .functions
+                .iter()
+                .find(|f| f.function_name == name)
+                .unwrap_or_else(|| panic!("RC7 ctor: FUT `{name}` not found"))
+                .input_output_specs[0]
+                .output
+                .clone()
+        };
+        assert_eq!(
+            out("maybe_id"),
+            serde_json::json!({"$optionish": "Some", "value": 3})
+        );
+        assert_eq!(
+            out("fallible_id"),
+            serde_json::json!({"$optionish": "Ok", "value": 7})
+        );
+        assert_eq!(
+            out("faulty"),
+            serde_json::json!({"$optionish": "Err", "value": "e"})
+        );
+        assert_eq!(out("empty"), serde_json::json!({"$optionish": "None"}));
+    }
+
+    /// RC7 Part 2 guard: an ordinary user call `wrap(7)` has the IDENTICAL
+    /// `call_expression` / `identifier`+`token_tree` shape as `Some(7)`, but
+    /// `wrap` is not in the closed `{Ok,Err,Some,None}` set, so it must NOT be
+    /// tagged with the `$optionish` sentinel (never fire on shape alone).
+    #[test]
+    fn rc7_user_call_is_not_tagged_as_constructor() {
+        let pool = ParserPool::new();
+        // Real-call form.
+        let src = "fn demo() -> i64 { wrap(7) }";
+        let tree = pool.parse(src, Language::Rust).ok().expect("parse rust");
+        let call = find_node_of_kind(tree.root_node(), "call_expression")
+            .expect("call_expression wrap(7)");
+        let val = try_eval_literal(call, src.as_bytes());
+        assert!(
+            val.get("$optionish").is_none(),
+            "user call wrap(7) must not be tagged: {val:?}"
+        );
+        // A bare user binding `some` (no payload `token_tree`) must not be
+        // tagged either — only the exact `{Ok,Err,Some}` text qualifies.
+        let src2 = "fn demo() { let value = thing; }";
+        let tree2 = pool.parse(src2, Language::Rust).ok().expect("parse rust");
+        let ident = find_node_of_kind(tree2.root_node(), "identifier")
+            .expect("identifier");
+        let val2 = try_eval_literal(ident, src2.as_bytes());
+        assert!(
+            val2.get("$optionish").is_none(),
+            "bare user identifier must not be tagged: {val2:?}"
+        );
+    }
+
+    /// RC7 Part 2: in real-expression position `Ok(7)` is a `call_expression`
+    /// (not a macro token_tree); the call-form recognizer also yields the
+    /// `$optionish` sentinel. Exercised by direct parse since Rust tests only
+    /// ever wrap assertions in macros.
+    #[test]
+    fn rc7_rust_constructor_real_call_form() {
+        let src = "fn demo() -> Result<i64, String> { Ok(7) }";
+        let pool = ParserPool::new();
+        let tree = pool.parse(src, Language::Rust).ok().expect("parse rust");
+        let call = find_node_of_kind(tree.root_node(), "call_expression")
+            .expect("should find call_expression Ok(7)");
+        let val = try_eval_literal(call, src.as_bytes());
+        assert_eq!(val, serde_json::json!({"$optionish": "Ok", "value": 7}));
+    }
+
     /// CHAR: cross-language FLAT classifier vocabulary — JUnit
     /// `assertEquals`/`assertThrows`, Kotlin `shouldBe`, C# `AreEqual`.
     /// Pins the equality / throws / known-callee leaf vocabulary that the
@@ -6096,10 +6553,9 @@ class CalcTests {
             .find(|f| f.function_name == "add")
             .expect("junit: add FUT from assertEquals");
         assert_eq!(add.input_output_specs.len(), 1);
-        // Java integer literals (`decimal_integer_literal`) are not the
-        // Python `integer` node kind, so `try_eval_literal` keeps them as
-        // source text. Pin that exact current representation.
-        assert_eq!(add.input_output_specs[0].output, serde_json::json!("5"));
+        // RC7: Java `decimal_integer_literal` is now typed as a real JSON
+        // number by the grammar-aware evaluator (was source text "5").
+        assert_eq!(add.input_output_specs[0].output, serde_json::json!(5));
         let parse = jreport
             .functions
             .iter()
@@ -6158,8 +6614,8 @@ public class CalcTests {
             .find(|f| f.function_name == "Add")
             .expect("csharp: Add FUT from AreEqual");
         assert_eq!(csadd.input_output_specs.len(), 1);
-        // C# integer literals are likewise kept as source text.
-        assert_eq!(csadd.input_output_specs[0].output, serde_json::json!("5"));
+        // RC7: C# `integer_literal` is now typed as a real JSON number.
+        assert_eq!(csadd.input_output_specs[0].output, serde_json::json!(5));
     }
 
     /// CHAR: Go `if <call> != want { t.Errorf(...) }` idiom.
@@ -6376,14 +6832,15 @@ class IOSuite extends munit.FunSuite {
         fs::write(&test_path, src).unwrap();
         let report = run_specs(&test_path, None).unwrap();
 
-        // Bare-value actual: FUT = `test`, expected = 42 (source-text literal).
+        // Bare-value actual: FUT = `test`, expected = 42 (RC7: Scala
+        // `integer_literal` now typed as a JSON number).
         let t = report
             .functions
             .iter()
             .find(|f| f.function_name == "test")
             .expect("assertCompleteAs(test, 42) => FUT test");
         assert_eq!(t.input_output_specs.len(), 1);
-        assert_eq!(t.input_output_specs[0].output, serde_json::json!("42"));
+        assert_eq!(t.input_output_specs[0].output, serde_json::json!(42));
 
         // Call actual: FUT = `compute`.
         let c = report
@@ -6391,9 +6848,11 @@ class IOSuite extends munit.FunSuite {
             .iter()
             .find(|f| f.function_name == "compute")
             .expect("assertCompleteAs(compute(), 7) => FUT compute");
-        assert_eq!(c.input_output_specs[0].output, serde_json::json!("7"));
+        assert_eq!(c.input_output_specs[0].output, serde_json::json!(7));
 
-        // Call EXPECTED side must NOT steal attribution: FUT stays `io`.
+        // Call EXPECTED side must NOT steal attribution: FUT stays `io`. The
+        // `Left(e)` constructor is NOT in the {Ok,Err,Some,None} set, so it
+        // stays source text (RC7 only structures the closed Rust set).
         let io = report
             .functions
             .iter()
@@ -6463,8 +6922,8 @@ class InfixSpec extends AnyFlatSpec {
             .expect("`result should be (5)` => FUT result");
         assert_eq!(
             result.input_output_specs[0].output,
-            serde_json::json!("5"),
-            "`should be (y)` unwraps the be(..) carrier to the expected value"
+            serde_json::json!(5),
+            "`should be (y)` unwraps the be(..) carrier to the expected value (RC7: typed)"
         );
 
         let a = report
@@ -6479,7 +6938,7 @@ class InfixSpec extends AnyFlatSpec {
             .iter()
             .find(|f| f.function_name == "value")
             .expect("`value shouldBe 99` => FUT value");
-        assert_eq!(value.input_output_specs[0].output, serde_json::json!("99"));
+        assert_eq!(value.input_output_specs[0].output, serde_json::json!(99));
 
         // Infix matcher words are never FUTs.
         assert!(
@@ -6532,8 +6991,8 @@ class MustSpec extends AnyFlatSpec {
         );
         assert_eq!(
             result.input_output_specs[0].output,
-            serde_json::json!("5"),
-            "`must equal(y)` unwraps the equal(..) carrier to the expected value"
+            serde_json::json!(5),
+            "`must equal(y)` unwraps the equal(..) carrier to the expected value (RC7: typed)"
         );
 
         // `other must be(7)` => FUT other, expected 7 (be(..) carrier unwrapped).
@@ -6549,8 +7008,8 @@ class MustSpec extends AnyFlatSpec {
         );
         assert_eq!(
             other.input_output_specs[0].output,
-            serde_json::json!("7"),
-            "`must be(y)` unwraps the be(..) carrier to the expected value"
+            serde_json::json!(7),
+            "`must be(y)` unwraps the be(..) carrier to the expected value (RC7: typed)"
         );
 
         // The infix matcher words and the carrier methods are never FUTs.
@@ -6998,17 +7457,13 @@ end)
             f.input_output_specs.len(),
             f.property_specs.len()
         );
-        // RC6 is about DESTRUCTURING the equality into input/output — not about
-        // literal typing. Lua's numeric literal node is `number` (not Python's
-        // `integer`), so `try_eval_literal` records its source text "3" (the
-        // same current behavior pinned for Java `decimal_integer_literal` in
-        // `char_flat_classifier_vocabulary`). Promoting `number` to a JSON
-        // integer is the separate (research-needed) trace-typer concern, out of
-        // scope here. Pin the value that proves the RHS reached the output slot.
+        // RC6 is about DESTRUCTURING the equality into input/output. RC7's
+        // grammar-aware evaluator now also types Lua's `number` literal node as
+        // a real JSON integer (was source text "3").
         assert_eq!(
             f.input_output_specs[0].output,
-            serde_json::json!("3"),
-            "RC6: the `== 3` RHS must become the spec output (source-text form)"
+            serde_json::json!(3),
+            "RC6/RC7: the `== 3` RHS becomes the spec output, typed as JSON 3"
         );
         assert!(
             !f.property_specs.iter().any(|p| p.property_type == "truthy"),
