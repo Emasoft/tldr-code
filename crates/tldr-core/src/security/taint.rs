@@ -2038,6 +2038,192 @@ fn call_args_have_identifier_leaf(
     false
 }
 
+/// security-fp2 RC2 (v0.5.0 CLOSEOUT): resolve THE sink's own call/construct AST
+/// node — not its enclosing CFG basic block — so reachability can be keyed on the
+/// sink call's `arguments` subtree rather than the whole block's physical line
+/// range.
+///
+/// The block-granular re-derivation is the documented over-approximation: a
+/// tainted variable that is an argument to an UNRELATED sibling call sharing the
+/// sink's CFG block was promoting the sink (`system($safe)` flagged because a
+/// neighbouring `log_event($bad)` carries the tainted `$bad`). Keying on the sink
+/// call node's own argument subtree (which [`arg_subtrees`] guarantees excludes
+/// the receiver/callee) is the tight, grammar-uniform unit of reachability used
+/// by every production engine.
+///
+/// Returns `None` when no call/construct node STARTS on `sink_line` (e.g.
+/// grammars that record the structural sink one line off the dangerous call, or
+/// an ambiguous multi-call line that cannot be disambiguated by the sink var) so
+/// callers fall back to the coarser block-window behaviour and recall is
+/// preserved.
+fn sink_call_node<'a>(
+    root: tree_sitter::Node<'a>,
+    source: &[u8],
+    language: Language,
+    sink_line: u32,
+    sink_var: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let call_kinds = call_node_kinds(language);
+    let extra_call_kinds = extra_arg_bearing_call_kinds(language);
+    let construct_kinds = arg_bearing_construct_kinds(language);
+    let ident_kinds = arg_ident_leaf_kinds(language);
+    let want = normalize_ident_head(sink_var);
+
+    // Candidates: call/construct nodes that START on the sink line.
+    let mut candidates: Vec<tree_sitter::Node<'a>> = Vec::new();
+    for node in walk_descendants(root) {
+        let kind = node.kind();
+        let is_call = call_kinds.contains(&kind) || extra_call_kinds.contains(&kind);
+        let is_construct = construct_kinds.contains(&kind);
+        if !is_call && !is_construct {
+            continue;
+        }
+        if node.start_position().row as u32 + 1 == sink_line {
+            candidates.push(node);
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // (1) Prefer a call whose OWN argument subtree contains an identifier leaf
+    //     equal to the sink var — the direct-argument sink shape
+    //     (`system($safe)`, `os.system(b)`).
+    for node in &candidates {
+        let is_call =
+            call_kinds.contains(&node.kind()) || extra_call_kinds.contains(&node.kind());
+        if is_call {
+            for args in arg_subtrees(node, language) {
+                if ident_leaf_in_subtree(&args, source, &ident_kinds, want) {
+                    return Some(*node);
+                }
+            }
+        } else if ident_leaf_in_subtree(node, source, &ident_kinds, want) {
+            return Some(*node);
+        }
+    }
+    // (2) Prefer a call whose callee/receiver head corresponds to the sink var —
+    //     the receiver-sink shape (`cursor.execute(...)` extracts `cursor`).
+    for node in &candidates {
+        if let Some(name) = extract_call_name(node, source, language) {
+            if normalize_ident_head(&name) == want {
+                return Some(*node);
+            }
+        }
+    }
+    // (3) Unambiguous single candidate on the sink line.
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+    // Ambiguous — fall back to the block-window path.
+    None
+}
+
+/// security-fp2 RC2 (v0.5.0 CLOSEOUT): collect the normalized identifier-leaf
+/// variable names appearing in the SINK call node's OWN argument subtree(s).
+///
+/// Empty when the sink node cannot be resolved or carries no identifier
+/// arguments — callers then fall back to coarser (block) reachability so recall
+/// is preserved.
+fn sink_arg_ident_vars(
+    root: tree_sitter::Node,
+    source: &[u8],
+    language: Language,
+    sink_line: u32,
+    sink_var: &str,
+) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    let Some(node) = sink_call_node(root, source, language, sink_line, sink_var) else {
+        return out;
+    };
+    let ident_kinds = arg_ident_leaf_kinds(language);
+    let is_call = call_node_kinds(language).contains(&node.kind())
+        || extra_arg_bearing_call_kinds(language).contains(&node.kind());
+    let subtrees: Vec<tree_sitter::Node> = if is_call {
+        arg_subtrees(&node, language)
+    } else {
+        vec![node]
+    };
+    for st in subtrees {
+        collect_ident_leaves(&st, source, &ident_kinds, &mut out);
+    }
+    out
+}
+
+/// BFS a subtree collecting every identifier-kind leaf's normalized head text.
+fn collect_ident_leaves(
+    subtree: &tree_sitter::Node,
+    source: &[u8],
+    ident_kinds: &[&str],
+    out: &mut HashSet<String>,
+) {
+    let mut stack: Vec<tree_sitter::Node> = vec![*subtree];
+    while let Some(n) = stack.pop() {
+        if ident_kinds.contains(&n.kind()) {
+            out.insert(normalize_ident_head(node_text(&n, source)).to_string());
+        }
+        for i in 0..n.child_count() {
+            if let Some(child) = n.child(i) {
+                if child.is_named() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+}
+
+/// security-fp2 RC2 (v0.5.0 CLOSEOUT): build the per-variable taint-derivation
+/// closure used to give [`flows_to`] real provenance instead of block
+/// set-membership.
+///
+/// An assignment / update `dst = ... src ...` (a `Definition`/`Update` VarRef on
+/// the same line as a `Use` of `src`) adds an edge `src -> dst`. The transitive
+/// closure of these edges answers "can `source_var` taint this sink-argument
+/// leaf?" — the per-variable def-use provenance that the conservative block-set
+/// membership dropped. Every variable reaches itself.
+fn build_taint_reaches(refs: &[VarRef]) -> HashMap<String, HashSet<String>> {
+    // Group `Use` reference names by line for an O(refs) edge build.
+    let mut uses_by_line: HashMap<u32, Vec<&str>> = HashMap::new();
+    for r in refs {
+        if matches!(r.ref_type, RefType::Use) {
+            uses_by_line.entry(r.line).or_default().push(r.name.as_str());
+        }
+    }
+    let mut edges: HashMap<String, HashSet<String>> = HashMap::new();
+    for r in refs {
+        if matches!(r.ref_type, RefType::Definition | RefType::Update) {
+            if let Some(us) = uses_by_line.get(&r.line) {
+                for u in us {
+                    if *u != r.name {
+                        edges
+                            .entry((*u).to_string())
+                            .or_default()
+                            .insert(r.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    let vars: HashSet<&str> = refs.iter().map(|r| r.name.as_str()).collect();
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    for v in vars {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = vec![v.to_string()];
+        while let Some(cur) = stack.pop() {
+            if !seen.insert(cur.clone()) {
+                continue;
+            }
+            if let Some(next) = edges.get(&cur) {
+                for n in next {
+                    stack.push(n.clone());
+                }
+            }
+        }
+        out.insert(v.to_string(), seen);
+    }
+    out
+}
+
 /// G5-O1 (T2-G5-taint): decide whether tainted variable `tvar` flows into the
 /// sink call's arguments — replacing the old `identifier_in_text` substring
 /// "indirect match" promotion.
@@ -2073,6 +2259,7 @@ fn indirect_arg_match(
     statements: &HashMap<u32, String>,
     sink_block: usize,
     sink_line: u32,
+    sink_var: &str,
     tvar: &str,
 ) -> bool {
     // Sink block's line range — used as the candidate window for the AST walk
@@ -2085,8 +2272,34 @@ fn indirect_arg_match(
         .map(|b| b.lines);
 
     if let (Some(tree), Some(source)) = (tree, source) {
+        let root = tree.root_node();
+        // security-fp2 RC2 (v0.5.0 CLOSEOUT): when the sink's OWN call node
+        // resolves, scope the tainted-arg scan to THAT node's argument
+        // subtree(s). A tainted var that is an argument to an UNRELATED sibling
+        // call sharing the sink's CFG block no longer promotes the sink. Because
+        // `arg_subtrees` excludes the receiver/callee, this is also immune to
+        // comma/sequence/chain/pipe/echo-list statements. Falls back to the
+        // block-window walk when the node cannot be resolved (off-by-one
+        // grammars / ambiguous multi-call line), preserving recall.
+        if let Some(sink_node) =
+            sink_call_node(root, source, language, sink_line, sink_var)
+        {
+            let ident_kinds = arg_ident_leaf_kinds(language);
+            let want = normalize_ident_head(tvar);
+            let is_call = call_node_kinds(language).contains(&sink_node.kind())
+                || extra_arg_bearing_call_kinds(language).contains(&sink_node.kind());
+            if is_call {
+                for args in arg_subtrees(&sink_node, language) {
+                    if ident_leaf_in_subtree(&args, source, &ident_kinds, want) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return ident_leaf_in_subtree(&sink_node, source, &ident_kinds, want);
+        }
         return tainted_ident_in_call_args(
-            &tree.root_node(),
+            &root,
             source,
             language,
             sink_line,
@@ -7334,6 +7547,7 @@ pub fn compute_taint_with_tree_indexed(
                                     statements,
                                     sink_block,
                                     sink.line,
+                                    &sink.var,
                                     tvar,
                                 ) {
                                     sink.tainted = true;
@@ -7364,6 +7578,7 @@ pub fn compute_taint_with_tree_indexed(
                             statements,
                             sink_block,
                             sink.line,
+                            &sink.var,
                             tvar,
                         ) {
                             sink.tainted = true;
@@ -7390,18 +7605,41 @@ pub fn compute_taint_with_tree_indexed(
         })
         .collect();
 
+    // security-fp2 RC2 (v0.5.0 CLOSEOUT) Commit 2: per-variable taint-derivation
+    // closure threaded into `flows_to` so a source pairs with a sink ONLY when it
+    // actually taint-reaches the sink's own argument leaf — replacing the
+    // provenance-free "any tainted var co-resident in the block" set-membership.
+    let taint_reaches = build_taint_reaches(refs);
+
     for (sink_var, sink_line, sink_type, sink_tainted, sink_statement) in sinks_snapshot {
         if !sink_tainted {
             continue;
         }
 
         if let Some(&sink_block) = line_to_block.get(&sink_line) {
+            // security-fp2 RC2 (v0.5.0 CLOSEOUT) Commit 2: identifier leaves of
+            // the sink call node's OWN argument subtree(s). Empty when the sink
+            // node cannot be resolved (receiver-only / construct / no AST) — then
+            // `flows_to` keeps its historical block-membership behaviour.
+            let sink_arg_vars: HashSet<String> = match (ast_tree, src_bytes) {
+                (Some(tree), Some(src)) => {
+                    sink_arg_ident_vars(tree.root_node(), src, language, sink_line, &sink_var)
+                }
+                _ => HashSet::new(),
+            };
             for source in &sources_clone {
                 if let Some(&source_block) = line_to_block.get(&source.line) {
-                    // Direct flow: sink's `var` matches a tainted variable that
-                    // reaches sink_block.
-                    let direct =
-                        flows_to(&source.var, &sink_var, &tainted, &predecessors, sink_block);
+                    // Direct flow: the source taint-reaches the sink's own
+                    // argument leaf (provenance-scoped), not merely co-resident in
+                    // the sink block.
+                    let direct = flows_to(
+                        &source.var,
+                        &sink_var,
+                        &sink_arg_vars,
+                        &taint_reaches,
+                        &tainted,
+                        sink_block,
+                    );
 
                     // VULN-MIGRATION-V1 M3: Indirect flow — when the sink's
                     // structural `var` is the call receiver (e.g.,
@@ -7432,6 +7670,7 @@ pub fn compute_taint_with_tree_indexed(
                             statements,
                             sink_block,
                             sink_line,
+                            &sink_var,
                             &source.var,
                         )
                     } else {
@@ -7496,36 +7735,61 @@ pub fn compute_taint_with_tree_indexed(
 // Vulnerability Detection Helpers - Phase 5
 // =============================================================================
 
-/// Check if source variable flows to target variable via taint propagation.
+/// Check whether `source_var` flows to the sink via per-variable taint
+/// provenance (security-fp2 RC2 Commit 2).
 ///
-/// This is a conservative check that assumes any source could cause taint
-/// if the target variable is tainted at the target block. A more precise
-/// implementation would track per-variable taint provenance.
+/// Replaces the prior conservative block set-membership ("any tainted var
+/// co-resident in the sink block reaches the sink"). When the sink call node's
+/// own argument leaves are resolvable (`sink_arg_vars` non-empty), the pairing
+/// is provenance-scoped: `source_var` must taint-reach one of those argument
+/// leaves (via the [`build_taint_reaches`] def-use closure) AND that leaf must be
+/// tainted at the sink block. When the sink's argument leaves are NOT resolvable
+/// (receiver-only / language-construct / no-AST path), it falls back to the
+/// historical block set-membership on `sink_var` so recall is preserved.
 ///
 /// # Arguments
 ///
-/// * `_source_var` - The source variable (unused in conservative check)
-/// * `target_var` - The variable to check at the sink
-/// * `tainted_vars` - Taint state at each block
-/// * `_predecessors` - Block predecessor map (unused in conservative check)
-/// * `target_block` - The block containing the sink
+/// * `source_var` - The candidate taint source variable.
+/// * `sink_var` - The sink's structural variable (block-membership fallback key).
+/// * `sink_arg_vars` - Identifier leaves of the sink call node's own arguments.
+/// * `taint_reaches` - Per-variable taint-derivation closure (def-use provenance).
+/// * `tainted_vars` - Taint state at each block.
+/// * `target_block` - The block containing the sink.
 ///
 /// # Returns
 ///
-/// `true` if the target variable is tainted at the target block.
+/// `true` if `source_var` provenance-reaches the sink's argument (or, in the
+/// fallback, `sink_var` is tainted at the block).
 fn flows_to(
-    _source_var: &str,
-    target_var: &str,
+    source_var: &str,
+    sink_var: &str,
+    sink_arg_vars: &HashSet<String>,
+    taint_reaches: &HashMap<String, HashSet<String>>,
     tainted_vars: &HashMap<usize, HashSet<String>>,
-    _predecessors: &HashMap<usize, Vec<usize>>,
     target_block: usize,
 ) -> bool {
-    // Conservative approximation: if target_var is tainted at target_block,
-    // assume any source could cause it. More precise tracking would require
-    // per-variable taint provenance.
-    tainted_vars
-        .get(&target_block)
-        .map(|t| t.contains(target_var))
+    let block_tainted = tainted_vars.get(&target_block);
+    // security-fp2 RC2 (v0.5.0 CLOSEOUT) Commit 2: provenance-scoped pairing.
+    // When the sink call node's OWN argument leaves are resolvable, a source
+    // pairs with the sink ONLY if it taint-reaches one of those argument leaves
+    // (per-variable def-use provenance) AND that leaf is tainted at the sink
+    // block. This kills the cross-pairing where an independent source `a` was
+    // paired with `os.system(b)` purely because `b` was block-tainted: `a` does
+    // not taint-reach `b`, so the spurious `a -> b` flow is dropped while the
+    // genuine `b -> b` is retained.
+    if !sink_arg_vars.is_empty() {
+        let reach = taint_reaches.get(source_var);
+        return sink_arg_vars.iter().any(|leaf| {
+            block_tainted.map(|t| t.contains(leaf)).unwrap_or(false)
+                && (source_var == leaf
+                    || reach.map(|r| r.contains(leaf)).unwrap_or(false))
+        });
+    }
+    // Unresolved sink args (receiver-only / language construct / no-AST path):
+    // preserve the historical block set-membership behaviour so recall is not
+    // lost where the tighter argument-leaf granularity is unavailable.
+    block_tainted
+        .map(|t| t.contains(sink_var))
         .unwrap_or(false)
 }
 
@@ -8963,6 +9227,7 @@ def vuln(user_input):
                 &statements,
                 0,
                 1,
+                "safe",
                 "tainted"
             ),
             "no-AST fallback substring scan over-taints from a comment token (documented; AST path does not)"
@@ -9179,6 +9444,239 @@ def vuln(request, cursor):\n\
             !result.flows.is_empty(),
             "expected a taint flow from request.args.get -> cursor.execute f-string"
         );
+    }
+
+    // =====================================================================
+    // security-fp2 RC2 char tests (v0.5.0 CLOSEOUT)
+    //
+    // Block-granular taint-reachability over-approximation. A tainted variable
+    // that is an argument to an UNRELATED sibling call sharing the sink's CFG
+    // basic block must NOT promote/pair the sink (Commit 1, node-scoped
+    // arguments). And an independent source that does not taint-reach the sink's
+    // own argument leaf must NOT pair with the sink (Commit 2, per-variable
+    // provenance). Each test uses a SINGLE-block CFG so the over-approximation is
+    // exercised language-agnostically (the real CFG builder splits some grammars
+    // into per-statement blocks, masking it on the CLI surface for those langs).
+    // =====================================================================
+
+    /// Build a one-block CFG covering lines `lo..=hi` for the function `name`.
+    #[cfg(test)]
+    fn rc2_single_block_cfg(name: &str, lo: u32, hi: u32) -> crate::types::CfgInfo {
+        use crate::types::{BlockType, CfgBlock, CfgEdge, CfgInfo};
+        CfgInfo {
+            function: name.to_string(),
+            blocks: vec![CfgBlock {
+                id: 0,
+                block_type: BlockType::Body,
+                lines: (lo, hi),
+                calls: Vec::new(),
+            }],
+            edges: Vec::<CfgEdge>::new(),
+            entry_block: 0,
+            exit_blocks: vec![0],
+            cyclomatic_complexity: 1,
+            nested_functions: HashMap::new(),
+        }
+    }
+
+    /// Run taint on `code` with a single-block CFG (sources auto-seeded from the
+    /// AST; no hand-built refs needed — they are independent of source seeding).
+    #[cfg(test)]
+    fn rc2_run(code: &str, fname: &str, language: Language) -> TaintInfo {
+        use crate::ast::ParserPool;
+        let lines = code.lines().count() as u32;
+        let cfg = rc2_single_block_cfg(fname, 1, lines.max(1));
+        let mut statements: HashMap<u32, String> = HashMap::new();
+        for (i, line) in code.lines().enumerate() {
+            statements.insert((i + 1) as u32, line.to_string());
+        }
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, language).ok();
+        compute_taint_with_tree(
+            &cfg,
+            &[],
+            &statements,
+            tree.as_ref(),
+            Some(code.as_bytes()),
+            language,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Commit 1 (PHP): `system($safe)` shares a block with an UNRELATED sibling
+    /// `log_event($bad)` whose argument is the tainted `$bad`. Block-granular
+    /// reachability used to promote `system` because `$bad` is *somewhere* in the
+    /// block; node-scoping the scan to `system`'s OWN arguments (which hold only
+    /// the clean `$safe`) rejects the promotion. This is the doc's `vuln` repro.
+    #[test]
+    fn test_rc2_php_sibling_call_does_not_promote_sink() {
+        let code = "<?php\n\
+function proc($req) {\n\
+    $bad = $_GET['x'];\n\
+    log_event($bad);\n\
+    $safe = \"constant-prefix\";\n\
+    system($safe);\n\
+}\n";
+        let result = rc2_run(code, "proc", Language::Php);
+        // Sanity: the tainted `$bad` must be a tracked source (PHP keeps the
+        // `$` sigil on the variable name).
+        assert!(
+            result.sources.iter().any(|s| s.var == "$bad" || s.var == "bad"),
+            "sanity: $_GET['x'] must seed `$bad` as a source; sources={:?}",
+            result.sources
+        );
+        let shell = result
+            .sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::ShellExec);
+        assert!(
+            shell.is_some(),
+            "sanity: system(...) must be a ShellExec sink; sinks={:?}",
+            result.sinks
+        );
+        assert!(
+            !shell.unwrap().tainted,
+            "system($safe) must NOT be tainted by the sibling log_event($bad) call"
+        );
+        assert!(
+            result.flows.is_empty(),
+            "no flow expected: $bad is an arg to an UNRELATED sibling, not to system; got {:?}",
+            result.flows
+        );
+    }
+
+    /// Commit 1 (Python): `os.system(safe)` shares a block with a sibling
+    /// `log_event(bad)` carrying the tainted `bad`. Node-scoping rejects the
+    /// sibling-call promotion.
+    #[test]
+    fn test_rc2_python_sibling_call_does_not_promote_sink() {
+        let code = "def proc():\n\
+    bad = request.args.get('x')\n\
+    log_event(bad)\n\
+    safe = 'ls'\n\
+    os.system(safe)\n";
+        let result = rc2_run(code, "proc", Language::Python);
+        assert!(
+            result.sources.iter().any(|s| s.var == "bad"),
+            "sanity: request.args.get must seed `bad`; sources={:?}",
+            result.sources
+        );
+        let shell = result
+            .sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::ShellExec);
+        assert!(shell.is_some(), "sanity: os.system sink; sinks={:?}", result.sinks);
+        assert!(
+            !shell.unwrap().tainted,
+            "os.system(safe) must NOT be tainted by the sibling log_event(bad)"
+        );
+        assert!(
+            result.flows.is_empty(),
+            "no flow expected; got {:?}",
+            result.flows
+        );
+    }
+
+    /// Commit 1 (JS): `child_process.exec(safe)` shares a block with a sibling
+    /// `logEvent(bad)`. Node-scoping rejects the sibling-call promotion.
+    #[test]
+    fn test_rc2_js_sibling_call_does_not_promote_sink() {
+        let code = "function proc(req) {\n\
+    var bad = req.query.x;\n\
+    logEvent(bad);\n\
+    var safe = \"ls\";\n\
+    child_process.exec(safe);\n\
+}\n";
+        let result = rc2_run(code, "proc", Language::JavaScript);
+        assert!(
+            result.sources.iter().any(|s| s.var == "bad"),
+            "sanity: req.query must seed `bad`; sources={:?}",
+            result.sources
+        );
+        let shell = result
+            .sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::ShellExec);
+        assert!(shell.is_some(), "sanity: exec sink; sinks={:?}", result.sinks);
+        assert!(
+            !shell.unwrap().tainted,
+            "child_process.exec(safe) must NOT be tainted by the sibling logEvent(bad)"
+        );
+        assert!(
+            result.flows.is_empty(),
+            "no flow expected; got {:?}",
+            result.flows
+        );
+    }
+
+    /// Commit 1 — residual class (JS comma/sequence) that statement-span (Option
+    /// B) would still mis-flag: `a(bad), child_process.exec(y)` is ONE statement
+    /// with both calls as siblings. Node-scoping to `exec`'s OWN arguments (only
+    /// `y`) rejects the tainted `bad` that belongs to the sibling `a(...)`.
+    #[test]
+    fn test_rc2_js_comma_sequence_does_not_promote_sink() {
+        let code = "function proc(req) {\n\
+    var bad = req.query.x;\n\
+    var y = \"ok\";\n\
+    a(bad), child_process.exec(y);\n\
+}\n";
+        let result = rc2_run(code, "proc", Language::JavaScript);
+        let shell = result
+            .sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::ShellExec);
+        assert!(shell.is_some(), "sanity: exec sink; sinks={:?}", result.sinks);
+        assert!(
+            !shell.unwrap().tainted,
+            "exec(y) must NOT be tainted by the sibling a(bad) in the comma sequence"
+        );
+        assert!(
+            result.flows.is_empty(),
+            "no flow expected from the comma-sibling argument; got {:?}",
+            result.flows
+        );
+    }
+
+    /// Commit 2 (Python provenance): two INDEPENDENT sources `a` and `b`; `a`
+    /// flows only into `log_event(a)`, the sink is `os.system(b)`. The
+    /// provenance-free `flows_to` paired BOTH sources with the sink (set
+    /// membership on the block). Per-variable provenance keeps EXACTLY the
+    /// genuine `b -> b` flow and drops the spurious `a -> b`.
+    #[test]
+    fn test_rc2_flows_to_provenance_pairs_only_real_source() {
+        let code = "def proc():\n\
+    a = request.args.get('a')\n\
+    b = request.args.get('b')\n\
+    log_event(a)\n\
+    os.system(b)\n";
+        let result = rc2_run(code, "proc", Language::Python);
+        // Both sources detected and the sink is genuinely tainted via `b`.
+        assert!(
+            result.sources.iter().any(|s| s.var == "a")
+                && result.sources.iter().any(|s| s.var == "b"),
+            "sanity: both a and b must be sources; sources={:?}",
+            result.sources
+        );
+        let shell = result
+            .sinks
+            .iter()
+            .find(|s| s.sink_type == TaintSinkType::ShellExec);
+        assert!(
+            shell.is_some_and(|s| s.tainted),
+            "sanity: os.system(b) must be tainted via its own arg `b`; sinks={:?}",
+            result.sinks
+        );
+        // Exactly one flow, and it is b -> b (NOT a -> b).
+        assert_eq!(
+            result.flows.len(),
+            1,
+            "expected exactly one flow (b -> b); got {:?}",
+            result.flows
+        );
+        let f = &result.flows[0];
+        assert_eq!(f.source.var, "b", "the only flow's source must be `b`");
+        assert_eq!(f.sink.var, "b", "the only flow's sink var must be `b`");
     }
 
     // =====================================================================
