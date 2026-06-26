@@ -590,42 +590,29 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
         }
     }
 
-    // Go same-package implicit dependencies:
-    // In Go, all files in the same directory share the same package scope.
-    // Add edges between files in the same package directory.
+    // Go same-package implicit dependencies (RC16 root-cause fix):
+    // Same-package Go files reference each other's symbols WITHOUT an import
+    // statement, so the normal import-resolution pass above can never emit
+    // intra-package file->file edges. Previously this gap was filled with a
+    // `k*(k-1)` same-package *clique* (every file "depends on" every sibling),
+    // which conflated Go's compile-time identifier *visibility* with actual
+    // symbol *usage* and required a downstream cycle-exclusion hack to undo the
+    // spurious 2-cycles it fabricated.
     //
-    // (deps-external-internal-classifier-v1 / M-048) Track these implicit
-    // edges in a separate set so the cycle detector can exclude them.
-    // Pre-fix, the implicit n*n same-package edges between (router.go,
-    // router_test.go, tree.go, tree_test.go, path.go, path_test.go) in
-    // go-httprouter generated 15 spurious cycles even though no real
-    // import-based cycle exists. Same-package files are mutually visible
-    // by Go's package-scope rules (a compile-time fact about identifier
-    // visibility) but that is NOT the same thing as "router.go imports
-    // router_test.go imports router.go" — feeding it to the cycle
-    // detector is a category error.
-    let mut same_package_edges: HashSet<(PathBuf, PathBuf)> = HashSet::new();
+    // We now derive the SPARSE, DIRECTIONAL reference graph the AST actually
+    // supports: an edge `using_file -> declaring_file` exists iff `using_file`
+    // contains a bare identifier/type_identifier resolving to a package-level
+    // symbol declared in a sibling file of the same *parsed* package. This is
+    // how real Go analyzers define file-level deps (go/types Info.Uses +
+    // Object.Pos()) and matches the file-granular model of every other
+    // language. Because the edges are real and directional, the cycle detector
+    // can consume them directly — no same-package exclusion is needed.
     if language == Language::Go {
-        let go_packages = group_go_files_by_package(&root, &files);
-        for pkg_files in go_packages.values() {
-            if pkg_files.len() < 2 {
-                continue;
-            }
-            for file_a in pkg_files {
-                let rel_a = make_relative_path(file_a, &root);
-                for file_b in pkg_files {
-                    let rel_b = make_relative_path(file_b, &root);
-                    if rel_a == rel_b {
-                        continue;
-                    }
-                    // Add implicit same-package dependency
-                    if let Some(deps) = internal_dependencies.get_mut(&rel_a) {
-                        if !deps.contains(&rel_b) {
-                            deps.push(rel_b.clone());
-                            total_internal_deps += 1;
-                            same_package_edges.insert((rel_a.clone(), rel_b.clone()));
-                        }
-                    }
+        for (using_rel, decl_rel) in go_same_package_reference_edges(&root, &files) {
+            if let Some(deps) = internal_dependencies.get_mut(&using_rel) {
+                if !deps.contains(&decl_rel) {
+                    deps.push(decl_rel);
+                    total_internal_deps += 1;
                 }
             }
         }
@@ -703,28 +690,13 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
 
     // Detect circular dependencies (Phase 3) - use final_deps
     //
-    // (deps-external-internal-classifier-v1 / M-048) Build a cycle-input
-    // graph that excludes same-package implicit edges (Go). Without this,
-    // every same-package file pair (`router.go` <-> `router_test.go`,
-    // etc.) registers as a 2-cycle, manufacturing 15 spurious cycles for
-    // go-httprouter where zero real cyclic imports exist.
+    // RC16: the Go same-package edges are now the sparse, directional symbol
+    // graph (no clique), so the cycle detector can consume `final_deps`
+    // directly. The former same-package cycle-exclusion special case existed
+    // ONLY to undo the `k*(k-1)` clique's fabricated 2-cycles; with the clique
+    // gone it is pure dead debt and has been removed.
     let max_cycle_length = options.max_cycle_length.unwrap_or(10);
-    let circular_dependencies = if same_package_edges.is_empty() {
-        detect_cycles(&final_deps, max_cycle_length)
-    } else {
-        let mut cycle_input: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-        for (src, deps) in &final_deps {
-            let filtered: Vec<PathBuf> = deps
-                .iter()
-                .filter(|tgt| {
-                    !same_package_edges.contains(&(src.clone(), (*tgt).clone()))
-                })
-                .cloned()
-                .collect();
-            cycle_input.insert(src.clone(), filtered);
-        }
-        detect_cycles(&cycle_input, max_cycle_length)
-    };
+    let circular_dependencies = detect_cycles(&final_deps, max_cycle_length);
     let cycles_found = circular_dependencies.len();
 
     // Calculate depth stats (Phase 7)
@@ -4702,10 +4674,52 @@ fn read_go_module_path(root: &Path) -> Option<String> {
     None
 }
 
-/// Collect Go files grouped by their package directory (relative to root).
+/// Parse a Go source string into a tree-sitter `Tree`.
 ///
-/// Returns a map from relative directory path to list of files in that directory.
-/// Files at the root level use an empty string key.
+/// Returns `None` if the parser cannot be constructed or the parse fails.
+fn parse_go_tree(source: &str) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_go::LANGUAGE.into())
+        .ok()?;
+    parser.parse(source, None)
+}
+
+/// Extract the declared package name from a Go file via tree-sitter
+/// (`source_file > package_clause > package_identifier`).
+///
+/// RC16: the grouping primitive must key on the *parsed* package clause, not
+/// the filesystem directory, so a co-located external-test `package foo_test`
+/// file is treated as a different package from the production `package foo`
+/// files — exactly as the Go toolchain (`cmd/go` `pxtest`) does. The grammar
+/// is `package_clause: seq('package', $._package_identifier)` with a single
+/// named child of kind `package_identifier` and no field name, so we take the
+/// only named child of that kind.
+fn parse_go_package_name(tree: &tree_sitter::Tree, source: &[u8]) -> Option<String> {
+    use crate::callgraph::languages::base::{get_node_text, walk_tree};
+    for node in walk_tree(tree.root_node()) {
+        if node.kind() == "package_clause" {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "package_identifier" {
+                    return Some(get_node_text(&child, source).to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Collect Go files grouped by their package, keyed by
+/// `(directory, parsed package_clause name)`.
+///
+/// RC16 root-cause fix: keying on directory alone is unsound — it cannot
+/// separate a production `package foo` file from a co-located external-test
+/// `package foo_test` file (the Go toolchain treats those as *different*
+/// packages). We parse each file's `package_clause` (AST, not a filename
+/// heuristic) and fold the package name into the group key. A file with no
+/// parseable `package_clause` (e.g. an `ERROR` node / bare snippet) falls back
+/// to a stable per-file key so it is never collapsed into a directory clique.
 fn group_go_files_by_package(root: &Path, files: &[PathBuf]) -> HashMap<String, Vec<PathBuf>> {
     let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for file_path in files {
@@ -4714,10 +4728,160 @@ fn group_go_files_by_package(root: &Path, files: &[PathBuf]) -> HashMap<String, 
                 .parent()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
-            groups.entry(pkg_dir).or_default().push(file_path.clone());
+            let pkg_name = std::fs::read_to_string(file_path).ok().and_then(|src| {
+                parse_go_tree(&src).and_then(|tree| parse_go_package_name(&tree, src.as_bytes()))
+            });
+            let key = match pkg_name {
+                Some(name) => format!("{}\u{0}{}", pkg_dir, name),
+                // Degenerate: no parseable package clause -> stable per-file
+                // key (NUL-prefixed sentinel), never a directory clique.
+                None => format!("{}\u{0}\u{0}file::{}", pkg_dir, relative.to_string_lossy()),
+            };
+            groups.entry(key).or_default().push(file_path.clone());
         }
     }
     groups
+}
+
+/// Collect the names of package-level declarations in a Go file (functions,
+/// types, package-level vars and consts) via tree-sitter.
+///
+/// These are the symbols a *sibling* same-package file can reference with a
+/// bare `identifier` / `type_identifier` (no import, no qualifier). Method
+/// names are intentionally excluded: a method is reached through its receiver
+/// (`recv.Method`, a `field_identifier`), and the relevant cross-file symbol
+/// is the receiver *type*, which is already captured via `type_declaration`.
+fn collect_go_package_level_decls(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<String> {
+    use crate::callgraph::languages::base::{get_node_text, walk_tree};
+    let root = tree.root_node();
+    let mut names: Vec<String> = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    names.push(get_node_text(&name_node, source).to_string());
+                }
+            }
+            "type_declaration" => {
+                let mut c2 = child.walk();
+                for spec in child.named_children(&mut c2) {
+                    if spec.kind() == "type_spec" {
+                        if let Some(name_node) = spec.child_by_field_name("name") {
+                            names.push(get_node_text(&name_node, source).to_string());
+                        }
+                    }
+                }
+            }
+            "var_declaration" | "const_declaration" => {
+                // `var_spec` / `const_spec` may be wrapped in a `*_spec_list`
+                // for grouped `var ( ... )` blocks; walk the subtree to reach
+                // every spec, then collect each `name`-field identifier
+                // (a spec may bind several names: `var a, b = ...`).
+                for n in walk_tree(child) {
+                    if n.kind() == "var_spec" || n.kind() == "const_spec" {
+                        let mut nc = n.walk();
+                        if nc.goto_first_child() {
+                            loop {
+                                if nc.field_name() == Some("name")
+                                    && nc.node().kind() == "identifier"
+                                {
+                                    names.push(get_node_text(&nc.node(), source).to_string());
+                                }
+                                if !nc.goto_next_sibling() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Build the directional same-package symbol-reference edges for Go (RC16).
+///
+/// Replaces the old `k*(k-1)` same-package *clique* (which conflated Go's
+/// compile-time identifier *visibility* with actual *usage*) with the sparse,
+/// directional reference graph real Go analyzers use: an edge
+/// `using_file -> declaring_file` exists iff `using_file` contains a bare
+/// `identifier` / `type_identifier` that resolves to a package-level symbol
+/// declared in a *sibling* file of the same parsed package.
+///
+/// This is AST-driven (tree-sitter), captures non-call references the
+/// call-only callgraph misses (package-level var/const reads, type references
+/// in fields/params/composite-literals, and struct embedding — all bare
+/// `type_identifier`/`identifier` nodes), and never fabricates an edge without
+/// a real symbol reference.
+fn go_same_package_reference_edges(root: &Path, files: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    use crate::callgraph::languages::base::{get_node_text, walk_tree};
+
+    struct ParsedFile {
+        rel: PathBuf,
+        src: String,
+        tree: tree_sitter::Tree,
+    }
+
+    let groups = group_go_files_by_package(root, files);
+    let mut edges: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut seen: HashSet<(PathBuf, PathBuf)> = HashSet::new();
+
+    for pkg_files in groups.values() {
+        if pkg_files.len() < 2 {
+            continue;
+        }
+
+        let mut parsed: Vec<ParsedFile> = Vec::new();
+        // Symbol name -> set of sibling files declaring it at package level.
+        let mut symbol_decl: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+
+        for fp in pkg_files {
+            let src = match std::fs::read_to_string(fp) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let tree = match parse_go_tree(&src) {
+                Some(t) => t,
+                None => continue,
+            };
+            let rel = make_relative_path(fp, root);
+            for name in collect_go_package_level_decls(&tree, src.as_bytes()) {
+                symbol_decl.entry(name).or_default().insert(rel.clone());
+            }
+            parsed.push(ParsedFile { rel, src, tree });
+        }
+
+        // Resolve each bare identifier/type_identifier use to its declaring
+        // sibling file(s), emitting a directional edge. A use that resolves to
+        // the *same* file (incl. the declaration site itself) is skipped, so
+        // no self-edges are produced.
+        for pf in &parsed {
+            let source = pf.src.as_bytes();
+            for node in walk_tree(pf.tree.root_node()) {
+                match node.kind() {
+                    "identifier" | "type_identifier" => {
+                        let text = get_node_text(&node, source);
+                        if let Some(decls) = symbol_decl.get(text) {
+                            for decl_rel in decls {
+                                if *decl_rel != pf.rel {
+                                    let e = (pf.rel.clone(), decl_rel.clone());
+                                    if seen.insert(e.clone()) {
+                                        edges.push(e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    edges
 }
 
 // =============================================================================

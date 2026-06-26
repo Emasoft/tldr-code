@@ -2394,13 +2394,83 @@ func Query(sql string) interface{} {
         );
     }
 
-    /// Test Go same-package files see each other implicitly.
+    // RC16 same-package directional-reference fixtures.
+    // `utils.go` actually CALLS `ExtraHelper` (declared in `extra.go`), so the
+    // only real same-package edge is the DIRECTIONAL `utils.go -> extra.go`.
+    const GO_UTILS_USES_EXTRA: &str = r#"
+package utils
+
+func UseExtra() string {
+    return ExtraHelper()
+}
+"#;
+
+    /// Test Go same-package files get a DIRECTIONAL edge ONLY where a real
+    /// symbol reference exists (RC16 rewrite).
     ///
-    /// Multiple .go files in the same directory are in the same Go package.
-    /// They don't need import statements to access each other's symbols.
-    /// The dependency graph should show same-package files as mutually dependent.
+    /// Previously this test encoded the over-approximation bug: it asserted a
+    /// same-package edge existed even between files with no cross-reference.
+    /// The root-cause fix replaces the `k*(k-1)` clique with sparse directional
+    /// symbol-reference edges, so this test now adds a real reference
+    /// (`utils.go` calls `ExtraHelper`) and asserts the directional edge
+    /// `utils.go -> extra.go` is present AND the reverse `extra.go -> utils.go`
+    /// is absent.
     #[test]
     fn go_same_package_implicit_deps() {
+        let test_dir = TestDir::new().unwrap();
+        test_dir.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+        test_dir
+            .add_file("utils/utils.go", GO_UTILS_USES_EXTRA)
+            .unwrap();
+        test_dir.add_file("utils/extra.go", GO_UTILS_EXTRA).unwrap();
+
+        let options = crate::analysis::deps::DepsOptions {
+            language: Some("go".to_string()),
+            ..Default::default()
+        };
+
+        let report = analyze_dependencies(test_dir.path(), &options).unwrap();
+
+        assert_eq!(
+            report.stats.total_files, 2,
+            "Expected 2 files in utils package"
+        );
+
+        let utils_deps = report
+            .internal_dependencies
+            .get(&PathBuf::from("utils/utils.go"))
+            .cloned()
+            .unwrap_or_default();
+        let extra_deps = report
+            .internal_dependencies
+            .get(&PathBuf::from("utils/extra.go"))
+            .cloned()
+            .unwrap_or_default();
+
+        // Directional edge present: utils.go references extra.go's ExtraHelper.
+        assert!(
+            utils_deps
+                .iter()
+                .any(|p| p == &PathBuf::from("utils/extra.go")),
+            "utils.go should depend on extra.go (it calls ExtraHelper). Got: {:?}",
+            utils_deps
+        );
+        // Reverse edge absent: extra.go references nothing from utils.go.
+        assert!(
+            !extra_deps
+                .iter()
+                .any(|p| p == &PathBuf::from("utils/utils.go")),
+            "extra.go must NOT depend on utils.go (no reverse reference). Got: {:?}",
+            extra_deps
+        );
+    }
+
+    /// RC16 headline char-test: two same-package files with NO cross-reference
+    /// must have ZERO internal deps between them (the `path.go <-> tree.go`
+    /// fabrication defect in miniature). `utils.go` here only calls stdlib
+    /// `time.*`; `extra.go`'s `ExtraHelper` is never used.
+    #[test]
+    fn go_same_package_no_reference_no_edge() {
         let test_dir = TestDir::new().unwrap();
         test_dir.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
         test_dir
@@ -2415,33 +2485,334 @@ func Query(sql string) interface{} {
 
         let report = analyze_dependencies(test_dir.path(), &options).unwrap();
 
-        // Both files should be in the report
-        assert_eq!(
-            report.stats.total_files, 2,
-            "Expected 2 files in utils package"
-        );
-
-        // utils/utils.go should depend on utils/extra.go (same package)
         let utils_deps = report
             .internal_dependencies
-            .get(&PathBuf::from("utils/utils.go"));
+            .get(&PathBuf::from("utils/utils.go"))
+            .cloned()
+            .unwrap_or_default();
         let extra_deps = report
             .internal_dependencies
-            .get(&PathBuf::from("utils/extra.go"));
-
-        // At least one direction of same-package dependency should exist
-        let has_same_pkg_dep = utils_deps
-            .map(|d| d.iter().any(|p| p.to_string_lossy().contains("extra")))
-            .unwrap_or(false)
-            || extra_deps
-                .map(|d| d.iter().any(|p| p.to_string_lossy().contains("utils.go")))
-                .unwrap_or(false);
+            .get(&PathBuf::from("utils/extra.go"))
+            .cloned()
+            .unwrap_or_default();
 
         assert!(
-            has_same_pkg_dep,
-            "Same-package Go files should have implicit dependencies on each other. \
-             utils/utils.go deps: {:?}, utils/extra.go deps: {:?}",
-            utils_deps, extra_deps
+            utils_deps.is_empty(),
+            "utils.go has no cross-reference; expected no internal deps. Got: {:?}",
+            utils_deps
+        );
+        assert!(
+            extra_deps.is_empty(),
+            "extra.go has no cross-reference; expected no internal deps. Got: {:?}",
+            extra_deps
+        );
+        assert_eq!(
+            report.stats.total_internal_deps, 0,
+            "No symbol reference => zero same-package edges"
+        );
+    }
+
+    /// RC16 directional sparsity: mirror go-httprouter. `router.go` references
+    /// symbols in `tree.go` and `path.go`; `tree.go`/`path.go` reference
+    /// nothing from each other. Assert `router.go -> {tree.go, path.go}` present
+    /// and `path.go <-> tree.go` absent (the fabricated mesh edge).
+    #[test]
+    fn go_same_package_directional_sparsity() {
+        let test_dir = TestDir::new().unwrap();
+        test_dir.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+        test_dir
+            .add_file(
+                "router.go",
+                "package main\n\nfunc Route() { addRoute(); CleanPath() }\n",
+            )
+            .unwrap();
+        test_dir
+            .add_file("tree.go", "package main\n\nfunc addRoute() {}\n")
+            .unwrap();
+        test_dir
+            .add_file("path.go", "package main\n\nfunc CleanPath() {}\n")
+            .unwrap();
+
+        let options = crate::analysis::deps::DepsOptions {
+            language: Some("go".to_string()),
+            ..Default::default()
+        };
+
+        let report = analyze_dependencies(test_dir.path(), &options).unwrap();
+
+        let router = report
+            .internal_dependencies
+            .get(&PathBuf::from("router.go"))
+            .cloned()
+            .unwrap_or_default();
+        let tree = report
+            .internal_dependencies
+            .get(&PathBuf::from("tree.go"))
+            .cloned()
+            .unwrap_or_default();
+        let path = report
+            .internal_dependencies
+            .get(&PathBuf::from("path.go"))
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(
+            router.contains(&PathBuf::from("tree.go")) && router.contains(&PathBuf::from("path.go")),
+            "router.go should reference tree.go and path.go. Got: {:?}",
+            router
+        );
+        assert!(
+            !path.contains(&PathBuf::from("tree.go")) && !tree.contains(&PathBuf::from("path.go")),
+            "path.go and tree.go must NOT reference each other (no mesh). path: {:?}, tree: {:?}",
+            path,
+            tree
+        );
+    }
+
+    /// RC16 non-call reference coverage: guards against the under-reporting
+    /// regression (calls are a strict subset of references). Three sub-cases:
+    /// (a) package-level `var x = SiblingVar`, (b) struct field of a
+    /// sibling-declared type, (c) struct embedding a sibling type. Each must
+    /// yield an edge the call-only extractor would miss.
+    #[test]
+    fn go_same_package_non_call_references() {
+        // (a) package-level var read of a sibling symbol.
+        {
+            let d = TestDir::new().unwrap();
+            d.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+            d.add_file("a.go", "package main\n\nvar Cfg = DefaultConfig\n")
+                .unwrap();
+            d.add_file("b.go", "package main\n\nvar DefaultConfig = 42\n")
+                .unwrap();
+            let report = analyze_dependencies(
+                d.path(),
+                &crate::analysis::deps::DepsOptions {
+                    language: Some("go".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let a = report
+                .internal_dependencies
+                .get(&PathBuf::from("a.go"))
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                a.contains(&PathBuf::from("b.go")),
+                "(a) var read: a.go should depend on b.go. Got: {:?}",
+                a
+            );
+        }
+
+        // (b) struct field whose type is declared in a sibling file.
+        {
+            let d = TestDir::new().unwrap();
+            d.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+            d.add_file(
+                "a.go",
+                "package main\n\ntype Holder struct {\n    item Widget\n}\n",
+            )
+            .unwrap();
+            d.add_file("b.go", "package main\n\ntype Widget struct{}\n")
+                .unwrap();
+            let report = analyze_dependencies(
+                d.path(),
+                &crate::analysis::deps::DepsOptions {
+                    language: Some("go".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let a = report
+                .internal_dependencies
+                .get(&PathBuf::from("a.go"))
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                a.contains(&PathBuf::from("b.go")),
+                "(b) struct field type: a.go should depend on b.go. Got: {:?}",
+                a
+            );
+        }
+
+        // (c) struct embedding a sibling-declared type.
+        {
+            let d = TestDir::new().unwrap();
+            d.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+            d.add_file(
+                "a.go",
+                "package main\n\ntype Outer struct {\n    Base\n}\n",
+            )
+            .unwrap();
+            d.add_file("b.go", "package main\n\ntype Base struct{}\n")
+                .unwrap();
+            let report = analyze_dependencies(
+                d.path(),
+                &crate::analysis::deps::DepsOptions {
+                    language: Some("go".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let a = report
+                .internal_dependencies
+                .get(&PathBuf::from("a.go"))
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                a.contains(&PathBuf::from("b.go")),
+                "(c) struct embedding: a.go should depend on b.go. Got: {:?}",
+                a
+            );
+        }
+    }
+
+    /// RC16 grouping (AST): co-located `package foo` and external-test
+    /// `package foo_test` are DIFFERENT packages and must not be meshed. An
+    /// in-package `bar_test.go` (`package foo`) that references a production
+    /// symbol DOES get a directional edge.
+    #[test]
+    fn go_package_clause_grouping_separates_external_test() {
+        let test_dir = TestDir::new().unwrap();
+        test_dir.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+        test_dir
+            .add_file("foo.go", "package foo\n\nfunc Helper() {}\n")
+            .unwrap();
+        // External test package: same dir, DIFFERENT package -> not meshed.
+        test_dir
+            .add_file(
+                "foo_test.go",
+                "package foo_test\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
+            )
+            .unwrap();
+        // In-package test: same package `foo`, references production `Helper`.
+        test_dir
+            .add_file(
+                "bar_test.go",
+                "package foo\n\nfunc useHelper() { Helper() }\n",
+            )
+            .unwrap();
+
+        let report = analyze_dependencies(
+            test_dir.path(),
+            &crate::analysis::deps::DepsOptions {
+                language: Some("go".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let foo = report
+            .internal_dependencies
+            .get(&PathBuf::from("foo.go"))
+            .cloned()
+            .unwrap_or_default();
+        let foo_test = report
+            .internal_dependencies
+            .get(&PathBuf::from("foo_test.go"))
+            .cloned()
+            .unwrap_or_default();
+        let bar_test = report
+            .internal_dependencies
+            .get(&PathBuf::from("bar_test.go"))
+            .cloned()
+            .unwrap_or_default();
+
+        // External-test file is a different package -> not meshed with foo.go.
+        assert!(
+            !foo_test.contains(&PathBuf::from("foo.go")),
+            "external-test foo_test.go must NOT be meshed with foo.go. Got: {:?}",
+            foo_test
+        );
+        assert!(
+            !foo.contains(&PathBuf::from("foo_test.go")),
+            "foo.go must NOT be meshed with external-test foo_test.go. Got: {:?}",
+            foo
+        );
+        // In-package bar_test.go references Helper -> directional edge to foo.go.
+        assert!(
+            bar_test.contains(&PathBuf::from("foo.go")),
+            "in-package bar_test.go should depend on foo.go (calls Helper). Got: {:?}",
+            bar_test
+        );
+    }
+
+    /// RC16 degenerate `package_clause`: a file with no parseable package
+    /// clause must fall back to a stable per-file key and gain NO clique edges.
+    #[test]
+    fn go_degenerate_package_clause_no_clique() {
+        let test_dir = TestDir::new().unwrap();
+        test_dir.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+        // Three normal sibling files (no cross-reference between them).
+        test_dir
+            .add_file("a.go", "package main\n\nfunc A() {}\n")
+            .unwrap();
+        test_dir
+            .add_file("b.go", "package main\n\nfunc B() {}\n")
+            .unwrap();
+        // Degenerate: no package clause at all.
+        test_dir
+            .add_file("c.go", "func Orphan() {}\n")
+            .unwrap();
+
+        let report = analyze_dependencies(
+            test_dir.path(),
+            &crate::analysis::deps::DepsOptions {
+                language: Some("go".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let c = report
+            .internal_dependencies
+            .get(&PathBuf::from("c.go"))
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            c.is_empty(),
+            "degenerate c.go must not gain spurious clique deps. Got: {:?}",
+            c
+        );
+        // No symbol references anywhere => zero internal deps overall.
+        assert_eq!(
+            report.stats.total_internal_deps, 0,
+            "no references => no same-package edges (no clique)"
+        );
+    }
+
+    /// RC16 cycle regression: a go-httprouter-shaped fixture must report
+    /// `cycles_found == 0` after deleting the same-package cycle-exclusion
+    /// special case (the directional reference edges contain no real cycle).
+    #[test]
+    fn go_same_package_no_spurious_cycles() {
+        let test_dir = TestDir::new().unwrap();
+        test_dir.add_file("go.mod", GO_MOD_MYPROJECT).unwrap();
+        test_dir
+            .add_file(
+                "router.go",
+                "package main\n\nfunc Route() { addRoute(); CleanPath() }\n",
+            )
+            .unwrap();
+        test_dir
+            .add_file("tree.go", "package main\n\nfunc addRoute() {}\n")
+            .unwrap();
+        test_dir
+            .add_file("path.go", "package main\n\nfunc CleanPath() {}\n")
+            .unwrap();
+
+        let report = analyze_dependencies(
+            test_dir.path(),
+            &crate::analysis::deps::DepsOptions {
+                language: Some("go".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.stats.cycles_found, 0,
+            "directional same-package edges must not fabricate cycles"
         );
     }
 
