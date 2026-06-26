@@ -301,6 +301,14 @@ struct DfgBuilder<'a> {
     /// is recognized as an upvalue write even though its name IS a local of F.
     /// Empty for non-Lua/Luau functions.
     lua_local_names: HashSet<String>,
+    /// stmt-edge-v1 (R3-r7-cl11-rust-match-arm-cross-variable-dfg, v0.5.0
+    /// CLOSEOUT): monotonic id handed to each binding/assignment STATEMENT so
+    /// `finalize` can recover the statement-granular, cross-variable flow
+    /// dependence (`def(LHS)` depends on every variable USED in the same
+    /// statement's RHS — HRB/FOW SDG rule). The id is stamped onto a ref via
+    /// `VarRef.group_id`; a fresh id is allocated per binding (per declarator
+    /// for multi-declarator `let a = .., b = ..`). 0 until the first statement.
+    stmt_counter: u32,
 }
 
 impl<'a> DfgBuilder<'a> {
@@ -319,6 +327,91 @@ impl<'a> DfgBuilder<'a> {
             generic_local_names: HashSet::new(),
             go_named_results: Vec::new(),
             lua_local_names: HashSet::new(),
+            stmt_counter: 0,
+        }
+    }
+
+    /// stmt-edge-v1 (R3-r7-cl11): allocate a fresh statement id for the next
+    /// binding/assignment. Distinct across the whole function so two unrelated
+    /// statements that happen to share a variable name never gain a spurious
+    /// cross-statement edge in `finalize`.
+    fn next_stmt_id(&mut self) -> u32 {
+        let id = self.stmt_counter;
+        self.stmt_counter = self.stmt_counter.wrapping_add(1);
+        id
+    }
+
+    /// stmt-edge-v1 (R3-r7-cl11): process the RHS subtree of ONE
+    /// binding/assignment and tag both ends with one statement id so
+    /// `finalize` can emit the cross-variable flow-dependence edge
+    /// `def(LHS) <- use(RHS-var)` (the dependency a multi-line RHS — Rust
+    /// `let bytes = match s { .. value .. }`, an `if/else`, a block tail, or
+    /// the C/Go/TS/Python ternary/switch analogues — otherwise drops).
+    ///
+    /// `def_start` is `self.refs.len()` captured *before* the caller recorded
+    /// this statement's LHS definitions, so `refs[def_start..]` are exactly
+    /// those LHS defs at entry. We:
+    ///   1. stamp the statement id onto those LHS `Definition`/`Update` refs,
+    ///   2. run the EXISTING `extract_refs_from_node` recursion on the RHS
+    ///      verbatim (so `match`/`if`/block-tail shapes are covered with no
+    ///      new dispatch arm), then
+    ///   3. stamp the same id onto every `Use` that recursion produced whose
+    ///      `group_id` is still `None`.
+    ///
+    /// The `is_none` guard means a NESTED binding's reads (already stamped with
+    /// their own inner id while recursing) are never re-stamped by the outer
+    /// statement. No ref's `line` is ever mutated — the edge is line-preserving.
+    fn extract_rhs_with_stmt(
+        &mut self,
+        def_start: usize,
+        rhs: Node,
+        depth: usize,
+    ) -> TldrResult<()> {
+        let sid = self.next_stmt_id();
+        for r in &mut self.refs[def_start..] {
+            if matches!(r.ref_type, RefType::Definition | RefType::Update)
+                && r.group_id.is_none()
+            {
+                r.group_id = Some(sid);
+            }
+        }
+        let rhs_start = self.refs.len();
+        self.extract_refs_from_node(rhs, depth + 1)?;
+        for r in &mut self.refs[rhs_start..] {
+            if r.ref_type == RefType::Use && r.group_id.is_none() {
+                r.group_id = Some(sid);
+            }
+        }
+        Ok(())
+    }
+
+    /// stmt-edge-v1 (R3-r7-cl11): span variant of [`Self::extract_rhs_with_stmt`]
+    /// for handlers whose RHS is NOT a single field node — Kotlin/Swift
+    /// `<binders> = <exprs>` (collected in a `found_eq` loop) and Lua
+    /// `variable_list = expression_list`. The caller records `def_start`
+    /// (refs index before the LHS binders) and `rhs_start` (refs index before
+    /// the RHS reads), having already walked both. We stamp one fresh statement
+    /// id onto the LHS `Definition`/`Update`s in `[def_start, rhs_start)` and
+    /// the `Use`s in `[rhs_start, end)` whose `group_id` is still `None` (so a
+    /// nested binding's reads, stamped during recursion, are left untouched).
+    fn tag_stmt_span(&mut self, def_start: usize, rhs_start: usize) {
+        let end = self.refs.len();
+        if def_start >= rhs_start || rhs_start >= end {
+            // No LHS def or no RHS read recorded — no cross edge is possible.
+            return;
+        }
+        let sid = self.next_stmt_id();
+        for r in &mut self.refs[def_start..rhs_start] {
+            if matches!(r.ref_type, RefType::Definition | RefType::Update)
+                && r.group_id.is_none()
+            {
+                r.group_id = Some(sid);
+            }
+        }
+        for r in &mut self.refs[rhs_start..end] {
+            if r.ref_type == RefType::Use && r.group_id.is_none() {
+                r.group_id = Some(sid);
+            }
         }
     }
 
@@ -2249,6 +2342,8 @@ impl<'a> DfgBuilder<'a> {
 
     /// Process an assignment statement (Python "assignment", Ruby "assignment")
     fn process_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): Python/Ruby `bytes = value*2 if c else value`.
+        let def_start = self.refs.len();
         // assignment has "left" and "right" fields
         if let Some(left) = node.child_by_field_name("left") {
             self.extract_assignment_targets(left)?;
@@ -2256,7 +2351,7 @@ impl<'a> DfgBuilder<'a> {
 
         // Process the right side for uses
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, right, depth)?;
         }
 
         Ok(())
@@ -2545,6 +2640,8 @@ impl<'a> DfgBuilder<'a> {
 
     /// Process augmented assignment (x += ...)
     fn process_augmented_assignment(&mut self, node: Node) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): see `extract_rhs_with_stmt`.
+        let def_start = self.refs.len();
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
                 // CL-13 (cl12_13_dfg_v1): an op-assign (`x += 1`, Ruby
@@ -2562,7 +2659,9 @@ impl<'a> DfgBuilder<'a> {
 
         // The right side contains uses
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, 1)?;
+            // stmt-edge-v1 (R3-r7-cl11): the LHS self-read `Use` stays in the
+            // def span, so only the RHS reads link to `def(x)`.
+            self.extract_rhs_with_stmt(def_start, right, 0)?;
         }
 
         Ok(())
@@ -2984,6 +3083,9 @@ impl<'a> DfgBuilder<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "variable_declarator" {
+                // stmt-edge-v1 (R3-r7-cl11): a fresh statement id PER declarator
+                // so `const a = x, b = y` never links `a`->`y` or `b`->`x`.
+                let def_start = self.refs.len();
                 // "name" field is the variable name
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if name_node.kind() == "identifier" {
@@ -2995,7 +3097,7 @@ impl<'a> DfgBuilder<'a> {
                 }
                 // "value" field is the initializer
                 if let Some(value) = child.child_by_field_name("value") {
-                    self.extract_refs_from_node(value, depth + 1)?;
+                    self.extract_rhs_with_stmt(def_start, value, depth)?;
                 }
             }
         }
@@ -3043,6 +3145,8 @@ impl<'a> DfgBuilder<'a> {
     /// Process C-style assignment expression: x = ...
     /// Used by TS/JS, Java, C, C++, Rust
     fn process_c_style_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): see `extract_rhs_with_stmt`.
+        let def_start = self.refs.len();
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
                 self.add_ref_from_node(left, RefType::Definition);
@@ -3053,7 +3157,7 @@ impl<'a> DfgBuilder<'a> {
         }
 
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, right, depth)?;
         }
 
         Ok(())
@@ -3061,6 +3165,10 @@ impl<'a> DfgBuilder<'a> {
 
     /// Process C-style augmented assignment: x += ..., x -= ...
     fn process_c_style_augmented_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): the self-read `Use(x)` recorded on the LHS
+        // stays in the def span (before the RHS), so it is never tagged as a
+        // statement use; only genuine RHS reads link to `def(x)`.
+        let def_start = self.refs.len();
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
                 // CL-13 (cl12_13_dfg_v1): C-style op-assign (`x += 1` in
@@ -3077,7 +3185,7 @@ impl<'a> DfgBuilder<'a> {
         }
 
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, right, depth)?;
         }
 
         Ok(())
@@ -3112,6 +3220,10 @@ impl<'a> DfgBuilder<'a> {
     /// Anything else falls through silently to preserve forward-compat
     /// with future tree-sitter-rust grammar updates.
     fn process_rust_let(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): mark where this statement's LHS defs begin
+        // so finalize can link `def(bytes)` to the RHS-used vars (`value` reads
+        // inside a `match`/`if`/block-tail) the per-variable model misses.
+        let def_start = self.refs.len();
         // "pattern" field contains the binding
         if let Some(pattern) = node.child_by_field_name("pattern") {
             self.extract_rust_binding_identifiers(pattern);
@@ -3119,7 +3231,7 @@ impl<'a> DfgBuilder<'a> {
 
         // "value" field contains the initializer (a use)
         if let Some(value) = node.child_by_field_name("value") {
-            self.extract_refs_from_node(value, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, value, depth)?;
         }
 
         // let-else: `let Pat = expr else { diverge };` carries an `else`
@@ -3330,12 +3442,14 @@ impl<'a> DfgBuilder<'a> {
     /// Process Go short var declaration: x := ...
     /// AST: short_var_declaration -> left (expression_list), right (expression_list)
     fn process_go_short_var(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): `bytes := func() u64 { switch s {..value..} }()`.
+        let def_start = self.refs.len();
         if let Some(left) = node.child_by_field_name("left") {
             self.extract_go_lhs_identifiers(left)?;
         }
 
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, right, depth)?;
         }
 
         Ok(())
@@ -3357,6 +3471,8 @@ impl<'a> DfgBuilder<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if matches!(child.kind(), "var_spec" | "const_spec") {
+                // stmt-edge-v1 (R3-r7-cl11): a fresh statement id per spec.
+                let def_start = self.refs.len();
                 // "name" field contains identifier(s)
                 if let Some(name) = child.child_by_field_name("name") {
                     if name.kind() == "identifier" {
@@ -3384,7 +3500,7 @@ impl<'a> DfgBuilder<'a> {
                 }
                 // Process value for uses
                 if let Some(value) = child.child_by_field_name("value") {
-                    self.extract_refs_from_node(value, depth + 1)?;
+                    self.extract_rhs_with_stmt(def_start, value, depth)?;
                 }
             }
         }
@@ -3481,6 +3597,8 @@ impl<'a> DfgBuilder<'a> {
     }
 
     fn process_go_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): see `extract_rhs_with_stmt`.
+        let def_start = self.refs.len();
         if let Some(left) = node.child_by_field_name("left") {
             // Check for operator: if it's += etc, it's an update
             let is_update = node.children(&mut node.walk()).any(|c| {
@@ -3501,7 +3619,7 @@ impl<'a> DfgBuilder<'a> {
         }
 
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, right, depth)?;
         }
 
         Ok(())
@@ -3573,6 +3691,8 @@ impl<'a> DfgBuilder<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "variable_declarator" {
+                // stmt-edge-v1 (R3-r7-cl11): one statement id per declarator.
+                let def_start = self.refs.len();
                 // "name" field is the variable name
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if name_node.kind() == "identifier" {
@@ -3581,7 +3701,7 @@ impl<'a> DfgBuilder<'a> {
                 }
                 // "value" field is the initializer
                 if let Some(value) = child.child_by_field_name("value") {
-                    self.extract_refs_from_node(value, depth + 1)?;
+                    self.extract_rhs_with_stmt(def_start, value, depth)?;
                 }
             }
         }
@@ -3608,6 +3728,8 @@ impl<'a> DfgBuilder<'a> {
         node: Node,
         depth: usize,
     ) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): see `extract_rhs_with_stmt`.
+        let def_start = self.refs.len();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "variable_declaration" {
@@ -3621,7 +3743,7 @@ impl<'a> DfgBuilder<'a> {
         // The initializer is in the `value` field on the OUTER
         // variable_declaration_statement, not on the inner declaration.
         if let Some(value) = node.child_by_field_name("value") {
-            self.extract_refs_from_node(value, depth + 1)?;
+            self.extract_rhs_with_stmt(def_start, value, depth)?;
         }
         Ok(())
     }
@@ -3659,6 +3781,9 @@ impl<'a> DfgBuilder<'a> {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "init_declarator" {
+                // stmt-edge-v1 (R3-r7-cl11): `int bytes = cond ? value : other;`
+                // — one statement id per init_declarator.
+                let def_start = self.refs.len();
                 // init_declarator has "declarator" and "value" fields
                 if let Some(declarator) = child.child_by_field_name("declarator") {
                     if declarator.kind() == "identifier" {
@@ -3675,7 +3800,7 @@ impl<'a> DfgBuilder<'a> {
                     }
                 }
                 if let Some(value) = child.child_by_field_name("value") {
-                    self.extract_refs_from_node(value, depth + 1)?;
+                    self.extract_rhs_with_stmt(def_start, value, depth)?;
                 }
             } else if child.kind() == "identifier" {
                 // Plain declaration without initializer: int x;
@@ -4145,6 +4270,9 @@ impl<'a> DfgBuilder<'a> {
     /// Process Lua assignment statement: x = expr or x, y = expr1, expr2
     /// AST: assignment_statement -> variable_list -> identifier(s), = , expression_list -> expression(s)
     fn process_lua_assignment_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): `variable_list` (defs) precedes
+        // `expression_list` (RHS reads); span-tag them as one statement.
+        let def_start = self.refs.len();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "variable_list" {
@@ -4226,7 +4354,10 @@ impl<'a> DfgBuilder<'a> {
                 }
             } else if child.kind() == "expression_list" {
                 // Process the value expressions for uses
+                let rhs_start = self.refs.len();
                 self.extract_refs_from_node(child, depth + 1)?;
+                // stmt-edge-v1 (R3-r7-cl11): link `def`(s) to the RHS reads.
+                self.tag_stmt_span(def_start, rhs_start);
             }
         }
         Ok(())
@@ -4391,6 +4522,8 @@ impl<'a> DfgBuilder<'a> {
         // The pre-fix path only recognised a direct `variable_declaration`
         // child, so the destructured names never got a def-site and
         // reaching-defs reported them as uninitialised.
+        // stmt-edge-v1 (R3-r7-cl11): span-tag the binders + the `= <value>`.
+        let def_start = self.refs.len();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
@@ -4425,6 +4558,7 @@ impl<'a> DfgBuilder<'a> {
 
         // Process the value expression (after "=")
         // The value is typically the last named child after "="
+        let rhs_start = self.refs.len();
         let mut cursor2 = node.walk();
         let mut found_eq = false;
         for child in node.children(&mut cursor2) {
@@ -4436,6 +4570,8 @@ impl<'a> DfgBuilder<'a> {
                 self.extract_refs_from_node(child, depth + 1)?;
             }
         }
+        // stmt-edge-v1 (R3-r7-cl11): link `def(name)` to its RHS reads.
+        self.tag_stmt_span(def_start, rhs_start);
 
         Ok(())
     }
@@ -4449,6 +4585,10 @@ impl<'a> DfgBuilder<'a> {
     /// Also handles: property_declaration -> value_binding_pattern, typed_pattern -> pattern -> simple_identifier, type_annotation
     fn process_swift_property(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         // Find the variable name: look for pattern -> simple_identifier or simple_identifier
+        // stmt-edge-v1 (R3-r7-cl11): all binders precede `=`; the RHS reads
+        // follow, so `rhs_start` is the refs length at the `=` token.
+        let def_start = self.refs.len();
+        let mut rhs_start: Option<usize> = None;
         let mut cursor = node.walk();
         let mut found_name = false;
         let mut found_eq = false;
@@ -4492,6 +4632,8 @@ impl<'a> DfgBuilder<'a> {
                         && child.utf8_text(self.source.as_bytes()).unwrap_or("") == "="
                     {
                         found_eq = true;
+                        // stmt-edge-v1: RHS reads start here (all binders done).
+                        rhs_start = Some(self.refs.len());
                         continue;
                     }
                     if found_eq && child.is_named() {
@@ -4502,12 +4644,20 @@ impl<'a> DfgBuilder<'a> {
             }
         }
 
+        // stmt-edge-v1 (R3-r7-cl11): link `def(name)` to its RHS reads.
+        if let Some(rs) = rhs_start {
+            self.tag_stmt_span(def_start, rs);
+        }
+
         Ok(())
     }
 
     /// Process Swift assignment: z = z + 1
     /// AST: assignment -> directly_assignable_expression -> simple_identifier, =, expression
     fn process_swift_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        // stmt-edge-v1 (R3-r7-cl11): span-tag target + RHS reads.
+        let def_start = self.refs.len();
+        let mut rhs_start: Option<usize> = None;
         let mut cursor = node.walk();
         let mut found_eq = false;
         let mut processed_target = false;
@@ -4545,10 +4695,17 @@ impl<'a> DfgBuilder<'a> {
                 && child.utf8_text(self.source.as_bytes()).unwrap_or("") == "="
             {
                 found_eq = true;
+                // stmt-edge-v1: RHS reads start after the `=` token.
+                rhs_start = Some(self.refs.len());
             } else if found_eq && child.is_named() {
                 // Process the value expression for uses
                 self.extract_refs_from_node(child, depth + 1)?;
             }
+        }
+
+        // stmt-edge-v1 (R3-r7-cl11): link `def(z)` to its RHS reads.
+        if let Some(rs) = rhs_start {
+            self.tag_stmt_span(def_start, rs);
         }
 
         Ok(())
@@ -6048,6 +6205,97 @@ impl<'a> DfgBuilder<'a> {
             }
         }
 
+        // stmt-edge-v1 (R3-r7-cl11-rust-match-arm-cross-variable-dfg, v0.5.0
+        // CLOSEOUT): SECOND pass — the missing CROSS-VARIABLE, statement-granular
+        // flow-dependence edge. The per-variable loop above can only express
+        // `def(v) -> use(v)` for ONE name; it therefore drops the dependency that
+        // flows through a MULTI-LINE right-hand side — `let bytes = match s { ..
+        // value .. }`, an `if/else`, a block tail, the C/Go/TS/Python ternary &
+        // switch analogues — where `bytes` is computed FROM `value` but the
+        // backward slice of `bytes` never reaches the def of `value`.
+        //
+        // Per the canonical PDG/SDG model (Horwitz–Reps–Binkley TOPLAS'90,
+        // Ferrante–Ottenstein–Warren TOPLAS'87) a statement's DEFINITION depends
+        // on EVERY variable USED in that same statement. We add exactly that edge
+        // class, scoped by the defining-statement id stamped into `group_id` by
+        // `extract_rhs_with_stmt` / `tag_stmt_span`. The edge runs from the used
+        // var's REACHING DEF (`value`@3) to the LHS def SITE (`bytes`@4), so the
+        // slice closure (slice.rs:`run_data_closure`) hops criterion -> LHS-def
+        // -> used-var-def WITHOUT pulling in the scattered RHS read lines, and
+        // NO read's own `line` is ever moved (line-preserving — `reaching-defs`
+        // / `dead-stores` / `taint` line attributions are unchanged).
+        let mut lhs_by_stmt: HashMap<u32, Vec<&VarRef>> = HashMap::new();
+        let mut uses_by_stmt: HashMap<u32, Vec<&VarRef>> = HashMap::new();
+        for r in &self.refs {
+            if let Some(sid) = r.group_id {
+                match r.ref_type {
+                    RefType::Definition | RefType::Update => {
+                        lhs_by_stmt.entry(sid).or_default().push(r);
+                    }
+                    RefType::Use => {
+                        uses_by_stmt.entry(sid).or_default().push(r);
+                    }
+                }
+            }
+        }
+        // Dedup against the per-variable edges already emitted (and within this
+        // pass), so a scrutinee already linked by the per-variable model
+        // (`match s` -> `s`@param) is not duplicated. Net effect: a small,
+        // strictly ADDITIVE set of correct cross-variable edges.
+        let mut seen_cross: HashSet<(String, u32, u32)> = edges
+            .iter()
+            .map(|e| (e.var.clone(), e.def_line, e.use_line))
+            .collect();
+        for (sid, lhs_defs) in &lhs_by_stmt {
+            let Some(stmt_uses) = uses_by_stmt.get(sid) else {
+                continue;
+            };
+            // Only single-LHS statements: a parallel/tuple binding
+            // (`a, b = c, d`) would mis-pair defs to uses (`a`->`d`), so we
+            // conservatively skip it — additive-only, never a regression.
+            let def_names: HashSet<&str> = lhs_defs.iter().map(|d| d.name.as_str()).collect();
+            if def_names.len() != 1 {
+                continue;
+            }
+            for &def in lhs_defs {
+                for &u in stmt_uses {
+                    // Skip the self-read of `x = x + 1` (the `Update`+`Use`
+                    // path already models it); we only want CROSS-variable flow.
+                    if u.name == def.name {
+                        continue;
+                    }
+                    // Reaching def of the USED var at its use site: the def of
+                    // `u.name` with the greatest line <= `u.line`. Anchoring on
+                    // the used var's DEF (not its scattered RHS read line) keeps
+                    // the match arms / branch bodies OUT of the slice.
+                    let Some(rdef) = defs_by_var.get(&u.name).and_then(|ds| {
+                        ds.iter()
+                            .copied()
+                            .filter(|d| d.line <= u.line)
+                            .max_by_key(|d| d.line)
+                    }) else {
+                        continue;
+                    };
+                    if rdef.line == def.line {
+                        // Same-line def of another var: no slicing distinction,
+                        // skip the self-loop edge.
+                        continue;
+                    }
+                    let key = (u.name.clone(), rdef.line, def.line);
+                    if !seen_cross.insert(key) {
+                        continue;
+                    }
+                    edges.push(DataflowEdge {
+                        var: u.name.clone(), // label = the READ var (CPG REACHING_DEF.VARIABLE)
+                        def_line: rdef.line, // source = used var's reaching def (line 3)
+                        use_line: def.line,  // sink   = the LHS def site (line 4)
+                        def_ref: rdef.clone(),
+                        use_ref: def.clone(),
+                    });
+                }
+            }
+        }
+
         let variables: Vec<String> = self.variables.into_iter().collect();
 
         Ok(DfgInfo {
@@ -7469,6 +7717,112 @@ def foo():
         let x_edges: Vec<_> = dfg.edges.iter().filter(|e| e.var == "x").collect();
 
         assert!(!x_edges.is_empty(), "should have def-use edge for x");
+    }
+
+    // =========================================================================
+    // stmt-edge-v1 (R3-r7-cl11): cross-variable, statement-granular flow
+    // dependence through a MULTI-LINE RHS (`let bytes = match s {..value..}`).
+    // The per-variable model only emits `def(v)->use(v)`; these tests pin the
+    // ADDED `def(LHS) <- use(RHS-var)` edge class in `finalize`.
+    // =========================================================================
+
+    #[test]
+    fn test_stmt_edge_rust_match_arm_cross_variable() {
+        // line 1 blank, 2 = signature, 3 = `let digits`, 4 = `let value`,
+        // 5 = `let bytes = match s {`, 6/7 = arms reading `value`, 8 = `_ =>`,
+        // 9 = `};`, 10 = `bytes`.
+        let source = r#"
+fn parse(s: &str) -> u64 {
+    let digits = "100";
+    let value: u64 = digits.parse().unwrap();
+    let bytes = match s {
+        "KB" => value.checked_mul(1024).unwrap(),
+        "MB" => value.checked_mul(1024 * 1024).unwrap(),
+        _ => value,
+    };
+    bytes
+}
+"#;
+        let dfg = get_dfg_context(source, "parse", Language::Rust).unwrap();
+
+        // The cross-variable edge: `value`'s reaching def (line 4) -> `bytes`'s
+        // def SITE (line 5). This is the edge that was structurally missing.
+        let has_cross = dfg
+            .edges
+            .iter()
+            .any(|e| e.var == "value" && e.def_line == 4 && e.use_line == 5);
+        assert!(
+            has_cross,
+            "expected cross-variable edge value(def@4) -> bytes-def-site(@5); edges = {:?}",
+            dfg.edges
+                .iter()
+                .map(|e| (e.var.as_str(), e.def_line, e.use_line))
+                .collect::<Vec<_>>()
+        );
+
+        // Regression guard: no RHS read's stored line moved — `value`'s reads
+        // are still anchored at lines 6/7/8, NOT retagged to the def line.
+        let value_use_lines: Vec<u32> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "value" && r.ref_type == RefType::Use)
+            .map(|r| r.line)
+            .collect();
+        assert!(
+            value_use_lines.contains(&6)
+                && value_use_lines.contains(&7)
+                && value_use_lines.contains(&8),
+            "value reads must keep their own lines (6,7,8); got {value_use_lines:?}"
+        );
+    }
+
+    #[test]
+    fn test_stmt_edge_no_false_edge_across_statements() {
+        // Two independent statements sharing nothing: `a = x`, `b = y`. The
+        // group_id scoping must NOT manufacture an `a<->y` or `b<->x` edge.
+        let source = r#"
+fn n(x: u64, y: u64) -> u64 {
+    let a = x;
+    let b = y;
+    a + b
+}
+"#;
+        let dfg = get_dfg_context(source, "n", Language::Rust).unwrap();
+
+        // `a` (def line 3) must never depend on `y`, and `b` (def line 4)
+        // must never depend on `x`.
+        let a_on_y = dfg
+            .edges
+            .iter()
+            .any(|e| e.var == "y" && e.use_line == 3);
+        let b_on_x = dfg
+            .edges
+            .iter()
+            .any(|e| e.var == "x" && e.use_line == 4);
+        assert!(!a_on_y, "spurious cross-statement edge a<-y");
+        assert!(!b_on_x, "spurious cross-statement edge b<-x");
+    }
+
+    #[test]
+    fn test_stmt_edge_single_line_rhs_no_extra_def_line() {
+        // Single-line RHS `let bytes = value + 1`: the cross edge must connect
+        // to `value`'s SAME def line the per-variable model already reaches —
+        // no NEW def line is introduced (no over-inclusion).
+        let source = r#"
+fn f() -> u64 {
+    let value: u64 = 1;
+    let bytes = value + 1;
+    bytes
+}
+"#;
+        let dfg = get_dfg_context(source, "f", Language::Rust).unwrap();
+        // Every `value`-labeled edge must have def_line == 3 (value's only def).
+        for e in dfg.edges.iter().filter(|e| e.var == "value") {
+            assert_eq!(
+                e.def_line, 3,
+                "single-line RHS must not invent a value def line other than 3"
+            );
+        }
     }
 
     // =========================================================================

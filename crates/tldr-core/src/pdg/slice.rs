@@ -616,6 +616,18 @@ fn slice_lines(
             .map(|n| n.lines.1)
             .max();
         if let (Some(blo), Some(bhi)) = (block_lo, block_hi) {
+            // stmt-edge-v1 (R3-r7-cl11): collect the block's on-side ref lines,
+            // then SEED the data closure from them (mirroring the RC5
+            // control-predicate re-run below). A criterion that carries no
+            // def-use edge of its own — e.g. a function's closing brace, whose
+            // tight block also holds the implicit-return use `bytes` — admits
+            // that sibling ref line via block recovery but, pre-fix, never
+            // explored ITS data dependencies, so `backward(brace)` collapsed to
+            // {brace, return-use} and `chop(value-def, brace)` reported no path.
+            // Re-seeding the (already re-runnable) closure from these lines pulls
+            // in the transitive defs (`bytes`@def -> `value`@def) in the slice
+            // direction, leaving forward/backward semantics otherwise unchanged.
+            let mut block_seeds: Vec<u32> = Vec::new();
             for r in &pdg.dfg.refs {
                 if r.line < blo || r.line > bhi {
                     continue;
@@ -626,8 +638,10 @@ fn slice_lines(
                 };
                 if on_side && r.line > 0 {
                     lines.insert(r.line);
+                    block_seeds.push(r.line);
                 }
             }
+            run_data_closure(&mut lines, &mut seen, block_seeds);
         }
     }
 
@@ -856,6 +870,266 @@ def foo():
         // Backward slice for 'x' from "z = x + y" should include x = 1 but not y = 2
         // Note: the line numbers in this test are approximate
         assert!(!slice.is_empty(), "slice should not be empty");
+    }
+
+    // =====================================================================
+    // stmt-edge-v1 (R3-r7-cl11): a backward slice through a MULTI-LINE RHS
+    // (`let bytes = match s {..value..}`, `if/else`, block-tail, the
+    // C/Go/TS/Python ternary & switch analogues) must reach the def of the
+    // cross-variable it is computed FROM. (All fixtures carry a leading
+    // newline, so line 1 is blank.)
+    // =====================================================================
+
+    #[test]
+    fn test_slice_rust_match_arm_reaches_cross_var_def() {
+        // 3=`let digits`, 4=`let value`, 5=`let bytes = match s {`,
+        // 6/7/8=arms, 9=`};`, 10=`bytes`.
+        let source = r#"
+fn parse(s: &str) -> u64 {
+    let digits = "100";
+    let value: u64 = digits.parse().unwrap();
+    let bytes = match s {
+        "KB" => value.checked_mul(1024).unwrap(),
+        "MB" => value.checked_mul(1024 * 1024).unwrap(),
+        _ => value,
+    };
+    bytes
+}
+"#;
+        let slice = get_slice(source, "parse", 10, SliceDirection::Backward, None, Language::Rust)
+            .unwrap();
+        assert!(
+            slice.contains(&4),
+            "backward slice of `bytes` must reach the def of `value`@4; got {slice:?}"
+        );
+        // The scattered match-arm read lines must NOT be pulled in (the edge is
+        // anchored on `value`'s DEF, not its reads).
+        assert!(
+            !slice.contains(&6) && !slice.contains(&7),
+            "match-arm read lines must stay out of the slice; got {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_rust_match_chop_reaches_through_closing_brace() {
+        // The proposal's `chop … 3 10` repro: `compute_chop` reports a path iff
+        // `backward(target).contains(source)`. Here target = line 11 (the
+        // closing brace), source = line 4 (`value`'s def). Pre-fix the backward
+        // slice of the brace collapsed to {return-use, brace} and never reached
+        // `value`; the cross edge + block-recovery re-seed now connect them.
+        let source = r#"
+fn parse(s: &str) -> u64 {
+    let digits = "100";
+    let value: u64 = digits.parse().unwrap();
+    let bytes = match s {
+        "KB" => value.checked_mul(1024).unwrap(),
+        "MB" => value.checked_mul(1024 * 1024).unwrap(),
+        _ => value,
+    };
+    bytes
+}
+"#;
+        let fwd = get_slice(source, "parse", 4, SliceDirection::Forward, None, Language::Rust)
+            .unwrap();
+        assert!(
+            fwd.contains(&5),
+            "forward slice of `value`@4 must reach `bytes` def@5; got {fwd:?}"
+        );
+        // backward slice of the CLOSING BRACE (line 11) must reach `value`@4 —
+        // this is exactly `path_exists` for `chop(value-def, brace)`.
+        let bwd_brace =
+            get_slice(source, "parse", 11, SliceDirection::Backward, None, Language::Rust).unwrap();
+        assert!(
+            bwd_brace.contains(&4),
+            "backward slice of the closing brace must reach `value`@4 (chop path); got {bwd_brace:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_rust_multiline_if_reaches_cross_var_def() {
+        // The non-`match` proof: same bug with an `if/else` RHS, no match node.
+        // 3=`let value`, 4=`let bytes = if ..`, 5=`value*1024`, 7=`value`, 9=`bytes`.
+        let source = r#"
+fn g(s: &str) -> u64 {
+    let value: u64 = 1;
+    let bytes = if s == "KB" {
+        value * 1024
+    } else {
+        value
+    };
+    bytes
+}
+"#;
+        let slice =
+            get_slice(source, "g", 9, SliceDirection::Backward, None, Language::Rust).unwrap();
+        assert!(
+            slice.contains(&3),
+            "backward slice of `bytes` must reach `value`@3 (multi-line if/else); got {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_rust_block_tail_reaches_cross_var_def() {
+        // block-tail RHS `let bytes = { let t = value; t * 2 }`.
+        // 3=`let value`, 4=`let bytes = {`, 5=`let t = value;`, 6=`t * 2`, 8=`bytes`.
+        let source = r#"
+fn h() -> u64 {
+    let value = 1;
+    let bytes = {
+        let t = value;
+        t * 2
+    };
+    bytes
+}
+"#;
+        let slice =
+            get_slice(source, "h", 8, SliceDirection::Backward, None, Language::Rust).unwrap();
+        assert!(
+            slice.contains(&3),
+            "backward slice of `bytes` must reach `value`@3 through the block tail; got {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_rust_oneline_rhs_no_overinclusion() {
+        // Regression guard: a single-line RHS must NOT gain spurious lines.
+        // 3=`let value`, 4=`let bytes = value + 1`, 5=`bytes`.
+        let source = r#"
+fn f(s: &str) -> u64 {
+    let value: u64 = 1;
+    let bytes = value + 1;
+    bytes
+}
+"#;
+        let slice =
+            get_slice(source, "f", 5, SliceDirection::Backward, None, Language::Rust).unwrap();
+        assert!(
+            slice.contains(&3) && slice.contains(&4),
+            "single-line slice must still reach value@3 and bytes@4; got {slice:?}"
+        );
+        // No over-inclusion: only function-body lines 2..=5 may appear.
+        assert!(
+            slice.iter().all(|&l| (2..=5).contains(&l)),
+            "single-line RHS slice over-included lines: {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_var_filter_label_correct() {
+        // The cross edge is labeled with the READ var (`value`); a `--var bytes`
+        // filter must NOT follow it, so `value`@4 is not spuriously pulled in.
+        let source = r#"
+fn parse(s: &str) -> u64 {
+    let digits = "100";
+    let value: u64 = digits.parse().unwrap();
+    let bytes = match s {
+        "KB" => value.checked_mul(1024).unwrap(),
+        _ => value,
+    };
+    bytes
+}
+"#;
+        let slice_bytes = get_slice(
+            source,
+            "parse",
+            9,
+            SliceDirection::Backward,
+            Some("bytes"),
+            Language::Rust,
+        )
+        .unwrap();
+        assert!(
+            !slice_bytes.contains(&4),
+            "`--var bytes` must not follow the value-labeled cross edge; got {slice_bytes:?}"
+        );
+    }
+
+    // --- Cross-language parity: backward slice of `bytes` reaches `value` ---
+
+    #[test]
+    fn test_slice_c_ternary_reaches_cross_var_def() {
+        // 3=`int value`, 4=`int other`, 5=`int bytes = c ? value`, 6=`: other;`.
+        let source = r#"
+int f(int c) {
+    int value = 100;
+    int other = 5;
+    int bytes = c ? value
+                  : other;
+    return bytes;
+}
+"#;
+        let slice =
+            get_slice(source, "f", 7, SliceDirection::Backward, None, Language::C).unwrap();
+        assert!(
+            slice.contains(&3),
+            "C: backward slice of `bytes` must reach `value`@3; got {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_ts_ternary_reaches_cross_var_def() {
+        let source = r#"
+function f(c: boolean): number {
+    let value = 100;
+    let bytes = c ? value * 2
+                  : value;
+    return bytes;
+}
+"#;
+        let slice = get_slice(
+            source,
+            "f",
+            6,
+            SliceDirection::Backward,
+            None,
+            Language::TypeScript,
+        )
+        .unwrap();
+        assert!(
+            slice.contains(&3),
+            "TS: backward slice of `bytes` must reach `value`@3; got {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_python_conditional_reaches_cross_var_def() {
+        // `total` (not the `bytes` builtin) avoids the builtin-name suppression.
+        let source = r#"
+def f(c):
+    value = 100
+    total = value * 2 if c else value
+    return total
+"#;
+        let slice =
+            get_slice(source, "f", 5, SliceDirection::Backward, None, Language::Python).unwrap();
+        assert!(
+            slice.contains(&3),
+            "Python: backward slice of `total` must reach `value`@3; got {slice:?}"
+        );
+    }
+
+    #[test]
+    fn test_slice_go_assignment_reaches_cross_var_def() {
+        // 3=`value :=`, 4=`var bytes`, 6=`bytes = value * 1024`, 8=`bytes = value`.
+        let source = r#"
+func g(s string) uint64 {
+	value := uint64(100)
+	var bytes uint64
+	switch s {
+	case "KB":
+		bytes = value * 1024
+	default:
+		bytes = value
+	}
+	return bytes
+}
+"#;
+        let slice =
+            get_slice(source, "g", 11, SliceDirection::Backward, None, Language::Go).unwrap();
+        assert!(
+            slice.contains(&3),
+            "Go: backward slice of `bytes` must reach `value`@3; got {slice:?}"
+        );
     }
 
     #[test]
