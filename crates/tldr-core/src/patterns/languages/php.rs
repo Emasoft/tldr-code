@@ -121,15 +121,21 @@ impl PhpSemantics {
         }
 
         // ---- Factory -------------------------------------------------
-        // R7 cluster[9] #150/#158 (design-fork Option A, see
+        // R7 cluster[9] #150/#158 (design-fork, see
         // decisions/r7-cl9-php-factory-name-only-heuristic.md): a Factory
         // requires EVIDENCE of construction, never a bare factory-shaped
         // method NAME. A method named `create*`/`make*`/`build*`/`new*` is
-        // a factory ONLY when it actually constructs an object (`new` in
-        // its body) OR is declared `abstract` (the abstract-factory
-        // contract). The pre-fix name-only "exposes a factory method"
-        // branch flagged `newLine(): void`, `buildLine(): string` and
-        // `buildUri(): UriInterface` (transforms input, no `new`).
+        // a factory ONLY when a freshly-constructed object REACHES a
+        // `return`/`yield` (`constructs_new`, computed by
+        // `construction_reaches_return`) OR it is declared `abstract` (the
+        // abstract-factory contract). The CLOSEOUT refinement tightened
+        // `constructs_new` from "a `new` exists in the body" to "a `new`
+        // reaches a return": that drops `throw new X()` guards
+        // (`createCompletionInput`), `$this->y = new X()` field mutators
+        // (`createResponse(): void`) and unreturned temporaries, which the
+        // earlier existence test still mis-flagged; the pre-Option-A
+        // name-only branch had flagged `newLine(): void` /
+        // `buildLine(): string` / `buildUri(): UriInterface` too.
         let factory_method = methods
             .iter()
             .find(|m| is_factory_method_name(&m.name) && (m.is_abstract || m.constructs_new));
@@ -349,7 +355,11 @@ fn collect_methods(node: Node, source: &str, has_static_property: &mut bool) -> 
                     is_static: has_child_kind(member, "static_modifier"),
                     is_private: has_visibility(member, source, "private"),
                     is_abstract: has_child_kind(member, "abstract_modifier"),
-                    constructs_new: subtree_has_kind(member, "object_creation_expression"),
+                    // R7 cluster[9] CLOSEOUT: a Factory needs a constructed
+                    // object that REACHES a `return`/`yield`, not merely a
+                    // `new` somewhere in the body — see
+                    // `construction_reaches_return`.
+                    constructs_new: construction_reaches_return(member, source),
                     name,
                 });
             }
@@ -377,18 +387,214 @@ fn has_visibility(node: Node, source: &str, vis: &str) -> bool {
     false
 }
 
-/// True when any descendant of `node` has the given kind.
-fn subtree_has_kind(node: Node, kind: &str) -> bool {
-    if node.kind() == kind {
-        return true;
+/// True when a freshly-constructed object REACHES a `return`/`yield` of this
+/// method — the AST-level contract for a Factory/Creation Method, per PMD's
+/// `SingletonClassReturningNewInstanceRule` and WALA's
+/// `FactoryBypassInterpreter` ("allocation flows to return").
+///
+/// This replaces the previous unscoped existence test
+/// (`subtree_has_kind(method, "object_creation_expression")`) that fired on
+/// ANY `new` anywhere in the body and so produced three false-positive shapes
+/// (R7 cluster[9] CLOSEOUT — see
+/// `decisions/r7-cl9-php-factory-name-only-heuristic.md`):
+///
+/// * `throw new X()` — a `throw_expression`; the object is an error sink and
+///   never reaches a `return` (e.g. `CompleteCommand::createCompletionInput`,
+///   `Client::createBodyStream`).
+/// * `$this->y = new X()` — a field mutator; the object is stored, not
+///   returned (e.g. `EasyHandle::createResponse(): void`).
+/// * `new Temp()` used only as an intermediate and never returned.
+///
+/// Scoping the search to return/yield operands (and the defs of returned
+/// locals) excludes all three automatically — they are simply never visited.
+fn construction_reaches_return(method: Node, source: &str) -> bool {
+    // Negative return-type filter: a `: void`/`: never` or scalar
+    // (`primitive_type`/`bottom_type`) return can never carry a constructed
+    // object out, so the method is not a factory regardless of body. Used
+    // ONLY as a negative filter (never as positive evidence), so a class
+    // return type like `buildUri(): UriInterface` is unaffected — it must
+    // still pass return-reachability below.
+    if let Some(rt) = method.child_by_field_name("return_type") {
+        if matches!(rt.kind(), "primitive_type" | "bottom_type") {
+            return false;
+        }
+    }
+    let body = match method.child_by_field_name("body") {
+        Some(b) => b,
+        None => return false, // abstract / interface method: no body
+    };
+    let mut operands: Vec<Node> = Vec::new();
+    collect_return_operands(body, &mut operands);
+    operands
+        .iter()
+        .any(|operand| operand_reaches_new(*operand, body, source))
+}
+
+/// Recursively collect the value operand of every `return_statement` and
+/// `yield_expression` reachable in `node` WITHOUT crossing a nested
+/// function / closure / anonymous-class boundary (an inner closure's
+/// `return` belongs to that closure, not to the enclosing method — this is
+/// the boundary guard that stops `array_map(fn() => new X(), …)` from being
+/// attributed to the outer factory).
+fn collect_return_operands<'t>(node: Node<'t>, out: &mut Vec<Node<'t>>) {
+    match node.kind() {
+        // Nested-scope boundaries: do not descend. A returned arrow such as
+        // `return fn() => new X()` is still handled, because that
+        // `return_statement` lives in the OUTER body and its operand (the
+        // arrow) is inspected by `operand_reaches_new`.
+        "arrow_function" | "anonymous_function" | "anonymous_class" => return,
+        "return_statement" => {
+            if let Some(value) = first_named_child(node) {
+                out.push(value);
+            }
+            return;
+        }
+        "yield_expression" => {
+            if let Some(value) = yield_value(node) {
+                out.push(value);
+            }
+            return;
+        }
+        _ => {}
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if subtree_has_kind(child, kind) {
-            return true;
+        collect_return_operands(child, out);
+    }
+}
+
+/// The value operand of a `yield_expression`. `yield new X()` wraps its value
+/// in an `array_element_initializer`; `yield $k => new X()` puts the value
+/// last in that initializer.
+fn yield_value(yield_node: Node) -> Option<Node> {
+    let inner = first_named_child(yield_node)?;
+    if inner.kind() == "array_element_initializer" {
+        last_named_child(inner)
+    } else {
+        Some(inner)
+    }
+}
+
+/// True when the return/yield `operand` carries a freshly-constructed object.
+fn operand_reaches_new(operand: Node, body: Node, source: &str) -> bool {
+    let head = peel_to_head(operand);
+    match head.kind() {
+        // Clause (a) — the operand's chain-head IS a construction:
+        // `return new X()`, `return new static()`,
+        // `return (new Table($o))->setStyle($s)`.
+        "object_creation_expression" => true,
+        // Clause (b) — the operand is a bare local whose reaching definition
+        // is `$v = new …`: `$x = new CompletionInput(); … return $x;`.
+        "variable_name" => local_reaching_def_is_new(&node_text(head, source), body, source),
+        // A returned arrow `fn() => new X()` is return-equivalent (its body
+        // field is the construction); `fn() => throw new X()` is not.
+        "arrow_function" => head
+            .child_by_field_name("body")
+            .map(|b| peel_to_head(b).kind() == "object_creation_expression")
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Strip transparent wrappers from a return operand to reach the expression
+/// that determines what is returned: a `parenthesized_expression`, and the
+/// receiver/head (`object`/`scope` field) of a member/scoped/nullsafe access
+/// or call chain — so `(new Table($o))->setStyle($s)` resolves to the inner
+/// `new`. Only the object/scope field is followed, never `arguments`, so a
+/// `new` buried in an argument (`return $x->with(new Helper())`) is NOT
+/// reached and does not spuriously qualify.
+fn peel_to_head(mut node: Node) -> Node {
+    loop {
+        let next = match node.kind() {
+            "parenthesized_expression" => first_named_child(node),
+            "member_access_expression"
+            | "member_call_expression"
+            | "nullsafe_member_access_expression"
+            | "nullsafe_member_call_expression" => node.child_by_field_name("object"),
+            "scoped_call_expression" | "scoped_property_access_expression" => {
+                node.child_by_field_name("scope")
+            }
+            _ => return node,
+        };
+        match next {
+            Some(inner) => node = inner,
+            None => return node,
         }
     }
-    false
+}
+
+/// Clause (b) reaching-definition test: the definition of the local `var`
+/// reaching a `return $var` is a fresh construction (`$var = new …`).
+///
+/// Mirrors PMD's `isReferenceToLocal` (only a `variable_name` LHS qualifies —
+/// never `$this->field`, so `return $this->cached;` does NOT qualify) plus
+/// WALA's "allocation flows to return". The reaching def is approximated, per
+/// the proposal's rule "never reassigned to a non-`new` value AFTERWARD", by
+/// the LAST textual write to `var`: that write must be a plain/reference
+/// `$var = new …`. Because `collect_writes_to` is a pre-order (source-order)
+/// walk, the last collected write is the textually-last one. This:
+///   * KEEPS `…; $x = new ArrayInput($x); …; return $x;` even when an earlier
+///     (conditional) `$x = array_merge(..)` write precedes the construction
+///     (the `new` is the reaching def) — e.g. `CommandTester::createInput`;
+///   * DROPS `$x = new X(); $x = foo(); return $x;` (reassigned afterward)
+///     and `$c = Y::fromTokens(..); return $c;` (def is a static call, not a
+///     `new`) — e.g. `CompleteCommand::createCompletionInput`.
+/// Conservative for FP-minimisation: a later conditional non-`new` write
+/// kills the local even if the `new` might still reach the return on some
+/// path (a tolerated false negative, never a false positive).
+fn local_reaching_def_is_new(var: &str, body: Node, source: &str) -> bool {
+    let mut writes: Vec<Node> = Vec::new();
+    collect_writes_to(body, var, source, &mut writes);
+    match writes.last() {
+        Some(last) => {
+            matches!(
+                last.kind(),
+                "assignment_expression" | "reference_assignment_expression"
+            ) && last
+                .child_by_field_name("right")
+                .map(|rhs| peel_to_head(rhs).kind() == "object_creation_expression")
+                .unwrap_or(false)
+        }
+        None => false,
+    }
+}
+
+/// Collect every assignment node (`=`, `op=`, `=&`) whose LEFT-hand side is
+/// exactly the local `var` (a `variable_name`, never a member access),
+/// without crossing a nested function / anonymous-class boundary.
+fn collect_writes_to<'t>(node: Node<'t>, var: &str, source: &str, out: &mut Vec<Node<'t>>) {
+    match node.kind() {
+        "arrow_function" | "anonymous_function" | "anonymous_class" => return,
+        "assignment_expression"
+        | "augmented_assignment_expression"
+        | "reference_assignment_expression" => {
+            if let Some(lhs) = node.child_by_field_name("left") {
+                if lhs.kind() == "variable_name" && node_text(lhs, source).as_str() == var {
+                    out.push(node);
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_writes_to(child, var, source, out);
+    }
+}
+
+/// First named child of `node`, if any.
+fn first_named_child(node: Node) -> Option<Node> {
+    node.named_child(0)
+}
+
+/// Last named child of `node`, if any.
+fn last_named_child(node: Node) -> Option<Node> {
+    let count = node.named_child_count();
+    if count == 0 {
+        None
+    } else {
+        node.named_child(count - 1)
+    }
 }
 
 /// Build the PHP language profile.

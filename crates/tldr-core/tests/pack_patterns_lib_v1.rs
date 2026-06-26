@@ -277,6 +277,284 @@ abstract class ShapeFactory {
 }
 
 // ============================================================================
+// R7 cluster[9] CLOSEOUT (design-fork, see
+// decisions/r7-cl9-php-factory-name-only-heuristic.md): the PHP Factory
+// predicate is RETURN/YIELD-REACHABILITY, not the mere existence of a `new`
+// in the body. A factory-NAMED method is a Factory only when a
+// freshly-constructed object reaches a `return`/`yield`. This drops the three
+// surviving false-positive shapes the existence test still mis-flagged —
+// throw-guard construction (`createCompletionInput`, `createBodyStream`),
+// field-mutator construction (`createResponse`), and unreturned temporaries —
+// while preserving real factories.
+// ============================================================================
+
+/// Factory subjects detected for a single-file PHP fixture.
+fn php_factories(file_name: &str, source: &str) -> Vec<String> {
+    mine_source(file_name, source)
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == "Factory")
+        .map(|d| d.subject.clone())
+        .collect()
+}
+
+#[test]
+fn php_factory_excludes_throw_guard_construction() {
+    // Mirrors symfony-console `CompleteCommand::createCompletionInput`: the
+    // ONLY `new` is `throw new \RuntimeException(...)` in a precondition
+    // guard; the method `return`s a static-factory call result. The thrown
+    // construction never reaches the return, so it must NOT be a Factory.
+    let src = r#"<?php
+class CompleteCommand {
+    private function createCompletionInput(InputInterface $input): CompletionInput
+    {
+        if (!$input->getOption('current')) {
+            throw new \RuntimeException('The "--current" option must be set.');
+        }
+        $completionInput = CompletionInput::fromTokens($input->getOption('input'));
+        return $completionInput;
+    }
+}
+"#;
+    let factories = php_factories("CompleteCommand.php", src);
+    assert!(
+        factories.is_empty(),
+        "a `create*` whose only `new` is a `throw new` guard (returns a \
+         static-factory call) must NOT be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_excludes_field_mutator_construction() {
+    // Mirrors guzzle `EasyHandle::createResponse`: the `new` is the RHS of a
+    // FIELD assignment (`$this->response = new Response(...)`), not a fresh
+    // local. Returning the field (`return $this->response;`, a
+    // member_access — NOT a `variable_name` local) does not make it a
+    // factory. Class return type, so this isolates the field-mutator
+    // exclusion from the void-return-type filter.
+    let src = r#"<?php
+class EasyHandle {
+    public function createResponse(): Response
+    {
+        $this->response = new Response(200);
+        return $this->response;
+    }
+}
+"#;
+    let factories = php_factories("EasyHandle.php", src);
+    assert!(
+        factories.is_empty(),
+        "a `create*` whose `new` is stored in a FIELD and returned via \
+         member-access (not a fresh local) must NOT be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_excludes_unreturned_temporary() {
+    // The only `new` builds a local TEMPORARY that is used as an
+    // intermediate and never returned; the method returns a cached field.
+    // Class return type, so the unreturned-temporary exclusion is tested
+    // independently of the void-return-type filter.
+    let src = r#"<?php
+class Widget {
+    public function buildThing(): Thing
+    {
+        $tmp = new Helper();
+        $tmp->configure($this->options);
+        return $this->cached;
+    }
+}
+"#;
+    let factories = php_factories("Widget.php", src);
+    assert!(
+        factories.is_empty(),
+        "a `build*` whose only `new` is an unreturned temporary (returns a \
+         cached field) must NOT be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_excludes_void_return_type() {
+    // Negative return-type filter: a `: void` method can never carry a
+    // constructed object out, so even a `new` (here in a throw) must not
+    // make it a Factory.
+    let src = r#"<?php
+class Renderer {
+    public function createBlock(): void
+    {
+        if ($this->broken) {
+            throw new \LogicException('cannot render');
+        }
+    }
+}
+"#;
+    let factories = php_factories("Renderer.php", src);
+    assert!(
+        factories.is_empty(),
+        "a `create*(): void` method must NOT be a Factory (negative \
+         return-type filter); got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_detects_return_of_constructed_local() {
+    // Clause (b): a local is assigned `new` and then returned —
+    // `$x = new CompletionInput(); ...; return $x;`. A real factory.
+    let src = r#"<?php
+class Builder {
+    public function createInput(InputInterface $i): CompletionInput
+    {
+        $x = new CompletionInput($i);
+        $x->bind();
+        return $x;
+    }
+}
+"#;
+    let factories = php_factories("Builder.php", src);
+    assert!(
+        factories.contains(&"Builder".to_string()),
+        "a `create*` that constructs a local via `new` and returns it must \
+         be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_detects_constructed_local_after_earlier_write() {
+    // Clause (b) reaching-def rule: the LAST write to the returned local is
+    // the `new`, even though an earlier (conditional) non-`new` write to the
+    // same variable precedes it. Mirrors symfony-console
+    // `CommandTester::createInput` (`$input = array_merge(..); … $input = new
+    // ArrayInput($input); … return $input;`). Must REMAIN a Factory.
+    let src = r#"<?php
+class CommandTester {
+    private function createInput(array $input): InputInterface
+    {
+        if (!isset($input['command'])) {
+            $input = array_merge(['command' => 'list'], $input);
+        }
+        $input = new ArrayInput($input);
+        $input->setStream($this->stream);
+        return $input;
+    }
+}
+"#;
+    let factories = php_factories("CommandTester.php", src);
+    assert!(
+        factories.contains(&"CommandTester".to_string()),
+        "a `create*` whose LAST write to the returned local is `new` (an \
+         earlier non-`new` write notwithstanding) must be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_excludes_local_reassigned_after_new() {
+    // Conservative kill: the returned local is constructed by `new` but then
+    // REASSIGNED to a non-`new` value afterward, so the reaching def at the
+    // return is no longer the construction. Must NOT be a Factory.
+    let src = r#"<?php
+class Thing {
+    public function createWidget(): Widget
+    {
+        $w = new Widget();
+        $w = $this->registry->lookup($w);
+        return $w;
+    }
+}
+"#;
+    let factories = php_factories("Thing.php", src);
+    assert!(
+        factories.is_empty(),
+        "a `create*` whose constructed local is reassigned to a non-`new` \
+         value before the return must NOT be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_detects_return_new_with_chain() {
+    // Clause (a) with receiver-chain peeling: mirrors
+    // `SymfonyStyle::createTable` — `return (new Table($o))->setStyle($s);`.
+    // The chain head is the inner `new`, so it IS a factory.
+    let src = r#"<?php
+class SymfonyStyle {
+    public function createTable(): Table
+    {
+        return (new Table($this->output))->setStyle('default');
+    }
+}
+"#;
+    let factories = php_factories("SymfonyStyle.php", src);
+    assert!(
+        factories.contains(&"SymfonyStyle".to_string()),
+        "a `create*` returning `(new X(..))->fluent(..)` must be a Factory \
+         (chain-head is the construction); got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_returns_arrow_new() {
+    // A returned arrow whose body is a construction (`fn() => new X()`) is
+    // return-equivalent and IS a factory; `fn() => throw new X()` is NOT.
+    let src = r#"<?php
+class ServiceRegistry {
+    public function makeFactory()
+    {
+        return fn() => new Service($this->config);
+    }
+}
+class ThrowerRegistry {
+    public function makeThrower()
+    {
+        return fn() => throw new \LogicException('nope');
+    }
+}
+"#;
+    let factories = php_factories("Registry.php", src);
+    assert!(
+        factories.contains(&"ServiceRegistry".to_string()),
+        "a `make*` returning `fn() => new X()` must be a Factory; got {:?}",
+        factories
+    );
+    assert!(
+        !factories.contains(&"ThrowerRegistry".to_string()),
+        "a `make*` returning `fn() => throw new X()` must NOT be a Factory; \
+         got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn php_factory_ignores_new_in_nested_closure() {
+    // Boundary guard: the only `new` lives in a NESTED closure's `return`
+    // (`array_map(function () { return new Item(); }, ...)`); it belongs to
+    // that closure, not the outer method, which returns a cached field. The
+    // nested-function pruning keeps this from re-broadening into an FP.
+    let src = r#"<?php
+class Mapper {
+    public function buildCollection(): Collection
+    {
+        $items = array_map(function () { return new Item(); }, $this->raw);
+        return $this->cached;
+    }
+}
+"#;
+    let factories = php_factories("Mapper.php", src);
+    assert!(
+        factories.is_empty(),
+        "a `build*` whose only `new` is inside a nested closure's return \
+         must NOT be a Factory (scope boundary); got {:?}",
+        factories
+    );
+}
+
+// ============================================================================
 // Solidity: Ownable + Proxy design patterns detected from the AST.
 // ============================================================================
 #[test]
