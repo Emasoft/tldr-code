@@ -359,10 +359,33 @@ pub struct FuncEntry {
 
     /// Containing class name if `is_method` is true.
     pub class_name: Option<String>,
+
+    /// Number of declared parameters (the AST `function_value_parameters` /
+    /// `parameter_list` arity).
+    ///
+    /// fix-R3-rc11-funcentry-arity (#109, Fix 3): the `(module, bare_name)` index
+    /// key is structurally signature-blind, so two same-name overloads
+    /// (`runInterruptible(Job, …)` vs `runInterruptible(CoroutineContext, …)`)
+    /// collapse to indistinguishable rows and resolution binds an order-dependent
+    /// survivor. Recording the arity gives the index the cheap, pure-syntax (no
+    /// type inference) discriminator that mature overload-aware indexers use
+    /// (Kotlin Analysis API multimap, SemanticDB ordinals, IntelliJ erased
+    /// params). `0` means "unknown / not captured at this construction site".
+    pub arity: u32,
+
+    /// Text of the first parameter's declared type, when captured (e.g. `Job`
+    /// vs `CoroutineContext`). The coarse arity-tie breaker for overloads that
+    /// share an arity. Pure AST text (`user_type` / `type_identifier`), never an
+    /// inferred type. `None` means "unknown / not captured".
+    pub first_param_type: Option<String>,
 }
 
 impl FuncEntry {
     /// Creates a new FuncEntry for a standalone function.
+    ///
+    /// The signature (`arity` / `first_param_type`) defaults to "unknown"
+    /// (`0` / `None`); attach it with [`with_signature`](Self::with_signature)
+    /// when the extractor has the parameter information in hand.
     pub fn function(file_path: PathBuf, line: u32, end_line: u32) -> Self {
         Self {
             file_path,
@@ -370,10 +393,14 @@ impl FuncEntry {
             end_line,
             is_method: false,
             class_name: None,
+            arity: 0,
+            first_param_type: None,
         }
     }
 
     /// Creates a new FuncEntry for a method.
+    ///
+    /// The signature defaults to "unknown" — see [`with_signature`](Self::with_signature).
     pub fn method(file_path: PathBuf, line: u32, end_line: u32, class_name: String) -> Self {
         Self {
             file_path,
@@ -381,7 +408,23 @@ impl FuncEntry {
             end_line,
             is_method: true,
             class_name: Some(class_name),
+            arity: 0,
+            first_param_type: None,
         }
+    }
+
+    /// Attaches the AST-derived overload signature (parameter `arity` and the
+    /// coarse `first_param_type` token) to this entry, returning `self` for
+    /// builder-style chaining.
+    ///
+    /// fix-R3-rc11-funcentry-arity (#109, Fix 3): kept as a separate builder so
+    /// the existing `function`/`method` constructors — and their ~50 call sites —
+    /// stay source-compatible; only construction sites that actually parsed the
+    /// parameter list opt in to recording the signature.
+    pub fn with_signature(mut self, arity: u32, first_param_type: Option<String>) -> Self {
+        self.arity = arity;
+        self.first_param_type = first_param_type;
+        self
     }
 }
 
@@ -686,6 +729,43 @@ impl FuncIndex {
             .get(&(module.to_string(), func_name.to_string()))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Selects the overload under `(module, func_name)` matching the call-site
+    /// signature: the entry whose [`arity`](FuncEntry::arity) equals `arity` and,
+    /// when `first_param_type` is supplied, whose
+    /// [`first_param_type`](FuncEntry::first_param_type) matches it.
+    ///
+    /// fix-R3-rc11-funcentry-arity (#109, Fix 3): the signature-blind index used
+    /// to return an order-dependent `first()` for same-name overloads (the
+    /// `runInterruptible` self-edge). With per-entry signatures the resolver can
+    /// bind the correct overload by its cheap syntactic discriminator. Following
+    /// the C++/MSVC `[over.match]` decline-on-tie norm, this returns `None`
+    /// rather than guessing when no candidate matches; when several remain
+    /// (genuinely ambiguous) it yields the first matching candidate so callers
+    /// that need strict ambiguity handling can still consult
+    /// [`get_all`](Self::get_all).
+    pub fn get_by_signature(
+        &self,
+        module: &str,
+        func_name: &str,
+        arity: u32,
+        first_param_type: Option<&str>,
+    ) -> Option<&FuncEntry> {
+        let candidates = self
+            .entries
+            .get(&(module.to_string(), func_name.to_string()))?;
+        // Prefer an exact (arity + first_param_type) match when a type token is
+        // supplied; fall back to arity-only so a partially-known call site still
+        // narrows the candidate set.
+        if let Some(want_ty) = first_param_type {
+            if let Some(exact) = candidates.iter().find(|e| {
+                e.arity == arity && e.first_param_type.as_deref() == Some(want_ty)
+            }) {
+                return Some(exact);
+            }
+        }
+        candidates.iter().find(|e| e.arity == arity)
     }
 
     /// Returns the total number of entries in the index (summed across all
@@ -1435,6 +1515,99 @@ mod tests {
             "find_by_name over {total_names} keys x {lookups} lookups took {elapsed:?}; \
              a full-index scan per lookup (the pre-fix O(N*M) behavior) blows this \
              generous 5s bound, the O(k) index does not"
+        );
+    }
+
+    /// fix-R3-rc11-funcentry-arity (#109, Fix 3 — represent overload identity in
+    /// the index): a `FuncEntry` must carry the AST-derived `arity` (parameter
+    /// count) and a coarse `first_param_type` discriminator so the
+    /// signature-blind `(module, bare_name)` index can tell same-name overloads
+    /// apart. The `kotlinx-coroutines` repro is the canonical case: two
+    /// `runInterruptible` overloads, BOTH arity 2, distinguished only by the
+    /// first parameter type (`Job` shim vs the real `CoroutineContext`). Before
+    /// this fix `FuncEntry` stored no signature at all, so the two rows under one
+    /// key were physically indistinguishable and resolution bound an
+    /// order-dependent survivor (the self-edge). This test pins that a
+    /// constructed entry reports the correct arity for a multi-arg / overloaded
+    /// function and that the index can SELECT the right overload by its
+    /// signature instead of returning an arbitrary first().
+    #[test]
+    fn func_entry_carries_arity_and_index_disambiguates_overloads() {
+        // The deprecated JVM shim: runInterruptible(context: Job, block) — arity 2.
+        let job_overload = FuncEntry::function(PathBuf::from("GuidanceJvm.kt"), 20, 23)
+            .with_signature(2, Some("Job".to_string()));
+        // The real impl: runInterruptible(context: CoroutineContext, block) — arity 2.
+        let ctx_overload = FuncEntry::function(PathBuf::from("Interruptible.kt"), 36, 41)
+            .with_signature(2, Some("CoroutineContext".to_string()));
+
+        // The entry now physically carries the discriminating signature.
+        assert_eq!(job_overload.arity, 2, "overload arity must be recorded");
+        assert_eq!(ctx_overload.arity, 2);
+        assert_eq!(job_overload.first_param_type.as_deref(), Some("Job"));
+        assert_eq!(
+            ctx_overload.first_param_type.as_deref(),
+            Some("CoroutineContext")
+        );
+
+        // A plain multi-arg standalone function records its real arity too.
+        let three_arg =
+            FuncEntry::function(PathBuf::from("m.kt"), 1, 2).with_signature(3, Some("Int".to_string()));
+        assert_eq!(three_arg.arity, 3);
+
+        // Backward-compat constructors default to "unknown signature" (arity 0,
+        // no first_param_type) so the ~50 existing call sites are unaffected.
+        let unknown = FuncEntry::function(PathBuf::from("x.py"), 1, 5);
+        assert_eq!(unknown.arity, 0);
+        assert_eq!(unknown.first_param_type, None);
+
+        // Both overloads survive insertion under the same (module, bare_name)
+        // key (they live at different files/lines).
+        let mut idx = FuncIndex::new();
+        idx.insert(
+            "kotlinx.coroutines",
+            "runInterruptible",
+            job_overload.clone(),
+        );
+        idx.insert(
+            "kotlinx.coroutines",
+            "runInterruptible",
+            ctx_overload.clone(),
+        );
+        assert_eq!(
+            idx.get_all("kotlinx.coroutines", "runInterruptible").len(),
+            2,
+            "both same-name overloads must be retained"
+        );
+
+        // The index can now DISAMBIGUATE by signature: asking for the
+        // CoroutineContext overload returns the cross-file Interruptible.kt
+        // definition, NOT the arbitrary first() (which would be the Job shim).
+        let picked = idx
+            .get_by_signature(
+                "kotlinx.coroutines",
+                "runInterruptible",
+                2,
+                Some("CoroutineContext"),
+            )
+            .expect("the CoroutineContext overload must be selectable by signature");
+        assert_eq!(
+            picked.file_path,
+            PathBuf::from("Interruptible.kt"),
+            "signature disambiguation must bind the correct cross-file overload"
+        );
+
+        // Arity-only disambiguation (first_param_type unspecified) still narrows
+        // to the matching-arity candidate set.
+        let by_arity = idx.get_by_signature("kotlinx.coroutines", "runInterruptible", 2, None);
+        assert!(
+            by_arity.is_some(),
+            "an arity-2 candidate must exist for the arity query"
+        );
+        // A non-existent arity selects nothing (decline, never arbitrary-pick).
+        assert!(
+            idx.get_by_signature("kotlinx.coroutines", "runInterruptible", 9, None)
+                .is_none(),
+            "no arity-9 overload exists; the index must decline, not guess"
         );
     }
 }
