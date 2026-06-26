@@ -1226,18 +1226,16 @@ fn extract_java_like_signature(func_node: Node, source: &[u8]) -> String {
 
 /// TypeScript/JavaScript signature.
 fn extract_ts_signature(func_node: Node, source: &[u8]) -> String {
-    let mut sig = String::new();
-
-    if let Some(params) = func_node.child_by_field_name("parameters") {
-        sig.push_str(node_text(params, source));
-    }
-
-    if let Some(ret) = func_node.child_by_field_name("return_type") {
-        sig.push_str(": ");
-        sig.push_str(node_text(ret, source));
-    }
-
-    sig
+    // RC2-META Stage 1: route the TS/JS signature through the shared
+    // header-span resolver so `interface` renders the SAME un-mangled
+    // signature as `structure`/`extract`. The legacy code concatenated the
+    // `parameters` field with the `return_type` field whose text ALREADY
+    // carries its own leading `: ` — producing the mangled double colon
+    // `(): : void` and dropping the method name entirely. The shared resolver
+    // pins the header span (name + params + return type, excluding the body),
+    // yielding `m(): void`.
+    let src = std::str::from_utf8(source).unwrap_or("");
+    tldr_core::ast::entity::signature_from_header(func_node, src)
 }
 
 /// C/C++ signature: extract from declarator.

@@ -2826,8 +2826,17 @@ fn collect_definitions(
             };
             let line_end = node.end_position().row as u32 + 1;
 
-            // Extract signature: skip doc comments/attributes, use actual def line
-            let signature = extract_def_signature(node, source);
+            // Extract signature. RC2-META Stage 1: function-axis declarations
+            // (methods/functions/constructors) render from the HEADER span via
+            // the shared resolver so an inline body block no longer leaks into
+            // the signature (`m(): void {} }` -> `m(): void`). Class-axis
+            // declarations keep the legacy first-line slice (their body brace
+            // `class Foo {` is intentionally retained — no churn).
+            let signature = if is_func && !is_class {
+                crate::ast::entity::signature_from_header(node, source)
+            } else {
+                extract_def_signature(node, source)
+            };
 
             let entry_kind = if is_class {
                 match kind {

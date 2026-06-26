@@ -1,0 +1,58 @@
+{
+  "assertion": "C-stage1-sig",
+  "result": "success",
+  "stage": "rc2-meta STAGE 1 — shared header-span signature resolver",
+  "implemented": "Added crates/tldr-core/src/ast/entity.rs (NEW) with a minimal Span and an AST-driven signature_from_header(node, source) that renders a declaration's signature from its HEADER span (name + params + return type), stopping at the body block (body field, else known block kinds: statement_block/block/function_body/compound_statement/do_block/field_declaration_list). Registered the module in ast/mod.rs. Routed two of the three signature producers through it: (a) structure's collect_definitions signature site (extractor.rs ~L2835) now uses signature_from_header for function-axis declarations (is_func && !is_class), keeping the legacy first-line slice for class-axis (no class-signature churn); (b) interface's extract_ts_signature (interface.rs ~L1228) now delegates to signature_from_header, fixing the `(): : void` double-colon mangle and adding the method name. (c) extract.rs uses STRUCTURED params/return_type fields (no flat signature string) and was already correct — left untouched (verified: extract Qux.m yields name=m, params=[], return_type=void which reconstructs to `m(): void`).",
+  "edit_set_scope": "All edits within the authorized Stage-1 edit-set. No classify_node, no kind enum, no struct collapse (those are Stage 2+).",
+  "ast_driven": "Spans pinned via tree-sitter node fields/children (child_by_field_name(\"body\"), child kind scan). No regex, no source-text trimming heuristics beyond first-line clipping for legacy multi-line parity.",
+  "repro_before": {
+    "structure_Qux_m": "m(): void {} }",
+    "interface_Qux_m": "(): : void",
+    "extract_Qux_m": "structured: name=m, return_type=void (already correct)"
+  },
+  "repro_after": {
+    "structure_Qux_m": "m(): void",
+    "interface_Qux_m": "m(): void",
+    "extract_Qux_m_reconstructed": "m(): void",
+    "all_three_agree": true
+  },
+  "char_tests": [
+    "crates/tldr-cli/tests/rc2_meta_stage1_signature_v1.rs::structure_qux_m_signature_is_unmangled",
+    "crates/tldr-cli/tests/rc2_meta_stage1_signature_v1.rs::interface_qux_m_signature_is_unmangled",
+    "crates/tldr-cli/tests/rc2_meta_stage1_signature_v1.rs::extract_qux_m_reconstructs_same_signature",
+    "crates/tldr-cli/tests/rc2_meta_stage1_signature_v1.rs::all_three_commands_agree_on_qux_m_signature"
+  ],
+  "lib_tests": [
+    "tldr-core --lib ast::entity:: -> 5 passed (ts_method/ts_function/ts_constructor/bodyless_method/multiline_header)",
+    "tldr-core --lib ast::extractor -> 60 passed, 0 failed"
+  ],
+  "targeted_suites": {
+    "structure_method_infos_all_langs_v1": "pass",
+    "cl6_interface_v1": "pass",
+    "fix_cl4_interface_v1": "pass",
+    "w1_interface_utf8_v1": "pass",
+    "interface_extraction_ocaml_elixir_v1": "pass",
+    "elixir_method_infos_v1": "pass",
+    "cross_command_consistency_v3": "pass",
+    "structure_functions_projection_v1": "pass",
+    "interface_per_lang_v1": "7 pass / 1 FAIL (javascript_prototype_assignments_emitted)"
+  },
+  "preexisting_red": {
+    "test": "interface_per_lang_v1::javascript_prototype_assignments_emitted",
+    "verified_preexisting": true,
+    "evidence": "Reverted interface.rs to HEAD (git show HEAD), rebuilt, ran the test in isolation: FAILS identically (`Application` function-declaration missing (got [\\\"create\\\"])). Restored Stage-1 version. The failure is a JS prototype-assignment NAME extraction gap, orthogonal to signature rendering; my edit only changes the signature STRING.",
+    "not_a_regression": true
+  },
+  "rebaselined_goldens": [],
+  "rebaseline_note": "ZERO goldens required re-baselining. The structure method_infos golden asserts signature DISTINCTNESS (not exact strings); interface goldens assert method NAMES / contains() not exact signature equality. The fix is surgical: only inline-body single-line declarations change (`m(): void {} }` -> `m(): void`); multi-line headers are byte-identical to the legacy first-line slice. No NAME/LINE/KIND change in any golden.",
+  "blast_radius": "structure: function-axis signatures with an inline body on the declaration line lose the leaked body text. interface (TS/JS only): method/function signatures now render name+params+return via the header span instead of params+return-with-double-colon. Other-language interface signatures are UNCHANGED (only extract_ts_signature was routed; per-language specialized extractors for Scala/Swift/OCaml/etc. untouched — consistent with the staged TS-first plan). extract: untouched. No file outside the authorized edit-set was needed.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/entity.rs",
+    "crates/tldr-core/src/ast/mod.rs",
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage1_signature_v1.rs"
+  ],
+  "committed": true,
+  "status": "closed"
+}

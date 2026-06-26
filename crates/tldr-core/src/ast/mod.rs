@@ -10,6 +10,7 @@
 
 pub mod count;
 pub mod cpp_macro;
+pub mod entity;
 pub mod extract;
 pub mod extractor;
 pub mod function_finder;
