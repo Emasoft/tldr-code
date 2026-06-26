@@ -157,7 +157,12 @@ pub fn dead_code_analysis(
 
         // Classify: public/exported but uncalled -> possibly dead (may be API surface)
         // Private/unenriched and uncalled -> definitely dead
-        if func_ref.is_public {
+        // RC6: an uncalled CLASS METHOD is reachable via dynamic dispatch / super /
+        // reflection / framework runtime (Node stream `_transform`, etc.), so it is at
+        // most *possibly* dead — never definitive. Only an uncalled FREE FUNCTION keeps
+        // the visibility rule. (Matches Knip/Rust/ESLint confidence models — see
+        // proposals/rc6-ts-underscore-method-definitive-vs-possibly-dead.md.)
+        if func_ref.is_public || func_ref.is_method {
             possibly_dead.push(func_ref.clone());
             // dead-by-file-population-v1 (M-045): also bucket possibly_dead by
             // file path so `by_file` is the complete map "file -> all
@@ -342,7 +347,12 @@ pub fn dead_code_analysis_refcount(
         let lookup_name = bare_name;
         enriched.ref_count = ref_counts.get(lookup_name).copied().unwrap_or(0) as u32;
 
-        if func_ref.is_public {
+        // RC6: an uncalled CLASS METHOD is reachable via dynamic dispatch / super /
+        // reflection / framework runtime (Node stream `_transform`, etc.), so it is at
+        // most *possibly* dead — never definitive. Only an uncalled FREE FUNCTION keeps
+        // the visibility rule. (Matches Knip/Rust/ESLint confidence models — see
+        // proposals/rc6-ts-underscore-method-definitive-vs-possibly-dead.md.)
+        if func_ref.is_public || func_ref.is_method {
             // dead-by-file-population-v1 (M-045): bucket possibly_dead in
             // `by_file` too so the map is the union of
             // dead_functions + possibly_dead grouped by source file. Pre-fix
@@ -741,6 +751,7 @@ pub fn collect_all_functions(
                 is_public,
                 is_test,
                 is_trait_method: false,
+                is_method: false,
                 has_decorator,
                 decorator_names: func.decorators.clone(),
             });
@@ -787,6 +798,7 @@ pub fn collect_all_functions(
                     is_public,
                     is_test,
                     is_trait_method: is_trait || is_trait_impl_method,
+                    is_method: true,
                     has_decorator,
                     decorator_names: method.decorators.clone(),
                 });
@@ -1590,8 +1602,29 @@ mod tests {
             is_public,
             is_test: false,
             is_trait_method,
+            is_method: false,
             has_decorator,
             decorator_names: decorator_names.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // RC6: helper to model an uncalled CLASS METHOD (is_method:true). Mirrors
+    // `enriched_func` but flips the method axis so the split-site hedge can be
+    // pinned. See proposals/rc6-ts-underscore-method-definitive-vs-possibly-dead.md.
+    #[allow(clippy::too_many_arguments)]
+    fn method_func(name: &str, is_public: bool) -> FunctionRef {
+        FunctionRef {
+            file: PathBuf::from("test.rs"),
+            name: name.to_string(),
+            line: 0,
+            signature: String::new(),
+            ref_count: 0,
+            is_public,
+            is_test: false,
+            is_trait_method: false,
+            is_method: true,
+            has_decorator: false,
+            decorator_names: Vec::new(),
         }
     }
 
@@ -1643,6 +1676,71 @@ mod tests {
                 .iter()
                 .any(|f| f.name == "_private_helper"),
             "Private uncalled function should not be in possibly_dead"
+        );
+    }
+
+    #[test]
+    fn test_uncalled_method_is_possibly_dead_free_fn_stays_dead() {
+        // RC6: an uncalled CLASS METHOD (is_method:true), even non-public
+        // (`_`-prefixed Node stream override like `Stream._transform`), is
+        // reachable via dynamic dispatch / super / reflection / framework
+        // runtime, so it must be hedged into `possibly_dead`, NEVER the
+        // definitive `dead_functions`. An uncalled non-public FREE FUNCTION
+        // (`_unusedFreeFunc`, is_method:false) keeps the confident axis and
+        // stays in `dead_functions`. Pinned through BOTH split sites.
+        let graph = ProjectCallGraph::new();
+        let functions = vec![
+            method_func("Stream._transform", false),
+            enriched_func("_unusedFreeFunc", false, false, false, vec![]),
+        ];
+
+        // Split site #1: dead_code_analysis (call-graph path).
+        let result = dead_code_analysis(&graph, &functions, None).unwrap();
+        assert!(
+            result
+                .possibly_dead
+                .iter()
+                .any(|f| f.name == "Stream._transform"),
+            "uncalled method must be in possibly_dead (call-graph path)"
+        );
+        assert!(
+            !result
+                .dead_functions
+                .iter()
+                .any(|f| f.name == "Stream._transform"),
+            "uncalled method must NOT be in dead_functions (call-graph path)"
+        );
+        assert!(
+            result
+                .dead_functions
+                .iter()
+                .any(|f| f.name == "_unusedFreeFunc"),
+            "uncalled free function must stay in dead_functions (call-graph path)"
+        );
+
+        // Split site #2: dead_code_analysis_refcount (default path).
+        let ref_counts: HashMap<String, usize> = HashMap::new();
+        let result2 = dead_code_analysis_refcount(&functions, &ref_counts, None).unwrap();
+        assert!(
+            result2
+                .possibly_dead
+                .iter()
+                .any(|f| f.name == "Stream._transform"),
+            "uncalled method must be in possibly_dead (refcount path)"
+        );
+        assert!(
+            !result2
+                .dead_functions
+                .iter()
+                .any(|f| f.name == "Stream._transform"),
+            "uncalled method must NOT be in dead_functions (refcount path)"
+        );
+        assert!(
+            result2
+                .dead_functions
+                .iter()
+                .any(|f| f.name == "_unusedFreeFunc"),
+            "uncalled free function must stay in dead_functions (refcount path)"
         );
     }
 
@@ -1707,6 +1805,7 @@ mod tests {
             is_public: false,
             is_test: true,
             is_trait_method: false,
+            is_method: false,
             has_decorator: false,
             decorator_names: vec![],
         }];
@@ -2136,6 +2235,7 @@ mod tests {
             is_public: false,
             is_test: false,
             is_trait_method: false,
+            is_method: false,
             has_decorator: false,
             decorator_names: vec![],
         };
@@ -2160,6 +2260,7 @@ mod tests {
             is_public: false,
             is_test: false,
             is_trait_method: false,
+            is_method: false,
             has_decorator: false,
             decorator_names: vec![],
         };

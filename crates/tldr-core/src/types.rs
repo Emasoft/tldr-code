@@ -2244,6 +2244,15 @@ pub struct FunctionRef {
     /// Whether this function is inside a trait/interface/protocol/abstract class
     #[serde(default)]
     pub is_trait_method: bool,
+    /// Whether this entity is a class/struct method (vs a free function).
+    /// Set at collection time from the `Class.method` emit path; consumed by
+    /// the dead-code classifier to hedge uncalled methods into `possibly_dead`
+    /// (reachable via dynamic dispatch / `super` / reflection / framework
+    /// runtime, e.g. Node stream `_transform`), while uncalled free functions
+    /// keep the visibility rule. See
+    /// proposals/rc6-ts-underscore-method-definitive-vs-possibly-dead.md.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub is_method: bool,
     /// Whether this function has any decorator/annotation
     #[serde(default)]
     pub has_decorator: bool,
@@ -2285,6 +2294,7 @@ impl FunctionRef {
             is_public: false,
             is_test: false,
             is_trait_method: false,
+            is_method: false,
             has_decorator: false,
             decorator_names: Vec::new(),
         }

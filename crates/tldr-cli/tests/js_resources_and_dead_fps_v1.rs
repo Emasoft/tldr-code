@@ -452,3 +452,129 @@ module.exports = {
         );
     }
 }
+
+// ===========================================================================
+// RC6 — TS/JS `_`-prefixed runtime-override methods must NOT be DEFINITIVELY
+//       dead. An uncalled CLASS METHOD (reachable via dynamic dispatch /
+//       super / reflection / Node stream runtime) is hedged into
+//       `possibly_dead`; an uncalled FREE FUNCTION keeps the confident
+//       `dead_functions` verdict. See
+//       proposals/rc6-ts-underscore-method-definitive-vs-possibly-dead.md.
+// ===========================================================================
+
+fn rc6_dead_run(label: &str, src: &str) -> serde_json::Value {
+    let dir = std::env::temp_dir().join("rc6_underscore_method_v1");
+    std::fs::create_dir_all(&dir).expect("mkdir tempdir");
+    let path = dir.join(format!("{}.js", label));
+    std::fs::write(&path, src).expect("write tempfile");
+    let (exit, out) = run_tldr(&["dead", path.to_str().unwrap(), "--format", "json"]);
+    assert!(exit >= 0, "dead exit must be non-negative; got {}", exit);
+    parse_json(&out)
+}
+
+fn names_in(v: &serde_json::Value, bucket: &str) -> Vec<String> {
+    v.get(bucket)
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+        .collect()
+}
+
+fn is_method_flag(v: &serde_json::Value, bucket: &str, name: &str) -> Option<bool> {
+    v.get(bucket)
+        .and_then(|x| x.as_array())?
+        .iter()
+        .find(|f| f.get("name").and_then(|n| n.as_str()) == Some(name))
+        .map(|f| f.get("is_method").and_then(|b| b.as_bool()).unwrap_or(false))
+}
+
+#[test]
+fn rc6_namespaced_stream_transform_is_possibly_dead_not_definitive() {
+    // `class MyStream extends stream.Transform { _transform … }` — the
+    // runtime override must land in possibly_dead with is_method:true, while
+    // a sibling `_unusedFreeFunc` stays in the definitive dead_functions.
+    let src = "import stream from \"stream\";\n\
+class MyStream extends stream.Transform {\n\
+  _transform(c,e,cb){this.push(c);cb();}\n\
+}\n\
+function _unusedFreeFunc(){return 7;}\n\
+export default MyStream;\n";
+    let v = rc6_dead_run("namespaced", src);
+
+    let possibly = names_in(&v, "possibly_dead");
+    let dead = names_in(&v, "dead_functions");
+    assert!(
+        possibly.iter().any(|n| n == "MyStream._transform"),
+        "RC6: uncalled method MyStream._transform must be in possibly_dead; \
+         possibly={:?} dead={:?}",
+        possibly,
+        dead
+    );
+    assert!(
+        !dead.iter().any(|n| n == "MyStream._transform"),
+        "RC6: uncalled method must NOT be in definitive dead_functions; dead={:?}",
+        dead
+    );
+    assert_eq!(
+        is_method_flag(&v, "possibly_dead", "MyStream._transform"),
+        Some(true),
+        "RC6: method entry must serialize is_method:true"
+    );
+    assert!(
+        dead.iter().any(|n| n == "_unusedFreeFunc"),
+        "RC6: uncalled free function must STAY in dead_functions (confident axis \
+         preserved); dead={:?}",
+        dead
+    );
+}
+
+#[test]
+fn rc6_bare_extends_transform_namespace_independent() {
+    // Bare `extends Transform` (no `stream.` namespace) must behave identically.
+    let src = "import { Transform } from \"stream\";\n\
+class Bare extends Transform {\n\
+  _transform(c,e,cb){this.push(c);cb();}\n\
+}\n\
+export default Bare;\n";
+    let v = rc6_dead_run("bare", src);
+    let possibly = names_in(&v, "possibly_dead");
+    let dead = names_in(&v, "dead_functions");
+    assert!(
+        possibly.iter().any(|n| n == "Bare._transform"),
+        "RC6: bare-extends override must be possibly_dead; possibly={:?} dead={:?}",
+        possibly,
+        dead
+    );
+    assert!(
+        !dead.iter().any(|n| n == "Bare._transform"),
+        "RC6: bare-extends override must NOT be definitive dead; dead={:?}",
+        dead
+    );
+}
+
+#[test]
+fn rc6_writev_only_writable_not_definitive_dead() {
+    // The 7-name allowlist (Option A) would have missed `_writev`; the
+    // structural is_method fix covers it. A `_writev`-only Writable's sole
+    // runtime hook must be hedged, not definitively dead.
+    let src = "import { Writable } from \"stream\";\n\
+class Sink extends Writable {\n\
+  _writev(chunks,cb){cb();}\n\
+}\n\
+export default Sink;\n";
+    let v = rc6_dead_run("writev", src);
+    let possibly = names_in(&v, "possibly_dead");
+    let dead = names_in(&v, "dead_functions");
+    assert!(
+        !dead.iter().any(|n| n == "Sink._writev"),
+        "RC6: `_writev`-only override must NOT be definitive dead; dead={:?}",
+        dead
+    );
+    assert!(
+        possibly.iter().any(|n| n == "Sink._writev"),
+        "RC6: `_writev` override must be possibly_dead; possibly={:?}",
+        possibly
+    );
+}
