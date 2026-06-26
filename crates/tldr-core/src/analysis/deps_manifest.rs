@@ -93,6 +93,17 @@ pub fn parse_manifest_dependencies(root: &Path, language: Language) -> Vec<Manif
                 out.push(d);
             }
         }
+        // rc3-external-deps-c-lua-php-v1 (v0.5.0 CLOSEOUT): PHP and Lua had
+        // no manifest arm, so a plain `tldr deps` reported
+        // `external_dependencies = {}` for them. composer.json (PHP) and
+        // package.lua / *.rockspec (Lua) are the authoritative declared-dep
+        // manifests.
+        Language::Php => {
+            collect_composer_jsons(root, &mut out);
+        }
+        Language::Lua | Language::Luau => {
+            collect_lua_manifests(root, &mut out);
+        }
         _ => {}
     }
     // Drop empties and keep deterministic ordering by manifest path.
@@ -386,6 +397,71 @@ fn parse_package_json(root: &Path, manifest: &Path) -> Option<ManifestDeps> {
 
     let rel = manifest.strip_prefix(root).unwrap_or(manifest).to_path_buf();
     finalize(rel, set)
+}
+
+// =============================================================================
+// PHP — composer.json (structured parse via serde_json)
+// =============================================================================
+
+/// Collect every `composer.json` under `root` (monorepos / packages nest
+/// many) and union their declared `require` / `require-dev` package sets.
+fn collect_composer_jsons(root: &Path, out: &mut Vec<ManifestDeps>) {
+    for manifest in find_manifests(root, "composer.json") {
+        if let Some(d) = parse_composer_json(root, &manifest) {
+            out.push(d);
+        }
+    }
+}
+
+/// Parse the `require` and `require-dev` object keys of a `composer.json`,
+/// dropping platform/virtual packages that install no code.
+///
+/// composer.json is JSON (getcomposer.org/doc/04-schema.md): declared deps
+/// live ONLY in the `require` / `require-dev` objects, each key a Packagist
+/// coordinate `vendor/name`. Platform entries (`php`, `php-64bit`, `ext-*`,
+/// `lib-*`, `composer*`) sit INSIDE `require` next to real packages and
+/// install no code, so they are filtered by KEY. `require-dev` IS part of the
+/// declared set (`--no-dev` only skips installation) — mirrors the Ruby / JVM
+/// arms that fold dev/test deps in. Keys are emitted verbatim, the same grain
+/// as the `package.json` / `go.mod` arms.
+fn parse_composer_json(root: &Path, manifest: &Path) -> Option<ManifestDeps> {
+    let content = std::fs::read_to_string(manifest).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let mut set: BTreeSet<String> = BTreeSet::new();
+
+    for block in ["require", "require-dev"] {
+        if let Some(obj) = json.get(block).and_then(|v| v.as_object()) {
+            for key in obj.keys() {
+                if key.is_empty() || is_php_platform_pkg(key) {
+                    continue;
+                }
+                set.insert(key.clone());
+            }
+        }
+    }
+
+    let rel = manifest.strip_prefix(root).unwrap_or(manifest).to_path_buf();
+    finalize(rel, set)
+}
+
+/// Is `key` a Composer platform / virtual package (installs no code)?
+///
+/// Primary signal: the explicit virtual-package list from
+/// getcomposer.org/doc/articles/composer-platform-dependencies.md
+/// (`php`, `php-*`, `ext-*`, `lib-*`, `composer`, `composer-plugin-api`,
+/// `composer-runtime-api`). Backstop: a real Packagist coordinate ALWAYS
+/// contains exactly one `/`; a key with no `/` cannot be a third-party
+/// package and is dropped.
+fn is_php_platform_pkg(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k == "php"
+        || k.starts_with("php-")
+        || k.starts_with("ext-")
+        || k.starts_with("lib-")
+        || k == "composer"
+        || k == "composer-plugin-api"
+        || k == "composer-runtime-api"
+        || !k.contains('/')
 }
 
 // =============================================================================
@@ -936,6 +1012,276 @@ fn swift_string_value(node: tree_sitter::Node, source: &[u8]) -> String {
 }
 
 // =============================================================================
+// Lua — package.lua (luvit) + *.rockspec (luarocks)  [AST: tree-sitter-lua]
+// =============================================================================
+
+/// Collect Lua dependency manifests: luvit `package.lua` and luarocks
+/// `*.rockspec`. Both are Lua source files with a workspace tree-sitter
+/// grammar, so the dependency tables are walked over the real AST (mirroring
+/// the Ruby / Swift / Elixir manifest arms). No regex over file text.
+fn collect_lua_manifests(root: &Path, out: &mut Vec<ManifestDeps>) {
+    for manifest in find_manifests(root, "package.lua") {
+        if let Some(d) = parse_luvit_package(root, &manifest) {
+            out.push(d);
+        }
+    }
+    for manifest in find_manifests_by_ext(root, "rockspec") {
+        if let Some(d) = parse_rockspec(root, &manifest) {
+            out.push(d);
+        }
+    }
+}
+
+/// Parse a luvit `package.lua` — a single `return { ... }` table whose
+/// `dependencies` field is an array of `"vendor/name@version"` strings.
+///
+/// Coordinate = the substring before the LAST `@` (keeps the slash-namespaced
+/// `vendor/name`, drops the `@version` constraint). There is no `lua`
+/// self-dependency in the luvit format.
+fn parse_luvit_package(root: &Path, manifest: &Path) -> Option<ManifestDeps> {
+    let source = std::fs::read_to_string(manifest).ok()?;
+    let tree = crate::ast::parser::parse(&source, Language::Lua).ok()?;
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    collect_lua_dependency_field(
+        tree.root_node(),
+        source.as_bytes(),
+        &mut set,
+        &["dependencies"],
+        luvit_coordinate,
+    );
+    let rel = manifest.strip_prefix(root).unwrap_or(manifest).to_path_buf();
+    finalize(rel, set)
+}
+
+/// Parse a luarocks `*.rockspec` — a flat chunk of bare top-level
+/// assignments. `dependencies` (and optional `build_dependencies` /
+/// `test_dependencies`) are arrays of `"name <constraints>"` strings.
+///
+/// `"lua"` is a special self/runtime dependency and is stripped. Each entry
+/// is normalised to its leading-name token (`luarocks deps.parse_dep` splits
+/// on `^%s*([a-zA-Z0-9][a-zA-Z0-9._-]*)`), discarding the constraint. The
+/// `external_dependencies` rockspec table is a C-library map
+/// (`{header=, library=}`), NOT Lua packages — it is deliberately NOT
+/// harvested. Non-literal `package` / `version` RHS (identifier refs /
+/// concatenations) are tolerated: they are simply not dependency fields.
+fn parse_rockspec(root: &Path, manifest: &Path) -> Option<ManifestDeps> {
+    let source = std::fs::read_to_string(manifest).ok()?;
+    let tree = crate::ast::parser::parse(&source, Language::Lua).ok()?;
+    let mut set: BTreeSet<String> = BTreeSet::new();
+    collect_lua_dependency_field(
+        tree.root_node(),
+        source.as_bytes(),
+        &mut set,
+        &["dependencies", "build_dependencies", "test_dependencies"],
+        rockspec_coordinate,
+    );
+    let rel = manifest.strip_prefix(root).unwrap_or(manifest).to_path_buf();
+    finalize(rel, set)
+}
+
+/// luvit coordinate normaliser: `"luvit/buffer@2.0.0"` -> `luvit/buffer`.
+/// Strip the `@version` suffix (last `@`), keep the `vendor/name` slash.
+fn luvit_coordinate(entry: &str) -> Option<String> {
+    let trimmed = entry.trim();
+    let coord = match trimmed.rsplit_once('@') {
+        Some((name, _ver)) => name,
+        None => trimmed,
+    };
+    let coord = coord.trim();
+    if coord.is_empty() {
+        None
+    } else {
+        Some(coord.to_string())
+    }
+}
+
+/// rockspec coordinate normaliser: `"penlight ~> 1.0"` -> `penlight`,
+/// `"lua >= 5.1"` -> dropped. Takes the leading
+/// `[A-Za-z0-9][A-Za-z0-9._-]*` token (matching luarocks `deps.parse_dep`)
+/// and drops the `lua` self/runtime dependency.
+fn rockspec_coordinate(entry: &str) -> Option<String> {
+    let s = entry.trim();
+    let mut chars = s.char_indices();
+    // First char must be alphanumeric.
+    let first = chars.next()?;
+    if !first.1.is_ascii_alphanumeric() {
+        return None;
+    }
+    let mut end = s.len();
+    for (i, c) in s.char_indices().skip(1) {
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+            continue;
+        }
+        end = i;
+        break;
+    }
+    let name = &s[..end];
+    if name.is_empty() || name.eq_ignore_ascii_case("lua") {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Walk the Lua AST for assignment(s)/fields whose LHS key is one of
+/// `field_names`, and harvest the string-literal elements of the RHS table
+/// constructor, normalised by `coord`.
+///
+/// Handles both manifest shapes with one walk:
+///   * luvit `package.lua`: `dependencies = { ... }` is a `field` inside the
+///     returned `table_constructor`.
+///   * luarocks `*.rockspec`: `dependencies = { ... }` is a top-level
+///     `assignment_statement`.
+///
+/// The dependency table is located by its key identifier; only its direct
+/// string children are taken (nested tables — e.g. a rockspec
+/// `external_dependencies` C-lib map — are reached via different keys and
+/// never matched here).
+fn collect_lua_dependency_field(
+    node: tree_sitter::Node,
+    source: &[u8],
+    set: &mut BTreeSet<String>,
+    field_names: &[&str],
+    coord: fn(&str) -> Option<String>,
+) {
+    // A `field` (table-constructor entry) or `assignment_statement`
+    // (top-level) whose key matches one of `field_names` and whose value is a
+    // table: harvest the table's string elements.
+    if let Some((key, value)) = lua_key_value(node, source) {
+        if field_names.iter().any(|f| *f == key) {
+            if let Some(table) = value {
+                if table.kind() == "table_constructor" {
+                    harvest_lua_string_table(table, source, set, coord);
+                    // The matched table's contents are fully consumed; do not
+                    // also descend (avoids double-walking).
+                    return;
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_lua_dependency_field(child, source, set, field_names, coord);
+    }
+}
+
+/// If `node` is a key = value binding (table `field` or top-level
+/// `assignment_statement`), return `(key_name, value_node)`.
+///
+/// Returns the key as a bare identifier string and the value node (which may
+/// be a `table_constructor`, a string, an identifier ref, etc.). Non-binding
+/// nodes return `None`.
+fn lua_key_value<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &[u8],
+) -> Option<(String, Option<tree_sitter::Node<'a>>)> {
+    match node.kind() {
+        // Table-constructor entry: `name = value`. tree-sitter-lua exposes
+        // the key via the `name` field and the value via the `value` field.
+        "field" => {
+            let key_node = node.child_by_field_name("name")?;
+            // Only bare-identifier keys (`dependencies = ...`), not `[expr]`.
+            if key_node.kind() != "identifier" {
+                return None;
+            }
+            let key = node_text(key_node, source);
+            let value = node.child_by_field_name("value");
+            Some((key, value))
+        }
+        // Top-level rockspec assignment: `dependencies = { ... }`.
+        "assignment_statement" => {
+            // Shape: (assignment_statement (variable_list (identifier))
+            //         (expression_list (table_constructor ...)))
+            let mut cursor = node.walk();
+            let mut key: Option<String> = None;
+            let mut value: Option<tree_sitter::Node> = None;
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "variable_list" => {
+                        if let Some(id) = first_child_of_kind(child, "identifier") {
+                            key = Some(node_text(id, source));
+                        }
+                    }
+                    "expression_list" => {
+                        value = first_child_of_kind(child, "table_constructor")
+                            .or_else(|| child.named_child(0));
+                    }
+                    _ => {}
+                }
+            }
+            key.map(|k| (k, value))
+        }
+        _ => None,
+    }
+}
+
+/// First direct child of `node` with the given kind.
+fn first_child_of_kind<'a>(
+    node: tree_sitter::Node<'a>,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            return Some(child);
+        }
+    }
+    None
+}
+
+/// Harvest the direct string-literal elements of a `table_constructor`,
+/// normalised by `coord`, into `set`.
+fn harvest_lua_string_table(
+    table: tree_sitter::Node,
+    source: &[u8],
+    set: &mut BTreeSet<String>,
+    coord: fn(&str) -> Option<String>,
+) {
+    let mut cursor = table.walk();
+    for child in table.children(&mut cursor) {
+        // Array elements appear as `field` wrappers (value-only) or as bare
+        // `string` nodes depending on grammar; handle both.
+        let string_node = if child.kind() == "string" {
+            Some(child)
+        } else if child.kind() == "field" {
+            // A value-only field (`{ "a", "b" }`) has no `name`; its value is
+            // the string. Skip key=value fields (those aren't list elements).
+            if child.child_by_field_name("name").is_some() {
+                None
+            } else {
+                child
+                    .child_by_field_name("value")
+                    .filter(|v| v.kind() == "string")
+                    .or_else(|| first_child_of_kind(child, "string"))
+            }
+        } else {
+            None
+        };
+        if let Some(s) = string_node {
+            let content = lua_string_content(s, source);
+            if let Some(c) = coord(&content) {
+                if !c.is_empty() {
+                    set.insert(c);
+                }
+            }
+        }
+    }
+}
+
+/// Decode a tree-sitter-lua `string` node's content, stripping the quote
+/// delimiters. Prefers a `string_content` child when present; otherwise trims
+/// the outer quote characters from the raw text.
+fn lua_string_content(string_node: tree_sitter::Node, source: &[u8]) -> String {
+    if let Some(content) = first_child_of_kind(string_node, "string_content") {
+        return node_text(content, source);
+    }
+    node_text(string_node, source)
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '[' || c == ']')
+        .to_string()
+}
+
+// =============================================================================
 // Shared AST + filesystem helpers
 // =============================================================================
 
@@ -1061,4 +1407,142 @@ fn is_skippable_dir(path: &Path) -> bool {
                 | ".build"
         )
     )
+}
+
+#[cfg(test)]
+mod rc3_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    // ---- PHP composer.json ----------------------------------------------
+
+    fn parse_composer_str(content: &str) -> BTreeSet<String> {
+        let dir = tempdir();
+        let manifest = dir.join("composer.json");
+        std::fs::write(&manifest, content).unwrap();
+        let md = parse_composer_json(&dir, &manifest).unwrap_or(ManifestDeps {
+            manifest: manifest.clone(),
+            packages: Vec::new(),
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        md.packages.into_iter().collect()
+    }
+
+    #[test]
+    fn php_composer_collects_require_and_dev_drops_platform() {
+        let content = r#"{
+            "require": {
+                "php": ">=7.2.5",
+                "ext-json": "*",
+                "guzzlehttp/promises": "^1.0",
+                "guzzlehttp/psr7": "^1.7",
+                "psr/http-client": "^1.0",
+                "symfony/deprecation-contracts": "^2.2",
+                "symfony/polyfill-php80": "^1.17"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^8.5"
+            }
+        }"#;
+        let set = parse_composer_str(content);
+        assert!(set.contains("guzzlehttp/promises"));
+        assert!(set.contains("guzzlehttp/psr7"));
+        assert!(set.contains("psr/http-client"));
+        assert!(set.contains("symfony/deprecation-contracts"));
+        assert!(set.contains("symfony/polyfill-php80"));
+        // require-dev IS part of the declared set.
+        assert!(set.contains("phpunit/phpunit"));
+        // Platform packages dropped.
+        assert!(!set.contains("php"));
+        assert!(!set.contains("ext-json"));
+    }
+
+    #[test]
+    fn php_platform_filter_drops_all_virtual_packages() {
+        let content = r#"{
+            "require": {
+                "php": ">=8",
+                "php-64bit": "*",
+                "ext-curl": "*",
+                "lib-curl": "*",
+                "composer-runtime-api": "^2",
+                "vendor/real": "^1"
+            }
+        }"#;
+        let set = parse_composer_str(content);
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("vendor/real"));
+        for dropped in ["php", "php-64bit", "ext-curl", "lib-curl", "composer-runtime-api"] {
+            assert!(!set.contains(dropped), "{dropped} should be dropped");
+        }
+    }
+
+    // ---- Lua luvit package.lua ------------------------------------------
+
+    fn parse_luvit_str(content: &str) -> Vec<String> {
+        let dir = tempdir();
+        let manifest = dir.join("package.lua");
+        std::fs::write(&manifest, content).unwrap();
+        let pkgs = parse_luvit_package(&dir, &manifest)
+            .map(|d| d.packages)
+            .unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        pkgs
+    }
+
+    #[test]
+    fn lua_luvit_strips_version_keeps_namespace() {
+        let content =
+            "return {\n  name = \"x/y\",\n  dependencies = { \"luvit/buffer@2.0.0\", \"luvit/url@2.1.2\" }\n}";
+        let pkgs = parse_luvit_str(content);
+        assert_eq!(pkgs, vec!["luvit/buffer".to_string(), "luvit/url".to_string()]);
+    }
+
+    // ---- Lua rockspec ---------------------------------------------------
+
+    fn parse_rockspec_str(content: &str) -> Vec<String> {
+        let dir = tempdir();
+        let manifest = dir.join("foo-1.0-1.rockspec");
+        std::fs::write(&manifest, content).unwrap();
+        let pkgs = parse_rockspec(&dir, &manifest)
+            .map(|d| d.packages)
+            .unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        pkgs
+    }
+
+    #[test]
+    fn lua_rockspec_strips_constraints_and_drops_lua() {
+        let content =
+            "package = \"foo\"\nversion = \"1.0-1\"\ndependencies = { \"lua >= 5.1\", \"luafilesystem\", \"penlight ~> 1.0\" }\n";
+        let pkgs = parse_rockspec_str(content);
+        assert_eq!(pkgs, vec!["luafilesystem".to_string(), "penlight".to_string()]);
+    }
+
+    #[test]
+    fn lua_rockspec_tolerates_non_literal_package_version_and_skips_c_libs() {
+        // Penlight-style: package/version are identifier refs / concatenations.
+        // external_dependencies (C-lib map) must NOT be harvested as Lua deps.
+        let content = "package = pkg_name\nversion = a .. \"-\" .. b\ndependencies = { \"luafilesystem\" }\nexternal_dependencies = { FOO = { header = \"foo.h\", library = \"foo\" } }\n";
+        let pkgs = parse_rockspec_str(content);
+        assert_eq!(pkgs, vec!["luafilesystem".to_string()]);
+    }
+
+    /// Minimal unique temp dir (avoids a dev-dependency on `tempfile`).
+    fn tempdir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static CTR: AtomicU64 = AtomicU64::new(0);
+        let n = CTR.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!(
+            "tldr_rc3_{}_{}_{}",
+            std::process::id(),
+            n,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
 }

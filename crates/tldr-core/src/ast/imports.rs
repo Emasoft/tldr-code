@@ -769,28 +769,40 @@ fn extract_c_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Impo
                 let path_kind = path_node.kind();
                 let raw_text = get_node_text(&path_node, source);
 
-                // Extract the header name, stripping quotes or angle brackets
-                let module = match path_kind {
+                // rc3-external-deps-c-lua-php-v1 (v0.5.0 CLOSEOUT): the
+                // tree-sitter-c grammar hands us the system-vs-local bit via
+                // two distinct `path`-child node kinds. Preserve it on
+                // `is_from` (Some(true) = `<...>` system / toolchain header,
+                // Some(false) = `"..."` local header) so `classify_import`
+                // can route system headers to Stdlib instead of inflating the
+                // third-party External axis. The `path` field's grammar type
+                // set is EXACTLY four kinds (tree-sitter-c node-types.json):
+                // `system_lib_string`, `string_literal`, `identifier`,
+                // `call_expression`. The latter two are macro indirections
+                // (`#include MACRO` / `#include MACRO(args)`) whose target is
+                // unknowable without preprocessing — drop them rather than
+                // leak fabricated deps (e.g. `HDR_MALLOC_INCLUDE`).
+                let (module, is_from) = match path_kind {
                     "system_lib_string" => {
-                        // <stdio.h> -> strip < and >
-                        raw_text.trim_matches(|c| c == '<' || c == '>').to_string()
+                        // <stdio.h> -> strip < and >; system/toolchain header.
+                        (
+                            raw_text.trim_matches(|c| c == '<' || c == '>').to_string(),
+                            Some(true),
+                        )
                     }
                     "string_literal" => {
-                        // "local.h" -> strip quotes
-                        raw_text.trim_matches('"').to_string()
+                        // "local.h" -> strip quotes; local/project header.
+                        (raw_text.trim_matches('"').to_string(), Some(false))
                     }
-                    _ => raw_text,
+                    // `identifier` / `call_expression`: macro indirection —
+                    // drop (defensive `_` covers the grammar-impossible 5th).
+                    _ => continue,
                 };
-
-                // imports-is-from-schema-v1 (v0.4.2 M-021): C #include
-                // directives no longer encode the system-vs-local
-                // distinction via the misnamed `is_from` field.
-                let _ = path_kind;
 
                 imports.push(ImportInfo {
                     module,
                     names: Vec::new(),
-                    is_from: None,
+                    is_from,
                     alias: None,
                     line: node_line(&child),
                 });
@@ -824,22 +836,24 @@ fn extract_cpp_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
                 let path_kind = path_node.kind();
                 let raw_text = get_node_text(&path_node, source);
 
-                let module = match path_kind {
-                    "system_lib_string" => {
-                        raw_text.trim_matches(|c| c == '<' || c == '>').to_string()
-                    }
-                    "string_literal" => raw_text.trim_matches('"').to_string(),
-                    _ => raw_text,
+                // rc3-external-deps-c-lua-php-v1: C++ shares the C
+                // `preproc_include` grammar (tree-sitter-cpp re-uses
+                // tree-sitter-c's rule). Preserve the system-vs-local bit on
+                // `is_from` and drop macro indirections — see
+                // `extract_c_imports_recursive` for the full rationale.
+                let (module, is_from) = match path_kind {
+                    "system_lib_string" => (
+                        raw_text.trim_matches(|c| c == '<' || c == '>').to_string(),
+                        Some(true),
+                    ),
+                    "string_literal" => (raw_text.trim_matches('"').to_string(), Some(false)),
+                    _ => continue,
                 };
-
-                // imports-is-from-schema-v1: C++ omits is_from for the same
-                // reason as C — see extract_c_imports_recursive.
-                let _ = path_kind;
 
                 imports.push(ImportInfo {
                     module,
                     names: Vec::new(),
-                    is_from: None,
+                    is_from,
                     alias: None,
                     line: node_line(&child),
                 });
@@ -2437,8 +2451,9 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "stdio.h");
-        // imports-is-from-schema-v1: C omits is_from entirely.
-        assert_eq!(imports[0].is_from, None);
+        // rc3-external-deps-c-lua-php-v1: `<...>` system header restores
+        // is_from = Some(true) (system/toolchain).
+        assert_eq!(imports[0].is_from, Some(true));
     }
 
     #[test]
@@ -2449,8 +2464,32 @@ mod tests {
 
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "local.h");
-        // imports-is-from-schema-v1: C omits is_from entirely.
-        assert_eq!(imports[0].is_from, None);
+        // rc3-external-deps-c-lua-php-v1: `"..."` local header restores
+        // is_from = Some(false) (local/project).
+        assert_eq!(imports[0].is_from, Some(false));
+    }
+
+    #[test]
+    fn test_c_include_macro_is_dropped() {
+        // rc3-external-deps-c-lua-php-v1: `#include MACRO` and
+        // `#include MACRO(args)` parse to `path: (identifier)` /
+        // `(call_expression)` — macro indirections whose target is unknowable
+        // without preprocessing. They must NOT leak in as fabricated deps.
+        let source = r#"
+#include <stdio.h>
+#include MALLOC_INCLUDE
+#include MACRO(arg1, arg2)
+#include "local.h"
+"#;
+        let tree = parse(source, Language::C).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::C).unwrap();
+
+        let modules: Vec<&str> = imports.iter().map(|i| i.module.as_str()).collect();
+        assert!(modules.contains(&"stdio.h"));
+        assert!(modules.contains(&"local.h"));
+        assert!(!modules.contains(&"MALLOC_INCLUDE"));
+        // The macro forms contribute no ImportInfo entries.
+        assert_eq!(imports.len(), 2);
     }
 
     #[test]

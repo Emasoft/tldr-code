@@ -4105,6 +4105,34 @@ pub fn classify_import(
                 DepKind::External
             }
         }
+        Language::C | Language::Cpp => {
+            // rc3-external-deps-c-lua-php-v1 (v0.5.0 CLOSEOUT). C/C++
+            // `#include` carries the system-vs-local intent purely in the
+            // angle-vs-quote spelling, which the extractor now preserves on
+            // `is_from` (Some(true) = `<...>` system, Some(false) = `"..."`
+            // local). The grammar gives no other discriminator (ISO C
+            // 6.10.2: the written form IS the system-vs-local signal).
+            //
+            //   * `<...>` system header -> Stdlib. A system-search-path
+            //     include is a toolchain header; like every other language's
+            //     stdlib it is deliberately kept OFF the third-party External
+            //     axis (see the `DepKind::Stdlib` arm in
+            //     `analyze_dependencies`). No header-name allow-list is
+            //     needed — the angle-bracket form is the canonical signal.
+            //   * `"..."` local header -> Internal. A quoted include is, by C
+            //     semantics, a project-local file. Resolved local headers
+            //     already returned Internal above (step 1); unresolved ones
+            //     are still local-intent (a missing/vendored project header),
+            //     not a declared third-party package, so they do NOT inflate
+            //     `total_external_deps`.
+            //   * `None` -> External (defensive; macro-indirection includes
+            //     are dropped at extraction, so this should not occur for C).
+            match import.is_from {
+                Some(true) => DepKind::Stdlib,
+                Some(false) => DepKind::Internal,
+                None => DepKind::External,
+            }
+        }
         Language::Solidity => {
             // solidity-deps-v1 (v0.5.0 SOL-007). `is_solidity_stdlib`
             // always returns `false` (Solidity has no module-system
@@ -5285,6 +5313,72 @@ mod tests {
             &index,
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_classify_c_system_header_is_stdlib() {
+        // rc3-external-deps-c-lua-php-v1: `<...>` system header (is_from
+        // Some(true)) classifies as Stdlib so it stays OFF the third-party
+        // External axis (and out of total_external_deps).
+        let index = HashMap::new();
+        let import = ImportInfo {
+            module: "stdio.h".to_string(),
+            names: Vec::new(),
+            is_from: Some(true),
+            alias: None,
+            line: 0,
+        };
+        let kind = classify_import(
+            &import,
+            Path::new("/project"),
+            Path::new("/project/src/main.c"),
+            &index,
+            Language::C,
+        );
+        assert_eq!(kind, DepKind::Stdlib);
+
+        // A `<arpa/inet.h>`-style nested system header (NOT in any allow-list)
+        // is still Stdlib purely on the angle-bracket signal.
+        let import2 = ImportInfo {
+            module: "arpa/inet.h".to_string(),
+            names: Vec::new(),
+            is_from: Some(true),
+            alias: None,
+            line: 0,
+        };
+        assert_eq!(
+            classify_import(
+                &import2,
+                Path::new("/project"),
+                Path::new("/project/src/main.c"),
+                &index,
+                Language::C,
+            ),
+            DepKind::Stdlib
+        );
+    }
+
+    #[test]
+    fn test_classify_c_local_quoted_header_is_internal() {
+        // rc3-external-deps-c-lua-php-v1: an unresolved `"local.h"` quoted
+        // include (is_from Some(false)) is a project-local file by C
+        // semantics -> Internal, never inflating total_external_deps.
+        let index = HashMap::new();
+        let import = ImportInfo {
+            module: "local.h".to_string(),
+            names: Vec::new(),
+            is_from: Some(false),
+            alias: None,
+            line: 0,
+        };
+        let kind = classify_import(
+            &import,
+            Path::new("/project"),
+            Path::new("/project/src/main.c"),
+            &index,
+            Language::C,
+        );
+        assert_eq!(kind, DepKind::Internal);
     }
 
     #[test]

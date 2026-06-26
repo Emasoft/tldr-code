@@ -658,6 +658,7 @@ const MANIFEST_PRECEDENCE: &[ManifestKind] = &[
     ManifestKind::PackageSwift,
     // --- Lua / Luau (weakest signals — lua projects often lack formal manifests)
     ManifestKind::Rockspec,
+    ManifestKind::PackageLua,
     ManifestKind::Luarc,
     ManifestKind::RojoProject,
     ManifestKind::LuauRc,
@@ -714,6 +715,8 @@ enum ManifestKind {
     // VAL-008: Lua
     Rockspec, // *.rockspec (extension match)
     Luarc,    // .luarc.json
+    // rc3-external-deps-c-lua-php-v1: luvit `package.lua` manifest.
+    PackageLua, // package.lua (luvit)
     // VAL-008: Luau
     RojoProject, // default.project.json
     LuauRc,      // .luaurc
@@ -761,6 +764,7 @@ impl ManifestKind {
             // VAL-008: Lua
             ManifestKind::Rockspec => ManifestMatcher::Extension("rockspec"),
             ManifestKind::Luarc => ManifestMatcher::Exact(".luarc.json"),
+            ManifestKind::PackageLua => ManifestMatcher::Exact("package.lua"),
             // VAL-008: Luau
             ManifestKind::RojoProject => ManifestMatcher::Exact("default.project.json"),
             ManifestKind::LuauRc => ManifestMatcher::Exact(".luaurc"),
@@ -1038,7 +1042,7 @@ fn language_from_manifest_set(
         // VAL-008: OCaml
         ManifestKind::DuneProject | ManifestKind::OpamFile => Language::Ocaml,
         // VAL-008: Lua
-        ManifestKind::Rockspec | ManifestKind::Luarc => Language::Lua,
+        ManifestKind::Rockspec | ManifestKind::Luarc | ManifestKind::PackageLua => Language::Lua,
         // VAL-008: Luau
         ManifestKind::RojoProject | ManifestKind::LuauRc => Language::Luau,
     };
