@@ -199,6 +199,215 @@ object Bar {
 }
 
 // ============================================================================
+// R7 cluster[9] #cl9 (design-fork): Scala GoF / idiomatic design-pattern
+// detection. Pre-fix `ScalaSemantics` never called `push_pattern`, so
+// `design_patterns` was always `null` for Scala. The file-level detector
+// reuses the already-parsed sealed/case modifiers, `extends_clause` parents,
+// and companion `apply` (AST-only). See
+// decisions/r7-cl9-scala-gof-detection-gap.md.
+// ============================================================================
+
+/// Helper: design patterns matching `pattern` with `subject` in a report.
+fn scala_pattern_subjects<'a>(
+    report: &'a tldr_core::types::PatternReport,
+    pattern: &str,
+) -> Vec<&'a str> {
+    report
+        .design_patterns
+        .iter()
+        .filter(|d| d.pattern == pattern && d.language == "scala")
+        .map(|d| d.subject.as_str())
+        .collect()
+}
+
+#[test]
+fn scala_sealed_trait_with_case_classes_is_adt() {
+    let src = r#"
+sealed trait Shape
+case class Circle(r: Int) extends Shape
+case object Unit extends Shape
+"#;
+    let report = mine_source("Shape.scala", src);
+    let adts = scala_pattern_subjects(&report, "ADT");
+    assert_eq!(
+        adts,
+        vec!["Shape"],
+        "sealed trait with case variants must surface exactly one ADT for Shape; got {:?}",
+        adts
+    );
+    let adt = report
+        .design_patterns
+        .iter()
+        .find(|d| d.pattern == "ADT" && d.subject == "Shape")
+        .expect("ADT for Shape must exist");
+    assert_eq!(adt.category, "structural");
+    assert!(
+        adt.evidence.contains("Circle") && adt.evidence.contains("Unit"),
+        "ADT evidence must list the variants; got {:?}",
+        adt.evidence
+    );
+}
+
+#[test]
+fn scala_sealed_variants_nested_in_companion_is_adt() {
+    // Variants nested inside the companion object's body (R2 play-json #502).
+    let src = r#"
+sealed trait Shape
+object Shape {
+  case class A() extends Shape
+  case object B extends Shape
+}
+"#;
+    let report = mine_source("ShapeNested.scala", src);
+    let adts = scala_pattern_subjects(&report, "ADT");
+    assert!(
+        adts.contains(&"Shape"),
+        "ADT must still be detected when variants are nested in the companion object; got {:?}",
+        adts
+    );
+}
+
+#[test]
+fn scala_companion_object_apply_constructs_is_factory() {
+    let src = r#"
+class Chunk
+object Chunk {
+  def apply[A](a: A): Chunk = new Chunk()
+}
+"#;
+    let report = mine_source("Chunk.scala", src);
+    let factories = scala_pattern_subjects(&report, "Factory");
+    assert_eq!(
+        factories,
+        vec!["Chunk"],
+        "companion object whose `apply` constructs the companion type must be a Factory; got {:?}",
+        factories
+    );
+    let f = report
+        .design_patterns
+        .iter()
+        .find(|d| d.pattern == "Factory" && d.subject == "Chunk")
+        .unwrap();
+    assert_eq!(f.category, "creational");
+}
+
+#[test]
+fn scala_enum_definition_is_adt() {
+    let src = r#"
+enum Color {
+  case Red, Green
+}
+"#;
+    let report = mine_source("Color.scala", src);
+    let adts = scala_pattern_subjects(&report, "ADT");
+    assert!(
+        adts.contains(&"Color"),
+        "Scala 3 `enum` is an intrinsic ADT; got {:?}",
+        adts
+    );
+}
+
+#[test]
+fn scala_plain_companion_object_is_singleton() {
+    let src = r#"
+class Foo
+object Foo {
+  val cfg = 1
+}
+"#;
+    let report = mine_source("Foo.scala", src);
+    let singletons = scala_pattern_subjects(&report, "Singleton");
+    assert_eq!(
+        singletons,
+        vec!["Foo"],
+        "companion object with no constructing apply must be a Singleton; got {:?}",
+        singletons
+    );
+    let s = report
+        .design_patterns
+        .iter()
+        .find(|d| d.pattern == "Singleton" && d.subject == "Foo")
+        .unwrap();
+    assert_eq!(s.category, "creational");
+}
+
+#[test]
+fn scala_bare_sealed_trait_no_variants_is_not_adt() {
+    // SC-W1079 / E145: a sealed trait with ZERO subclasses is not a sum type.
+    let src = r#"
+sealed trait Marker
+"#;
+    let report = mine_source("Marker.scala", src);
+    let adts = scala_pattern_subjects(&report, "ADT");
+    assert!(
+        adts.is_empty(),
+        "a bare sealed trait with no variants must NOT be an ADT; got {:?}",
+        adts
+    );
+}
+
+#[test]
+fn scala_apply_returning_non_companion_is_not_factory() {
+    // `apply` that transforms input (no `new`, return type != companion) must
+    // NOT be a Factory — evidence over name (the php.rs lesson).
+    let src = r#"
+object U {
+  def apply(s: String): Int = s.length
+}
+"#;
+    let report = mine_source("U.scala", src);
+    let factories = scala_pattern_subjects(&report, "Factory");
+    assert!(
+        factories.is_empty(),
+        "an `apply` that constructs nothing must NOT be a Factory; got {:?}",
+        factories
+    );
+}
+
+#[test]
+fn scala_factory_and_singleton_not_double_counted() {
+    // A companion object that is a Factory must be Factory ONLY, never also
+    // Singleton (disjoint branches).
+    let src = r#"
+class Chunk
+object Chunk {
+  def apply[A](a: A): Chunk = new Chunk()
+}
+"#;
+    let report = mine_source("ChunkDup.scala", src);
+    let factories = scala_pattern_subjects(&report, "Factory");
+    let singletons = scala_pattern_subjects(&report, "Singleton");
+    assert!(
+        factories.contains(&"Chunk"),
+        "factory companion must fire Factory; got {:?}",
+        factories
+    );
+    assert!(
+        !singletons.contains(&"Chunk"),
+        "a Factory companion must NOT also be counted as a Singleton; got {:?}",
+        singletons
+    );
+}
+
+#[test]
+fn scala_bare_package_object_is_not_singleton() {
+    // A standalone object with no same-name type must NOT be flagged Singleton
+    // (the Singleton precision guard that prevents the 966-object swamp).
+    let src = r#"
+object utils {
+  val cfg = 1
+}
+"#;
+    let report = mine_source("utils.scala", src);
+    let singletons = scala_pattern_subjects(&report, "Singleton");
+    assert!(
+        singletons.is_empty(),
+        "a non-companion package object must NOT be flagged Singleton; got {:?}",
+        singletons
+    );
+}
+
+// ============================================================================
 // R7 cluster[9] #150/#158 (design-fork, Option A): PHP Factory must require
 // EVIDENCE of construction (a `new` in the method body OR an abstract
 // factory method OR a *Factory-named class with a constructing method) —
