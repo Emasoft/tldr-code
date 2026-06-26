@@ -1757,6 +1757,16 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // the `class_node_kinds(Scala)` members.
         Language::Scala => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (ocaml): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth). OCaml's interface "class" axis is exactly
+        // `class_node_kinds(Ocaml)` = {`module_definition`, `type_definition`},
+        // so `interface` now reports `kind:"module"` for a `module M = struct
+        // ... end` and `kind:"type"` for a `type t = ...` alias, instead of an
+        // undifferentiated `kind: None`. Additive — agrees with the
+        // `EntityKind::Module` / `EntityKind::TypeAlias` that structure emits.
+        Language::Ocaml => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
@@ -5386,6 +5396,60 @@ type MyInt = Int
             Some("type"),
             "scala type alias must surface in interface with kind:\"type\"; got {:?}",
             info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// RC2-META Stage 3 (ocaml): `interface` must populate `ClassInfo.kind`
+    /// for OCaml's container/type axis via the canonical classifier — a
+    /// `module M = struct .. end` carries `kind:"module"` and a `type t = ..`
+    /// alias carries `kind:"type"`, replacing the former undifferentiated
+    /// `kind: None`. Node kinds reaching `extract_class_info` are exactly
+    /// `class_node_kinds(Ocaml)` = {module_definition, type_definition}.
+    #[test]
+    fn test_interface_ocaml_kind_population_module_and_type() {
+        let source = r#"
+module Greeter = struct
+  let hello name = "hi " ^ name
+end
+
+type color = Red | Green | Blue
+
+type alias_t = int
+"#;
+        let info = extract_interface(Path::new("test.ml"), source).unwrap();
+        let kind_of = |n: &str| -> Option<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == n)
+                .and_then(|c| c.kind.clone())
+        };
+
+        assert_eq!(
+            kind_of("Greeter").as_deref(),
+            Some("module"),
+            "ocaml module must surface in interface with kind:\"module\"; got {:?}",
+            info.classes
+                .iter()
+                .map(|c| (&c.name, &c.kind))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            kind_of("color").as_deref(),
+            Some("type"),
+            "ocaml type definition must carry kind:\"type\"; got {:?}",
+            info.classes
+                .iter()
+                .map(|c| (&c.name, &c.kind))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            kind_of("alias_t").as_deref(),
+            Some("type"),
+            "ocaml type alias must carry kind:\"type\"; got {:?}",
+            info.classes
+                .iter()
+                .map(|c| (&c.name, &c.kind))
+                .collect::<Vec<_>>()
         );
     }
 

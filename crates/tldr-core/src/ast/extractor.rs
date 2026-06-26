@@ -2022,8 +2022,23 @@ fn extract_ocaml_functions(node: &Node, source: &str, functions: &mut Vec<String
                 let mut inner_cursor = child.walk();
                 for inner in child.children(&mut inner_cursor) {
                     if inner.kind() == "let_binding" {
-                        // Only extract if it has parameters (i.e., is a function, not a value binding)
-                        if ocaml_binding_has_params_simple(&inner) {
+                        // RC2-META Stage 3 (ocaml): classify via the canonical,
+                        // STRUCTURAL `classify_node` discriminator instead of the
+                        // params-only legacy walk. A `let_binding` is a FUNCTION
+                        // (`EntityKind::Function`) when it is function-shaped —
+                        // either parameterised (`let f x = ...`) OR point-free
+                        // (`let g = fun x -> ...` / `let h = function | ...`); a
+                        // plain `let x = 1` binding classifies as
+                        // `EntityKind::Value` and is correctly excluded. This
+                        // kills the former `ocaml_binding_has_params_simple`
+                        // params-only test that DROPPED point-free functions
+                        // from `functions[]` (and downstream `impact` / the
+                        // semantic chunker), so this projection now agrees with
+                        // `structure`'s `definitions[]` and `extract`.
+                        if matches!(
+                            crate::ast::entity::classify_node(inner, Language::Ocaml, source),
+                            Some(crate::ast::entity::EntityKind::Function)
+                        ) {
                             if let Some(pattern_node) = inner.child_by_field_name("pattern") {
                                 let name = get_node_text(&pattern_node, source);
                                 // Skip anonymous bindings like `let () = ...`
@@ -2038,17 +2053,6 @@ fn extract_ocaml_functions(node: &Node, source: &str, functions: &mut Vec<String
         }
         extract_ocaml_functions(&child, source, functions);
     }
-}
-
-/// Check if an OCaml let_binding has parameter children (i.e., is a function definition).
-fn ocaml_binding_has_params_simple(node: &Node) -> bool {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "parameter" {
-            return true;
-        }
-    }
-    false
 }
 
 /// Return true when an OCaml `value_definition` node binds a FUNCTION (either a
@@ -4822,6 +4826,54 @@ let () = greet "world"
         assert!(
             !functions.contains(&"()".to_string()),
             "Should not find anonymous let () binding"
+        );
+    }
+
+    /// RC2-META Stage 3 (ocaml): the `structure` `functions[]` projection
+    /// (`extract_functions` → `extract_ocaml_functions`) must classify
+    /// function-vs-value via the canonical STRUCTURAL `classify_node` test, not
+    /// the former params-only walk. The params-only `ocaml_binding_has_params_simple`
+    /// DROPPED point-free functions (`let g = fun x -> x`, `let h = function | ..`)
+    /// because they carry no `parameter` child — diverging from `structure`'s
+    /// `definitions[]` (and `extract` / `impact`), which already used the
+    /// structural predicate. This pins the agreement.
+    #[test]
+    fn test_extract_ocaml_functions_pointfree_via_classify_node() {
+        let source = r#"
+let f x = x
+let g = fun x -> x
+let h = function
+  | 0 -> "zero"
+  | _ -> "other"
+let x = 1
+let pair = (1, 2)
+"#;
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let functions = extract_functions(&tree, source, Language::Ocaml);
+
+        // Parameterised function.
+        assert!(
+            functions.contains(&"f".to_string()),
+            "parameterised `let f x = x` must be a function; got {functions:?}"
+        );
+        // Point-free `fun` lambda — was DROPPED by the params-only test.
+        assert!(
+            functions.contains(&"g".to_string()),
+            "point-free `let g = fun x -> x` must be a function; got {functions:?}"
+        );
+        // Point-free `function | ..` — was DROPPED by the params-only test.
+        assert!(
+            functions.contains(&"h".to_string()),
+            "point-free `let h = function | ..` must be a function; got {functions:?}"
+        );
+        // Plain value bindings classify as `EntityKind::Value`, NOT functions.
+        assert!(
+            !functions.contains(&"x".to_string()),
+            "`let x = 1` is a value, not a function; got {functions:?}"
+        );
+        assert!(
+            !functions.contains(&"pair".to_string()),
+            "`let pair = (1, 2)` is a value, not a function; got {functions:?}"
         );
     }
 

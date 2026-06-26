@@ -1,0 +1,21 @@
+{
+  "language": "ocaml",
+  "result": "success",
+  "stage": "rc2-meta STAGE 3 (ocaml)",
+  "implemented": "Wired the canonical classify_node STRUCTURAL function-vs-value discriminator into the two remaining OCaml production paths that still used a params-only test, and populated interface ClassInfo.kind for OCaml's module/type axis via the canonical classifier. (1) crates/tldr-core/src/ast/extractor.rs::extract_ocaml_functions (the structure functions[] projection, also feeding `impact` and the semantic chunker) now classifies each let_binding via classify_node(Ocaml) == Some(Function) instead of the params-only ocaml_binding_has_params_simple, which DROPPED point-free functions (let g = fun x -> x / let h = function | ..). The now-unused ocaml_binding_has_params_simple helper was removed (root-cause kill, not suppressed). (2) crates/tldr-cli/src/commands/patterns/interface.rs::ts_js_entry_kind gained a Language::Ocaml arm delegating to entity::classify_node_kind, so interface ClassInfo.kind is now module for module_definition and type for type_definition (previously None).",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs"
+  ],
+  "char_tests": [
+    "crates/tldr-core/src/ast/extractor.rs::tests::test_extract_ocaml_functions_pointfree_via_classify_node (RED->GREEN: f param-fn, g `fun`, h `function` all appear in functions[]; let x=1 and let pair=(1,2) excluded as Value)",
+    "crates/tldr-cli/src/commands/patterns/interface.rs::tests::test_interface_ocaml_kind_population_module_and_type (RED->GREEN: module Greeter -> kind:\"module\", type color/alias_t -> kind:\"type\")"
+  ],
+  "lib_test": "cargo test -p tldr-core --lib => 5269 passed, 0 failed, 342 ignored. cargo test -p tldr-cli --lib interface => 43 passed, 0 failed.",
+  "targeted_tests": "interface_extraction_ocaml_elixir_v1 (8), interface_per_lang_v1 (7 pass / 1 PRE-EXISTING FAIL javascript_prototype_assignments_emitted - confirmed failing on clean HEAD worktree, JS-only, unrelated to OCaml-gated change), is_public_visibility_v1 (5), structure_functions_projection_v1 (5), cross_command_consistency_v1, cross_command_consistency_v3 (4), cl6_interface_v1 (5), b3_structure_polyglot_bound_scala_classify_v1 (9), structure_method_infos_all_langs_v1 (8) -- all pass.",
+  "goldens_rebaselined": [],
+  "json_delta": "ADDITIVE. (1) interface command: OCaml ClassInfo entries for `module_definition` now serialize kind:\"module\" and `type_definition` now serialize kind:\"type\" (previously the kind field was omitted / None). (2) structure functions[] projection and the `impact`/chunker consumers of extractor::extract_functions now INCLUDE point-free OCaml functions (let f = fun .. / let f = function | ..) that were formerly silently dropped; no construct loses its name/line and no plain value (let x = 1) is mis-emitted as a function. No existing kind value changed; no construct dropped.",
+  "committed": true,
+  "status": "closed",
+  "notes": "OCaml has no class axis in extract (Language::Ocaml => {} // No classes), so there is no extract.rs ClassInfo.kind arm to populate for OCaml; the structure definitions[] path (collect_definitions) already used the structural ocaml_value_definition_is_function from Stage 2. The two remaining params-only mis-classifiers were extract_ocaml_functions (structure functions[] / impact / chunker) -- now fixed -- and the interface module/type kind gap -- now fixed. diff.rs uses its own already-structural ocaml_let_binding_is_function (no change needed). The single non-green test (javascript_prototype_assignments_emitted) is pre-existing and JS-only, verified failing on a clean HEAD worktree."
+}
