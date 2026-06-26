@@ -115,8 +115,14 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         ],
         Language::TypeScript | Language::JavaScript => &[
             "class_declaration",
+            "abstract_class_declaration",
             "interface_declaration",
             "type_alias_declaration",
+            // rc2-ts-interface-typealias-lumped-as-classes: capture & kind-tag
+            // TS enums (graphify PR #708 + `structure` both treat enums as
+            // first-class members of this union) instead of silently dropping
+            // them.
+            "enum_declaration",
         ],
         Language::C => &["struct_specifier"],
         Language::Cpp => &["struct_specifier", "class_specifier"],
@@ -349,6 +355,23 @@ fn is_node_public(node: Node, source: &[u8], lang: Language) -> bool {
         // Filter only when an explicit `private` / `protected`
         // access_modifier appears inside a `modifiers` wrapper.
         Language::Scala => !is_scala_non_public(node, source),
+        // rc2-ts-interface-typealias-lumped-as-classes (#243): TS/JS
+        // exportedness is STRUCTURAL — the `export` marker lives on the
+        // wrapping `export_statement`, never on the declaration node. A
+        // top-level declaration is exported iff, after unwrapping at most one
+        // `ambient_declaration` layer (handles `export declare interface/
+        // class/type`), its parent is an `export_statement`. Non-exported
+        // file-local decls sit directly under `program` / a statement_block /
+        // a module body, so they are correctly filtered out of `classes[]`
+        // (and, via the name-chain fallback, out of `all_exports[]`). This is
+        // an AST parent-kind gate, NOT a source-line regex.
+        Language::TypeScript | Language::JavaScript => {
+            let mut p = node.parent();
+            while matches!(p.map(|n| n.kind()), Some("ambient_declaration")) {
+                p = p.and_then(|n| n.parent());
+            }
+            matches!(p.map(|n| n.kind()), Some("export_statement"))
+        }
         // For other languages, default to public
         _ => true,
     }
@@ -1685,10 +1708,39 @@ pub fn extract_class_info(class_node: Node, source: &[u8], lang: Language) -> Cl
 
     ClassInfo {
         name,
+        // rc2-ts-interface-typealias-lumped-as-classes: the discriminating
+        // tree-sitter node kind is LIVE here (the dispatcher matched
+        // `class_node.kind()` against `class_node_kinds`). Record it for
+        // TS/JS so the `interface` command stops lumping interfaces / type
+        // aliases / enums into an undifferentiated class bucket. Other
+        // languages keep `kind: None` (JSON stays byte-identical via the
+        // `skip_serializing_if` guard on the field).
+        kind: ts_js_entry_kind(class_node.kind(), lang),
         lineno,
         bases,
         methods,
         private_method_count,
+    }
+}
+
+/// rc2-ts-interface-typealias-lumped-as-classes: map a tree-sitter
+/// TypeScript/JavaScript declaration node kind to the `ClassInfo.kind`
+/// discriminator ("class"/"interface"/"type"/"enum"). Returns `None` for any
+/// non-TS/JS language so their `interface` JSON stays byte-identical.
+/// AST-keyed — no source-text scanning.
+fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
+    match lang {
+        Language::TypeScript | Language::JavaScript => {
+            let kind = match node_kind {
+                "interface_declaration" => "interface",
+                "type_alias_declaration" => "type",
+                "enum_declaration" => "enum",
+                // class_declaration | abstract_class_declaration | class
+                _ => "class",
+            };
+            Some(kind.to_string())
+        }
+        _ => None,
     }
 }
 
@@ -2307,6 +2359,7 @@ fn walk_ocaml_mli(
                                 if !name.is_empty() {
                                     classes.push(ClassInfo {
                                         name,
+                                        kind: None,
                                         lineno,
                                         bases: Vec::new(),
                                         methods: Vec::new(),
@@ -2547,6 +2600,9 @@ fn collect_js_member_exports(
                     // points at the first prototype assignment.
                     classes.push(ClassInfo {
                         name: class_name.clone(),
+                        // JS prototype-based class synthesized from a
+                        // `Foo.prototype.bar = ...` assignment.
+                        kind: Some("class".to_string()),
                         lineno,
                         bases: Vec::new(),
                         methods: vec![method],
@@ -3991,6 +4047,7 @@ class Child(Parent, Mixin):
             }],
             classes: vec![ClassInfo {
                 name: "MyClass".to_string(),
+                kind: None,
                 lineno: 10,
                 bases: vec!["Base".to_string()],
                 methods: vec![MethodInfo {
@@ -4155,8 +4212,12 @@ func internalHelper() bool {
 
     #[test]
     fn test_extract_interface_typescript_class() {
+        // rc2-ts-interface-typealias-lumped-as-classes (#243): the `interface`
+        // command now filters non-exported TS decls (they are not part of the
+        // public API surface). The definitions are `export`ed so they still
+        // surface; the class carrier carries `kind == "class"`.
         let source = r#"
-class UserService {
+export class UserService {
     async fetchUser(id: string): Promise<User> {
         return {} as User;
     }
@@ -4164,7 +4225,7 @@ class UserService {
     private internalMethod(): void {}
 }
 
-function processData(input: string): number {
+export function processData(input: string): number {
     return input.length;
 }
 "#;
@@ -4177,18 +4238,27 @@ function processData(input: string): number {
             info.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
             info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
+        let svc = info
+            .classes
+            .iter()
+            .find(|c| c.name == "UserService")
+            .expect("UserService present");
+        assert_eq!(svc.kind.as_deref(), Some("class"));
     }
 
     #[test]
     fn test_extract_interface_typescript_interface() {
+        // rc2-ts-interface-typealias-lumped-as-classes: interface and type
+        // alias carriers must now carry an AST-derived `kind` discriminator,
+        // and (#243) only the exported decls surface.
         let source = r#"
-interface User {
+export interface User {
     id: string;
     name: string;
     email: string;
 }
 
-type Status = "active" | "inactive";
+export type Status = "active" | "inactive";
 "#;
         let info = extract_interface(Path::new("test.ts"), source).unwrap();
 
@@ -4196,6 +4266,99 @@ type Status = "active" | "inactive";
             !info.classes.is_empty(),
             "Should find interface/type declarations, got: {:?}",
             info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        let user = info.classes.iter().find(|c| c.name == "User").unwrap();
+        assert_eq!(user.kind.as_deref(), Some("interface"));
+        let status = info.classes.iter().find(|c| c.name == "Status").unwrap();
+        assert_eq!(status.kind.as_deref(), Some("type"));
+    }
+
+    #[test]
+    fn test_extract_interface_ts_kind_discriminator_and_export_gate() {
+        // rc2-ts-interface-typealias-lumped-as-classes char test: the minimal
+        // mixed fixture from the proposal's ## Reproduction (1 non-exported
+        // interface, 1 exported interface, 1 non-exported type alias, 1
+        // exported class, 1 exported enum).
+        let source = r#"
+interface PrivateLocal { a: number; }
+export interface PublicOne { b: string; }
+type LocalAlias = string | number;
+export class RealClass { run(): void {} }
+export enum Color { Red, Green }
+"#;
+        let info = extract_interface(Path::new("t243.ts"), source).unwrap();
+        let names: Vec<&str> = info.classes.iter().map(|c| c.name.as_str()).collect();
+
+        // #243: non-exported file-local decls are filtered from classes[].
+        assert!(
+            !names.contains(&"PrivateLocal"),
+            "non-exported interface must be filtered, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"LocalAlias"),
+            "non-exported type alias must be filtered, got {names:?}"
+        );
+
+        // #243: and from all_exports[] (the name-chain fallback).
+        assert!(!info.all_exports.contains(&"PrivateLocal".to_string()));
+        assert!(!info.all_exports.contains(&"LocalAlias".to_string()));
+
+        // Exported decls surface, each kind-tagged from its tree-sitter node.
+        let kind_of = |n: &str| {
+            info.classes
+                .iter()
+                .find(|c| c.name == n)
+                .and_then(|c| c.kind.as_deref())
+        };
+        assert_eq!(kind_of("PublicOne"), Some("interface"));
+        assert_eq!(kind_of("RealClass"), Some("class"));
+        assert_eq!(kind_of("Color"), Some("enum"));
+
+        // The real class count is exactly the entries with kind == "class".
+        let class_count = info
+            .classes
+            .iter()
+            .filter(|c| c.kind.as_deref() == Some("class"))
+            .count();
+        assert_eq!(class_count, 1, "exactly one real class");
+    }
+
+    #[test]
+    fn test_ts_export_gate_wrapper_shapes() {
+        // rc2-ts-interface-typealias-lumped-as-classes: the AST parent-kind
+        // export gate (`is_node_public` for TS) must accept exported wrapper
+        // shapes and reject bare (file-local) ones.
+
+        // exported interface -> present
+        let info = extract_interface(
+            Path::new("a.ts"),
+            "export interface Exported { x: number; }\n",
+        )
+        .unwrap();
+        assert!(info.classes.iter().any(|c| c.name == "Exported"));
+
+        // bare interface -> filtered
+        let info =
+            extract_interface(Path::new("b.ts"), "interface Bare { x: number; }\n").unwrap();
+        assert!(!info.classes.iter().any(|c| c.name == "Bare"));
+
+        // export default class -> present (decl still in `declaration` field)
+        let info = extract_interface(
+            Path::new("c.ts"),
+            "export default class Defaulted { run(): void {} }\n",
+        )
+        .unwrap();
+        assert!(info.classes.iter().any(|c| c.name == "Defaulted"));
+
+        // re-export `export { X }` -> no `declaration` child -> no leak
+        let info = extract_interface(
+            Path::new("d.ts"),
+            "class Hidden { run(): void {} }\nexport { Hidden };\n",
+        )
+        .unwrap();
+        assert!(
+            !info.classes.iter().any(|c| c.name == "Hidden"),
+            "re-export must not surface the file-local class"
         );
     }
 

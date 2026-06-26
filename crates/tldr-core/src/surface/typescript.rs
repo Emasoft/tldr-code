@@ -18,7 +18,7 @@ use tree_sitter::{Node, Tree};
 
 use crate::ast::extract::extract_from_tree;
 use crate::ast::parser::parse;
-use crate::types::{ClassInfo, Language};
+use crate::types::Language;
 use crate::TldrResult;
 
 use super::language_profile::{is_noise_dir, is_noise_file, strip_layout_segments};
@@ -177,7 +177,22 @@ fn extract_from_typescript_file(
             continue;
         }
 
-        let kind = determine_ts_class_kind(class, &source);
+        // rc2-ts-interface-typealias-lumped-as-classes: enums now arrive in
+        // `module_info.classes` (kind == "enum") from PATH A and are emitted
+        // as the `ApiKind::Enum` container here. The dedicated enum extractor
+        // below (`extract_exported_enums`) detects the container is already
+        // present (its `existing_class_names` guard) and emits ONLY the enum
+        // members as Constants — so the container is not double-counted.
+
+        // rc2-ts-interface-typealias-lumped-as-classes: read the AST-derived
+        // node kind recorded at carrier construction instead of re-deriving it
+        // from source text. `ClassInfo.kind` is "class"/"interface"/"type"
+        // (set from `child.kind()` in extract_ts_classes_detailed).
+        let kind = class
+            .kind
+            .as_deref()
+            .map(ApiKind::from_ts_kind)
+            .unwrap_or(ApiKind::Class);
         let qualified_name = format!("{}.{}", module_path, class.name);
         let triggers = extract_triggers(&class.name, class.docstring.as_deref());
 
@@ -692,26 +707,6 @@ fn is_exported(source: &str, line_number: usize, is_dts: bool) -> bool {
     line.starts_with("export ") || line.starts_with("export{") || line.starts_with("export default")
 }
 
-/// Determine the kind of a TypeScript class definition.
-///
-/// Distinguishes between `class`, `interface`, and `enum`.
-fn determine_ts_class_kind(class: &ClassInfo, source: &str) -> ApiKind {
-    let lines: Vec<&str> = source.lines().collect();
-    if class.line_number > 0 && (class.line_number as usize) <= lines.len() {
-        let line = lines[class.line_number as usize - 1].trim();
-        if line.contains("interface ") {
-            return ApiKind::Interface;
-        }
-        if line.contains("enum ") {
-            return ApiKind::Enum;
-        }
-        if line.contains("type ") && line.contains('=') {
-            return ApiKind::TypeAlias;
-        }
-    }
-    ApiKind::Class
-}
-
 /// Check if a line defines a `readonly` property in an interface/class.
 fn is_readonly_property(source: &str, line_number: usize) -> bool {
     let lines: Vec<&str> = source.lines().collect();
@@ -1192,44 +1187,67 @@ mod tests {
         assert!(is_exported(source, 1, true));
     }
 
-    #[test]
-    fn test_determine_ts_class_kind_class() {
-        let class = crate::types::ClassInfo {
-            name: "MyClass".to_string(),
-            line_number: 1,
-            line_end: 1,
-            methods: vec![],
-            fields: vec![],
-            bases: vec![],
-            decorators: vec![],
-            docstring: None,
-            kind: None,
-            modifiers: Vec::new(),
-            events: Vec::new(),
-            errors: Vec::new(),
-        };
-        let source = "export class MyClass {\n}\n";
-        assert_eq!(determine_ts_class_kind(&class, source), ApiKind::Class);
+    /// rc2-ts-interface-typealias-lumped-as-classes: helper that parses TS
+    /// source and returns the AST-derived `ClassInfo.kind` for the named
+    /// carrier. Drives the kind-from-node assertions below.
+    fn ts_kind_of(source: &str, name: &str) -> Option<String> {
+        let tree = parse(source, Language::TypeScript).unwrap();
+        let mi = extract_from_tree(
+            &tree,
+            source,
+            Language::TypeScript,
+            std::path::Path::new("t.ts"),
+            None,
+        )
+        .unwrap();
+        mi.classes
+            .into_iter()
+            .find(|c| c.name == name)
+            .and_then(|c| c.kind)
     }
 
     #[test]
-    fn test_determine_ts_class_kind_interface() {
-        let class = crate::types::ClassInfo {
-            name: "MyInterface".to_string(),
-            line_number: 1,
-            line_end: 1,
-            methods: vec![],
-            fields: vec![],
-            bases: vec![],
-            decorators: vec![],
-            docstring: None,
-            kind: None,
-            modifiers: Vec::new(),
-            events: Vec::new(),
-            errors: Vec::new(),
-        };
+    fn test_ts_kind_from_node_class() {
+        // Adversarial: a class whose JSDoc literally contains the word
+        // "interface" must STILL be tagged as a class — proving the kind is
+        // node-driven, not text-scanned (the old `determine_ts_class_kind`
+        // heuristic would have mis-tagged this as an interface).
+        let source = "/** implements an interface */\nexport class MyClass {\n}\n";
+        let kind = ts_kind_of(source, "MyClass").unwrap();
+        assert_eq!(kind, "class");
+        assert_eq!(ApiKind::from_ts_kind(&kind), ApiKind::Class);
+    }
+
+    #[test]
+    fn test_ts_kind_from_node_interface() {
         let source = "export interface MyInterface {\n}\n";
-        assert_eq!(determine_ts_class_kind(&class, source), ApiKind::Interface);
+        let kind = ts_kind_of(source, "MyInterface").unwrap();
+        assert_eq!(kind, "interface");
+        assert_eq!(ApiKind::from_ts_kind(&kind), ApiKind::Interface);
+    }
+
+    #[test]
+    fn test_ts_kind_from_node_type_alias() {
+        let source = "export type MyAlias = string | number;\n";
+        let kind = ts_kind_of(source, "MyAlias").unwrap();
+        assert_eq!(kind, "type");
+        assert_eq!(ApiKind::from_ts_kind(&kind), ApiKind::TypeAlias);
+    }
+
+    #[test]
+    fn test_ts_kind_from_node_enum() {
+        let source = "export enum Color { Red, Green }\n";
+        let kind = ts_kind_of(source, "Color").unwrap();
+        assert_eq!(kind, "enum");
+        assert_eq!(ApiKind::from_ts_kind(&kind), ApiKind::Enum);
+    }
+
+    #[test]
+    fn test_ts_kind_from_node_abstract_class() {
+        let source = "export abstract class Base {\n}\n";
+        let kind = ts_kind_of(source, "Base").unwrap();
+        assert_eq!(kind, "class");
+        assert_eq!(ApiKind::from_ts_kind(&kind), ApiKind::Class);
     }
 
     #[test]

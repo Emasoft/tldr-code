@@ -513,6 +513,14 @@ pub struct MethodInfo {
 pub struct ClassInfo {
     /// Class name
     pub name: String,
+    /// rc2-ts-interface-typealias-lumped-as-classes: the AST-derived entity
+    /// kind discriminator ("class"/"interface"/"type"/"enum"), recorded from
+    /// the tree-sitter node kind at carrier construction so the `interface`
+    /// command no longer lumps interfaces / type aliases / enums into an
+    /// undifferentiated class bucket. `None` (and the `skip_serializing_if`
+    /// guard) keeps non-TS/JS JSON byte-identical to the pre-fix schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     /// Line number of definition
     pub lineno: u32,
     /// Base classes

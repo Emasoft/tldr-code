@@ -102,6 +102,22 @@ pub enum ApiKind {
     Module,
 }
 
+impl ApiKind {
+    /// rc2-ts-interface-typealias-lumped-as-classes: map a `ClassInfo.kind`
+    /// discriminator (set from the tree-sitter node kind at carrier
+    /// construction) to the corresponding `ApiKind`. Total over the values
+    /// produced by `ts_entry_kind` ("class"/"interface"/"type"/"enum");
+    /// anything else falls back to `Class`. AST-keyed — no source-text scan.
+    pub fn from_ts_kind(kind: &str) -> ApiKind {
+        match kind {
+            "interface" => ApiKind::Interface,
+            "type" => ApiKind::TypeAlias,
+            "enum" => ApiKind::Enum,
+            _ => ApiKind::Class,
+        }
+    }
+}
+
 impl std::fmt::Display for ApiKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

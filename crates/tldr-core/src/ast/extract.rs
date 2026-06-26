@@ -2819,14 +2819,21 @@ fn extract_ts_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Clas
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "class_declaration" | "class" | "interface_declaration" => {
-                let info = extract_ts_class_info(&child, source);
+            k @ ("class_declaration" | "class" | "abstract_class_declaration"
+            | "interface_declaration") => {
+                // rc2-ts-interface-typealias-lumped-as-classes: record the
+                // discriminating tree-sitter node kind on the carrier instead
+                // of discarding it. `child.kind()` already distinguishes
+                // class vs interface — no source-text re-derivation needed.
+                let mut info = extract_ts_class_info(&child, source);
+                info.kind = Some(ts_entry_kind(k));
                 classes.push(info);
             }
-            "type_alias_declaration" => {
-                // Type aliases like `type Foo = string | number` are represented
-                // as ClassInfo entries so the surface extractor can detect them via
-                // `determine_ts_class_kind` and tag them as TypeAlias.
+            k @ ("type_alias_declaration" | "enum_declaration") => {
+                // Type aliases (`type Foo = string | number`) and enums are
+                // first-class named entities even though a type alias has no
+                // body/braces. Carry their AST node kind on the ClassInfo so
+                // consumers can discriminate without scanning source text.
                 let name = child
                     .child_by_field_name("name")
                     .map(|n| get_node_text(&n, source))
@@ -2842,7 +2849,7 @@ fn extract_ts_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Clas
                     decorators: Vec::new(),
                     line_number,
                     line_end,
-                    kind: None,
+                    kind: Some(ts_entry_kind(k)),
                     modifiers: Vec::new(),
                     events: Vec::new(),
                     errors: Vec::new(),
@@ -2853,6 +2860,22 @@ fn extract_ts_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Clas
             }
         }
     }
+}
+
+/// rc2-ts-interface-typealias-lumped-as-classes: map a tree-sitter
+/// TypeScript/JavaScript declaration node kind to the `ClassInfo.kind`
+/// discriminator. Mirrors `structure`'s extractor match-kind switch so the
+/// `extract`, `interface`, and `structure` commands agree on entity kinds.
+/// AST-keyed — no source-text scanning.
+fn ts_entry_kind(node_kind: &str) -> String {
+    match node_kind {
+        "interface_declaration" => "interface",
+        "type_alias_declaration" => "type",
+        "enum_declaration" => "enum",
+        // class_declaration | abstract_class_declaration | class
+        _ => "class",
+    }
+    .to_string()
 }
 
 fn extract_ts_class_info(node: &Node, source: &str) -> ClassInfo {
