@@ -792,6 +792,16 @@ pub struct InvariantsSummary {
     /// `contracts::test_recognizer`).
     #[serde(default)]
     pub test_functions_scanned: u32,
+
+    /// Bare names of observed test calls that were SCOPED OUT because they are
+    /// not declared in the analyzed `<FILE>` (fix-R3-rc4 / RC4 deferred
+    /// sub-part). Under the strict declared-in-file scoping these are typically
+    /// constructors of other types, inherited members, or framework / imported
+    /// calls — correctly excluded from the report, but surfaced here (and as a
+    /// text-output note) so the behaviour change is never silent. Sorted,
+    /// de-duplicated. Additive, back-compatible field.
+    #[serde(default)]
+    pub skipped_undefined: Vec<String>,
 }
 
 /// Full report from the invariants command.

@@ -523,6 +523,9 @@ pub fn run_invariants(
     let mut total_observations = 0u32;
     let mut total_invariants = 0u32;
     let mut by_kind: HashMap<String, u32> = HashMap::new();
+    // fix-R3-rc4 (RC4 deferred sub-part): record names dropped by the
+    // declared-in-file scope so the behaviour change is surfaced, not silent.
+    let mut skipped_undefined: Vec<String> = Vec::new();
 
     for (func_name, obs_list) in by_function.iter() {
         // fix-R3-rc4 (RC4): scope to symbols DECLARED in the analyzed FILE.
@@ -536,6 +539,7 @@ pub fn run_invariants(
         // the FILE positional.
         if let Some(ref defined) = defined {
             if !defined.contains(func_name) {
+                skipped_undefined.push(func_name.clone());
                 continue;
             }
         }
@@ -578,6 +582,10 @@ pub fn run_invariants(
     // Sort functions alphabetically for consistent output (E12)
     functions.sort_by(|a, b| a.function_name.cmp(&b.function_name));
 
+    // Deterministic, de-duplicated diagnostic list (the buckets are HashMap
+    // keyed so names are already unique; sort for stable output).
+    skipped_undefined.sort();
+
     Ok(InvariantsReport {
         functions,
         summary: InvariantsSummary {
@@ -586,6 +594,7 @@ pub fn run_invariants(
             by_kind,
             test_files_scanned,
             test_functions_scanned,
+            skipped_undefined,
         },
     })
 }
@@ -1535,6 +1544,18 @@ pub fn format_invariants_text(report: &InvariantsReport) -> String {
         lines.push(format!("By kind: {}", kinds.join(", ")));
     }
 
+    // fix-R3-rc4 (RC4 deferred sub-part): surface calls dropped by the strict
+    // declared-in-file scoping so the exclusion is never silent. These are
+    // likely inherited / imported / constructor calls not declared in the file.
+    if !report.summary.skipped_undefined.is_empty() {
+        lines.push(format!(
+            "Note: {} observed call(s) skipped (not declared in the analyzed file; \
+             likely inherited / imported / constructor): {}",
+            report.summary.skipped_undefined.len(),
+            report.summary.skipped_undefined.join(", ")
+        ));
+    }
+
     lines.join("\n")
 }
 
@@ -1554,6 +1575,76 @@ mod tests {
         fs::write(&src_path, source).unwrap();
         fs::write(&test_path, test).unwrap();
         (src_path, test_path)
+    }
+
+    /// A-rc4inv (RC4 deferred sub-part): observed call names NOT declared in
+    /// the analyzed FILE are scoped out of the report. Their count must not be
+    /// silent — it is surfaced via the additive `skipped_undefined` summary
+    /// field (populated + serialized) and echoed as a note in the text
+    /// rendering, per the rc4-invariants proposal (step 3, "Surface dropped
+    /// names").
+    #[test]
+    fn rc4_skipped_undefined_is_populated_serialized_and_noted() {
+        let temp = TempDir::new().unwrap();
+        // Source declares ONLY `compute`; `helper` is observed in the tests but
+        // is not declared here (an imported / inherited / framework call).
+        let (src_path, test_path) = create_test_files(
+            &temp,
+            "def compute(x, y): return x + y",
+            r#"
+from src import compute
+from other import helper
+
+def test_calls():
+    assert compute(1, 2) == 3
+    assert compute(5, 10) == 15
+    assert helper(7) == 14
+    assert helper(8) == 16
+"#,
+        );
+
+        let report = run_invariants(&src_path, &test_path, None, 1).unwrap();
+
+        // `helper` is not declared in src.py -> scoped out and recorded.
+        assert!(
+            report
+                .summary
+                .skipped_undefined
+                .contains(&"helper".to_string()),
+            "skipped_undefined must list the dropped name: {:?}",
+            report.summary.skipped_undefined
+        );
+        // `compute` IS declared -> still reported, never skipped.
+        assert!(
+            !report
+                .summary
+                .skipped_undefined
+                .contains(&"compute".to_string()),
+            "a declared symbol must not be reported as skipped: {:?}",
+            report.summary.skipped_undefined
+        );
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "compute"),
+            "declared `compute` should still be reported"
+        );
+
+        // Serializes as an additive JSON field.
+        let json = serde_json::to_value(&report.summary).unwrap();
+        let arr = json
+            .get("skipped_undefined")
+            .and_then(|v| v.as_array())
+            .expect("skipped_undefined present in serialized summary");
+        assert!(
+            arr.iter().any(|v| v.as_str() == Some("helper")),
+            "serialized skipped_undefined must contain `helper`: {json}"
+        );
+
+        // Text rendering surfaces the dropped call so scoping is not silent.
+        let text = format_invariants_text(&report);
+        assert!(
+            text.contains("skipped") && text.contains("helper"),
+            "text output must note the skipped undefined call(s): {text}"
+        );
     }
 
     #[test]
