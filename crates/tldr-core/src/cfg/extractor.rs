@@ -797,6 +797,25 @@ impl<'a> CfgBuilder<'a> {
             // if, try_expression/?, etc.). Scan immediate children to find them.
             "expression_statement" | "let_declaration" => {
                 let mut found_cf = false;
+                // RC4-4a: close the binder-line coverage hole. For a
+                // `let_declaration` whose value is a control-flow expression
+                // (`let value = call()?;`, `let x = match … {…}`), block
+                // creation is reparented onto the inner CF node
+                // (`try_expression`/`match`/`if`), whose `start_position()`
+                // is the inner operand's row — NOT the `let` head row. That
+                // left the binder's own source line owned by NO basic block
+                // (a totality-invariant violation), which made the
+                // reaching-defs uninit worklist flood the bound variable
+                // with a spurious `possible` finding. Anchor the head line
+                // onto the CURRENT block (the predecessor that the CF node
+                // forks from, which dominates every continuation use) BEFORE
+                // descending, so the binder line is always covered. We record
+                // only the head row (`start_line`) — the inner CF rows are
+                // already covered by the blocks the CF node creates, so
+                // extending to `end_line` here would overlap them.
+                if node.kind() == "let_declaration" {
+                    self.update_current_block_lines(start_line, start_line);
+                }
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
                     loop {

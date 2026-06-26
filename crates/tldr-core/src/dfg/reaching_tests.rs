@@ -1371,3 +1371,129 @@ mod bitvec_tests {
         );
     }
 }
+
+// =============================================================================
+// RC4-4a: Rust `?`-binder coverage-hole regression tests
+//
+// Before the fix, `CfgBuilder::process_statement`'s `let_declaration` arm
+// reparented block creation onto the inner `try_expression` (the `?`), whose
+// `start_position()` row is the inner operand's row — NOT the `let` head row.
+// That left the binder's own source line owned by NO basic block (a
+// totality-invariant violation), which made the reaching-defs uninitialized
+// worklist flood the bound variable with a spurious `possible` finding even
+// though the def-use chain correctly linked the def to its uses.
+// =============================================================================
+#[cfg(test)]
+mod rc4_4a_question_mark_binder_tests {
+    use crate::cfg::get_cfg_context;
+    use crate::dfg::get_dfg_context;
+    use crate::Language;
+    use std::path::PathBuf;
+
+    use crate::dfg::reaching::build_reaching_defs_report;
+
+    /// Fixture mirroring rust-ripgrep `parse_human_readable_size`: a `let`
+    /// binder whose `=` is on its OWN line and whose `?`-terminated RHS starts
+    /// on the NEXT line (exactly the human.rs:86/87 shape). This is what
+    /// orphans the head row: `try_expression.start_position()` is the RHS row
+    /// (line 4), so the `let value =` head row (line 3) was owned by no block.
+    const FIXTURE: &str = "\
+fn parse_size(s: &str) -> Result<u64, String> {
+    let digits = s.trim();
+    let value =
+        digits.parse::<u64>().map_err(|e| e.to_string())?;
+    let a = value + 1;
+    let b = value + 2;
+    Ok(value + a + b)
+}";
+
+    /// 4a-1 — totality invariant: every source line of the function body must
+    /// be owned by ≥1 basic block. Specifically the `let value =` head row
+    /// (line 3) must not be orphaned. This is the direct regression lock for
+    /// the coverage hole; it failed before the fix (line 3 was in no block).
+    #[test]
+    fn binder_head_line_is_covered_by_a_block() {
+        let cfg = get_cfg_context(FIXTURE, "parse_size", Language::Rust).unwrap();
+
+        // Every body line (2..=7) must be covered by some block.
+        for line in 2u32..=7 {
+            let covered = cfg
+                .blocks
+                .iter()
+                .any(|b| b.lines.0 <= line && line <= b.lines.1);
+            assert!(
+                covered,
+                "RC4-4a totality: source line {line} is owned by NO block (orphan); \
+                 blocks = {:?}",
+                cfg.blocks.iter().map(|b| b.lines).collect::<Vec<_>>()
+            );
+        }
+
+        // The binder head line (3) specifically.
+        let head_covered = cfg
+            .blocks
+            .iter()
+            .any(|b| b.lines.0 <= 3 && 3 <= b.lines.1);
+        assert!(head_covered, "RC4-4a: `let value =` head line 3 must be covered");
+    }
+
+    /// 4a-2 — reaching-defs: the bound variable `value` must appear in some
+    /// block's GEN set and must NOT be reported uninitialized. The def-use
+    /// verdict and the uninit verdict must AGREE.
+    #[test]
+    fn bound_value_is_generated_and_not_uninitialized() {
+        let cfg = get_cfg_context(FIXTURE, "parse_size", Language::Rust).unwrap();
+        let dfg = get_dfg_context(FIXTURE, "parse_size", Language::Rust).unwrap();
+        let report = build_reaching_defs_report(&cfg, &dfg.refs, PathBuf::from("fixture.rs"));
+
+        // `value` is a recorded GEN in at least one block.
+        let value_in_gen = report
+            .blocks
+            .iter()
+            .any(|b| b.gen.iter().any(|d| d.var == "value"));
+        assert!(
+            value_in_gen,
+            "RC4-4a: `value` must be in some block's gen set; blocks = {:?}",
+            report
+                .blocks
+                .iter()
+                .map(|b| (b.lines, b.gen.iter().map(|d| d.var.clone()).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        );
+
+        // No spurious `possible` (or any) uninitialized finding for `value`.
+        let value_uninit: Vec<_> = report
+            .uninitialized
+            .iter()
+            .filter(|u| u.var == "value")
+            .collect();
+        assert!(
+            value_uninit.is_empty(),
+            "RC4-4a: `value` must not be flagged uninitialized (def-use chain links \
+             def@3 to its uses); found {value_uninit:?}"
+        );
+    }
+
+    /// 4a-3 — the OCaml-style `let x = match … in` shape (a control-flow value
+    /// binding that is NOT a `?`) must also keep its head line covered, since
+    /// the same arm handles it.
+    #[test]
+    fn match_valued_binder_head_line_is_covered() {
+        let src = "\
+fn pick(n: i32) -> i32 {
+    let chosen = match n {
+        0 => 10,
+        _ => 20,
+    };
+    chosen + 1
+}";
+        let cfg = get_cfg_context(src, "pick", Language::Rust).unwrap();
+        // `let chosen = match …` head row is line 2.
+        let covered = cfg.blocks.iter().any(|b| b.lines.0 <= 2 && 2 <= b.lines.1);
+        assert!(
+            covered,
+            "RC4-4a: `let chosen = match` head line 2 must be covered; blocks = {:?}",
+            cfg.blocks.iter().map(|b| b.lines).collect::<Vec<_>>()
+        );
+    }
+}
