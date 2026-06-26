@@ -34,6 +34,180 @@ use tldr_core::callgraph::languages::LanguageRegistry;
 use tldr_core::Language;
 
 // =============================================================================
+// Column position normalization (r7-cl11-definition-column-convention)
+//
+// tree-sitter natively reports a column as a 0-based UTF-8 *byte* offset
+// within its line; LSP editors default to UTF-16 code units. Historically
+// every `definition` call site re-derived an ad-hoc column with a
+// hand-written `±1` and an *implicit* (byte) encoding, so the index-base
+// and the encoding were both undeclared and inconsistent. This module
+// introduces ONE canonical `(index-base, encoding)` mapper at the CLI <->
+// tree-sitter boundary — the rust-analyzer `LineIndex` / gopls
+// `ColumnMapper` pattern — so the conversion lives in exactly one place
+// instead of being re-derived (or omitted) per call site.
+//
+// Default encoding is `Utf8Byte`, which makes every conversion the
+// identity: the existing 0-indexed-byte INPUT and 1-indexed-byte OUTPUT
+// contracts are preserved byte-for-byte (zero regression). `utf16`/`utf32`
+// are explicit opt-in via `--position-encoding` and only diverge from the
+// default on lines containing non-ASCII before the column.
+// =============================================================================
+
+/// Declared column encoding for the `definition` command's INPUT and
+/// REPORTED columns. Making the encoding an explicit, negotiable property
+/// removes the implicit byte-offset assumption that silently disagreed
+/// with every stock LSP editor on any non-ASCII line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PositionEncoding {
+    /// 0-based UTF-8 byte offset (tree-sitter native; LSP `utf-8`). Default.
+    #[default]
+    Utf8Byte,
+    /// 0-based UTF-16 code-unit offset (the LSP default, `utf-16`).
+    Utf16,
+    /// 0-based Unicode code-point / char offset (LSP `utf-32`).
+    Utf32Char,
+}
+
+impl PositionEncoding {
+    /// Parse a CLI `--position-encoding` value. Accepts the LSP spellings
+    /// plus common aliases; returns `None` for unknown input.
+    pub fn parse_cli(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "utf8" | "utf-8" | "byte" | "bytes" => Some(Self::Utf8Byte),
+            "utf16" | "utf-16" => Some(Self::Utf16),
+            "utf32" | "utf-32" | "char" | "chars" | "codepoint" | "codepoints" => {
+                Some(Self::Utf32Char)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Per-file line index used to convert a tree-sitter UTF-8 byte column to
+/// or from a declared [`PositionEncoding`]. Built once from the source
+/// string. Because the byte<->code-unit delta is content-dependent (a
+/// non-BMP char is 4 UTF-8 bytes but 2 UTF-16 units), the conversion is
+/// derived from the line's actual bytes — never a constant offset or a
+/// `÷2` heuristic.
+pub struct LineIndex<'a> {
+    lines: Vec<&'a str>,
+}
+
+impl<'a> LineIndex<'a> {
+    /// Build the index from raw source. Lines are split on `\n` with an
+    /// optional trailing `\r` stripped, matching `str::lines` semantics so
+    /// the row indices agree with tree-sitter's `Point::row`.
+    pub fn new(src: &'a str) -> Self {
+        let lines = src
+            .split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l))
+            .collect();
+        Self { lines }
+    }
+
+    fn line(&self, row: usize) -> &'a str {
+        self.lines.get(row).copied().unwrap_or("")
+    }
+
+    /// Clamp a byte offset down to the nearest char boundary `<= byte` so
+    /// slicing a multi-byte char never panics.
+    fn floor_char_boundary(line: &str, byte: usize) -> usize {
+        let mut b = byte.min(line.len());
+        while b > 0 && !line.is_char_boundary(b) {
+            b -= 1;
+        }
+        b
+    }
+
+    /// Convert a 0-based tree-sitter UTF-8 byte column to the 0-based
+    /// column in `enc`. For [`PositionEncoding::Utf8Byte`] this is the
+    /// identity, so today's byte-column output is preserved exactly.
+    pub fn byte_col_to(&self, row: usize, byte_col: usize, enc: PositionEncoding) -> usize {
+        match enc {
+            PositionEncoding::Utf8Byte => byte_col,
+            PositionEncoding::Utf16 => {
+                let line = self.line(row);
+                let end = Self::floor_char_boundary(line, byte_col);
+                line[..end].chars().map(char::len_utf16).sum()
+            }
+            PositionEncoding::Utf32Char => {
+                let line = self.line(row);
+                let end = Self::floor_char_boundary(line, byte_col);
+                line[..end].chars().count()
+            }
+        }
+    }
+
+    /// Convert a 0-based column in `enc` to a 0-based UTF-8 byte column
+    /// suitable for `tree_sitter::Point::new`. Inverse of [`byte_col_to`];
+    /// for [`PositionEncoding::Utf8Byte`] it is the identity. A column past
+    /// end-of-line clamps to the line length.
+    pub fn enc_col_to_byte(&self, row: usize, col: usize, enc: PositionEncoding) -> usize {
+        match enc {
+            PositionEncoding::Utf8Byte => col,
+            PositionEncoding::Utf16 => {
+                let line = self.line(row);
+                let mut units = 0usize;
+                for (byte_idx, ch) in line.char_indices() {
+                    if units >= col {
+                        return byte_idx;
+                    }
+                    units += ch.len_utf16();
+                }
+                line.len()
+            }
+            PositionEncoding::Utf32Char => {
+                let line = self.line(row);
+                for (chars, (byte_idx, _ch)) in line.char_indices().enumerate() {
+                    if chars >= col {
+                        return byte_idx;
+                    }
+                }
+                line.len()
+            }
+        }
+    }
+}
+
+/// Re-encode every column carried by a [`DefinitionResult`] from the
+/// internal 1-indexed UTF-8 byte representation to the declared output
+/// encoding. A no-op for [`PositionEncoding::Utf8Byte`] (the default), so
+/// the existing `col >= 1` byte-column contract is untouched unless the
+/// caller explicitly opts into `utf16`/`utf32`.
+fn reencode_result_columns(result: &mut DefinitionResult, enc: PositionEncoding) {
+    if enc == PositionEncoding::Utf8Byte {
+        return;
+    }
+    reencode_location(&mut result.symbol.location, enc);
+    reencode_location(&mut result.definition, enc);
+    reencode_location(&mut result.type_definition, enc);
+}
+
+/// Re-encode the column (and `end_column`, if present) of one optional
+/// [`Location`] in place, reading the located file to build its
+/// [`LineIndex`]. Columns are 1-indexed byte on input and 1-indexed `enc`
+/// on output; a `0` column (the "no column" sentinel) is left untouched.
+fn reencode_location(loc: &mut Option<Location>, enc: PositionEncoding) {
+    let Some(l) = loc.as_mut() else { return };
+    let Ok(src) = fs::read_to_string(&l.file) else {
+        return;
+    };
+    let li = LineIndex::new(&src);
+    if l.column >= 1 {
+        let row0 = l.line.saturating_sub(1) as usize;
+        let byte0 = (l.column - 1) as usize;
+        l.column = li.byte_col_to(row0, byte0, enc) as u32 + 1;
+    }
+    if let Some(ec) = l.end_column {
+        if ec >= 1 {
+            let erow0 = l.end_line.unwrap_or(l.line).saturating_sub(1) as usize;
+            let ebyte0 = (ec - 1) as usize;
+            l.end_column = Some(li.byte_col_to(erow0, ebyte0, enc) as u32 + 1);
+        }
+    }
+}
+
+// =============================================================================
 // Constants
 // =============================================================================
 
@@ -179,11 +353,25 @@ pub struct DefinitionArgs {
     /// 0-indexed (editor-cursor / tree-sitter byte-offset style), while the
     /// REPORTED column in the result is 1-indexed, matching `references` and
     /// `structure` (`diff-column-one-indexed-v1`). This input/output asymmetry
-    /// is intentional and retained: making the input 1-indexed would diverge
-    /// from existing 0-indexed positional callers/tests, and making the output
-    /// 0-indexed would diverge from the 1-indexed `references`/`structure`
-    /// family. The `line` argument is 1-indexed (human line numbers).
+    /// is the declared *index-base* axis of [`PositionEncoding`]; it is retained
+    /// as the default to avoid a silent CLI-contract break (making the input
+    /// 1-indexed would shift every existing 0-indexed positional caller/test by
+    /// one). The *encoding* axis — orthogonal to the base — is now explicit via
+    /// `--position-encoding`. The `line` argument is 1-indexed (human line
+    /// numbers).
     pub column: Option<u32>,
+
+    /// Column encoding for the INPUT column and the REPORTED columns
+    /// (r7-cl11-definition-column-convention).
+    ///
+    /// `utf8` (default) = 0-based UTF-8 byte offset, tree-sitter native —
+    /// byte-for-byte identical to the historical behavior. `utf16` = LSP's
+    /// default UTF-16 code units (what stock editors send/expect). `utf32` =
+    /// Unicode code points (char count). The three coincide on pure-ASCII
+    /// lines and only diverge where a line contains non-ASCII before the
+    /// column, so enabling `utf16`/`utf32` never moves an ASCII result.
+    #[arg(long = "position-encoding", value_name = "ENC", default_value = "utf8")]
+    pub position_encoding: String,
 
     /// Find symbol by name instead of position
     #[arg(long)]
@@ -231,6 +419,16 @@ impl DefinitionArgs {
             Some(l) => format!("{:?}", l).to_lowercase(),
             None => "auto".to_string(),
         };
+
+        // r7-cl11: resolve the declared column encoding once. Default `utf8`
+        // makes every column conversion below the identity, preserving the
+        // historical byte-column INPUT/OUTPUT contract exactly.
+        let encoding = PositionEncoding::parse_cli(&self.position_encoding).ok_or_else(|| {
+            RemainingError::invalid_argument(format!(
+                "invalid --position-encoding '{}': expected one of utf8, utf16, utf32",
+                self.position_encoding
+            ))
+        })?;
 
         // Determine which mode we're in
         let result = if let Some(ref symbol_name) = self.symbol {
@@ -286,10 +484,29 @@ impl DefinitionArgs {
             };
             let effective_project = self.project.as_deref().or(auto_project.as_deref());
 
+            // r7-cl11: normalize the declared-encoding INPUT column to the
+            // 0-indexed UTF-8 byte column the resolver consumes internally.
+            // The index-base stays 0-indexed (default contract); only the
+            // *encoding* is converted. For `utf8` this is the identity, so
+            // every existing 0-indexed positional query is unchanged.
+            let byte_column = if encoding == PositionEncoding::Utf8Byte {
+                column
+            } else {
+                match fs::read_to_string(file) {
+                    Ok(src) => {
+                        let li = LineIndex::new(&src);
+                        let row0 = line.saturating_sub(1) as usize;
+                        li.enc_col_to_byte(row0, column as usize, encoding) as u32
+                    }
+                    // File unreadable: let the resolver surface FileNotFound.
+                    Err(_) => column,
+                }
+            };
+
             match find_definition_by_position(
                 file,
                 line,
-                column,
+                byte_column,
                 effective_project,
                 &lang_hint,
             ) {
@@ -336,6 +553,13 @@ impl DefinitionArgs {
                 }
             }
         };
+
+        // r7-cl11: re-encode the REPORTED columns into the declared output
+        // encoding. No-op for the default `utf8` (the 1-indexed byte-column
+        // contract is preserved exactly); under `utf16`/`utf32` the columns
+        // become LSP-correct on non-ASCII lines.
+        let mut result = result;
+        reencode_result_columns(&mut result, encoding);
 
         // Determine output format
         let use_text = format == crate::output::OutputFormat::Text;
@@ -5286,6 +5510,182 @@ from . import types
             def.line, expected_def_line,
             "{}: param declared on line {}, got {}",
             lang, expected_def_line, def.line
+        );
+    }
+
+    // =========================================================================
+    // r7-cl11-definition-column-convention: char-aware column tests.
+    //
+    // Pin the canonical `(index-base, encoding)` mapper introduced to replace
+    // the per-call-site ad-hoc `±1`/implicit-byte column math. These exercise
+    // the `LineIndex` directly (the single conversion choke point) plus the
+    // INPUT/OUTPUT wiring, so the coverage is self-contained and does not
+    // depend on the external `/tmp/repos` corpus.
+    // =========================================================================
+
+    // Axis-2 discriminator (the gap a byte-only column hides): the three
+    // encodings must DIVERGE on a non-ASCII line and COINCIDE on pure ASCII.
+    // `néme` = 4 chars, 5 UTF-8 bytes (n=1, é=2, m=1, e=1), 4 UTF-16 units.
+    #[test]
+    fn r7_cl11_byte_col_diverges_on_non_ascii() {
+        let src = "fn greet(néme: &str) -> String {\n    néme.to_string()\n}\n";
+        let li = LineIndex::new(src);
+        // Byte column just past `néme` on line 0: `fn greet(` is 9 bytes, plus
+        // 5 bytes for `néme` => byte 14.
+        let byte_col = 9 + "néme".len(); // 9 + 5 = 14
+        assert_eq!(byte_col, 14);
+        // utf8 keeps the raw byte width (today's value).
+        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf8Byte), 14);
+        // utf16 and utf32 collapse the 2-byte `é` to one unit => 9 + 4 = 13.
+        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf16), 13);
+        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf32Char), 13);
+
+        // The *width* of `néme` alone (offset 9 -> 14): utf8=5, utf16=4, utf32=4.
+        let start = li.byte_col_to(0, 9, PositionEncoding::Utf8Byte);
+        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf8Byte) - start, 5);
+        let start16 = li.byte_col_to(0, 9, PositionEncoding::Utf16);
+        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf16) - start16, 4);
+        let start32 = li.byte_col_to(0, 9, PositionEncoding::Utf32Char);
+        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf32Char) - start32, 4);
+    }
+
+    // Non-BMP: a 🦀 (U+1F980) is 4 UTF-8 bytes but TWO UTF-16 code units and
+    // ONE code point — proving the byte<->utf16 delta is content-dependent
+    // (not a constant, not `÷2`), the exact bug helix#5711 documents.
+    #[test]
+    fn r7_cl11_non_bmp_utf16_is_two_units() {
+        let src = "let x = \"🦀\";\n"; // crab then closing quote
+        let li = LineIndex::new(src);
+        let quote_open = src.find('"').unwrap(); // byte 8
+        let after_crab = quote_open + 1 + "🦀".len(); // 9 + 4 = 13
+        // From just-after the opening quote to just-after the crab:
+        let b0 = quote_open + 1; // byte 9
+        assert_eq!(
+            li.byte_col_to(0, after_crab, PositionEncoding::Utf16)
+                - li.byte_col_to(0, b0, PositionEncoding::Utf16),
+            2,
+            "🦀 is two UTF-16 code units"
+        );
+        assert_eq!(
+            li.byte_col_to(0, after_crab, PositionEncoding::Utf32Char)
+                - li.byte_col_to(0, b0, PositionEncoding::Utf32Char),
+            1,
+            "🦀 is one code point"
+        );
+        assert_eq!(
+            li.byte_col_to(0, after_crab, PositionEncoding::Utf8Byte)
+                - li.byte_col_to(0, b0, PositionEncoding::Utf8Byte),
+            4,
+            "🦀 is four UTF-8 bytes"
+        );
+    }
+
+    // Pure ASCII: all three encodings coincide (no result ever moves).
+    #[test]
+    fn r7_cl11_ascii_encodings_coincide() {
+        let src = "fn greet(name: &str) {}\n";
+        let li = LineIndex::new(src);
+        for col in [0usize, 5, 9, 13, 20] {
+            let b = li.byte_col_to(0, col, PositionEncoding::Utf8Byte);
+            let u16 = li.byte_col_to(0, col, PositionEncoding::Utf16);
+            let u32 = li.byte_col_to(0, col, PositionEncoding::Utf32Char);
+            assert_eq!(b, u16, "ascii utf8/utf16 must coincide at {}", col);
+            assert_eq!(b, u32, "ascii utf8/utf32 must coincide at {}", col);
+        }
+    }
+
+    // Axis-1 round-trip invariant: encoding conversion is a bijection on the
+    // line's columns. enc_col_to_byte ∘ byte_col_to == identity at every char
+    // boundary — the property the ad-hoc per-site math could not guarantee.
+    #[test]
+    fn r7_cl11_encoding_round_trip_is_identity() {
+        let src = "fn f(néme: i32, 🦀x: i32) {}\n";
+        let li = LineIndex::new(src);
+        let line0 = src.split('\n').next().unwrap();
+        for enc in [
+            PositionEncoding::Utf8Byte,
+            PositionEncoding::Utf16,
+            PositionEncoding::Utf32Char,
+        ] {
+            // Walk every char-boundary byte column and round-trip it.
+            for (byte_idx, _) in line0.char_indices() {
+                let enc_col = li.byte_col_to(0, byte_idx, enc);
+                let back = li.enc_col_to_byte(0, enc_col, enc);
+                assert_eq!(
+                    back, byte_idx,
+                    "round-trip failed for {:?} at byte {}",
+                    enc, byte_idx
+                );
+            }
+        }
+    }
+
+    // Encoding parser accepts the LSP spellings + aliases, rejects garbage.
+    #[test]
+    fn r7_cl11_position_encoding_parse() {
+        assert_eq!(PositionEncoding::parse_cli("utf8"), Some(PositionEncoding::Utf8Byte));
+        assert_eq!(PositionEncoding::parse_cli("UTF-8"), Some(PositionEncoding::Utf8Byte));
+        assert_eq!(PositionEncoding::parse_cli("byte"), Some(PositionEncoding::Utf8Byte));
+        assert_eq!(PositionEncoding::parse_cli("utf16"), Some(PositionEncoding::Utf16));
+        assert_eq!(PositionEncoding::parse_cli("utf-16"), Some(PositionEncoding::Utf16));
+        assert_eq!(PositionEncoding::parse_cli("utf32"), Some(PositionEncoding::Utf32Char));
+        assert_eq!(PositionEncoding::parse_cli("char"), Some(PositionEncoding::Utf32Char));
+        assert_eq!(PositionEncoding::parse_cli(""), None);
+        assert_eq!(PositionEncoding::parse_cli("latin1"), None);
+        assert_eq!(PositionEncoding::default(), PositionEncoding::Utf8Byte);
+    }
+
+    // OUTPUT re-encoding is a no-op under the default `utf8` (byte contract
+    // preserved) and rewrites the column under `utf16` for a non-ASCII line.
+    //
+    // Fixture line bytes: `fn f(néme: i32)...`
+    //   0:f 1:n 2:' ' 3:f 4:( 5:n 6,7:é 8:m 9:e 10:: ...
+    // So `néme` starts at byte 5 => 1-indexed byte column 6 (start, BEFORE the
+    // multi-byte `é`), and byte 8 (`m`, AFTER `é`) => 1-indexed column 9.
+    #[test]
+    fn r7_cl11_reencode_output_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("u.rs");
+        fs::write(&file, "fn f(néme: i32) -> i32 { néme }\n").unwrap();
+        let fstr = file.display().to_string();
+
+        let mk = |col: u32, name: &str| DefinitionResult {
+            symbol: SymbolInfo {
+                name: name.to_string(),
+                kind: SymbolKind::Parameter,
+                location: Some(Location::with_column(fstr.clone(), 1, col)),
+                type_annotation: None,
+                docstring: None,
+                is_builtin: false,
+                module: None,
+            },
+            definition: Some(Location::with_column(fstr.clone(), 1, col)),
+            type_definition: None,
+        };
+
+        // Default utf8: byte column unchanged (the existing contract).
+        let mut r8 = mk(6, "néme");
+        reencode_result_columns(&mut r8, PositionEncoding::Utf8Byte);
+        assert_eq!(r8.definition.unwrap().column, 6);
+
+        // utf16, column 6 = start of `néme` (precedes the multi-byte `é`) =>
+        // unchanged, proving the conversion is line-content-aware.
+        let mut r16_start = mk(6, "néme");
+        reencode_result_columns(&mut r16_start, PositionEncoding::Utf16);
+        assert_eq!(
+            r16_start.definition.unwrap().column,
+            6,
+            "col at the start of `néme` precedes `é` => unchanged"
+        );
+
+        // utf16, column 9 = byte 8 (`m`, AFTER the 2-byte `é`) => the saved
+        // byte collapses the column to 8.
+        let mut r16_after = mk(9, "néme");
+        reencode_result_columns(&mut r16_after, PositionEncoding::Utf16);
+        assert_eq!(
+            r16_after.definition.unwrap().column,
+            8,
+            "1-indexed byte col 9 (after the 2-byte `é`) -> utf16 col 8"
         );
     }
 
