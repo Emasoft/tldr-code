@@ -331,26 +331,15 @@ fn elixir_docstring_and_defmodule_excluded() {
         files
     );
 
-    // adapter.ex has a real `alias Plug.Conn` on line 6, AND a defmodule
-    // header on line 1. Pre-fix, the emitter reported line=1 (the
-    // defmodule line, picked up by the text-substring catch-all) and the
-    // import_statement was the defmodule text. Post-fix, the line points
-    // at the AST-anchored alias call (line 6).
-    let adapter = importers
-        .iter()
-        .find(|imp| imp["file"].as_str().unwrap_or("").ends_with("adapter.ex"))
-        .expect("adapter.ex among importers (has real alias Plug.Conn)");
-    let adapter_line = adapter["line"].as_u64().expect("line is integer");
-    assert_eq!(
-        adapter_line, 5,
-        "Elixir adapter.ex import line should be the AST-anchored `alias Plug.Conn` line (5), not the defmodule line, got line={}",
-        adapter_line
-    );
-    let adapter_stmt = adapter["import_statement"].as_str().unwrap_or("");
+    // adapter.ex has only `alias Plug.Conn` (name-only, no functions brought
+    // into scope). elixir-importers-kind-gate-v1 (#52): a bare `alias` is NOT
+    // an importer — only `import`/`use` qualify. adapter.ex must be ABSENT.
+    // (The `line:5` AST-anchoring guarantee is separately covered by the
+    // basic_auth.ex `import` line-4 assertion below.)
     assert!(
-        !adapter_stmt.contains("defmodule"),
-        "Elixir adapter.ex import statement should NOT be the defmodule line, got {:?}",
-        adapter_stmt
+        !files.iter().any(|f| f.ends_with("adapter.ex")),
+        "alias-only adapter.ex is NOT an importer of Plug.Conn (alias brings no functions into scope), got {:?}",
+        files
     );
 
     // basic_auth.ex import line must be AST-anchored (line 4), not 1.
@@ -414,5 +403,173 @@ fn python_importer_line_is_ast_anchored() {
         line, 7,
         "Python importer line should anchor on the real `from services.auth import authenticate` (line 7), got line={}",
         line
+    );
+}
+
+// =============================================================================
+// Elixir: directive-kind matrix — only `import`/`use` are importers.
+// =============================================================================
+//
+// elixir-importers-kind-gate-v1 (#52): the four Elixir module directives are
+// semantically distinct. Only `import` (un-namespaces functions/macros) and
+// `use` (meta-import; conventionally injects `import`) bring the target's
+// functions into lexical scope. `alias` (name-only) and `require`
+// (macro-availability) do NOT. `importers Plug.Conn` must return exactly the
+// `{import, use}` files.
+#[test]
+fn elixir_importers_only_import_and_use() {
+    let dir = TempDir::new().expect("tempdir");
+
+    write_file(
+        dir.path(),
+        "lib/a_import.ex",
+        "defmodule A.Import do\n\timport Plug.Conn\nend\n",
+    );
+    write_file(
+        dir.path(),
+        "lib/b_use.ex",
+        "defmodule B.Use do\n\tuse Plug.Conn\nend\n",
+    );
+    write_file(
+        dir.path(),
+        "lib/c_alias.ex",
+        "defmodule C.Alias do\n\talias Plug.Conn\nend\n",
+    );
+    write_file(
+        dir.path(),
+        "lib/d_require.ex",
+        "defmodule D.Require do\n\trequire Plug.Conn\nend\n",
+    );
+
+    let v = run_importers("Plug.Conn", dir.path(), "elixir");
+    let importers = v["importers"].as_array().expect("importers array");
+    let files: Vec<&str> = importers
+        .iter()
+        .map(|imp| imp["file"].as_str().unwrap_or(""))
+        .collect();
+
+    assert!(
+        files.iter().any(|f| f.ends_with("a_import.ex")),
+        "import Plug.Conn IS an importer, got {:?}",
+        files
+    );
+    assert!(
+        files.iter().any(|f| f.ends_with("b_use.ex")),
+        "use Plug.Conn IS an importer (meta-import), got {:?}",
+        files
+    );
+    assert!(
+        !files.iter().any(|f| f.ends_with("c_alias.ex")),
+        "alias Plug.Conn is NOT an importer (name-only), got {:?}",
+        files
+    );
+    assert!(
+        !files.iter().any(|f| f.ends_with("d_require.ex")),
+        "require Plug.Conn is NOT an importer (macro-availability only), got {:?}",
+        files
+    );
+    assert_eq!(
+        files.len(),
+        2,
+        "exactly the {{import, use}} files should be importers, got {:?}",
+        files
+    );
+}
+
+// =============================================================================
+// Elixir: count parity on a corpus-shaped fixture (mirrors elixir-plug).
+// =============================================================================
+//
+// elixir-importers-kind-gate-v1 (#52): a fixture mixing real `import Plug.Conn`
+// sites with `alias Plug.Conn`-only files. The total must equal the import
+// count and none of the alias-only filenames may appear.
+#[test]
+fn elixir_importers_count_parity_no_alias_files() {
+    let dir = TempDir::new().expect("tempdir");
+
+    // Three real importers.
+    for (i, name) in ["i1.ex", "i2.ex", "i3.ex"].iter().enumerate() {
+        write_file(
+            dir.path(),
+            &format!("lib/{}", name),
+            &format!(
+                "defmodule Imp{} do\n\timport Plug.Conn\nend\n",
+                i
+            ),
+        );
+    }
+    // Two alias-only files — must NOT appear.
+    for (i, name) in ["a1.ex", "a2.ex"].iter().enumerate() {
+        write_file(
+            dir.path(),
+            &format!("lib/{}", name),
+            &format!(
+                "defmodule Ali{} do\n\talias Plug.Conn\nend\n",
+                i
+            ),
+        );
+    }
+
+    let v = run_importers("Plug.Conn", dir.path(), "elixir");
+    let importers = v["importers"].as_array().expect("importers array");
+    let files: Vec<&str> = importers
+        .iter()
+        .map(|imp| imp["file"].as_str().unwrap_or(""))
+        .collect();
+
+    assert_eq!(
+        files.len(),
+        3,
+        "only the 3 import sites are importers, got {:?}",
+        files
+    );
+    for alias_file in ["a1.ex", "a2.ex"] {
+        assert!(
+            !files.iter().any(|f| f.ends_with(alias_file)),
+            "alias-only {} must not be an importer, got {:?}",
+            alias_file,
+            files
+        );
+    }
+}
+
+// =============================================================================
+// Elixir: a multi-alias-only file is NOT an importer (Part 2 + gate).
+// =============================================================================
+//
+// elixir-importers-kind-gate-v1 (#52) Part 2: `alias Plug.{Conn, Router}`
+// expands to two alias entries; with the kind-gate in place neither makes the
+// file an importer of Plug.Conn.
+#[test]
+fn elixir_multi_alias_file_is_not_an_importer() {
+    let dir = TempDir::new().expect("tempdir");
+
+    write_file(
+        dir.path(),
+        "lib/multi.ex",
+        "defmodule Multi do\n\talias Plug.{Conn, Router}\nend\n",
+    );
+    write_file(
+        dir.path(),
+        "lib/real.ex",
+        "defmodule Real do\n\timport Plug.Conn\nend\n",
+    );
+
+    let v = run_importers("Plug.Conn", dir.path(), "elixir");
+    let importers = v["importers"].as_array().expect("importers array");
+    let files: Vec<&str> = importers
+        .iter()
+        .map(|imp| imp["file"].as_str().unwrap_or(""))
+        .collect();
+
+    assert!(
+        files.iter().any(|f| f.ends_with("real.ex")),
+        "import Plug.Conn IS an importer, got {:?}",
+        files
+    );
+    assert!(
+        !files.iter().any(|f| f.ends_with("multi.ex")),
+        "multi-alias `alias Plug.{{Conn, Router}}` is NOT an importer, got {:?}",
+        files
     );
 }

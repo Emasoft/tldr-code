@@ -111,6 +111,21 @@ fn find_import_in_file(
                 continue;
             }
 
+            // elixir-importers-kind-gate-v1 (#52): "importer" = a directive that
+            // brings the target's functions/macros into lexical scope. Only
+            // `import` and `use` qualify; `alias` (name-only) and `require`
+            // (macro-availability) do NOT. The extractor projects the directive
+            // keyword into the ImportInfo tuple:
+            //   import : is_from=Some(true),  names=["*"], alias=None
+            //   use    : is_from=Some(true),  names=["*"], alias=None   (byte-identical to import)
+            //   alias  : is_from=Some(false), names=[],    alias=Some(_)
+            //   require: is_from=Some(false), names=[],    alias=None
+            // so `is_from == Some(true)` exactly selects {import, use} and drops
+            // {alias, require}.
+            if matches!(language, Language::Elixir) && import.is_from != Some(true) {
+                continue;
+            }
+
             let matched_module = module_matches(&import.module, target_module, language);
 
             // Secondary match: `from X import target_module` — when querying
@@ -413,6 +428,14 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
         // path, bare leaf name): match on path suffix or leaf basename,
         // with leading `./`/`../` relative noise stripped from both sides.
         Language::Ruby => path_module_matches(import_module, target),
+        // elixir-importers-kind-gate-v1 (#52): Elixir modules are dotted
+        // PascalCase atoms and the extractor captures the full `Plug.Conn`, so
+        // exact equality is correct today. This explicit arm replaces the
+        // catch-all fall-through so the language's dotted-module semantics are
+        // intentional and host any future submodule rule (mirroring Python/
+        // Scala). The behavioral fix for #52 is the `is_from` kind-gate in
+        // `find_import_in_file`; this arm is its documentation-as-code companion.
+        Language::Elixir => import_module == target,
         _ => import_module == target,
     }
 }

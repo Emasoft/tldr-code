@@ -1221,6 +1221,10 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
             let mut call_cursor = child.walk();
             let mut keyword = String::new();
             let mut module_name = String::new();
+            // Multi-alias expansion (`alias Plug.{Conn, Router}`): each expanded
+            // submodule is collected here. Non-empty iff the directive used the
+            // brace-tuple form.
+            let mut multi_modules: Vec<String> = Vec::new();
             let mut explicit_alias: Option<String> = None;
 
             for call_child in child.children(&mut call_cursor) {
@@ -1235,6 +1239,21 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             match arg_child.kind() {
                                 "alias" if module_name.is_empty() => {
                                     module_name = get_node_text(&arg_child, source);
+                                }
+                                // Multi-alias / multi-require form
+                                // `alias Plug.{Conn, Router}`. tree-sitter-elixir
+                                // parses this as a `dot` node: a left `alias`
+                                // prefix (`Plug`), a `.`, and a `tuple` of member
+                                // `alias`/`identifier` nodes. Expand to one
+                                // fully-qualified module per member so downstream
+                                // consumers (deps/coupling/context/importers) see
+                                // every dependency edge instead of silently
+                                // dropping the whole directive.
+                                "dot" if module_name.is_empty()
+                                    && multi_modules.is_empty() =>
+                                {
+                                    multi_modules =
+                                        expand_elixir_multi_alias(&arg_child, source);
                                 }
                                 "keywords" => {
                                     // Parse `as: ShortName` from keywords -> pair -> keyword + alias
@@ -1275,12 +1294,23 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                 }
             }
 
+            // Modules targeted by this directive. The single-module form yields
+            // exactly one; the multi-alias brace form (`alias Plug.{Conn,
+            // Router}`) yields one per expanded submodule.
+            let modules: Vec<String> = if !multi_modules.is_empty() {
+                multi_modules
+            } else if !module_name.is_empty() {
+                vec![module_name]
+            } else {
+                Vec::new()
+            };
+
             // Only process recognized Elixir import keywords
             match keyword.as_str() {
                 "import" => {
-                    if !module_name.is_empty() {
+                    for m in modules {
                         imports.push(ImportInfo {
-                            module: module_name,
+                            module: m,
                             names: vec!["*".to_string()],
                             is_from: Some(true),
                             alias: None,
@@ -1289,12 +1319,21 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     }
                 }
                 "alias" => {
-                    if !module_name.is_empty() {
-                        // If no explicit alias, Elixir uses the last segment
-                        let resolved_alias = explicit_alias
-                            .or_else(|| module_name.rsplit('.').next().map(|s| s.to_string()));
+                    for m in &modules {
+                        // If no explicit alias, Elixir uses the last segment.
+                        // The explicit `as:` form is only valid for the
+                        // single-module shape, so it applies when there is one
+                        // module; the multi-alias members each take their own
+                        // last segment.
+                        let resolved_alias = if modules.len() == 1 {
+                            explicit_alias
+                                .clone()
+                                .or_else(|| m.rsplit('.').next().map(|s| s.to_string()))
+                        } else {
+                            m.rsplit('.').next().map(|s| s.to_string())
+                        };
                         imports.push(ImportInfo {
-                            module: module_name,
+                            module: m.clone(),
                             names: Vec::new(),
                             is_from: Some(false),
                             alias: resolved_alias,
@@ -1303,9 +1342,9 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     }
                 }
                 "require" => {
-                    if !module_name.is_empty() {
+                    for m in modules {
                         imports.push(ImportInfo {
-                            module: module_name,
+                            module: m,
                             names: Vec::new(),
                             is_from: Some(false),
                             alias: None,
@@ -1314,9 +1353,9 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     }
                 }
                 "use" => {
-                    if !module_name.is_empty() {
+                    for m in modules {
                         imports.push(ImportInfo {
-                            module: module_name,
+                            module: m,
                             names: vec!["*".to_string()],
                             is_from: Some(true),
                             alias: None,
@@ -1335,6 +1374,43 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
             extract_elixir_imports_recursive(&child, source, imports);
         }
     }
+}
+
+/// Expand an Elixir multi-alias `dot` node into fully-qualified module names.
+///
+/// The brace form `alias Plug.{Conn, Router}` parses as a `dot` node whose
+/// children are a left `alias` prefix (`Plug`), a `.`, and a `tuple` of member
+/// `alias`/`identifier` nodes (`Conn`, `Router`). Returns one joined module per
+/// member, e.g. `["Plug.Conn", "Plug.Router"]`. The Sourceror
+/// `expand_multi_alias` expansion. Valid for `alias`/`require`/`import` (never
+/// `use`).
+fn expand_elixir_multi_alias(dot_node: &Node, source: &str) -> Vec<String> {
+    let mut prefix = String::new();
+    let mut members: Vec<String> = Vec::new();
+    let mut cursor = dot_node.walk();
+    for child in dot_node.children(&mut cursor) {
+        match child.kind() {
+            "alias" if prefix.is_empty() => {
+                prefix = get_node_text(&child, source);
+            }
+            "tuple" => {
+                let mut tcursor = child.walk();
+                for member in child.children(&mut tcursor) {
+                    if matches!(member.kind(), "alias" | "identifier") {
+                        members.push(get_node_text(&member, source));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if prefix.is_empty() {
+        return Vec::new();
+    }
+    members
+        .into_iter()
+        .map(|m| format!("{}.{}", prefix, m))
+        .collect()
 }
 
 // =============================================================================
@@ -2764,6 +2840,29 @@ require_relative './local_module'
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].module, "Phoenix.LiveView");
         assert_eq!(imports[0].alias, Some("LV".to_string()));
+    }
+
+    #[test]
+    fn test_elixir_multi_alias_expands() {
+        // elixir-importers-kind-gate-v1 Part 2 (#52): the brace form
+        // `alias Plug.{Conn, Router}` must expand to TWO alias-signed entries,
+        // not be silently dropped.
+        let source = "alias Plug.{Conn, Router}";
+        let tree = parse(source, Language::Elixir).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Elixir).unwrap();
+
+        assert_eq!(imports.len(), 2, "multi-alias should expand to two entries");
+        let modules: Vec<&str> = imports.iter().map(|i| i.module.as_str()).collect();
+        assert!(modules.contains(&"Plug.Conn"));
+        assert!(modules.contains(&"Plug.Router"));
+        for i in &imports {
+            assert_eq!(i.is_from, Some(false), "alias signature: is_from=false");
+            assert!(i.alias.is_some(), "alias signature: alias=Some(_)");
+            assert!(i.names.is_empty(), "alias signature: names empty");
+        }
+        // Each member takes its own last segment as the short name.
+        let conn = imports.iter().find(|i| i.module == "Plug.Conn").unwrap();
+        assert_eq!(conn.alias.as_deref(), Some("Conn"));
     }
 
     #[test]
