@@ -339,46 +339,52 @@ fn find_function_node<'a>(
 /// scope `Class.method` lookups in [`find_function_node`]. The set of
 /// container kinds intentionally covers all major OO/struct grammars
 /// supported by tldr.
+/// Class/struct/trait/interface container node kinds used to scope
+/// `Class.method` lookups in [`find_function_node`]. Module-level (not a local
+/// const) so the RC2-META Stage 2 fourth-table guard test can enumerate it and
+/// lock it to the canonical `entity::classify_node_kind`.
+const EXPLAIN_CLASS_KINDS: &[&str] = &[
+    // Python
+    "class_definition",
+    // TS/JS/Java/PHP/C#/Kotlin/Swift/Ruby
+    "class_declaration",
+    "class",
+    "interface_declaration",
+    // Rust
+    "struct_item",
+    "enum_item",
+    "trait_item",
+    "impl_item",
+    "union_item",
+    // C++
+    "class_specifier",
+    "struct_specifier",
+    "union_specifier",
+    // Java
+    "enum_declaration",
+    "record_declaration",
+    // PHP
+    "trait_declaration",
+    // C#
+    "struct_declaration",
+    // Kotlin / Scala
+    "object_declaration",
+    "class_definition",
+    "object_definition",
+    "trait_definition",
+    // Swift
+    "protocol_declaration",
+    "extension_declaration",
+    // Ruby
+    "module",
+];
+
 fn find_class_node_explain<'a>(
     root: Node<'a>,
     class_name: &str,
     source: &[u8],
 ) -> Option<Node<'a>> {
-    const CLASS_KINDS: &[&str] = &[
-        // Python
-        "class_definition",
-        // TS/JS/Java/PHP/C#/Kotlin/Swift/Ruby
-        "class_declaration",
-        "class",
-        "interface_declaration",
-        // Rust
-        "struct_item",
-        "enum_item",
-        "trait_item",
-        "impl_item",
-        "union_item",
-        // C++
-        "class_specifier",
-        "struct_specifier",
-        "union_specifier",
-        // Java
-        "enum_declaration",
-        "record_declaration",
-        // PHP
-        "trait_declaration",
-        // C#
-        "struct_declaration",
-        // Kotlin / Scala
-        "object_declaration",
-        "class_definition",
-        "object_definition",
-        "trait_definition",
-        // Swift
-        "protocol_declaration",
-        "extension_declaration",
-        // Ruby
-        "module",
-    ];
+    const CLASS_KINDS: &[&str] = EXPLAIN_CLASS_KINDS;
 
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -3346,6 +3352,61 @@ impl ExplainArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tldr_core::ast::entity::{classify_node_kind, EntityKind};
+
+    const GUARD_LANGUAGES: &[Language] = &[
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+        Language::Rust,
+        Language::Java,
+        Language::C,
+        Language::Cpp,
+        Language::CSharp,
+        Language::Kotlin,
+        Language::Scala,
+        Language::Php,
+        Language::Ruby,
+        Language::Lua,
+        Language::Luau,
+        Language::Elixir,
+        Language::Ocaml,
+        Language::Swift,
+        Language::Solidity,
+    ];
+
+    /// RC2-META Stage 2 fourth-table guard: lock `explain`'s local
+    /// `get_function_node_kinds` and `EXPLAIN_CLASS_KINDS` to the canonical
+    /// `entity::classify_node_kind`.
+    #[test]
+    fn explain_node_kind_tables_match_classify_node() {
+        for &lang in GUARD_LANGUAGES {
+            for &k in get_function_node_kinds(lang) {
+                if k == "call" {
+                    continue; // Elixir def/defp — node-aware only.
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_function_axis) == Some(true),
+                    "explain get_function_node_kinds({lang:?}) {k:?} -> {ek:?} not function-axis"
+                );
+            }
+        }
+        // EXPLAIN_CLASS_KINDS is a language-agnostic union: each kind must be a
+        // class-axis kind in at least one language under the canonical classifier.
+        for &k in EXPLAIN_CLASS_KINDS {
+            let known_class_axis = GUARD_LANGUAGES.iter().any(|&lang| {
+                classify_node_kind(k, lang)
+                    .map(EntityKind::is_class_axis)
+                    .unwrap_or(false)
+            });
+            assert!(
+                known_class_axis,
+                "EXPLAIN_CLASS_KINDS member {k:?} is not class-axis in any language"
+            );
+        }
+    }
 
     const SAMPLE_CODE: &str = r#"
 def calculate_total(items: list[dict], tax_rate: float = 0.1) -> float:

@@ -4233,6 +4233,49 @@ fn run_arch_level_diff(dir_a: &Path, dir_b: &Path) -> Result<DiffReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tldr_core::ast::entity::{classify_node_kind, EntityKind};
+
+    const GUARD_LANGUAGES: &[Language] = &[
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+        Language::Rust,
+        Language::Java,
+        Language::C,
+        Language::Cpp,
+        Language::CSharp,
+        Language::Kotlin,
+        Language::Scala,
+        Language::Php,
+        Language::Ruby,
+        Language::Lua,
+        Language::Luau,
+        Language::Elixir,
+        Language::Ocaml,
+        Language::Swift,
+        Language::Solidity,
+    ];
+
+    /// RC2-META Stage 2 fourth-table guard: lock `diff`'s local
+    /// `get_class_node_kinds` to the canonical `entity::classify_node_kind`.
+    /// (diff reuses `function_finder::get_function_node_kinds`, guarded in
+    /// `tldr-core::ast::entity`.)
+    #[test]
+    fn diff_class_node_kinds_match_classify_node() {
+        for &lang in GUARD_LANGUAGES {
+            for &k in get_class_node_kinds(lang) {
+                if k == "call" {
+                    continue; // Elixir defmodule — node-aware only.
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_class_axis) == Some(true),
+                    "diff get_class_node_kinds({lang:?}) {k:?} -> {ek:?} not class-axis"
+                );
+            }
+        }
+    }
 
     const SAMPLE_A: &str = r#"
 def original_function(x):

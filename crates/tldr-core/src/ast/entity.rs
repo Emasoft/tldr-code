@@ -19,6 +19,8 @@
 //! This module is intentionally minimal for Stage 1. It GROWS in Stage 2 (a
 //! shared `classify_node` discriminator); do NOT pre-build the kind enum here.
 
+use crate::types::Language;
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 /// A byte/row span pinned from a tree-sitter node.
@@ -142,6 +144,341 @@ pub fn signature_from_header(node: Node, source: &str) -> String {
         .to_string()
 }
 
+// =============================================================================
+// RC2-META Stage 2 — the canonical entity discriminator.
+// =============================================================================
+//
+// Historically the "is this a class / function?" decision was duplicated across
+// ≥10 divergent per-language tables (`function_finder::get_function_node_kinds` /
+// `get_class_node_kinds`, `patterns::interface::{function,class,method}_node_kinds`,
+// `extractor::classify_definition_node`, `remaining::explain::get_function_node_kinds`,
+// `remaining::diff::get_class_node_kinds`, `security::ast_utils::function_node_kinds`).
+// Each drifted independently, so the same source construct could be a `class`
+// in one command and dropped in another.
+//
+// [`EntityKind`] + [`classify_node_kind`] / [`classify_node`] are the single
+// canonical answer those tables are LOCKED to (see the `*_matches_classify_node`
+// guard tests in this crate and in `tldr-cli`). classify_node is intentionally
+// the RICHER union of every table (e.g. it classifies TS `type_alias_declaration`
+// even though `function_finder` / `classify_definition_node` still omit it). The
+// existing tables keep their EXACT current membership in Stage 2 to preserve
+// byte-identical command output; the guard tests prove no table can ever return
+// an answer that DISAGREES with classify_node (re-drift fails CI). Physically
+// folding each table's membership up to the full union is the per-language
+// Stage 3 migration, gated by its own corpus diff.
+
+/// Closed superset of LSP `SymbolKind`, covering all 16 tldr languages.
+///
+/// LSP's 26-variant `SymbolKind` lacks `Trait`, `TypeAlias`, `Macro`, the OCaml
+/// `Value` distinction, and the Solidity-native kinds, so this is a SUPERSET; a
+/// total `to_lsp_symbol_kind()` projection at the LSP boundary is a later
+/// concern (kept native in tldr JSON). Serializes as the exact stable lowercase
+/// strings already emitted by `collect_definitions` / `ts_entry_kind`
+/// (`"interface"` / `"type"` / `"enum"` / `"class"` / `"method"` / `"function"`
+/// / `"struct"` / `"trait"` / `"module"` / `"object"` / `"contract"` /
+/// `"library"`) so a future migration cannot introduce a value-level JSON diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EntityKind {
+    // LSP-direct (1:1):
+    Module,
+    Class,
+    Struct,
+    Interface,
+    Enum,
+    EnumMember,
+    Function,
+    Method,
+    Constructor,
+    Field,
+    Property,
+    Constant,
+    Object,
+    // tldr-native (no LSP variant — keep native, project lossily at the boundary):
+    /// Rust/Scala/PHP trait. -> LSP Interface.
+    Trait,
+    /// TS/Scala/Rust/OCaml type alias. -> LSP Class. Serialized as `"type"`.
+    #[serde(rename = "type")]
+    TypeAlias,
+    /// Rust/Elixir macro. -> LSP Function.
+    Macro,
+    /// OCaml `let x = 1` value binding. -> LSP Variable/Constant.
+    Value,
+    // Solidity-native:
+    /// Solidity `contract`. -> LSP Class.
+    Contract,
+    /// Solidity `library`. -> LSP Class.
+    Library,
+    /// Solidity `modifier`. -> LSP Method.
+    Modifier,
+    /// Solidity `event`. -> LSP Event.
+    Event,
+    /// Solidity custom `error`. -> LSP Struct.
+    Error,
+}
+
+impl EntityKind {
+    /// True for kinds that live on the FUNCTION axis (`is_func` in the legacy
+    /// `classify_definition_node` (bool, bool) contract). Modifier/Event/Error
+    /// are function-axis to match the Solidity rows of `classify_definition_node`.
+    pub fn is_function_axis(self) -> bool {
+        matches!(
+            self,
+            EntityKind::Function
+                | EntityKind::Method
+                | EntityKind::Constructor
+                | EntityKind::Macro
+                | EntityKind::Modifier
+                | EntityKind::Event
+                | EntityKind::Error
+        )
+    }
+
+    /// True for kinds that live on the CLASS / type-container axis (`is_class`
+    /// in the legacy `classify_definition_node` (bool, bool) contract).
+    pub fn is_class_axis(self) -> bool {
+        matches!(
+            self,
+            EntityKind::Class
+                | EntityKind::Struct
+                | EntityKind::Interface
+                | EntityKind::Enum
+                | EntityKind::Trait
+                | EntityKind::Object
+                | EntityKind::Module
+                | EntityKind::TypeAlias
+                | EntityKind::Contract
+                | EntityKind::Library
+        )
+    }
+}
+
+/// Canonical string-keyed classifier: map a tree-sitter node KIND + language to
+/// its [`EntityKind`]. This is the UNION of every per-language table in the
+/// codebase, language-gated so a node-kind string reused across grammars with
+/// different semantics (`type_definition` in OCaml vs Scala, `struct_declaration`
+/// in C# vs Solidity, `enum_declaration` across Java/C#/PHP/Kotlin vs Solidity)
+/// resolves correctly.
+///
+/// Returns `None` for kinds that are not entity declarations, and for the Elixir
+/// `call` node whose discriminator is only decidable from the callee keyword —
+/// use [`classify_node`] for that (it reads the `def`/`defp`/`defmacro` head).
+pub fn classify_node_kind(kind: &str, language: Language) -> Option<EntityKind> {
+    use EntityKind::*;
+    let ek = match language {
+        Language::Python => match kind {
+            "function_definition" | "async_function_definition" => Function,
+            "class_definition" => Class,
+            _ => return None,
+        },
+        Language::TypeScript | Language::JavaScript => match kind {
+            "function_declaration" | "function_expression" | "arrow_function"
+            | "generator_function" | "generator_function_declaration" | "function" => Function,
+            "method_definition" | "method_signature" | "abstract_method_signature"
+            | "public_field_definition" => Method,
+            "class_declaration" | "class" | "abstract_class_declaration" => Class,
+            "interface_declaration" => Interface,
+            "type_alias_declaration" => TypeAlias,
+            "enum_declaration" => Enum,
+            _ => return None,
+        },
+        Language::Go => match kind {
+            "function_declaration" | "func_literal" | "function_type" => Function,
+            "method_declaration" => Method,
+            "type_declaration" => Class,
+            "type_spec" => Struct,
+            _ => return None,
+        },
+        Language::Rust => match kind {
+            "function_item" => Function,
+            "struct_item" => Struct,
+            "enum_item" => Enum,
+            "trait_item" => Trait,
+            "impl_item" => Class,
+            "union_item" => Struct,
+            _ => return None,
+        },
+        Language::Java => match kind {
+            "method_declaration" => Method,
+            "constructor_declaration" => Constructor,
+            "class_declaration" => Class,
+            "interface_declaration" => Interface,
+            "enum_declaration" => Enum,
+            "record_declaration" => Class,
+            _ => return None,
+        },
+        Language::C | Language::Cpp => match kind {
+            "function_definition" | "declaration" => Function,
+            "field_declaration" => Method,
+            "class_specifier" => Class,
+            "struct_specifier" | "union_specifier" => Struct,
+            "enum_specifier" => Enum,
+            _ => return None,
+        },
+        Language::Ruby => match kind {
+            "method" | "singleton_method" => Method,
+            "class" => Class,
+            "module" => Module,
+            _ => return None,
+        },
+        Language::Php => match kind {
+            "function_definition" => Function,
+            "method_declaration" => Method,
+            "class_declaration" => Class,
+            "interface_declaration" => Interface,
+            "trait_declaration" => Trait,
+            "enum_declaration" => Enum,
+            _ => return None,
+        },
+        Language::CSharp => match kind {
+            "method_declaration" => Method,
+            "constructor_declaration" => Constructor,
+            "class_declaration" => Class,
+            "interface_declaration" => Interface,
+            "struct_declaration" => Struct,
+            "record_declaration" => Class,
+            "enum_declaration" => Enum,
+            _ => return None,
+        },
+        Language::Kotlin => match kind {
+            "function_declaration" => Function,
+            "class_declaration" => Class,
+            "object_declaration" | "companion_object" => Object,
+            _ => return None,
+        },
+        Language::Scala => match kind {
+            "function_definition" | "function_declaration" | "def_definition"
+            | "val_definition" => Function,
+            "class_definition" => Class,
+            "object_definition" => Object,
+            "trait_definition" => Trait,
+            "type_definition" => TypeAlias,
+            "enum_definition" => Enum,
+            _ => return None,
+        },
+        // Elixir def/defp/defmacro/defmacrop/defmodule are `call` nodes —
+        // only decidable from the callee keyword (see `classify_node`).
+        Language::Elixir => return None,
+        Language::Lua | Language::Luau => match kind {
+            "function_declaration" | "function_definition" | "local_function"
+            | "function_definition_statement" => Function,
+            _ => return None,
+        },
+        Language::Swift => match kind {
+            "function_declaration" => Function,
+            "init_declaration" => Constructor,
+            "class_declaration" | "extension_declaration" => Class,
+            // tree-sitter-swift also emits a dedicated `struct_declaration`
+            // (diff's Swift container table lists it alongside class/protocol).
+            "struct_declaration" => Struct,
+            "protocol_declaration" => Interface,
+            // `function_type` is a Swift closure TYPE annotation, never a def.
+            _ => return None,
+        },
+        Language::Ocaml => match kind {
+            // String level: a value binding is function-shaped by default;
+            // `classify_node` refines a non-function binding to `Value`.
+            "let_binding" | "value_definition" => Function,
+            "module_definition" => Module,
+            "type_definition" => TypeAlias,
+            _ => return None,
+        },
+        Language::Solidity => match kind {
+            "function_definition"
+            | "fallback_function_definition"
+            | "receive_function_definition"
+            | "fallback_receive_definition" => Function,
+            "constructor_definition" => Constructor,
+            "modifier_definition" => Modifier,
+            "event_definition" => Event,
+            "error_declaration" => Error,
+            "contract_declaration" => Contract,
+            "library_declaration" => Library,
+            "interface_declaration" => Interface,
+            "struct_declaration" => Struct,
+            "enum_declaration" => Enum,
+            _ => return None,
+        },
+    };
+    Some(ek)
+}
+
+/// The canonical, node-aware discriminator. Delegates to [`classify_node_kind`]
+/// for the string-decidable majority, then applies the two STRUCTURAL rules that
+/// a bare node-kind string cannot express:
+///
+/// * OCaml — a `value_definition` / `let_binding` is a [`EntityKind::Function`]
+///   only when it is function-shaped (`≥1 parameter` child OR a `fun_expression`
+///   / `function_expression` body); otherwise it is a plain [`EntityKind::Value`].
+///   This reuses the verified `ocaml_value_definition_is_function` predicate.
+/// * Elixir — `def`/`defp` → [`EntityKind::Function`], `defmacro`/`defmacrop` →
+///   [`EntityKind::Macro`], `defmodule` → [`EntityKind::Module`] (the
+///   `try_elixir_call_definition` call-based rule), read from the callee keyword.
+pub fn classify_node(node: Node, language: Language, source: &str) -> Option<EntityKind> {
+    let kind = node.kind();
+
+    if language == Language::Elixir && kind == "call" {
+        return classify_elixir_call(node, source);
+    }
+
+    let base = classify_node_kind(kind, language)?;
+
+    if matches!(language, Language::Ocaml)
+        && matches!(kind, "value_definition" | "let_binding")
+        && !ocaml_node_is_function(node)
+    {
+        return Some(EntityKind::Value);
+    }
+
+    Some(base)
+}
+
+/// Structural OCaml function-shape test, mirroring
+/// `extractor::ocaml_value_definition_is_function`: a binding is a function if
+/// any `let_binding` it owns (or itself, when a `let_binding` is passed) has a
+/// `parameter` child or a `fun_expression` / `function_expression` body.
+fn ocaml_node_is_function(node: Node) -> bool {
+    fn binding_is_function(binding: Node) -> bool {
+        let mut cursor = binding.walk();
+        for child in binding.children(&mut cursor) {
+            match child.kind() {
+                "parameter" | "fun_expression" | "function_expression" => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    if node.kind() == "let_binding" {
+        return binding_is_function(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "let_binding" && binding_is_function(child) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Classify an Elixir `call` node by its callee keyword.
+fn classify_elixir_call(node: Node, source: &str) -> Option<EntityKind> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "identifier" {
+            continue;
+        }
+        let keyword = child.utf8_text(source.as_bytes()).ok()?;
+        return match keyword {
+            "def" | "defp" => Some(EntityKind::Function),
+            "defmacro" | "defmacrop" => Some(EntityKind::Macro),
+            "defmodule" => Some(EntityKind::Module),
+            _ => None,
+        };
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +551,212 @@ mod tests {
         let func = find_kind(tree.root_node(), "function_declaration")
             .expect("function_declaration node");
         assert_eq!(signature_from_header(func, source), "function foo(");
+    }
+}
+
+// =============================================================================
+// RC2-META Stage 2 — canonical classifier tests.
+// =============================================================================
+//
+// Two kinds of guard live here:
+//   1. GRAMMAR-GROUND-TRUTH: parse real fixtures and pin the EntityKind for the
+//      verified per-language arms (TS / Scala / OCaml / Elixir). These lock the
+//      grammar rules so a future edit cannot silently re-map a node kind.
+//   2. THE FOURTH-TABLE GUARD: enumerate the membership of every in-crate
+//      classification table (`function_finder` ×2, `ast_utils` ×1) and assert
+//      each accepted node kind agrees with `classify_node_kind` on the relevant
+//      axis. A table can never drift to an answer classify_node disagrees with
+//      without failing CI. (The `tldr-cli` tables — `interface`, `explain`,
+//      `diff` — carry the equivalent guard next to their own definitions, since
+//      those functions are private to that crate.)
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+    use crate::ast::function_finder::{get_class_node_kinds, get_function_node_kinds};
+    use crate::ast::parser::parse;
+    use crate::security::ast_utils;
+    use crate::types::Language;
+
+    const ALL_LANGUAGES: &[Language] = &[
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+        Language::Rust,
+        Language::Java,
+        Language::C,
+        Language::Cpp,
+        Language::CSharp,
+        Language::Kotlin,
+        Language::Scala,
+        Language::Php,
+        Language::Ruby,
+        Language::Lua,
+        Language::Luau,
+        Language::Elixir,
+        Language::Ocaml,
+        Language::Swift,
+        Language::Solidity,
+    ];
+
+    fn find_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = find_kind(child, kind) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn collect_kind<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+        if node.kind() == kind {
+            out.push(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_kind(child, kind, out);
+        }
+    }
+
+    // ---- serde stable strings (no value-level JSON diff on migration) -------
+    #[test]
+    fn entity_kind_serializes_to_stable_strings() {
+        let cases = [
+            (EntityKind::Interface, "\"interface\""),
+            (EntityKind::TypeAlias, "\"type\""),
+            (EntityKind::Enum, "\"enum\""),
+            (EntityKind::Class, "\"class\""),
+            (EntityKind::Method, "\"method\""),
+            (EntityKind::Function, "\"function\""),
+            (EntityKind::Struct, "\"struct\""),
+            (EntityKind::Trait, "\"trait\""),
+            (EntityKind::Module, "\"module\""),
+            (EntityKind::Object, "\"object\""),
+            (EntityKind::Contract, "\"contract\""),
+            (EntityKind::Library, "\"library\""),
+            (EntityKind::Macro, "\"macro\""),
+            (EntityKind::Value, "\"value\""),
+        ];
+        for (ek, expected) in cases {
+            assert_eq!(serde_json::to_string(&ek).unwrap(), expected, "{ek:?}");
+        }
+    }
+
+    // ---- grammar ground truth ----------------------------------------------
+    #[test]
+    fn ts_grammar_ground_truth() {
+        let src = "abstract class A {}\ninterface I {}\ntype T = number;\nenum E { X }\n";
+        let tree = parse(src, Language::TypeScript).unwrap();
+        let root = tree.root_node();
+        let abs = find_kind(root, "abstract_class_declaration").expect("abstract class");
+        assert_eq!(classify_node(abs, Language::TypeScript, src), Some(EntityKind::Class));
+        let iface = find_kind(root, "interface_declaration").expect("interface");
+        assert_eq!(
+            classify_node(iface, Language::TypeScript, src),
+            Some(EntityKind::Interface)
+        );
+        let alias = find_kind(root, "type_alias_declaration").expect("type alias");
+        assert_eq!(
+            classify_node(alias, Language::TypeScript, src),
+            Some(EntityKind::TypeAlias)
+        );
+        let en = find_kind(root, "enum_declaration").expect("enum");
+        assert_eq!(classify_node(en, Language::TypeScript, src), Some(EntityKind::Enum));
+    }
+
+    #[test]
+    fn scala_grammar_ground_truth() {
+        let src = "type X = Int\nobject O {}\ntrait T {}\n";
+        let tree = parse(src, Language::Scala).unwrap();
+        let root = tree.root_node();
+        let ty = find_kind(root, "type_definition").expect("scala type_definition");
+        assert_eq!(classify_node(ty, Language::Scala, src), Some(EntityKind::TypeAlias));
+        let obj = find_kind(root, "object_definition").expect("scala object");
+        assert_eq!(classify_node(obj, Language::Scala, src), Some(EntityKind::Object));
+        let tr = find_kind(root, "trait_definition").expect("scala trait");
+        assert_eq!(classify_node(tr, Language::Scala, src), Some(EntityKind::Trait));
+    }
+
+    #[test]
+    fn ocaml_function_vs_value_is_structural() {
+        let fsrc = "let f = fun x -> x\n";
+        let ftree = parse(fsrc, Language::Ocaml).unwrap();
+        let fnode = find_kind(ftree.root_node(), "value_definition").expect("ocaml value_definition");
+        assert_eq!(
+            classify_node(fnode, Language::Ocaml, fsrc),
+            Some(EntityKind::Function),
+            "let f = fun x -> x is a Function"
+        );
+
+        let vsrc = "let x = 1\n";
+        let vtree = parse(vsrc, Language::Ocaml).unwrap();
+        let vnode = find_kind(vtree.root_node(), "value_definition").expect("ocaml value_definition");
+        assert_eq!(
+            classify_node(vnode, Language::Ocaml, vsrc),
+            Some(EntityKind::Value),
+            "let x = 1 is a Value"
+        );
+    }
+
+    #[test]
+    fn elixir_def_vs_defmacro() {
+        let src = "defmodule M do\n  def bar(x) do\n    x\n  end\n\n  defmacro foo(x) do\n    x\n  end\nend\n";
+        let tree = parse(src, Language::Elixir).unwrap();
+        let mut calls = Vec::new();
+        collect_kind(tree.root_node(), "call", &mut calls);
+        let kinds: Vec<_> = calls
+            .iter()
+            .filter_map(|n| classify_node(*n, Language::Elixir, src))
+            .collect();
+        assert!(kinds.contains(&EntityKind::Module), "defmodule -> Module: {kinds:?}");
+        assert!(kinds.contains(&EntityKind::Function), "def -> Function: {kinds:?}");
+        assert!(kinds.contains(&EntityKind::Macro), "defmacro -> Macro: {kinds:?}");
+    }
+
+    // ---- the fourth-table guard (in-crate tables) --------------------------
+    #[test]
+    fn function_finder_tables_match_classify_node() {
+        for &lang in ALL_LANGUAGES {
+            for &k in get_function_node_kinds(lang) {
+                if k == "call" {
+                    continue; // Elixir def/defp — node-aware only.
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_function_axis) == Some(true),
+                    "get_function_node_kinds({lang:?}) member {k:?} -> {ek:?} is not function-axis"
+                );
+            }
+            for &k in get_class_node_kinds(lang) {
+                if k == "call" {
+                    continue; // Elixir defmodule — node-aware only.
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_class_axis) == Some(true),
+                    "get_class_node_kinds({lang:?}) member {k:?} -> {ek:?} is not class-axis"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ast_utils_function_table_matches_classify_node() {
+        for &lang in ALL_LANGUAGES {
+            for &k in ast_utils::function_node_kinds(lang) {
+                if k == "call" {
+                    continue;
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_function_axis) == Some(true),
+                    "ast_utils::function_node_kinds({lang:?}) member {k:?} -> {ek:?} is not function-axis"
+                );
+            }
+        }
     }
 }

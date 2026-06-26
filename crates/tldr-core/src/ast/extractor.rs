@@ -4192,6 +4192,78 @@ mod tests {
     use super::*;
     use crate::ast::parser::parse;
 
+    /// RC2-META Stage 2 fourth-table guard: `classify_definition_node` (the
+    /// `(is_func, is_class)` table that drives `structure`) must AGREE with the
+    /// canonical `entity::classify_node` on every definition node across the
+    /// verified fixture languages. This locks the local table so it can never
+    /// drift to an answer the shared classifier disagrees with. (Membership is
+    /// preserved byte-identically in Stage 2; broadening to classify_node's full
+    /// union is the per-language Stage 3 migration.)
+    #[test]
+    fn classify_definition_node_agrees_with_classify_node_on_fixtures() {
+        use crate::ast::entity::classify_node;
+
+        fn walk(node: Node, language: Language, source: &str) {
+            let kind = node.kind();
+            // Elixir def/defp are `call` nodes resolved structurally elsewhere;
+            // classify_definition_node deliberately abstains on them.
+            if !(language == Language::Elixir && kind == "call") {
+                let (is_func, is_class) = classify_definition_node(kind, language);
+                if let Some(ek) = classify_node(node, language, source) {
+                    // Where classify_definition_node ALSO recognises this kind on
+                    // an axis, the axis must agree with the canonical classifier.
+                    // EXCEPTION: classify_node is the RICHER answer for an OCaml
+                    // `value_definition` / `let_binding` — it structurally refines
+                    // a non-function binding to `Value`, exactly as
+                    // `collect_definitions` does via the separate
+                    // `is_non_function_ocaml_value` guard. So a legacy `is_func`
+                    // table row paired with a canonical `Value` is the intended
+                    // richer classification, not a disagreement.
+                    let is_ocaml_value_refinement = matches!(ek, crate::ast::entity::EntityKind::Value);
+                    if is_func && !is_ocaml_value_refinement {
+                        assert!(
+                            ek.is_function_axis(),
+                            "{language:?} {kind:?}: classify_definition_node=func but classify_node={ek:?}"
+                        );
+                    }
+                    if is_class {
+                        assert!(
+                            ek.is_class_axis(),
+                            "{language:?} {kind:?}: classify_definition_node=class but classify_node={ek:?}"
+                        );
+                    }
+                }
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                walk(child, language, source);
+            }
+        }
+
+        let fixtures = [
+            (
+                Language::TypeScript,
+                "abstract class A { m(): void {} }\ninterface I {}\ntype T = number;\nenum E { X }\nfunction f() {}\n",
+            ),
+            (
+                Language::Scala,
+                "class C {}\nobject O {}\ntrait T {}\ntype X = Int\ndef g(): Int = 1\n",
+            ),
+            (
+                Language::Ocaml,
+                "let f = fun x -> x\nlet x = 1\nmodule M = struct end\n",
+            ),
+            (
+                Language::Elixir,
+                "defmodule M do\n  def bar(x) do x end\n  defmacro foo(x) do x end\nend\n",
+            ),
+        ];
+        for (lang, src) in fixtures {
+            let tree = parse(src, lang).unwrap();
+            walk(tree.root_node(), lang, src);
+        }
+    }
+
     #[test]
     fn test_extract_python_functions() {
         let source = r#"

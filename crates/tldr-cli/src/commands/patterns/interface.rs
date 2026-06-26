@@ -4399,6 +4399,70 @@ fn node_text<'a>(node: Node, source: &'a [u8]) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tldr_core::ast::entity::{classify_node_kind, EntityKind};
+
+    const GUARD_LANGUAGES: &[Language] = &[
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+        Language::Rust,
+        Language::Java,
+        Language::C,
+        Language::Cpp,
+        Language::CSharp,
+        Language::Kotlin,
+        Language::Scala,
+        Language::Php,
+        Language::Ruby,
+        Language::Lua,
+        Language::Luau,
+        Language::Elixir,
+        Language::Ocaml,
+        Language::Swift,
+        Language::Solidity,
+    ];
+
+    /// RC2-META Stage 2 fourth-table guard: every node kind accepted by
+    /// `interface`'s local `function_node_kinds` / `class_node_kinds` /
+    /// `method_node_kinds` tables must agree with the canonical
+    /// `entity::classify_node_kind` on the relevant axis. Locks the local copies
+    /// so they can never drift to an answer the shared classifier disagrees with.
+    #[test]
+    fn interface_node_kind_tables_match_classify_node() {
+        for &lang in GUARD_LANGUAGES {
+            for &k in function_node_kinds(lang) {
+                if k == "call" {
+                    continue; // Elixir def/defp — node-aware only.
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_function_axis) == Some(true),
+                    "interface function_node_kinds({lang:?}) {k:?} -> {ek:?} not function-axis"
+                );
+            }
+            for &k in method_node_kinds(lang) {
+                if k == "call" {
+                    continue;
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_function_axis) == Some(true),
+                    "interface method_node_kinds({lang:?}) {k:?} -> {ek:?} not function-axis"
+                );
+            }
+            for &k in class_node_kinds(lang) {
+                if k == "call" {
+                    continue; // Elixir defmodule — node-aware only.
+                }
+                let ek = classify_node_kind(k, lang);
+                assert!(
+                    ek.map(EntityKind::is_class_axis) == Some(true),
+                    "interface class_node_kinds({lang:?}) {k:?} -> {ek:?} not class-axis"
+                );
+            }
+        }
+    }
 
     // -------------------------------------------------------------------------
     // is_public_name tests (backward-compatible)
