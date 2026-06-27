@@ -969,11 +969,33 @@ impl<'a> CfgBuilder<'a> {
             .or_else(|| node.child_by_field_name("consequence"))
             .or_else(|| find_child_by_kind(node, "then_clause"))
             .or_else(|| kotlin_if_consequence(node));
-        let alternative = sol_else
-            .or(swift_else)
-            .or_else(|| node.child_by_field_name("alternative"))
-            .or_else(|| find_child_by_kind(node, "else_clause"))
-            .or_else(|| kotlin_if_alternative(node));
+        // RC1-A-cfg-branch (v0.5.0): an `if` may expose MORE THAN ONE
+        // `alternative`-field child. Lua `if/elseif/elseif/else` and Python
+        // `if/elif/elif/else` each surface every elseif/elif AND the trailing
+        // else as a SEPARATE flat `[alternative]` sibling of the `if_statement`
+        // (verified via dump_ast). Pre-fix this read only the FIRST alternative
+        // via `child_by_field_name`, so the 2nd+ elseif/elif arm bodies (and the
+        // else) fell into NO basic block — `tldr slice` on those lines returned
+        // an empty slice and their reads vanished from reaching-defs. Collect
+        // ALL of them. `else if`-style languages (Rust/JS/C/Java/C#) nest the
+        // continuation INSIDE a single `else_clause`, so they still yield one
+        // alternative (unchanged); the per-language Swift/Solidity/Kotlin/OCaml
+        // fallbacks below are single-alternative by construction.
+        let mut alt_cursor = node.walk();
+        let field_alternatives: Vec<Node> = node
+            .children_by_field_name("alternative", &mut alt_cursor)
+            .collect();
+        let alternatives: Vec<Node> = if let Some(single) = sol_else.or(swift_else) {
+            vec![single]
+        } else if !field_alternatives.is_empty() {
+            field_alternatives
+        } else if let Some(single) =
+            find_child_by_kind(node, "else_clause").or_else(|| kotlin_if_alternative(node))
+        {
+            vec![single]
+        } else {
+            Vec::new()
+        };
 
         // Create join block for after the if
         let join_block = self.new_block(BlockType::Body, end_line, end_line);
@@ -1001,31 +1023,38 @@ impl<'a> CfgBuilder<'a> {
             }
         }
 
-        // Process else branch
-        if let Some(else_node) = alternative {
-            let else_start = else_node.start_position().row as u32 + 1;
-            let else_end = else_node.end_position().row as u32 + 1;
-            let else_block = self.new_block(BlockType::Body, else_start, else_end);
-
-            self.add_edge(branch_block, else_block, EdgeType::False, None);
-
-            self.current_block_id = else_block;
-
-            // Handle elif by processing as nested if
-            self.process_block(else_node, depth + 1)?;
-
-            if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
-                self.add_edge(
-                    self.current_block_id,
-                    join_block,
-                    EdgeType::Unconditional,
-                    None,
-                );
-            }
-        } else {
+        // Process else/elseif branches. Each alternative (elseif/elif arm or
+        // the trailing else) gets its OWN body block and a False decision edge
+        // off the shared branch, so every arm body is covered. For the common
+        // single-alternative case this is byte-identical to the prior behavior.
+        if alternatives.is_empty() {
             // No else - false edge goes directly to join
             self.add_edge(branch_block, join_block, EdgeType::False, None);
+        } else {
+            for else_node in alternatives {
+                let else_start = else_node.start_position().row as u32 + 1;
+                let else_end = else_node.end_position().row as u32 + 1;
+                let else_block = self.new_block(BlockType::Body, else_start, else_end);
+
+                self.add_edge(branch_block, else_block, EdgeType::False, None);
+
+                self.current_block_id = else_block;
+
+                // Handle elif/elseif by processing the arm body (and, for
+                // `else if`-style languages, the nested if it contains).
+                self.process_block(else_node, depth + 1)?;
+
+                if !self.exit_blocks.contains(&self.current_block_id)
+                    && !self.loop_exit_blocks.contains(&self.current_block_id)
+                {
+                    self.add_edge(
+                        self.current_block_id,
+                        join_block,
+                        EdgeType::Unconditional,
+                        None,
+                    );
+                }
+            }
         }
 
         self.current_block_id = join_block;
@@ -1633,7 +1662,8 @@ impl<'a> CfgBuilder<'a> {
         Ok(())
     }
 
-    /// Process a match/switch expression (OCaml `match_expression`, Rust `match_expression`)
+    /// Process a match/switch expression (OCaml `match_expression`, Rust
+    /// `match_expression`, Scala `match_expression`).
     fn process_match_expression(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         let start_line = node.start_position().row as u32 + 1;
         let end_line = node.end_position().row as u32 + 1;
@@ -1666,15 +1696,22 @@ impl<'a> CfgBuilder<'a> {
         // Find the container of match arms/cases.
         // OCaml: match_case children are direct children of match_expression.
         // Rust: match_arm children are inside a match_block child (via "body" field).
+        // Scala: case_clause children are inside a case_block child (via "body"
+        //   field) — same container shape as Rust, different arm node-kind.
         let arms_parent = node.child_by_field_name("body").unwrap_or(node);
 
-        // Process each match_case/match_arm child as a separate branch
+        // Process each match_case/match_arm/case_clause child as a separate
+        // branch. RC1-A-cfg-branch (v0.5.0): Scala arms are `case_clause`; pre-fix
+        // the recognizer only knew Rust `match_arm` / OCaml `match_case`, so every
+        // Scala arm body fell into NO basic block (scala-zio
+        // BuildHelper.extraOptions arms 134-164), erasing its refs from
+        // reaching-defs and producing false dead-stores.
         let mut cursor = arms_parent.walk();
         let mut case_count = 0;
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                if child.kind() == "match_case" || child.kind() == "match_arm" {
+                if matches!(child.kind(), "match_case" | "match_arm" | "case_clause") {
                     let case_start = child.start_position().row as u32 + 1;
                     let case_end = child.end_position().row as u32 + 1;
                     let case_block = self.new_block(BlockType::Body, case_start, case_end);
@@ -3778,5 +3815,183 @@ fn sum_items(items: &[i32]) -> i32 {
         assert!(has_loop, "Rust for should create a loop header block");
         let has_back = cfg.edges.iter().any(|e| e.edge_type == EdgeType::BackEdge);
         assert!(has_back, "Rust for should have a back edge");
+    }
+
+    // -- RC1-A-cfg-branch (v0.5.0 RC-CAMPAIGN) --------------------------------
+    //
+    // Branch-arm completion for two distinct symptom variants that both left
+    // arm bodies in NO basic block (refs vanished -> false dead-stores):
+    //   * Scala `match` — arms are `case_clause` (the match-arm recognizer in
+    //     `process_match_expression` only knew Rust `match_arm` / OCaml
+    //     `match_case`).
+    //   * Lua `if/elseif/elseif/else` — each elseif and the trailing else is a
+    //     SEPARATE `[alternative]` field child; `process_if_statement` read
+    //     only the FIRST one, dropping the rest.
+    // The generalization gate requires BOTH variants to be covered here, and
+    // the per-language Elixir/Swift handlers to stay structurally unchanged.
+
+    /// Helper: is `line` covered by the line range of some basic block?
+    fn line_covered(cfg: &CfgInfo, line: u32) -> bool {
+        cfg.blocks
+            .iter()
+            .any(|b| b.lines.0 <= line && line <= b.lines.1)
+    }
+
+    #[test]
+    fn test_scala_match_arms_get_cfg_blocks() {
+        // Scala `match` arms are `case_clause` children of a `case_block`
+        // (the `body` field of `match_expression`). Reproduced on scala-zio
+        // BuildHelper.extraOptions (arms 134-164 fell in no CFG block;
+        // `explain` reported num_blocks:4 = entry/branch/join/exit only).
+        let source = r#"
+object M {
+  def classify(x: Int): String =
+    x match {
+      case 0 =>
+        "zero"
+      case 1 =>
+        "one"
+      case _ =>
+        "other"
+    }
+}
+"#;
+        let cfg = get_cfg_context(source, "classify", Language::Scala).unwrap();
+        // branch + 3 arm blocks + join (+ entry/exit) => >= 6 blocks.
+        assert!(
+            cfg.blocks.len() >= 6,
+            "Scala match with 3 arms should produce >= 6 blocks, got {}",
+            cfg.blocks.len()
+        );
+        let has_true = cfg.edges.iter().any(|e| e.edge_type == EdgeType::True);
+        let has_false = cfg.edges.iter().any(|e| e.edge_type == EdgeType::False);
+        assert!(has_true, "Scala match should have a True edge to the first arm");
+        assert!(has_false, "Scala match should have False edges to other arms");
+        // Every arm BODY line must fall in a basic block (no vanished refs).
+        for body_line in [6u32, 8, 10] {
+            assert!(
+                line_covered(&cfg, body_line),
+                "Scala match arm body line {} must fall in a CFG block",
+                body_line
+            );
+        }
+    }
+
+    #[test]
+    fn test_lua_elseif_arms_get_cfg_blocks() {
+        // Lua `if/elseif/elseif/else`: each elseif and the else is a separate
+        // `[alternative]` child. Reproduced on lua-lsp setTraceLevel and on a
+        // minimal repro where `tldr slice` on the 2nd elseif body returned an
+        // empty slice (line_count:0 -> body in no block).
+        let source = r#"
+local function classify(x)
+  local r = 0
+  if x == 0 then
+    r = 1
+  elseif x == 1 then
+    r = 2
+  elseif x == 2 then
+    r = 3
+  else
+    r = 4
+  end
+  return r
+end
+"#;
+        let cfg = get_cfg_context(source, "classify", Language::Lua).unwrap();
+        // then=5, elseif1 body=7, elseif2 body=9, else body=11 — ALL must be
+        // covered (pre-fix only then=5 and elseif1 body=7 were).
+        for body_line in [5u32, 7, 9, 11] {
+            assert!(
+                line_covered(&cfg, body_line),
+                "Lua if/elseif arm body line {} must fall in a CFG block",
+                body_line
+            );
+        }
+        let has_true = cfg.edges.iter().any(|e| e.edge_type == EdgeType::True);
+        let has_false = cfg.edges.iter().any(|e| e.edge_type == EdgeType::False);
+        assert!(has_true, "Lua if should have a True edge");
+        assert!(has_false, "Lua if/elseif should have False edges to each arm");
+        // then + 2 elseif + else => 4 arm blocks, with branch/join/entry/exit.
+        assert!(
+            cfg.blocks.len() >= 7,
+            "Lua if/elseif/elseif/else should produce >= 7 blocks, got {}",
+            cfg.blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_elixir_case_cfg_unchanged_reconcile() {
+        // Reconciliation guard: Elixir `case` is lowered by its OWN handler
+        // (process_elixir_case via the `call` dispatch), NOT by
+        // process_match_expression. Adding Scala `case_clause` to the
+        // match-arm recognizer must not perturb it (baseline: 7 blocks).
+        let source = r#"
+defmodule M do
+  def classify(x) do
+    case x do
+      0 -> "zero"
+      1 -> "one"
+      _ -> "other"
+    end
+  end
+end
+"#;
+        let cfg = get_cfg_context(source, "classify", Language::Elixir).unwrap();
+        assert!(
+            cfg.blocks
+                .iter()
+                .any(|b| b.block_type == BlockType::Branch),
+            "Elixir case should still produce a Branch block"
+        );
+        let has_true = cfg.edges.iter().any(|e| e.edge_type == EdgeType::True);
+        let has_false = cfg.edges.iter().any(|e| e.edge_type == EdgeType::False);
+        assert!(
+            has_true && has_false,
+            "Elixir case should still have True/False arm edges"
+        );
+        assert!(
+            cfg.blocks.len() >= 6,
+            "Elixir case (3 arms) should stay a full branching CFG (>= 6 blocks), got {}",
+            cfg.blocks.len()
+        );
+    }
+
+    #[test]
+    fn test_swift_switch_cfg_unchanged_reconcile() {
+        // Reconciliation guard: Swift `switch` is lowered by process_swift_switch
+        // (gated on Language::Swift for `switch_statement`), NOT by
+        // process_match_expression. The branch recognizer change must not
+        // perturb it (baseline: 7 blocks).
+        let source = r#"
+func classify(_ x: Int) -> String {
+    switch x {
+    case 0:
+        return "zero"
+    case 1:
+        return "one"
+    default:
+        return "other"
+    }
+}
+"#;
+        let cfg = get_cfg_context(source, "classify", Language::Swift).unwrap();
+        assert!(
+            cfg.blocks
+                .iter()
+                .any(|b| b.block_type == BlockType::Branch),
+            "Swift switch should still produce a Branch block"
+        );
+        let has_true = cfg.edges.iter().any(|e| e.edge_type == EdgeType::True);
+        let has_false = cfg.edges.iter().any(|e| e.edge_type == EdgeType::False);
+        assert!(
+            has_true && has_false,
+            "Swift switch should still have True/False arm edges"
+        );
+        assert!(
+            cfg.blocks.len() >= 6,
+            "Swift switch (3 arms) should stay a full branching CFG (>= 6 blocks), got {}",
+            cfg.blocks.len()
+        );
     }
 }
