@@ -1,0 +1,29 @@
+{
+  "language": "kotlin",
+  "stage": "rc2-meta STAGE 3 (universal kind population, kotlin slice)",
+  "result": "success",
+  "implemented": "Wired the canonical classify_node/EntityKind classifier into the production extract + interface + structure paths for Kotlin. (1) entity.rs classify_node_kind(Kotlin) gained type_alias->TypeAlias; classify_node gained a STRUCTURAL Kotlin refinement for class_declaration (which folds class/data class/sealed class/interface/fun interface/enum class into ONE node): an enum_class_body child -> Enum, an 'interface' keyword token child -> Interface, otherwise Class. (2) extract.rs: extract_kotlin_class_info / extract_kotlin_object_info now populate ClassInfo.kind via classify_node (was None); added extract_kotlin_typealias_info + a type_alias arm in extract_kotlin_classes_detailed surfacing a kind:\"type\" carrier (was DROPPED). (3) interface.rs: the kind match gained Kotlin alongside Go (node-aware classify_node, needed for interface/enum disambiguation); class_node_kinds(Kotlin) gained type_alias; get_node_name gained a Kotlin type_alias arm (alias name lives under the grammar 'type' field). (4) extractor.rs (structure family-1): classify_definition_node gained a Kotlin arm marking object_declaration + type_alias is_class (were dropped); get_definition_node_name resolves type_alias names; collect_definitions routes class-axis Kotlin entries through classify_node so structure reports interface/enum/object/type/class in agreement with extract+interface. classify_node is the single source of truth; no new per-language kind table.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/entity.rs",
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs"
+  ],
+  "char_tests": [
+    "tldr-core entity.rs classify_tests::kotlin_grammar_ground_truth (RED->GREEN: class/data/sealed->Class x3, interface/fun-interface->Interface x2, enum class->Enum, object->Object, typealias->TypeAlias, fun->Function)",
+    "tldr-core extractor.rs test_kotlin_companion_object_definition (re-baselined: companion object kind 'class'->'object' via classify_node; name 'Companion'/line unchanged)"
+  ],
+  "lib_test": "cargo test -p tldr-core --lib: 5274 passed, 0 failed, 342 ignored. Touched tldr-cli suites: kotlin_extract_and_cpp_extensions_v1 6/6, interface_per_lang_v1 7/8 (1 pre-existing JS failure), is_public_visibility_v1 7/7, structure_method_infos_all_langs_v1 4/4, m007_m036_hubs_v1 7/7, kotlin_extract_params_v1 4/4, kotlin_deps_wiring_v1 3/3, real_repo_fixes_v1 13/13, inheritance_walker_per_lang_v1 7/7, cross_language_extraction_v2 4/6 (2 pre-existing todo failures, Java+Kotlin symmetric).",
+  "goldens_rebaselined": [
+    "tldr-core/src/ast/extractor.rs::test_kotlin_companion_object_definition — companion object kind assertion 'class'->'object' (intended additive kind correction per STAGE 3 spec 'object/companion object->object'; name 'Companion' and line unchanged, construct not dropped)"
+  ],
+  "json_delta": "extract.classes[] (Kotlin): class/data class/sealed class now carry kind:\"class\", interface/fun interface kind:\"interface\", enum class kind:\"enum\", object/companion object kind:\"object\" (all were None); typealias now surfaced as a class-list entry with kind:\"type\" (was DROPPED). interface.classes[] (Kotlin): same kind population (was None) plus typealias now emitted with kind:\"type\" (was DROPPED). structure.definitions[] (Kotlin): interface/enum/object kind discriminator corrected from undifferentiated \"class\" to interface/enum/object; top-level object (object_declaration) and typealias (type_alias) now emitted (were DROPPED); companion object kind \"class\"->\"object\". Method/function distinction (greet/draw/register=method, topLevel=function) unchanged. All additive/agreement; skip_serializing_if guard means no non-Kotlin output changes.",
+  "no_gaming_notes": "Interface/enum/enum-class are not distinguishable from a bare node-kind string in Kotlin (all are class_declaration) so classify_node uses an AST-structural test (enum_class_body child / 'interface' keyword token child) — no regex, no source-text heuristics. Verified the grammar literals against vendor/tree-sitter-kotlin-ng/src/grammar.json (class_declaration rule contains 'class'|'interface' tokens and a class_body|enum_class_body choice). The single re-baselined assertion is an intended kind correction, not a weakening.",
+  "preexisting_failures_unrelated": [
+    "interface_per_lang_v1::javascript_prototype_assignments_emitted — pure-JS path untouched by Kotlin/Go-only edits; also listed pre-existing in C-stage3-scala.json",
+    "cross_language_extraction_v2::todo_autodetect_works_for_java — Java path untouched by this commit yet fails identically to the Kotlin variant, proving the 'tldr todo' pipeline failure is independent of kind population",
+    "cross_language_extraction_v2::todo_autodetect_works_for_kotlin — same 'tldr todo' pipeline root cause as the Java variant; pre-existing"
+  ],
+  "committed": true,
+  "status": "closed"
+}

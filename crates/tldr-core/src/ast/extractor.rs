@@ -2935,6 +2935,26 @@ fn collect_definitions(
                 }
             };
 
+            // RC2-META Stage 3 (kotlin): Kotlin folds `class` / `interface` /
+            // `enum class` into ONE `class_declaration` node and uses a separate
+            // `object_declaration` / `type_alias`; the string-keyed entry-kind
+            // switch above cannot tell them apart, so every Kotlin container was
+            // reported `kind:"class"`. Route the class-axis kotlin entries
+            // through the node-aware canonical `classify_node` (single source of
+            // truth — same answer extract/interface use) so `structure` reports
+            // `interface`/`enum`/`object`/`type`/`class` in agreement. Gated to
+            // is_class so the method/function distinction (decided by lexical
+            // containment below) is untouched. Additive (corrects the kind
+            // discriminator; name/line unchanged).
+            let entry_kind = if matches!(language, Language::Kotlin) && is_class {
+                match crate::ast::entity::classify_node(node, language, source) {
+                    Some(ek) => ek.as_str(),
+                    None => entry_kind,
+                }
+            } else {
+                entry_kind
+            };
+
             // m114-adapter-tail-v1 (v0.4.2 M-114): tag Ruby class
             // definitions whose superclass is a known unit-test base
             // class (`Minitest::Test`, `Minitest::Spec`,
@@ -3914,6 +3934,23 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
                 is_class = true;
             }
         }
+        Language::Kotlin => {
+            // RC2-META Stage 3 (kotlin): a singleton `object Foo {...}`
+            // (`object_declaration`) and a `typealias H = ...` (`type_alias`)
+            // are top-level declarations the canonical `classify_node` maps to
+            // `EntityKind::Object` / `EntityKind::TypeAlias` (both class-axis).
+            // They were ABSENT from the shared `is_class` list above (only the
+            // nested `companion_object` was), so `structure`'s `definitions[]`
+            // DROPPED every top-level Kotlin object and type alias even though
+            // `extract`/`interface` now surface them. Add them here (language-
+            // gated; `type_alias` is Kotlin-only, `object_declaration` is too).
+            // The reported kind is refined to "object"/"type" by the Kotlin
+            // override in `collect_definitions`. Additive: structure now AGREES
+            // with extract/interface instead of dropping the construct.
+            if matches!(kind, "object_declaration" | "type_alias") {
+                is_class = true;
+            }
+        }
         Language::Ocaml => {
             if kind == "type_definition" {
                 is_class = true;
@@ -4047,6 +4084,17 @@ fn get_definition_node_name(node: Node, source: &str) -> Option<String> {
     // Kotlin: companion_object has no identifier child; use "Companion" by convention.
     if node.kind() == "companion_object" {
         return Some("Companion".to_string());
+    }
+
+    // RC2-META Stage 3 (kotlin): `typealias Name = T` stores its name under the
+    // grammar's `type` field (an `identifier`), not a `name` field, so the
+    // common `name`-field lookup above returns None and the alias would be
+    // dropped from `definitions[]`. Resolve it explicitly.
+    if node.kind() == "type_alias" {
+        if let Some(t) = node.child_by_field_name("type") {
+            let text = t.utf8_text(source.as_bytes()).ok()?;
+            return Some(text.to_string());
+        }
     }
 
     // v0.5.0 SOL-004 (solidity-ast-extractor-v1): Solidity
@@ -5452,10 +5500,15 @@ class Animal(val name: String) {
             "Kotlin: companion object must produce a 'Companion' definition; definitions: {:?}",
             defs.iter().map(|d| (&d.name, &d.kind)).collect::<Vec<_>>()
         );
+        // RC2-META Stage 3 (kotlin): a companion object IS an object — the
+        // canonical `classify_node` maps `companion_object` -> `EntityKind::Object`
+        // so `structure` now reports `kind:"object"` (in agreement with the
+        // canonical model and with `extract`/`interface`), not the historical
+        // undifferentiated "class". Name ("Companion") and line are unchanged.
         assert_eq!(
             companion.unwrap().kind,
-            "class",
-            "Kotlin companion object kind must be 'class'"
+            "object",
+            "Kotlin companion object kind must be 'object' (canonical classify_node)"
         );
     }
 

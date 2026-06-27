@@ -374,8 +374,13 @@ pub fn classify_node_kind(kind: &str, language: Language) -> Option<EntityKind> 
         },
         Language::Kotlin => match kind {
             "function_declaration" => Function,
+            // `class_declaration` covers `class` / `data class` / `sealed class`
+            // (-> Class), `interface` / `fun interface` (-> Interface) and
+            // `enum class` (-> Enum). The bare node-kind string cannot tell them
+            // apart — `classify_node` refines it structurally below.
             "class_declaration" => Class,
             "object_declaration" | "companion_object" => Object,
+            "type_alias" => TypeAlias,
             _ => return None,
         },
         Language::Scala => match kind {
@@ -482,6 +487,35 @@ pub fn classify_node(node: Node, language: Language, source: &str) -> Option<Ent
             }
             _ => {}
         }
+    }
+
+    // RC2-META Stage 3 (kotlin): Kotlin folds `class` / `interface` /
+    // `enum class` into ONE `class_declaration` node, distinguished only by
+    // structural children (the `interface` keyword token, or an
+    // `enum_class_body`), never by the bare node-kind string. `classify_node_kind`
+    // therefore maps `class_declaration` conservatively to `Class`; refine it
+    // here so `extract`/`interface`/`structure` agree on Interface/Enum:
+    //   `interface Foo {...}` / `fun interface Foo {...}`  -> Interface
+    //   `enum class Color {...}`  (has `enum_class_body`)   -> Enum
+    //   `class` / `data class` / `sealed class`             -> Class
+    if language == Language::Kotlin && kind == "class_declaration" {
+        let mut cursor = node.walk();
+        let mut has_enum_body = false;
+        let mut has_interface_kw = false;
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "enum_class_body" => has_enum_body = true,
+                "interface" => has_interface_kw = true,
+                _ => {}
+            }
+        }
+        if has_enum_body {
+            return Some(EntityKind::Enum);
+        }
+        if has_interface_kw {
+            return Some(EntityKind::Interface);
+        }
+        return Some(EntityKind::Class);
     }
 
     let base = classify_node_kind(kind, language)?;
@@ -841,6 +875,75 @@ mod classify_tests {
         assert_eq!(classify_node(m, Language::Go, src), Some(EntityKind::Method));
         let f = find_kind(root, "function_declaration").expect("go function");
         assert_eq!(classify_node(f, Language::Go, src), Some(EntityKind::Function));
+    }
+
+    #[test]
+    fn kotlin_grammar_ground_truth() {
+        // class / data class / sealed class -> Class; interface -> Interface;
+        // enum class -> Enum; object & companion object -> Object;
+        // typealias -> TypeAlias; fun -> Function.
+        let src = r#"package com.example
+
+class Person(val name: String) {
+    fun greet(): String = name
+}
+
+data class Point(val x: Int, val y: Int)
+
+sealed class Shape
+
+interface Drawable {
+    fun draw()
+}
+
+fun interface Runner {
+    fun run()
+}
+
+enum class Color { RED, GREEN }
+
+object Registry {
+    fun reg() {}
+}
+
+typealias Handler = (Int) -> String
+
+fun topLevel(): Int = 42
+"#;
+        let tree = parse(src, Language::Kotlin).unwrap();
+        let root = tree.root_node();
+
+        // Every class_declaration, classified structurally.
+        let mut classes = Vec::new();
+        collect_kind(root, "class_declaration", &mut classes);
+        let kinds: Vec<_> = classes
+            .iter()
+            .filter_map(|n| classify_node(*n, Language::Kotlin, src))
+            .collect();
+        assert!(kinds.contains(&EntityKind::Class), "class/data/sealed -> Class: {kinds:?}");
+        assert!(kinds.contains(&EntityKind::Interface), "interface -> Interface: {kinds:?}");
+        assert!(kinds.contains(&EntityKind::Enum), "enum class -> Enum: {kinds:?}");
+        // Exactly 3 Class nodes (Person, Point, Shape); interface/fun-interface
+        // and the enum class must NOT be miscounted as Class.
+        assert_eq!(
+            kinds.iter().filter(|k| **k == EntityKind::Class).count(),
+            3,
+            "class/data class/sealed class are the only 3 Class kinds: {kinds:?}"
+        );
+        assert_eq!(
+            kinds.iter().filter(|k| **k == EntityKind::Interface).count(),
+            2,
+            "interface + fun interface are the 2 Interface kinds: {kinds:?}"
+        );
+
+        let obj = find_kind(root, "object_declaration").expect("kotlin object");
+        assert_eq!(classify_node(obj, Language::Kotlin, src), Some(EntityKind::Object));
+
+        let alias = find_kind(root, "type_alias").expect("kotlin type_alias");
+        assert_eq!(classify_node(alias, Language::Kotlin, src), Some(EntityKind::TypeAlias));
+
+        let f = find_kind(root, "function_declaration").expect("kotlin function");
+        assert_eq!(classify_node(f, Language::Kotlin, src), Some(EntityKind::Function));
     }
 
     #[test]

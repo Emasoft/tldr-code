@@ -152,7 +152,10 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         // Kotlin's tree-sitter grammar emits `class_declaration` for
         // `class`, `interface`, `enum class`, `data class`, etc., and
         // `object_declaration` for singleton `object` blocks.
-        Language::Kotlin => &["class_declaration", "object_declaration"],
+        // RC2-META Stage 3 (kotlin): `type_alias` (`typealias H = ...`) is a
+        // top-level type-defining construct surfaced as `kind:"type"` via the
+        // canonical classifier — additive, previously dropped from `interface`.
+        Language::Kotlin => &["class_declaration", "object_declaration", "type_alias"],
         // real-repo-fixes-v1 (P9.BUG-R7): swift classes/protocols. The
         // tree-sitter-swift grammar uses `class_declaration` for
         // class/struct/enum/actor/extension and `protocol_declaration`
@@ -456,6 +459,16 @@ fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option
                             }
                         }
                     }
+                }
+            }
+        }
+        Language::Kotlin => {
+            // RC2-META Stage 3 (kotlin): `typealias Name = T` stores the alias
+            // name under the grammar's `type` field (an `identifier`), not a
+            // `name` field, so the common lookup above misses it.
+            if node.kind() == "type_alias" {
+                if let Some(t) = node.child_by_field_name("type") {
+                    return Some(node_text(t, source).to_string());
                 }
             }
         }
@@ -1742,7 +1755,15 @@ pub fn extract_class_info(class_node: Node, source: &[u8], lang: Language) -> Cl
     // `interface` reports `struct`/`interface`/`type`/`class` in agreement with
     // `extract`, instead of an undifferentiated `kind: None`. Additive.
     let kind = match lang {
-        Language::Go => {
+        // RC2-META Stage 3 (kotlin): like Go, Kotlin's container discriminator is
+        // NOT decidable from the bare node-kind string — `class` / `interface` /
+        // `enum class` are all `class_declaration`, distinguished structurally
+        // (the `interface` keyword token, an `enum_class_body` child). Route
+        // through the node-aware canonical `classify_node` (single source of
+        // truth) so `interface` reports `class`/`interface`/`enum`/`object`/`type`
+        // in agreement with `extract`, instead of an undifferentiated `kind:None`.
+        // Additive.
+        Language::Go | Language::Kotlin => {
             let src_str = std::str::from_utf8(source).unwrap_or("");
             tldr_core::ast::entity::classify_node(class_node, lang, src_str)
                 .map(|k| k.as_str().to_string())

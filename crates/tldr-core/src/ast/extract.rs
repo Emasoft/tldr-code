@@ -7945,6 +7945,10 @@ fn extract_kotlin_classes_detailed(node: &Node, source: &str, classes: &mut Vec<
                 let info = extract_kotlin_object_info(&child, source);
                 classes.push(info);
             }
+            "type_alias" => {
+                let info = extract_kotlin_typealias_info(&child, source);
+                classes.push(info);
+            }
             _ => {
                 extract_kotlin_classes_detailed(&child, source, classes);
             }
@@ -8010,7 +8014,15 @@ fn extract_kotlin_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (kotlin): populate the carrier `kind` from the
+        // canonical [`crate::ast::entity::classify_node`] discriminator (single
+        // source of truth — same answer structure/interface use). A Kotlin
+        // `class_declaration` folds `class`/`data class`/`sealed class`
+        // (-> "class"), `interface`/`fun interface` (-> "interface") and
+        // `enum class` (-> "enum") into one node; the classifier refines them
+        // structurally. Additive — no existing field/name/line changes.
+        kind: crate::ast::entity::classify_node(*node, Language::Kotlin, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -8087,7 +8099,47 @@ fn extract_kotlin_object_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (kotlin): a Kotlin `object` / `companion object`
+        // singleton -> canonical `kind:"object"` via the shared classifier.
+        // Additive — no existing field/name/line changes.
+        kind: crate::ast::entity::classify_node(*node, Language::Kotlin, source)
+            .map(|k| k.as_str().to_string()),
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
+    }
+}
+
+/// RC2-META Stage 3 (kotlin): extract a top-level Kotlin `typealias Name = T`
+/// as a carrier `ClassInfo` with `kind:"type"`, mirroring the TS type-alias
+/// treatment (rc2-ts). The alias name lives under the grammar's `type` field
+/// (an `identifier`), NOT a `name` field. Additive — surfaces a construct that
+/// `extract` previously dropped entirely.
+fn extract_kotlin_typealias_info(node: &Node, source: &str) -> ClassInfo {
+    let name = node
+        .child_by_field_name("type")
+        .map(|n| get_node_text(&n, source))
+        .unwrap_or_else(|| {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                    return get_node_text(&child, source);
+                }
+            }
+            String::new()
+        });
+
+    ClassInfo {
+        name,
+        bases: Vec::new(),
+        docstring: extract_kotlin_docstring(node, source),
+        methods: Vec::new(),
+        fields: Vec::new(),
+        decorators: Vec::new(),
+        line_number: decl_keyword_line_from_node(node),
+        line_end: node.end_position().row as u32 + 1,
+        kind: crate::ast::entity::classify_node(*node, Language::Kotlin, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
