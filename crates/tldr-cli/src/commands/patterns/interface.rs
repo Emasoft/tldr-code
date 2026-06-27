@@ -290,33 +290,94 @@ fn is_rust_pub(node: Node, source: &[u8]) -> bool {
     false
 }
 
-/// Check if a Java/C#/TS node has public access modifier.
+/// Check if a Java/C#/PHP/TS node has public access modifier.
+///
+/// RC2-1-visibility-csharp-java-php: the legacy fall-through returned `true`
+/// unconditionally whenever no `public` keyword was *seen*, so an explicit
+/// `private`/`protected`/`internal` member leaked into the public surface and
+/// `private_method_count` was always 0 for csharp/java/php. The repair returns
+/// `false` when an explicit non-public access modifier child is present, while
+/// still treating a member with NO access keyword as public — preserving the
+/// language-level default for Java interface methods, C# interface/enum
+/// members, and PHP interface methods, none of which carry a visibility
+/// keyword (mirrors `surface/csharp.rs` / `surface/java.rs` interface-member
+/// special-casing).
 fn has_public_modifier(node: Node, source: &[u8]) -> bool {
-    // Check modifiers child
-    if let Some(modifiers) = node.child_by_field_name("modifiers") {
-        let text = node_text(modifiers, source);
-        return text.contains("public");
-    }
-    // Also check for direct modifier children
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            let kind = child.kind();
-            if kind == "modifiers" || kind == "modifier" || kind == "access_modifier" {
-                let text = node_text(child, source);
-                if text.contains("public") {
-                    return true;
+    // Implicit visibility (no explicit access modifier) stays public.
+    explicit_access_visibility(node, source).unwrap_or(true)
+}
+
+/// AST-driven access-modifier classification shared by Java / C# / PHP / TS.
+///
+/// Returns:
+///   - `Some(true)`  — an explicit `public` access modifier is present;
+///   - `Some(false)` — an explicit non-public access modifier
+///     (`private`/`protected`/`internal`/`file`) is present and there is no
+///     `public`;
+///   - `None`        — NO explicit access modifier at all (implicit
+///     visibility: interface/enum members, Java package-private).
+///
+/// Every grammar shape used by the routed languages is recognised by node
+/// kind (NOT a source-text scan):
+///   - tree-sitter-java: a single `modifiers` wrapper whose access keyword is
+///     an anonymous token child (`kind()` IS the keyword) — mirrors
+///     `extract_java_visibility` (ast/extract.rs);
+///   - tree-sitter-c-sharp: individual `modifier` named children whose text is
+///     the keyword — mirrors `extract_csharp_visibility`;
+///   - tree-sitter-php: a direct `visibility_modifier` child whose text is the
+///     keyword — mirrors the `visibility_modifier` harvest in ast/extract.rs;
+///   - tree-sitter-typescript: an `accessibility_modifier` child.
+fn explicit_access_visibility(node: Node, source: &[u8]) -> Option<bool> {
+    let mut explicit_non_public = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            // Java: keyword tokens live INSIDE a `modifiers` wrapper; the
+            // keyword's own `kind()` is the literal ("public"/"private"/…), with
+            // a node-text fallback for grammars that expose it as raw text.
+            "modifiers" => {
+                let mut mc = child.walk();
+                for m in child.children(&mut mc) {
+                    let class = classify_access_keyword(m.kind())
+                        .or_else(|| classify_access_keyword(node_text(m, source).trim()));
+                    match class {
+                        Some(true) => return Some(true),
+                        Some(false) => explicit_non_public = true,
+                        None => {}
+                    }
                 }
             }
-            // For TypeScript: check for accessibility_modifier
-            if kind == "accessibility_modifier" {
-                let text = node_text(child, source);
-                return text == "public";
+            // C# `modifier`, a generic `access_modifier` wrapper, PHP
+            // `visibility_modifier`, and TS `accessibility_modifier` all carry
+            // the access keyword as the node's own text.
+            "modifier" | "access_modifier" | "visibility_modifier"
+            | "accessibility_modifier" => {
+                match classify_access_keyword(node_text(child, source).trim()) {
+                    Some(true) => return Some(true),
+                    Some(false) => explicit_non_public = true,
+                    None => {}
+                }
             }
+            _ => {}
         }
     }
-    // In Java, default (package-private) is not public, but for interface extraction
-    // we treat non-private as public for utility
-    true
+    if explicit_non_public {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Classify an access-modifier keyword. `Some(true)` = `public`,
+/// `Some(false)` = an explicit non-public access level, `None` = not an access
+/// modifier at all (e.g. `static`/`final`/`abstract`/`readonly`/annotations).
+fn classify_access_keyword(kw: &str) -> Option<bool> {
+    match kw {
+        "public" => Some(true),
+        // Java/PHP `private`/`protected`; C# adds `internal` and `file`.
+        "private" | "protected" | "internal" | "file" => Some(false),
+        _ => None,
+    }
 }
 
 /// Check if a C/C++ function is `static` (file-local, not public).
@@ -2206,7 +2267,13 @@ fn is_method_public(name: &str, node: Node, source: &[u8], lang: Language) -> bo
             is_public_for_lang(name, lang)
         }
         Language::Rust => is_rust_pub(node, source),
-        Language::Java | Language::CSharp => has_public_modifier(node, source),
+        // RC2-1-visibility-csharp-java-php: PHP joins Java/C# on the shared
+        // AST modifier-child predicate. PHP `method_declaration` carries a
+        // direct `visibility_modifier` child for `private`/`protected`; absence
+        // of one (interface methods, or a bare `function`) is implicit-public.
+        // Previously PHP fell through to `_ => true`, so every PHP method was
+        // counted public and `private_method_count` was always 0.
+        Language::Java | Language::CSharp | Language::Php => has_public_modifier(node, source),
         // interface-per-lang-v1 (v0.4.2 M-022): exclude scala `private`
         // / `protected` methods from the public method list.
         Language::Scala => !is_scala_non_public(node, source),
@@ -5458,6 +5525,206 @@ class ServerException extends BadResponseException
             "PHP base `BadResponseException` must be captured, got {:?}",
             cls.bases
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // RC2-1-visibility-csharp-java-php: explicit private/protected/internal
+    // members must be EXCLUDED from the public `methods` set and tallied in
+    // `private_method_count`, while implicit-visibility (interface/enum)
+    // members carrying NO access keyword stay public. Symptom class spans
+    // csharp + java + php; this gate asserts ALL THREE plus implicit-public
+    // preservation, so a single-language fix cannot pass.
+    // -------------------------------------------------------------------------
+
+    fn cls_named<'a>(info: &'a InterfaceInfo, name: &str) -> &'a ClassInfo {
+        info.classes
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "class {name:?} not found, got {:?}",
+                    info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    #[test]
+    fn test_interface_java_excludes_private_protected_methods_rc2_1() {
+        let source = r#"
+public class UserService {
+    public String getUser(String id) { return id; }
+    private void cleanup() {}
+    protected int helper() { return 0; }
+}
+"#;
+        let info = extract_interface(Path::new("test.java"), source).unwrap();
+        let cls = cls_named(&info, "UserService");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "getUser"),
+            "public method must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "cleanup"),
+            "private method must be excluded from public set, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "helper"),
+            "protected method must be excluded from public set, got {names:?}"
+        );
+        assert_eq!(
+            cls.private_method_count, 2,
+            "private + protected must be tallied"
+        );
+    }
+
+    #[test]
+    fn test_interface_java_interface_methods_implicit_public_rc2_1() {
+        // Java interface methods carry NO access keyword yet are public.
+        let source = r#"
+public interface Repository {
+    String find(String id);
+    void save(Object o);
+}
+"#;
+        let info = extract_interface(Path::new("test.java"), source).unwrap();
+        let cls = cls_named(&info, "Repository");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "find") && names.iter().any(|n| *n == "save"),
+            "implicit-public interface methods must surface, got {names:?}"
+        );
+        assert_eq!(
+            cls.private_method_count, 0,
+            "no explicit private modifiers => 0 private methods"
+        );
+    }
+
+    #[test]
+    fn test_interface_csharp_excludes_private_internal_protected_methods_rc2_1() {
+        let source = r#"
+public class Writer
+{
+    public void Write() {}
+    private void Flush() {}
+    protected void Reset() {}
+    internal void Sync() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.cs"), source).unwrap();
+        let cls = cls_named(&info, "Writer");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "Write"),
+            "public method must surface, got {names:?}"
+        );
+        for hidden in ["Flush", "Reset", "Sync"] {
+            assert!(
+                !names.iter().any(|n| *n == hidden),
+                "{hidden} (non-public) must be excluded, got {names:?}"
+            );
+        }
+        assert_eq!(
+            cls.private_method_count, 3,
+            "private + protected + internal must be tallied"
+        );
+    }
+
+    #[test]
+    fn test_interface_csharp_interface_members_implicit_public_rc2_1() {
+        // C# interface members carry NO access keyword yet are public.
+        let source = r#"
+public interface IWriter
+{
+    void Write();
+    string Name();
+}
+"#;
+        let info = extract_interface(Path::new("test.cs"), source).unwrap();
+        let cls = cls_named(&info, "IWriter");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "Write") && names.iter().any(|n| *n == "Name"),
+            "implicit-public interface members must surface, got {names:?}"
+        );
+        assert_eq!(cls.private_method_count, 0);
+    }
+
+    #[test]
+    fn test_interface_php_excludes_private_protected_methods_rc2_1() {
+        let source = r#"<?php
+class Client {
+    public function send() {}
+    private function open() {}
+    protected function close() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.php"), source).unwrap();
+        let cls = cls_named(&info, "Client");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "send"),
+            "public method must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "open"),
+            "private method must be excluded, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "close"),
+            "protected method must be excluded, got {names:?}"
+        );
+        assert_eq!(
+            cls.private_method_count, 2,
+            "private + protected must be tallied"
+        );
+    }
+
+    #[test]
+    fn test_interface_php_interface_methods_implicit_public_rc2_1() {
+        // PHP interface methods without a visibility keyword are public.
+        let source = r#"<?php
+interface Sender {
+    function send($req);
+    function ping();
+}
+"#;
+        let info = extract_interface(Path::new("test.php"), source).unwrap();
+        let cls = cls_named(&info, "Sender");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "send") && names.iter().any(|n| *n == "ping"),
+            "implicit-public interface methods must surface, got {names:?}"
+        );
+        assert_eq!(cls.private_method_count, 0);
+    }
+
+    #[test]
+    fn test_interface_visibility_other_langs_unchanged_rc2_1() {
+        // Guard: the has_public_modifier repair must NOT bleed into languages
+        // that resolve visibility by other means. Rust uses `pub`; a non-pub
+        // method must still be excluded (is_rust_pub path), and a `pub` method
+        // must surface — proving the modifier-child inspection did not regress
+        // the C/Cpp/Kotlin/Swift/Elixir/OCaml `_ => true` fall-through siblings.
+        let rust = r#"
+pub struct Foo;
+impl Foo {
+    pub fn visible(&self) {}
+    fn hidden(&self) {}
+}
+"#;
+        let info = extract_interface(Path::new("test.rs"), rust).unwrap();
+        let cls = cls_named(&info, "Foo");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "visible"),
+            "rust pub method must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "hidden"),
+            "rust non-pub method must stay excluded, got {names:?}"
+        );
+        assert_eq!(cls.private_method_count, 1);
     }
 
     /// RC2-META Stage 3 (swift): `interface`'s ClassInfo.kind must be populated
