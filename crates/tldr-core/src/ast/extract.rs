@@ -3200,7 +3200,18 @@ fn extract_go_types_pass1(node: &Node, source: &str, classes: &mut Vec<ClassInfo
                                 decorators: Vec::new(),
                                 line_number,
                                 line_end,
-                                kind: None,
+                                // RC2-META Stage 3 (go): the canonical
+                                // `classify_node` discriminator (single source of
+                                // truth — no per-language kind table). A
+                                // `type_spec` with a `struct_type` underlying maps
+                                // to `EntityKind::Struct` ("struct"). Additive:
+                                // formerly `kind: None`.
+                                kind: crate::ast::entity::classify_node(
+                                    spec,
+                                    Language::Go,
+                                    source,
+                                )
+                                .map(|k| k.as_str().to_string()),
                                 modifiers: Vec::new(),
                                 events: Vec::new(),
                                 errors: Vec::new(),
@@ -3218,7 +3229,16 @@ fn extract_go_types_pass1(node: &Node, source: &str, classes: &mut Vec<ClassInfo
                                 decorators: Vec::new(),
                                 line_number,
                                 line_end,
-                                kind: None,
+                                // RC2-META Stage 3 (go): a `type_spec` with an
+                                // `interface_type` underlying maps to
+                                // `EntityKind::Interface` ("interface") via the
+                                // canonical `classify_node`. Additive.
+                                kind: crate::ast::entity::classify_node(
+                                    spec,
+                                    Language::Go,
+                                    source,
+                                )
+                                .map(|k| k.as_str().to_string()),
                                 modifiers: Vec::new(),
                                 events: Vec::new(),
                                 errors: Vec::new(),

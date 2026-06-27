@@ -1,0 +1,31 @@
+{
+  "language": "go",
+  "stage": "rc2-meta-stage3-go",
+  "result": "success",
+  "implemented": "Wired the canonical entity::classify_node discriminator into the production Go extract + interface ClassInfo.kind producers (additive kind population). Go has no classes: classify_node now resolves a Go type by the UNDERLYING shape of its type_spec (struct_type -> Struct, interface_type -> Interface, other defined type -> Class) and by the dedicated type_alias node (type X = Y -> TypeAlias). The type_declaration wrapper drills into its inner spec/alias child. func with receiver -> Method and plain func -> Function continue to classify via the existing string-keyed classify_node_kind path. Single source of truth: no new per-language kind table.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/entity.rs",
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_go_v1.rs"
+  ],
+  "shared_classify_node_wiring": "entity.rs::classify_node gained a Go node-aware branch (gated on Language::Go) plus a private go_type_node_kind(node) helper that inspects the type_spec `type` field. classify_node_kind (string-only) is UNCHANGED, so all Stage-2 string-keyed consumers (function_finder, ast_utils, the classify_definition_node agreement test) stay byte-identical (Struct/Interface/TypeAlias/Class are all class-axis, matching the prior Struct mapping's axis).",
+  "json_delta": "extract.classes[].kind: Go struct-type carriers now emit \"struct\" and interface-type carriers now emit \"interface\" (were: field omitted via skip_serializing_if, kind:None). interface.classes[].kind: Go containers now emit \"struct\" / \"interface\" / \"class\" (a defined type such as `type Celsius float64` -> \"class\", matching structure's legacy default) where the field was previously omitted. Purely ADDITIVE — no name/line/construct dropped, no existing value changed. structure command output UNCHANGED (its entry-kind switch still reports the class-axis default \"class\" for Go type_specs and was intentionally not modified). Other 15 languages UNCHANGED (Go-gated). Go `type X = Y` aliases are still dropped by interface's pre-existing type_spec-only name resolver (orthogonal to this additive slice; classify_node nonetheless classifies type_alias -> \"type\" for the day the collector is widened).",
+  "char_tests": [
+    "crates/tldr-core/src/ast/entity.rs::classify_tests::go_grammar_ground_truth (type_spec struct->Struct, interface->Interface, defined type->Class; type_declaration wrapper resolves via inner spec; type_alias->TypeAlias; method_declaration->Method; function_declaration->Function)",
+    "crates/tldr-cli/tests/rc2_meta_stage3_go_v1.rs::extract_populates_go_container_kinds (Server->struct, Handler->interface)",
+    "crates/tldr-cli/tests/rc2_meta_stage3_go_v1.rs::interface_populates_go_container_kinds (Server->struct, Handler->interface, Celsius->class)",
+    "crates/tldr-cli/tests/rc2_meta_stage3_go_v1.rs::extract_interface_agree_on_go_kinds"
+  ],
+  "lib_test": "cargo test -p tldr-core --lib entity: 18 passed, 0 failed (incl. new go_grammar_ground_truth + the fourth-table guards function_finder_tables_match_classify_node / ast_utils_function_table_matches_classify_node still green).",
+  "targeted_tests": "cargo test -p tldr-cli --no-fail-fast across rc2_meta_stage3_go_v1 (3/3), cl6_interface_v1 (8), critical_regressions_v1 (13), cross_command_consistency_v3 (5), cross_language_extraction_v2 (4; go_structure_method_infos_populated green), interface_extraction_ocaml_elixir_v1 (6), is_public_visibility_v1 (7), m002_java_cross_pipeline_v1 (11; Go pinned), p19_secondary_fixes_v1 (8), schema_cleanup_v2 (5), solidity_extract_v1 (17). All GREEN.",
+  "goldens_rebaselined": [],
+  "preexisting_failures_unrelated": [
+    "cross_language_extraction_v2::todo_autodetect_works_for_java (todo command; Go-untouched path; returns 0 items independent of this change)",
+    "cross_language_extraction_v2::todo_autodetect_works_for_kotlin (same)",
+    "interface_per_lang_v1::javascript_prototype_assignments_emitted (JS prototype-method collection; interface.rs JS path is byte-identical post-edit: `_ => ts_js_entry_kind(class_node.kind(), lang)`)"
+  ],
+  "no_gaming": "No assertions weakened, no constructs dropped, no kind value changed for any existing golden. classify_node_kind string table untouched -> Stage-2 parity preserved. Interface alias-drop left as-is rather than gamed in.",
+  "committed": true,
+  "status": "closed"
+}

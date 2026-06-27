@@ -453,6 +453,37 @@ pub fn classify_node(node: Node, language: Language, source: &str) -> Option<Ent
         return classify_elixir_call(node, source);
     }
 
+    // RC2-META Stage 3 (go): a Go type is classified by the UNDERLYING type of
+    // its `type_spec` (or by the dedicated `type_alias` node), not by the bare
+    // node-kind string. `classify_node_kind` cannot express this (it only sees a
+    // string), so it conservatively maps `type_spec` to the class axis; the
+    // node-aware path below refines it:
+    //   `type X struct {...}`     (type_spec → struct_type)    -> Struct
+    //   `type X interface {...}`  (type_spec → interface_type) -> Interface
+    //   `type X = Y`              (type_alias)                 -> TypeAlias
+    //   `type X <other>`          (defined type, e.g. `float64`) -> Class
+    // The `type_declaration` wrapper drills into its inner spec/alias child.
+    // All four results stay on the CLASS axis, so the Stage-2 string-keyed
+    // consumers (`function_finder`, the agreement test) remain byte-identical.
+    if language == Language::Go {
+        match kind {
+            "type_declaration" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(ek) = go_type_node_kind(child) {
+                        return Some(ek);
+                    }
+                }
+            }
+            "type_spec" | "type_alias" => {
+                if let Some(ek) = go_type_node_kind(node) {
+                    return Some(ek);
+                }
+            }
+            _ => {}
+        }
+    }
+
     let base = classify_node_kind(kind, language)?;
 
     if matches!(language, Language::Ocaml)
@@ -509,6 +540,28 @@ fn classify_elixir_call(node: Node, source: &str) -> Option<EntityKind> {
         };
     }
     None
+}
+
+/// RC2-META Stage 3 (go): classify a Go type-definition node by its underlying
+/// shape. Returns `None` for any node that is not a `type_spec` / `type_alias`
+/// (so the caller falls through to the string-keyed `classify_node_kind`).
+///
+/// * `type_alias` (`type X = Y`)                     -> [`EntityKind::TypeAlias`]
+/// * `type_spec` whose `type` field is `struct_type` -> [`EntityKind::Struct`]
+/// * `type_spec` whose `type` field is `interface_type` -> [`EntityKind::Interface`]
+/// * `type_spec` with any other underlying type      -> [`EntityKind::Class`]
+///   (a defined type such as `type Celsius float64` — `structure`'s legacy
+///   entry-kind switch likewise reports it as the class-axis default).
+fn go_type_node_kind(node: Node) -> Option<EntityKind> {
+    match node.kind() {
+        "type_alias" => Some(EntityKind::TypeAlias),
+        "type_spec" => Some(match node.child_by_field_name("type").map(|t| t.kind()) {
+            Some("struct_type") => EntityKind::Struct,
+            Some("interface_type") => EntityKind::Interface,
+            _ => EntityKind::Class,
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -745,6 +798,49 @@ mod classify_tests {
         assert_eq!(classify_node(obj, Language::Scala, src), Some(EntityKind::Object));
         let tr = find_kind(root, "trait_definition").expect("scala trait");
         assert_eq!(classify_node(tr, Language::Scala, src), Some(EntityKind::Trait));
+    }
+
+    #[test]
+    fn go_grammar_ground_truth() {
+        let src = "package p\n\ntype S struct { x int }\n\ntype I interface { M() error }\n\ntype Celsius float64\n\ntype Alias = S\n\nfunc (s *S) M() error { return nil }\n\nfunc Free() int { return 0 }\n";
+        let tree = parse(src, Language::Go).unwrap();
+        let root = tree.root_node();
+
+        // `type S struct {...}` -> Struct (type_spec → struct_type)
+        let s = find_kind(root, "type_spec").expect("go type_spec (struct)");
+        assert_eq!(classify_node(s, Language::Go, src), Some(EntityKind::Struct));
+
+        // The `type_declaration` wrapper drills into its inner spec.
+        let s_decl = find_kind(root, "type_declaration").expect("go type_declaration");
+        assert_eq!(
+            classify_node(s_decl, Language::Go, src),
+            Some(EntityKind::Struct),
+            "type_declaration wrapper resolves via its inner type_spec"
+        );
+
+        // Collect every type_spec to reach the interface / defined-type ones.
+        let mut specs = Vec::new();
+        collect_kind(root, "type_spec", &mut specs);
+        let kinds: Vec<_> = specs
+            .iter()
+            .filter_map(|n| classify_node(*n, Language::Go, src))
+            .collect();
+        assert!(kinds.contains(&EntityKind::Struct), "struct: {kinds:?}");
+        assert!(kinds.contains(&EntityKind::Interface), "interface: {kinds:?}");
+        assert!(
+            kinds.contains(&EntityKind::Class),
+            "defined type `type Celsius float64` -> Class: {kinds:?}"
+        );
+
+        // `type Alias = S` -> TypeAlias (dedicated type_alias node).
+        let alias = find_kind(root, "type_alias").expect("go type_alias");
+        assert_eq!(classify_node(alias, Language::Go, src), Some(EntityKind::TypeAlias));
+
+        // Function-axis nodes still classify via the string-keyed path.
+        let m = find_kind(root, "method_declaration").expect("go method");
+        assert_eq!(classify_node(m, Language::Go, src), Some(EntityKind::Method));
+        let f = find_kind(root, "function_declaration").expect("go function");
+        assert_eq!(classify_node(f, Language::Go, src), Some(EntityKind::Function));
     }
 
     #[test]

@@ -1730,8 +1730,18 @@ pub fn extract_class_info(class_node: Node, source: &[u8], lang: Language) -> Cl
         );
     }
 
-    ClassInfo {
-        name,
+    // RC2-META Stage 3 (go): Go's container/type discriminator is NOT decidable
+    // from the bare node-kind string — every Go type is a `type_declaration`
+    // wrapping a `type_spec` (struct / interface / defined type) or `type_alias`.
+    // Use the node-aware canonical `classify_node` (single source of truth) so
+    // `interface` reports `struct`/`interface`/`type`/`class` in agreement with
+    // `extract`, instead of an undifferentiated `kind: None`. Additive.
+    let kind = match lang {
+        Language::Go => {
+            let src_str = std::str::from_utf8(source).unwrap_or("");
+            tldr_core::ast::entity::classify_node(class_node, lang, src_str)
+                .map(|k| k.as_str().to_string())
+        }
         // rc2-ts-interface-typealias-lumped-as-classes: the discriminating
         // tree-sitter node kind is LIVE here (the dispatcher matched
         // `class_node.kind()` against `class_node_kinds`). Record it for
@@ -1739,7 +1749,12 @@ pub fn extract_class_info(class_node: Node, source: &[u8], lang: Language) -> Cl
         // aliases / enums into an undifferentiated class bucket. Other
         // languages keep `kind: None` (JSON stays byte-identical via the
         // `skip_serializing_if` guard on the field).
-        kind: ts_js_entry_kind(class_node.kind(), lang),
+        _ => ts_js_entry_kind(class_node.kind(), lang),
+    };
+
+    ClassInfo {
+        name,
+        kind,
         lineno,
         bases,
         methods,
