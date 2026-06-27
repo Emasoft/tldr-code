@@ -589,11 +589,24 @@ impl<'a> ComplexityCalculator<'a> {
             // `foreach_statement`), neither of which had any arm here.
             // ---------------------------------------------------------------
 
-            // Kotlin / Scala / OCaml: `if` is an expression.
+            // Kotlin / Scala / OCaml / Rust: `if` is an expression.
+            //
+            // RC5 (v0.5.0 RC-CAMPAIGN): in tree-sitter-rust `if`, `if let` and
+            // the chained `else if` all parse as `if_expression` (never the
+            // C-shaped `if_statement`), so the generic `_statement` arms never
+            // fired and every branchy Rust function collapsed to cyclomatic = 1.
+            // The canonical cognitive cyclomatic counter
+            // (`cognitive::count_cyclomatic_increment`) credits `if_expression`
+            // ungated, so `tldr complexity` disagreed with
+            // `tldr cognitive --include-cyclomatic` and with the CFG's own
+            // E-N+2P decision count. Adding `Language::Rust` brings the McCabe
+            // count back in step (rust-clap / rust-ripgrep were 1 vs cognitive
+            // 4 / 9). The trailing bare `else` is an `else_clause` (not an
+            // `if_expression`) and is correctly NOT counted.
             "if_expression"
                 if matches!(
                     self.language,
-                    Language::Kotlin | Language::Scala | Language::Ocaml
+                    Language::Kotlin | Language::Scala | Language::Ocaml | Language::Rust
                 ) =>
             {
                 self.cyclomatic += 1;
@@ -2060,6 +2073,152 @@ end
         assert_eq!(
             metrics.cyclomatic, 1,
             "Ruby straight-line stays cyclomatic 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    // -- RC5: Rust `if` is an expression ---------------------------------
+    //
+    // RC5 (v0.5.0 RC-CAMPAIGN): in tree-sitter-rust `if`, `if let` and the
+    // chained `else if` all parse as `if_expression` nodes (never the C-shaped
+    // `if_statement`), so none of the generic `_statement` arms ever fired and
+    // every branchy Rust function collapsed to cyclomatic = 1. The canonical
+    // cognitive cyclomatic counter (`cognitive::count_cyclomatic_increment`,
+    // which credits `if_expression` ungated) already counted these, so
+    // `tldr complexity` disagreed with `tldr cognitive --include-cyclomatic`
+    // and with the CFG's own E-N+2P decision count. The fix adds
+    // `Language::Rust` to the existing `if_expression` decision arm.
+    //
+    // GENERALIZATION GATE: this asserts EVERY variant of the Rust-`if`
+    // symptom class — plain `if`, `if let`, and chained `else if` — is
+    // credited, plus the over-correction guard that a straight-line Rust
+    // function stays at 1.
+
+    #[test]
+    fn test_rust_if_expression_counts_all_variants() {
+        // base 1 + `if` (1) + `else if` (nested if_expression, 1)
+        //        + `if let` (1) = 4. This is exactly the McCabe E-N+2P count
+        // and matches `tldr cognitive --include-cyclomatic` (which reports 4).
+        let source = r#"
+fn classify(x: i32) -> i32 {
+    if x < 0 {
+        return -1;
+    } else if x == 0 {
+        return 0;
+    }
+    if let Some(_y) = Some(x) {
+        return 1;
+    }
+    2
+}
+"#;
+        let metrics = calculate_complexity(source, "classify", Language::Rust).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Rust if + else-if + if-let: base 1 +1 +1 +1 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_rust_plain_if_counts() {
+        // Variant: a single plain `if` -> base 1 + 1 = 2.
+        let source = r#"
+fn f(x: i32) -> i32 {
+    if x > 0 {
+        return 1;
+    }
+    0
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::Rust).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Rust plain `if`: base 1 + 1 = 2, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_rust_if_let_counts() {
+        // Variant: a single `if let` pattern match -> base 1 + 1 = 2.
+        let source = r#"
+fn f(x: Option<i32>) -> i32 {
+    if let Some(v) = x {
+        return v;
+    }
+    0
+}
+"#;
+        let metrics = calculate_complexity(source, "f", Language::Rust).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Rust `if let`: base 1 + 1 = 2, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_rust_else_if_chain_counts_each() {
+        // Variant: a 3-deep `else if` chain. Each `else if` is its own nested
+        // `if_expression`; the trailing bare `else` is an `else_clause` with a
+        // block (NOT a decision point). base 1 + 3 = 4.
+        let source = r#"
+fn grade(x: i32) -> i32 {
+    if x >= 90 {
+        4
+    } else if x >= 80 {
+        3
+    } else if x >= 70 {
+        2
+    } else {
+        0
+    }
+}
+"#;
+        let metrics = calculate_complexity(source, "grade", Language::Rust).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 4,
+            "Rust 3 `else if` arms (trailing `else` not counted): base 1 + 3 = 4, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_rust_straight_line_stays_one() {
+        // Over-correction guard: no branches -> cyclomatic 1.
+        let source = r#"
+fn linear(x: i32) -> i32 {
+    let y = x + 1;
+    let z = y * 2;
+    z
+}
+"#;
+        let metrics = calculate_complexity(source, "linear", Language::Rust).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 1,
+            "Rust straight-line stays cyclomatic 1, got {}",
+            metrics.cyclomatic
+        );
+    }
+
+    #[test]
+    fn test_other_expr_langs_if_unchanged_by_rust_fix() {
+        // Regression guard: the existing expression-oriented languages already
+        // credited via the `if_expression` arm (Kotlin / Scala / OCaml) must be
+        // unchanged. A Kotlin `if` -> base 1 + 1 = 2.
+        let kotlin = r#"
+fun f(x: Int): Int {
+    if (x > 0) {
+        return 1
+    }
+    return 0
+}
+"#;
+        let metrics = calculate_complexity(kotlin, "f", Language::Kotlin).unwrap();
+        assert_eq!(
+            metrics.cyclomatic, 2,
+            "Kotlin `if` still counts after Rust fix: base 1 + 1 = 2, got {}",
             metrics.cyclomatic
         );
     }
