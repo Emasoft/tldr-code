@@ -7626,7 +7626,14 @@ fn extract_csharp_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (csharp): populate the carrier `kind` from the
+        // canonical [`crate::ast::entity::classify_node`] discriminator (single
+        // source of truth — same answer structure/interface use) so `extract`
+        // reports `kind:"class"`/`"struct"`/`"interface"` for
+        // `class_declaration`/`struct_declaration`/`interface_declaration`
+        // instead of `None`. Additive — no existing field/name/line changes.
+        kind: crate::ast::entity::classify_node(*node, Language::CSharp, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),

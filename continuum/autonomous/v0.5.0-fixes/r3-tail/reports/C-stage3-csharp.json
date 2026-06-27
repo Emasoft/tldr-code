@@ -1,0 +1,50 @@
+{
+  "fix": "fix-R3-rc2-meta-stage3-csharp",
+  "campaign": "v0.5.0 CLOSEOUT — rc2-meta STAGE 3 (universal kind population)",
+  "language": "csharp",
+  "result": "success",
+  "spec": "continuum/autonomous/v0.5.0-fixes/decisions/proposals/rc2-meta-STAGED-PLAN.md (STAGE 3)",
+  "single_source_of_truth": "crates/tldr-core/src/ast/entity.rs::classify_node / classify_node_kind (no new per-language kind table; existing CSharp arm reused)",
+  "implemented": "Wired the canonical classify_node discriminator into the C# production paths of extract, interface, and structure to populate EntityKind (kind) additively. extract_csharp_class_info now sets kind via classify_node (class_declaration->class, struct_declaration->struct, interface_declaration->interface) instead of None. interface's ts_js_entry_kind gained a CSharp arm delegating to classify_node_kind (same three containers). structure's classify_definition_node gained a CSharp arm marking struct_declaration | enum_declaration | record_declaration as class-axis so definitions[] stops DROPPING C# structs/enums/records (record -> kind \"class\", struct -> \"struct\", enum -> \"enum\" via the existing collect_definitions entry-kind switch).",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_csharp_v1.rs",
+    "continuum/autonomous/v0.5.0-fixes/r3-tail/reports/C-stage3-csharp.json"
+  ],
+  "json_delta": "ADDITIVE only. (1) `tldr extract` classes[]: each C# class/struct/interface ClassInfo now carries kind: \"class\"|\"struct\"|\"interface\" (formerly the field was omitted via skip_serializing_if on kind:None). (2) `tldr interface` classes[]: same three containers now carry the same kind string (formerly omitted). (3) `tldr structure` files[].definitions[]: C# `struct_declaration` (kind:\"struct\"), `enum_declaration` (kind:\"enum\") and `record_declaration` (kind:\"class\") now SURFACE as definition entries that were previously dropped entirely — additive new entries, no existing entry changed name/line/kind. class/interface/method definition entries are byte-identical to before. No field renamed, no construct dropped, no line/name change.",
+  "node_kind_mapping": {
+    "class_declaration": "class",
+    "struct_declaration": "struct",
+    "interface_declaration": "interface",
+    "enum_declaration": "enum",
+    "record_declaration": "class"
+  },
+  "out_of_scope_noted": {
+    "delegate_declaration": "C# delegate (named function-type). Not in the canonical CSharp classify_node_kind arm and not walked by any C#/interface/structure extractor; surfacing it would require a NEW shared classify_node mapping + entry-kind string + name-extraction wiring (beyond additive-kind scope). Left for a follow-up; structure still drops BinaryOp delegate. EntityKind variant exists (TypeAlias/Function) so this is NOT a blocked-needs-other-file model gap — purely scope.",
+    "property_declaration": "C# auto-properties are class MEMBERS not surfaced by any current extractor; adding them is new member extraction, not kind population. Deferred."
+  },
+  "char_tests": [
+    "crates/tldr-cli/tests/rc2_meta_stage3_csharp_v1.rs::extract_populates_csharp_container_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_csharp_v1.rs::interface_populates_csharp_container_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_csharp_v1.rs::structure_extract_interface_agree_on_csharp_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_csharp_v1.rs::structure_surfaces_csharp_struct_enum_record"
+  ],
+  "tests": {
+    "new_char_test": "rc2_meta_stage3_csharp_v1: 4 passed",
+    "tldr_core_lib": "5273 passed; 0 failed; 342 ignored",
+    "csharp_relevant_cli_suites": "exhaustive_matrix 676 ok, is_public_visibility_v1 7 ok, structure_functions_projection_v1 6 ok, c_structure_schema_v1 4 ok, cross_cutting_and_clear_fix_bugs_v1 19 ok, critical_regressions_v1 13 ok, language_adapter_fixes_v1 14 ok, cl4r_csharp_cognitive_v1 3 ok, structure_method_infos_all_langs_v1 4 ok, language_command_matrix 871 ok (1 pre-existing ocaml-imports RED)",
+    "pre_existing_unrelated_reds": [
+      "cross_language_extraction_v2::todo_autodetect_works_for_java",
+      "cross_language_extraction_v2::todo_autodetect_works_for_kotlin",
+      "language_command_matrix::test_imports_on_ocaml",
+      "interface_per_lang_v1::javascript_prototype_assignments_emitted"
+    ],
+    "pre_existing_justification": "All four failing tests exercise java/kotlin/ocaml/javascript paths only. Every edit in this commit is gated on Language::CSharp (classify_definition_node CSharp arm, ts_js_entry_kind CSharp arm, extract_csharp_class_info which is only invoked for C#), so they are causally incapable of affecting these tests. Pre-existing per STAGED-PLAN §4 known-RED list."
+  },
+  "goldens_rebaselined": [],
+  "goldens_note": "No existing golden GAINED or LOST anything that required a rebaseline: all C# extract/interface/structure suites stayed green because the kind field is additive (skip_serializing_if) and the new structure definition entries did not collide with any pinned C# count/exact-list assertion. NO-GAMING: no assertion weakened, no construct dropped, no name/line changed.",
+  "committed": true,
+  "status": "closed"
+}

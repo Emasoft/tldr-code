@@ -3889,6 +3889,31 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
                 is_class = true;
             }
         }
+        Language::CSharp => {
+            // RC2-META Stage 3 (csharp): C# `struct X { ... }`
+            // (`struct_declaration`), `enum E { ... }` (`enum_declaration`) and
+            // `record P(...);` (`record_declaration`) are top-level TYPE-DEFINING
+            // containers that the canonical `classify_node_kind` maps to
+            // `EntityKind::Struct` / `EntityKind::Enum` / `EntityKind::Class`
+            // (all class-axis). They were ABSENT from the shared `is_class` list
+            // above, so `structure`'s `definitions[]` DROPPED every C# struct,
+            // enum and record even though the `extract`/`interface` families
+            // already surface structs. Surface them here (Solidity/Java
+            // precedent: language-gated so the shared names — `struct_declaration`
+            // also exists in Solidity, `enum_declaration` in Java/PHP/Kotlin/
+            // Solidity, `record_declaration` in Java — cannot collide). The
+            // reported kind string is refined to "struct"/"enum" by the
+            // entry-kind switch in `collect_definitions` (record falls through to
+            // the default "class", matching `EntityKind::Class`). Additive:
+            // structure now AGREES with extract on (name, kind) instead of
+            // dropping the construct.
+            if matches!(
+                kind,
+                "struct_declaration" | "enum_declaration" | "record_declaration"
+            ) {
+                is_class = true;
+            }
+        }
         Language::Ocaml => {
             if kind == "type_definition" {
                 is_class = true;

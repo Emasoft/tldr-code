@@ -1822,6 +1822,15 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // `kind: None`.
         Language::Java => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (csharp): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth — same answer `extract`/`structure` use). The
+        // node kinds reaching here are exactly `class_node_kinds(CSharp)` =
+        // {`class_declaration`, `interface_declaration`, `struct_declaration`},
+        // which map to `class`/`interface`/`struct`. Additive — formerly
+        // `kind: None`.
+        Language::CSharp => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
