@@ -1907,6 +1907,18 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // set ever widen.)
         Language::Cpp => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (php): populate the `interface` `ClassInfo.kind` from
+        // the canonical, string-keyed `classify_node_kind` discriminator (single
+        // source of truth — same answer `extract`/`structure` use). The node
+        // kinds reaching here are exactly `class_node_kinds(Php)` =
+        // {`class_declaration`, `interface_declaration`}, which map to
+        // `class`/`interface`. Additive — formerly `kind: None` (omitted via the
+        // `skip_serializing_if` guard); `interface` now reports `kind:"class"` /
+        // `kind:"interface"` in agreement with `extract`/`structure`. (PHP traits
+        // are not in `class_node_kinds(Php)`, so no trait/class ambiguity arises
+        // here; methods are folded into their owner's `methods`.)
+        Language::Php => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }

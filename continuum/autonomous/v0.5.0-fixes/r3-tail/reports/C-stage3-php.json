@@ -1,0 +1,65 @@
+{
+  "fix_id": "fix-R3-rc2-meta-stage3-php",
+  "stage": "STAGE 3 — universal kind population (additive)",
+  "language": "php",
+  "campaign": "v0.5.0 CLOSEOUT",
+  "summary": "Wire the canonical classify_node discriminator into the PRODUCTION extract + interface PHP paths so ClassInfo.kind is populated (additive) for class/interface/trait, matching what structure already emits via the Stage-2 family-1 switch. Single source of truth: crate::ast::entity::classify_node / classify_node_kind. No new per-language kind table.",
+  "repro_before": {
+    "file": "/tmp/rc2_php.php (interface Shape, trait Loggable, enum Suit, class Circle, function helper)",
+    "extract.classes[].kind": "Shape=None, Loggable=None, Circle=None",
+    "interface.classes[].kind": "Shape=None, Circle=None",
+    "structure.definitions[].kind": "Shape=interface, Circle=class (already populated in Stage 2; trait/enum dropped by family-1 membership — pre-existing, out of scope)"
+  },
+  "implementation": {
+    "ast_driven": true,
+    "regex_or_hardcode": false,
+    "classifier": "crate::ast::entity::classify_node(node, Language::Php, source) / classify_node_kind(node_kind, Language::Php) — already maps class_declaration->Class, interface_declaration->Interface, trait_declaration->Trait, enum_declaration->Enum, function_definition->Function, method_declaration->Method (landed Stage 2; unchanged here)",
+    "edits": [
+      "crates/tldr-core/src/ast/extract.rs: extract_php_class_info — kind: classify_node(*node, Php, source).map(as_str) (was None)",
+      "crates/tldr-core/src/ast/extract.rs: extract_php_interface_info — kind via classify_node (was None)",
+      "crates/tldr-core/src/ast/extract.rs: extract_php_trait_info — kind via classify_node (was None)",
+      "crates/tldr-cli/src/commands/patterns/interface.rs: ts_js_entry_kind — added Language::Php arm delegating to classify_node_kind (was falling through to _ => None)"
+    ]
+  },
+  "json_delta": {
+    "command_extract": "extract.classes[] for PHP now emits additive field \"kind\": class_declaration -> \"class\", interface_declaration -> \"interface\", trait_declaration -> \"trait\". Previously the field was omitted (serde skip_serializing_if Option::is_none). No name/line/bases/methods/docstring/decorators change.",
+    "command_interface": "interface.classes[] for PHP now emits additive field \"kind\": class_declaration -> \"class\", interface_declaration -> \"interface\". (class_node_kinds(Php) = {class_declaration, interface_declaration}; traits are not in that set, so interface emits no trait carrier.) Previously omitted.",
+    "command_structure": "UNCHANGED (already populated in Stage 2).",
+    "axis": "All new kind strings are class-axis; the Stage-2 string-keyed consumers (function_finder, agreement test) remain byte-identical. Purely additive — no field removed, no value changed."
+  },
+  "scope_notes": [
+    "FunctionInfo has no kind field (as in all 13 prior Stage-3 commits); function->function / method->method kind is already emitted by structure.definitions via the Stage-2 family-1 entry-kind switch. No FunctionInfo change.",
+    "PHP enum_declaration is NOT currently extracted as a class by extract_php_classes_detailed, and structure's family-1 membership drops trait_declaration/enum_declaration. Widening those membership tables would change emitted entity COUNTS (beyond additive-kind) and risk floor goldens, so it is intentionally OUT OF SCOPE for this additive-kind commit. classify_node already returns Enum/Trait for those node kinds, so a future membership-widening commit needs no classifier change."
+  ],
+  "tests": {
+    "char_test_file": "crates/tldr-cli/tests/rc2_meta_stage3_php_v1.rs",
+    "char_tests": [
+      "extract_populates_php_container_kinds — Shape=interface, Loggable=trait, Circle=class",
+      "interface_populates_php_container_kinds — Shape=interface, Circle=class",
+      "structure_extract_interface_agree_on_php_kinds — structure==extract==interface on (name,kind) for class+interface carriers"
+    ],
+    "red_before_green_after": true,
+    "core_lib": "cargo test -p tldr-core --lib => 5280 passed; 0 failed; 342 ignored",
+    "cli_suites_green": [
+      "rc2_meta_stage3_php_v1 (3 passed)",
+      "interface_extraction_ocaml_elixir_v1 (6 passed)",
+      "cl6_interface_v1 (8 passed)",
+      "structure_method_infos_all_langs_v1 (4 passed)",
+      "language_specific_bugs_v1 (14 passed)",
+      "cl11_implements_v1 (4 passed)"
+    ],
+    "unrelated_failures_pre_existing": [
+      "interface_per_lang_v1::javascript_prototype_assignments_emitted — JS-only (Application prototype carrier dropped); confirmed pre-existing via the installed binary which predates this change and also drops it. Not touched by PHP edits.",
+      "quality_metrics_and_schema_v1::agg13_17_smells_summary_populated_multi_lang — environmental: panics 'no repos available' because /tmp/repos/* corpora are absent. Not a logic regression."
+    ]
+  },
+  "goldens_rebaselined": [],
+  "goldens_note": "No snapshot/golden files exist for the PHP extract/interface kind path; all assertions are inline. The change is additive (new optional field only), so no existing inline assertion required weakening or re-baselining. No golden dropped a construct or changed a name/line.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_php_v1.rs",
+    "continuum/autonomous/v0.5.0-fixes/r3-tail/reports/C-stage3-php.json"
+  ],
+  "status": "closed"
+}
