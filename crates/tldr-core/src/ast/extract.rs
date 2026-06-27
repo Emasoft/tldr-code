@@ -5570,7 +5570,14 @@ fn extract_swift_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (swift): populate the discriminator via the canonical
+        // node-aware `classify_node` (single source of truth — same answer
+        // `structure`/`interface` use). tree-sitter-swift folds class / struct /
+        // enum / extension / actor into ONE `class_declaration` node, so the kind
+        // is NOT decidable from the bare node-kind string; `classify_node` reads
+        // the leading keyword token. Additive — formerly `kind: None`.
+        kind: crate::ast::entity::classify_node(*node, Language::Swift, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -11514,6 +11521,38 @@ let lowercase_val = 42
             !constants.iter().any(|c| c.name == "lowercase_val"),
             "Should not extract lowercase lowercase_val"
         );
+    }
+
+    #[test]
+    fn test_extract_swift_class_kind_rc2_meta_stage3() {
+        use crate::ast::parser::parse;
+
+        // RC2-META Stage 3 (swift): `extract`'s ClassInfo.kind must be populated
+        // via the canonical `classify_node` — class/struct/enum surface their
+        // real kind instead of `kind: None`.
+        let source = r#"
+class Animal {
+    func speak() -> String { return "" }
+}
+
+struct Point {
+    var x: Int
+}
+
+enum Color {
+    case red
+}
+"#;
+        let tree = parse(source, Language::Swift).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Swift);
+
+        let kind_of = |name: &str| -> Option<String> {
+            classes.iter().find(|c| c.name == name).and_then(|c| c.kind.clone())
+        };
+
+        assert_eq!(kind_of("Animal").as_deref(), Some("class"), "classes: {classes:?}");
+        assert_eq!(kind_of("Point").as_deref(), Some("struct"), "classes: {classes:?}");
+        assert_eq!(kind_of("Color").as_deref(), Some("enum"), "classes: {classes:?}");
     }
 
     #[test]

@@ -403,12 +403,23 @@ pub fn classify_node_kind(kind: &str, language: Language) -> Option<EntityKind> 
         },
         Language::Swift => match kind {
             "function_declaration" => Function,
+            // A protocol method REQUIREMENT (`func f()` inside a `protocol_body`)
+            // parses as its own node kind; it is a method on the function axis.
+            "protocol_function_declaration" => Method,
             "init_declaration" => Constructor,
+            // RC2-META Stage 3 (swift): tree-sitter-swift folds
+            // class / struct / enum / extension / actor into ONE
+            // `class_declaration` node — the bare node-kind string cannot tell
+            // them apart, so it maps conservatively to the class axis here;
+            // `classify_node` refines it structurally (the leading keyword token)
+            // below.
             "class_declaration" | "extension_declaration" => Class,
             // tree-sitter-swift also emits a dedicated `struct_declaration`
             // (diff's Swift container table lists it alongside class/protocol).
             "struct_declaration" => Struct,
             "protocol_declaration" => Interface,
+            // `typealias Name = T` -> TypeAlias (serialized as `"type"`).
+            "typealias_declaration" => TypeAlias,
             // `function_type` is a Swift closure TYPE annotation, never a def.
             _ => return None,
         },
@@ -514,6 +525,30 @@ pub fn classify_node(node: Node, language: Language, source: &str) -> Option<Ent
         }
         if has_interface_kw {
             return Some(EntityKind::Interface);
+        }
+        return Some(EntityKind::Class);
+    }
+
+    // RC2-META Stage 3 (swift): tree-sitter-swift folds class / struct / enum /
+    // extension / actor into ONE `class_declaration` node, distinguished only by
+    // the leading keyword token child (`struct`, `enum`, `extension`, `actor`,
+    // `class`), never by the bare node-kind string. `classify_node_kind`
+    // therefore maps `class_declaration` conservatively to `Class`; refine it
+    // here so `extract`/`interface`/`structure` agree on Struct/Enum:
+    //   `struct X {...}`                 -> Struct
+    //   `enum X {...}`                   -> Enum
+    //   `class` / `actor` / `extension`  -> Class (extension carriers -> class)
+    // All results stay on the CLASS axis, so the Stage-2 string-keyed consumers
+    // (`function_finder`, the agreement test) remain byte-identical.
+    if language == Language::Swift && kind == "class_declaration" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "struct" => return Some(EntityKind::Struct),
+                "enum" => return Some(EntityKind::Enum),
+                "class" | "actor" | "extension" => return Some(EntityKind::Class),
+                _ => {}
+            }
         }
         return Some(EntityKind::Class);
     }
@@ -980,6 +1015,73 @@ fun topLevel(): Int = 42
         assert!(kinds.contains(&EntityKind::Module), "defmodule -> Module: {kinds:?}");
         assert!(kinds.contains(&EntityKind::Function), "def -> Function: {kinds:?}");
         assert!(kinds.contains(&EntityKind::Macro), "defmacro -> Macro: {kinds:?}");
+    }
+
+    #[test]
+    fn swift_grammar_ground_truth() {
+        // tree-sitter-swift folds class / struct / enum / extension / actor into
+        // ONE `class_declaration` node, distinguished by the leading keyword
+        // token. protocol -> protocol_declaration; typealias ->
+        // typealias_declaration; init -> init_declaration; func ->
+        // function_declaration.
+        let src = r#"
+class Animal { func speak() -> String { return "" } }
+struct Point { var x: Int }
+enum Color { case red }
+protocol Greet { func hi() }
+extension Animal { func extra() {} }
+actor Bank { func deposit() {} }
+typealias Meters = Int
+func topLevel() -> Int { return 1 }
+"#;
+        let tree = parse(src, Language::Swift).unwrap();
+        let root = tree.root_node();
+
+        // Every class_declaration, classified structurally by its keyword token.
+        let mut decls = Vec::new();
+        collect_kind(root, "class_declaration", &mut decls);
+        let kinds: Vec<_> = decls
+            .iter()
+            .filter_map(|n| classify_node(*n, Language::Swift, src))
+            .collect();
+        assert!(kinds.contains(&EntityKind::Struct), "struct -> Struct: {kinds:?}");
+        assert!(kinds.contains(&EntityKind::Enum), "enum -> Enum: {kinds:?}");
+        // class + extension + actor all -> Class (extension carriers -> class).
+        assert_eq!(
+            kinds.iter().filter(|k| **k == EntityKind::Class).count(),
+            3,
+            "class + extension + actor are the 3 Class kinds: {kinds:?}"
+        );
+
+        let proto = find_kind(root, "protocol_declaration").expect("swift protocol");
+        assert_eq!(
+            classify_node(proto, Language::Swift, src),
+            Some(EntityKind::Interface),
+            "protocol -> Interface"
+        );
+
+        let ta = find_kind(root, "typealias_declaration").expect("swift typealias");
+        assert_eq!(
+            classify_node(ta, Language::Swift, src),
+            Some(EntityKind::TypeAlias),
+            "typealias -> TypeAlias"
+        );
+
+        let f = find_kind(root, "function_declaration").expect("swift function");
+        assert_eq!(
+            classify_node(f, Language::Swift, src),
+            Some(EntityKind::Function),
+            "func -> Function"
+        );
+
+        let init_src = "class C {\n    init() {}\n}\n";
+        let itree = parse(init_src, Language::Swift).unwrap();
+        let init = find_kind(itree.root_node(), "init_declaration").expect("swift init");
+        assert_eq!(
+            classify_node(init, Language::Swift, init_src),
+            Some(EntityKind::Constructor),
+            "init -> Constructor"
+        );
     }
 
     // ---- the fourth-table guard (in-crate tables) --------------------------

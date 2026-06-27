@@ -1763,7 +1763,16 @@ pub fn extract_class_info(class_node: Node, source: &[u8], lang: Language) -> Cl
         // truth) so `interface` reports `class`/`interface`/`enum`/`object`/`type`
         // in agreement with `extract`, instead of an undifferentiated `kind:None`.
         // Additive.
-        Language::Go | Language::Kotlin => {
+        // RC2-META Stage 3 (swift): like Go/Kotlin, Swift's container
+        // discriminator is NOT decidable from the bare node-kind string —
+        // `class` / `struct` / `enum` / `extension` / `actor` are all
+        // `class_declaration`, distinguished structurally by the leading keyword
+        // token; `protocol_declaration` maps to Interface. Route through the
+        // node-aware canonical `classify_node` (single source of truth) so
+        // `interface` reports `class`/`struct`/`enum`/`interface` in agreement
+        // with `extract`/`structure`, instead of an undifferentiated `kind:None`.
+        // Additive.
+        Language::Go | Language::Kotlin | Language::Swift => {
             let src_str = std::str::from_utf8(source).unwrap_or("");
             tldr_core::ast::entity::classify_node(class_node, lang, src_str)
                 .map(|k| k.as_str().to_string())
@@ -5361,6 +5370,46 @@ class ServerException extends BadResponseException
             cls.bases.iter().any(|b| b == "BadResponseException"),
             "PHP base `BadResponseException` must be captured, got {:?}",
             cls.bases
+        );
+    }
+
+    /// RC2-META Stage 3 (swift): `interface`'s ClassInfo.kind must be populated
+    /// via the canonical `classify_node` — class/struct/enum/protocol surface
+    /// their real kind instead of `kind: None`.
+    #[test]
+    fn test_interface_swift_class_kind_rc2_meta_stage3() {
+        let source = r#"
+public class Animal {
+    public func speak() -> String { return "" }
+}
+
+public struct Point {
+    public var x: Int
+}
+
+public enum Color {
+    case red
+}
+
+public protocol Greet {
+    func hi()
+}
+"#;
+        let info = extract_interface(Path::new("test.swift"), source).unwrap();
+        let kind_of = |name: &str| -> Option<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == name)
+                .and_then(|c| c.kind.clone())
+        };
+        assert_eq!(kind_of("Animal").as_deref(), Some("class"), "classes: {:?}", info.classes);
+        assert_eq!(kind_of("Point").as_deref(), Some("struct"), "classes: {:?}", info.classes);
+        assert_eq!(kind_of("Color").as_deref(), Some("enum"), "classes: {:?}", info.classes);
+        assert_eq!(
+            kind_of("Greet").as_deref(),
+            Some("interface"),
+            "swift protocol -> kind:interface; classes: {:?}",
+            info.classes
         );
     }
 

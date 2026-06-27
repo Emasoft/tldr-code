@@ -1,0 +1,46 @@
+{
+  "task": "fix-R3-rc2-meta-stage3-swift",
+  "language": "swift",
+  "stage": 3,
+  "result": "success",
+  "summary": "Wired the canonical node-aware classify_node into the PRODUCTION extract / interface / structure paths to populate EntityKind for Swift (additive). No new per-language kind table; classify_node is the single source of truth. tree-sitter-swift folds class/struct/enum/extension/actor into ONE class_declaration node distinguished only by the leading keyword token, so a node-aware refinement was added to classify_node (mirroring the Go/Kotlin pattern); protocol_declaration->interface, typealias_declaration->type.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/entity.rs",
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_swift_v1.rs"
+  ],
+  "classify_node_changes": {
+    "classify_node_kind(Swift)": "added typealias_declaration->TypeAlias and protocol_function_declaration->Method (kept function_declaration->Function, init_declaration->Constructor, class_declaration|extension_declaration->Class, struct_declaration->Struct, protocol_declaration->Interface)",
+    "classify_node(Swift class_declaration)": "added structural keyword-token refinement: child `struct`->Struct, `enum`->Enum, `class`/`actor`/`extension`->Class (all stay class-axis so Stage-2 string consumers remain byte-identical)"
+  },
+  "json_delta": {
+    "extract.classes[].kind": "Swift class_declaration carriers now emit kind \"class\"/\"struct\"/\"enum\" (previously omitted via skip_serializing_if on kind:None). protocol/typealias remain uncaptured by extract's collector (pre-existing scope, unchanged).",
+    "interface.classes[].kind": "Swift containers now emit kind: class_declaration -> \"class\"/\"struct\"/\"enum\", protocol_declaration -> \"interface\" (previously kind field omitted, kind:None).",
+    "structure.files[].definitions[]": "Swift struct/enum container kind corrected \"class\" -> \"struct\"/\"enum\"; protocol now emitted with kind:\"interface\" and typealias with kind:\"type\" (both were previously DROPPED from definitions[] for lack of an is_class entry). Additive: no name/line changes, no construct dropped."
+  },
+  "char_tests": [
+    "tldr-core ast::entity::classify_tests::swift_grammar_ground_truth (RED->GREEN): classify_node maps struct/enum/class/extension/actor/protocol/typealias/func/init correctly",
+    "tldr-core ast::extractor::tests::test_swift_structure_definition_kinds_rc2_meta_stage3 (RED->GREEN): structure definitions kinds class/struct/enum/interface/type",
+    "tldr-core ast::extract::tests::test_extract_swift_class_kind_rc2_meta_stage3 (RED->GREEN): extract ClassInfo.kind class/struct/enum",
+    "tldr-cli ...interface::tests::test_interface_swift_class_kind_rc2_meta_stage3 (RED->GREEN): interface ClassInfo.kind class/struct/enum/interface",
+    "tldr-cli tests/rc2_meta_stage3_swift_v1.rs (4 integration tests, debug binary via assert_cmd cargo_bin): extract/interface/structure kind population + cross-command agreement"
+  ],
+  "tests_run": {
+    "cargo test -p tldr-core --lib": "5277 passed; 0 failed; 342 ignored",
+    "cargo test -p tldr-cli --lib": "1673 passed; 0 failed",
+    "rc2_meta_stage3_swift_v1": "4 passed; 0 failed",
+    "rc2_meta_stage3_{go,csharp,java,rust,scala,typescript}_v1": "all passed; 0 failed (no cross-language regression)",
+    "b3_structure_polyglot_bound_scala_classify_v1": "passed",
+    "structure_functions_projection_v1": "passed",
+    "structure_method_infos_all_langs_v1": "passed",
+    "cross_command_consistency_v3": "passed",
+    "language_command_matrix (-- swift)": "48 passed; 0 failed"
+  },
+  "goldens_rebaselined": [],
+  "goldens_note": "No goldens re-baselined: no snapshot files exist for Swift (live inline assertions only), and no existing assertion pinned the old (wrong) Swift kinds. The change is purely additive (kind values corrected to the true construct + previously-dropped protocol/typealias now surfaced). All touched suites pass without modification. No golden DROPPED a construct or changed a name/line.",
+  "committed": true,
+  "pushed": false,
+  "status": "closed"
+}

@@ -2946,7 +2946,18 @@ fn collect_definitions(
             // is_class so the method/function distinction (decided by lexical
             // containment below) is untouched. Additive (corrects the kind
             // discriminator; name/line unchanged).
-            let entry_kind = if matches!(language, Language::Kotlin) && is_class {
+            // RC2-META Stage 3 (swift): Swift, like Kotlin, folds
+            // class / struct / enum / extension / actor into ONE
+            // `class_declaration` node (distinguished only by the leading keyword
+            // token) and surfaces `protocol_declaration` / `typealias_declaration`
+            // separately; the string-keyed entry-kind switch above cannot tell
+            // them apart, so every Swift container was reported `kind:"class"`.
+            // Route the class-axis Swift entries through the node-aware canonical
+            // `classify_node` so `structure` reports
+            // `struct`/`enum`/`interface`/`type`/`class` in agreement with
+            // `extract`/`interface`. Gated to is_class so the method/function
+            // distinction (decided by lexical containment) is untouched.
+            let entry_kind = if matches!(language, Language::Kotlin | Language::Swift) && is_class {
                 match crate::ast::entity::classify_node(node, language, source) {
                     Some(ek) => ek.as_str(),
                     None => entry_kind,
@@ -3869,6 +3880,22 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
             if kind == "function_type" {
                 is_func = false;
             }
+            // RC2-META Stage 3 (swift): a `protocol Foo {...}`
+            // (`protocol_declaration`) and a `typealias Name = T`
+            // (`typealias_declaration`) are top-level TYPE-DEFINING constructs
+            // that the canonical `classify_node` maps to `EntityKind::Interface`
+            // / `EntityKind::TypeAlias` (both class-axis). They were ABSENT from
+            // the shared `is_class` list above, so `structure`'s `definitions[]`
+            // DROPPED every Swift protocol and type alias even though `interface`
+            // already surfaces protocols. Add them here (language-gated;
+            // `protocol_declaration` / `typealias_declaration` are Swift-only
+            // node kinds, no cross-grammar collision). The reported kind is
+            // refined to "interface"/"type" by the Swift override in
+            // `collect_definitions`. Additive: structure now AGREES with
+            // interface instead of dropping the construct.
+            if matches!(kind, "protocol_declaration" | "typealias_declaration") {
+                is_class = true;
+            }
         }
         Language::TypeScript | Language::JavaScript => {
             // RC2-META Stage 3 (typescript-javascript): TS `type X = ...`
@@ -4084,6 +4111,21 @@ fn get_definition_node_name(node: Node, source: &str) -> Option<String> {
     // Kotlin: companion_object has no identifier child; use "Companion" by convention.
     if node.kind() == "companion_object" {
         return Some("Companion".to_string());
+    }
+
+    // RC2-META Stage 3 (swift): `typealias Name = T` (`typealias_declaration`)
+    // and `protocol Name {...}` (`protocol_declaration`) expose their name as a
+    // `type_identifier` child. The generic `name`-field lookup above resolves
+    // most Swift declarations, but add an explicit fallback so a newly-surfaced
+    // alias/protocol name is never dropped from `definitions[]`.
+    if matches!(node.kind(), "typealias_declaration" | "protocol_declaration") {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_identifier" || child.kind() == "simple_identifier" {
+                let text = child.utf8_text(source.as_bytes()).ok()?;
+                return Some(text.to_string());
+            }
+        }
     }
 
     // RC2-META Stage 3 (kotlin): `typealias Name = T` stores its name under the
@@ -5579,6 +5621,59 @@ class Foo {
             "method",
             "VAL-002: Swift init inside class must have kind='method'; got {:?}",
             named
+        );
+    }
+
+    // ── RC2-META Stage 3 (swift): structure definition kinds ──────────
+
+    #[test]
+    fn test_swift_structure_definition_kinds_rc2_meta_stage3() {
+        // tree-sitter-swift folds class / struct / enum / extension / actor into
+        // one `class_declaration` node; protocol / typealias are their own nodes.
+        // `structure`'s definitions[] must report each container's REAL kind via
+        // the canonical `classify_node`, instead of an undifferentiated "class".
+        let source = r#"
+class Animal {
+    func speak() -> String { return "" }
+}
+
+struct Point {
+    var x: Int
+}
+
+enum Color {
+    case red
+}
+
+protocol Greet {
+    func hi()
+}
+
+typealias Meters = Int
+"#;
+        let tree = parse(source, Language::Swift).unwrap();
+        let defs = extract_definitions(&tree, source, Language::Swift);
+        let named: Vec<(String, String)> = defs
+            .iter()
+            .map(|d| (d.name.clone(), d.kind.clone()))
+            .collect();
+
+        let kind_of = |name: &str| -> Option<String> {
+            defs.iter().find(|d| d.name == name).map(|d| d.kind.clone())
+        };
+
+        assert_eq!(kind_of("Animal").as_deref(), Some("class"), "defs: {named:?}");
+        assert_eq!(kind_of("Point").as_deref(), Some("struct"), "defs: {named:?}");
+        assert_eq!(kind_of("Color").as_deref(), Some("enum"), "defs: {named:?}");
+        assert_eq!(
+            kind_of("Greet").as_deref(),
+            Some("interface"),
+            "swift protocol -> kind:interface; defs: {named:?}"
+        );
+        assert_eq!(
+            kind_of("Meters").as_deref(),
+            Some("type"),
+            "swift typealias -> kind:type; defs: {named:?}"
         );
     }
 
