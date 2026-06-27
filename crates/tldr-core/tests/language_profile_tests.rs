@@ -2267,6 +2267,108 @@ fn test_leading_underscore_does_not_force_snake_case() {
     assert_eq!(detect_naming_case("__init__"), NamingCase::Unknown);
 }
 
+/// RC5 scala trailing-underscore: a TRAILING-underscore (the idiomatic
+/// keyword-escape marker in Scala — `sequence_`, `async_`, `type_`,
+/// `wait_`, `yield_`, and also a private/temp marker in other langs) must
+/// NOT, by itself, make a single-word identifier look like `snake_case`.
+/// Pre-fix, `core = name.trim_start_matches('_')` stripped only LEADING
+/// underscores, so `sequence_` kept its trailing `_`, matched
+/// `contains('_') && all lowercase`, and was wrongly classified
+/// `SnakeCase`. On a Scala file using the keyword-escape idiom this drove
+/// the function-naming MAJORITY to `snake_case`, inverting the result and
+/// flagging every genuine camelCase function as a spurious violation.
+///
+/// GENERALIZATION GATE: only INTERNAL underscores may drive the
+/// snake/upper-snake decision. The classifier must strip BOTH leading AND
+/// trailing underscores before counting internal underscores. This test
+/// pins the full symptom class: trailing-underscore lower/upper words,
+/// trailing-underscore camelCase, leading-underscore (regression guard),
+/// combined leading+trailing, and — crucially — that GENUINE snake_case
+/// (with an internal `_`) is STILL flagged.
+#[test]
+fn test_trailing_underscore_does_not_force_snake_case() {
+    // Scala keyword-escape trailing-underscore lowercase words -> LowerAlpha
+    // (compatible with both snake & camel), NOT SnakeCase.
+    assert_eq!(detect_naming_case("sequence_"), NamingCase::LowerAlpha);
+    assert_eq!(detect_naming_case("async_"), NamingCase::LowerAlpha);
+    assert_eq!(detect_naming_case("type_"), NamingCase::LowerAlpha);
+    assert_eq!(detect_naming_case("wait_"), NamingCase::LowerAlpha);
+    assert_eq!(detect_naming_case("yield_"), NamingCase::LowerAlpha);
+    assert_eq!(detect_naming_case("value_"), NamingCase::LowerAlpha);
+    // Trailing-underscore UPPER single word -> UpperAlpha, NOT UpperSnakeCase.
+    assert_eq!(detect_naming_case("MAX_"), NamingCase::UpperAlpha);
+    // Trailing-underscore camelCase -> CamelCase (previously fell through to
+    // Unknown because the trailing `_` failed the `!contains('_')` guard).
+    assert_eq!(detect_naming_case("fooBar_"), NamingCase::CamelCase);
+    // Trailing-underscore PascalCase -> PascalCase.
+    assert_eq!(detect_naming_case("FooBar_"), NamingCase::PascalCase);
+    // Combined leading + trailing underscore degenerate word -> LowerAlpha.
+    assert_eq!(detect_naming_case("_value_"), NamingCase::LowerAlpha);
+    // Leading-underscore (regression guard) still NOT snake.
+    assert_eq!(detect_naming_case("_foo"), NamingCase::LowerAlpha);
+
+    // GENUINE snake_case with an INTERNAL underscore is STILL flagged,
+    // including when wrapped in leading/trailing underscores.
+    assert_eq!(detect_naming_case("foo_bar"), NamingCase::SnakeCase);
+    assert_eq!(detect_naming_case("process_data"), NamingCase::SnakeCase);
+    assert_eq!(detect_naming_case("_foo_bar_"), NamingCase::SnakeCase);
+    // GENUINE UPPER_SNAKE with an internal underscore still flagged.
+    assert_eq!(detect_naming_case("MAX_LEN"), NamingCase::UpperSnakeCase);
+    assert_eq!(detect_naming_case("MAX_LEN_"), NamingCase::UpperSnakeCase);
+}
+
+/// RC5 end-to-end: a Scala file using the keyword-escape trailing-underscore
+/// idiom for a MAJORITY of its functions, plus genuine camelCase functions,
+/// must NOT report the camelCase functions as `snake_case` violations. The
+/// trailing-underscore names must be treated as single-word (compatible),
+/// so the dominant convention is correctly camelCase.
+#[test]
+fn test_scala_trailing_underscore_no_spurious_camel_violations() {
+    let source = r#"
+object Sample {
+  def sequence_(xs: List[Int]): Int = xs.sum
+  def async_(x: Int): Int = x + 1
+  def type_(t: String): String = t
+  def wait_(n: Int): Int = n
+  def yield_(n: Int): Int = n
+  def value_(v: Int): Int = v
+  def processData(x: Int): Int = x * 2
+  def fetchUser(id: Int): Int = id
+  def buildIndex(n: Int): Int = n
+  def renderView(v: Int): Int = v
+}
+"#;
+    let signals = detect_signals(Language::Scala, source);
+    // Genuine camelCase functions must NOT be flagged as snake_case
+    // violations driven by the trailing-underscore false majority.
+    for (name, case) in [
+        ("processData", detect_naming_case("processData")),
+        ("fetchUser", detect_naming_case("fetchUser")),
+        ("buildIndex", detect_naming_case("buildIndex")),
+        ("renderView", detect_naming_case("renderView")),
+    ] {
+        assert_eq!(
+            case,
+            NamingCase::CamelCase,
+            "{name} must classify as CamelCase",
+        );
+    }
+    // And the trailing-underscore names must be single-word compatible,
+    // never SnakeCase.
+    for esc in ["sequence_", "async_", "type_", "wait_", "yield_", "value_"] {
+        assert_ne!(
+            detect_naming_case(esc),
+            NamingCase::SnakeCase,
+            "keyword-escape `{esc}` must NOT be SnakeCase",
+        );
+    }
+    // Sanity: signals were collected for the Scala functions.
+    assert!(
+        !signals.naming.function_names.is_empty(),
+        "expected Scala function-name signals to be collected",
+    );
+}
+
 /// R7 cluster[9] #25/#26: C++ function-name extraction must be AST-driven.
 /// The pre-fix text-split (`text.split('(').next().split_whitespace().last()`)
 /// grabbed the RETURN TYPE / keyword for several declarator shapes:

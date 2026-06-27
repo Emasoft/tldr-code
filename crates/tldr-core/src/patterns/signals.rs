@@ -366,21 +366,28 @@ pub fn detect_naming_case(name: &str) -> NamingCase {
         return NamingCase::Unknown;
     }
 
-    // R7 cluster[9] #235/#255: trim a LEADING-underscore private prefix
-    // BEFORE any case test, and classify on the core. A leading
-    // underscore is the idiomatic private marker in Swift, TypeScript,
-    // JavaScript, Rust, Python, etc. (`_create`, `_readBytes`, `_ptr`),
-    // and must NOT, by itself, make a camelCase/Pascal/upper identifier
-    // look like `snake_case`. Pre-fix, the `contains('_') && all
-    // lowercase` snake test ran on the raw name and matched `_create`
-    // (a leading `_` makes `contains('_')` true), flagging 198
-    // leading-underscore camelCase names in swift-collections and the
-    // axios JS leading-underscore set as snake_case violations. Only
-    // INTERNAL underscores should drive the snake/upper-snake decision,
-    // so we run every subsequent test on `core` (the name with leading
-    // underscores stripped). A single residual char after stripping is
-    // ambiguous, so fall back to Unknown.
-    let core = name.trim_start_matches('_');
+    // R7 cluster[9] #235/#255 + RC5 scala trailing-underscore: trim BOTH
+    // leading AND trailing underscore markers BEFORE any case test, and
+    // classify on the core. A LEADING underscore is the idiomatic private
+    // marker in Swift, TypeScript, JavaScript, Rust, Python, etc.
+    // (`_create`, `_readBytes`, `_ptr`); a TRAILING underscore is the
+    // idiomatic keyword-escape marker in Scala (`sequence_`, `async_`,
+    // `type_`, `wait_`, `yield_`) and a private/temp marker elsewhere.
+    // Neither must, by itself, make a camelCase/Pascal/single-word
+    // identifier look like `snake_case`. Pre-fix, the `contains('_') &&
+    // all lowercase` snake test ran on the raw/leading-trimmed name:
+    //   - a leading `_` (`_create`) made `contains('_')` true, flagging
+    //     198 leading-underscore camelCase names in swift-collections and
+    //     the axios JS leading-underscore set as snake_case violations;
+    //   - a trailing `_` (`sequence_`) survived the leading-only trim,
+    //     making `contains('_')` true and driving the Scala function
+    //     majority to `snake_case`, which then flagged every genuine
+    //     camelCase function as a spurious violation.
+    // Only INTERNAL underscores should drive the snake/upper-snake
+    // decision, so we strip leading+trailing underscores and run every
+    // subsequent test on `core`. A single residual char after stripping
+    // is ambiguous, so fall back to Unknown.
+    let core = name.trim_matches('_');
     if core.len() <= 1 {
         return NamingCase::Unknown;
     }
