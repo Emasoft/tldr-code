@@ -817,7 +817,13 @@ fn extract_python_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (python): the canonical `classify_node` discriminator
+        // (single source of truth — no per-language kind table). A
+        // `class_definition` maps to `EntityKind::Class` ("class"), in agreement
+        // with `structure`'s `definitions[].kind` and `interface`. Additive:
+        // formerly `kind: None`.
+        kind: crate::ast::entity::classify_node(*node, Language::Python, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),

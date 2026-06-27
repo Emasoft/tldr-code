@@ -1,0 +1,56 @@
+{
+  "language": "python",
+  "result": "success",
+  "stage": "rc2-meta-stage3",
+  "implemented": "Populated ClassInfo.kind for Python via the canonical classify_node / classify_node_kind (single source of truth, no new per-language kind table). Additive: extract.classes[].kind and interface.classes[].kind now report \"class\" for class_definition, agreeing with structure.definitions[].kind which already classified class/method/function correctly.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_python_v1.rs"
+  ],
+  "edits": [
+    {
+      "file": "crates/tldr-core/src/ast/extract.rs",
+      "fn": "extract_python_class_info",
+      "change": "kind: None -> kind: classify_node(*node, Language::Python, source).map(|k| k.as_str().to_string())"
+    },
+    {
+      "file": "crates/tldr-cli/src/commands/patterns/interface.rs",
+      "fn": "ts_js_entry_kind",
+      "change": "Added Language::Python arm delegating to classify_node_kind(node_kind, lang) (class_definition -> \"class\"); previously fell through to _ => None"
+    }
+  ],
+  "json_delta": "extract command: classes[].kind changes from null to \"class\" for every Python class_definition (key was emitted as null pre-fix because extract's ClassInfo serializer always wrote kind; now non-null). interface command: classes[].kind ADDED (key was omitted via skip_serializing_if=Option::is_none when None; now emitted as \"class\"). structure command: UNCHANGED (definitions[].kind already correct: class_definition->\"class\", top-level def/async def->\"function\", in-class def/async def->\"method\"). No name/line/signature/membership changes. Python functions carry no kind field in extract (FunctionInfo has is_method bool, not kind) so functions are unaffected.",
+  "char_tests": [
+    "rc2_meta_stage3_python_v1::extract_populates_python_class_kind",
+    "rc2_meta_stage3_python_v1::interface_populates_python_class_kind",
+    "rc2_meta_stage3_python_v1::structure_classifies_python_class_method_function",
+    "rc2_meta_stage3_python_v1::structure_extract_interface_agree_on_python_class_kind"
+  ],
+  "tests": {
+    "tldr_core_lib": "5277 passed; 0 failed; 342 ignored",
+    "rc2_meta_stage3_python_v1": "4 passed",
+    "rc2_meta_stage3_typescript_v1": "5 passed (regression-free)",
+    "rc2_meta_stage3_scala_v1": "3 passed (regression-free)",
+    "cl6_interface_v1": "8 passed",
+    "interface_extraction_ocaml_elixir_v1": "6 passed",
+    "interface_per_lang_v1": "7 passed, 1 pre-existing unrelated failure (javascript_prototype_assignments_emitted)",
+    "is_public_visibility_v1": "7 passed",
+    "cross_command_consistency_v1": "7 passed",
+    "cross_command_consistency_v3": "5 passed",
+    "cpp_python_ast_issues_v1": "4 passed",
+    "cross_language_extraction_v2": "4 passed, 2 pre-existing unrelated failures (todo_autodetect_works_for_java, todo_autodetect_works_for_kotlin)"
+  },
+  "pre_existing_unrelated_failures": [
+    "interface_per_lang_v1::javascript_prototype_assignments_emitted (JavaScript; not reached by Python-only diff; test file unchanged from HEAD)",
+    "cross_language_extraction_v2::todo_autodetect_works_for_java (Java dead-code todo; unrelated)",
+    "cross_language_extraction_v2::todo_autodetect_works_for_kotlin (Kotlin dead-code todo; unrelated)"
+  ],
+  "goldens_rebaselined": [],
+  "goldens_note": "No golden snapshot files exist for Python (all inline live assertions per STAGED-PLAN Stage 3c). Change is purely additive kind; no construct dropped, no name/line change, so no golden weakened or rebaselined.",
+  "committed": true,
+  "status": "closed",
+  "ast_driven": true,
+  "regex_used": false,
+  "entity_kind_variant_added": false
+}

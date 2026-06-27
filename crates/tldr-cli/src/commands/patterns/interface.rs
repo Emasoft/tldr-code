@@ -1870,6 +1870,15 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // folded into `methods`, so no method/function ambiguity arises here.)
         Language::Ruby => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (python): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth — same answer `extract`/`structure` use). The
+        // node kinds reaching here are exactly `class_node_kinds(Python)` =
+        // {`class_definition`}, which maps to `class`. Additive — formerly
+        // `kind: None`. (Python methods are folded into `methods`, so no
+        // method/function ambiguity arises at the class-kind level.)
+        Language::Python => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
