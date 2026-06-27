@@ -1,0 +1,34 @@
+{
+  "task": "fix-R3-rc2-meta-stage3-rust",
+  "language": "rust",
+  "stage": "STAGE 3 — universal kind population (rust slice)",
+  "result": "success",
+  "implemented": "Wired the canonical classify_node / classify_node_kind discriminator (single source of truth, no new per-language kind table) into the production rust extract arm and the interface ts_js_entry_kind generalization so ClassInfo.kind is populated for rust struct_item/enum_item/trait_item carriers (struct/enum/trait). Additive only; agrees with structure's existing entry-kind switch.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_rust_v1.rs"
+  ],
+  "edit_detail": {
+    "extract.rs": "collect_rust_struct_defs (~L3735): kind: None -> kind: classify_node(child, Language::Rust, source).map(|k| k.as_str().to_string()). struct_item->struct, enum_item->enum, trait_item->trait.",
+    "interface.rs": "ts_js_entry_kind (~L1785): added Language::Rust arm delegating to classify_node_kind(node_kind, lang).map(|k| k.as_str().to_string()); class_node_kinds(Rust)={struct_item,impl_item,trait_item,enum_item} -> struct/class/trait/enum."
+  },
+  "method_vs_function_watch": "Resolved: free fns are FunctionInfo (never a class carrier); impl-block methods are folded into their owner's methods[]. So this class-carrier kind population can never confuse method with function. No new EntityKind variant needed (Struct/Enum/Trait/Class already exist).",
+  "char_tests": [
+    "crates/tldr-cli/tests/rc2_meta_stage3_rust_v1.rs::extract_populates_rust_container_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_rust_v1.rs::interface_populates_rust_container_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_rust_v1.rs::structure_extract_interface_agree_on_rust_kinds"
+  ],
+  "tests": {
+    "tldr-core --lib": "5272 passed, 0 failed, 342 ignored",
+    "rc2_meta_stage3_rust_v1": "3 passed",
+    "rc2_meta_stage3_scala_v1 / rc2_meta_stage3_typescript_v1 / interface_per_lang_v1 / cl6_interface_v1 / interface_extraction_ocaml_elixir_v1 / structure_functions_projection_v1": "all passed (no regressions)",
+    "structure_method_infos_all_langs_v1 / extract_slice_explain_decl_keyword_span_v1 / c_structure_schema_v1 / schema_cleanup_v1 / cli_remaining_tests / remaining_test": "4/80/12/95/11/4 passed, 0 failed",
+    "unrelated_preexisting_failures": "cross_language_extraction_v2::todo_autodetect_works_for_{java,kotlin} — TODO autodetect for Java/Kotlin, no rust code path; outside this change's scope (diff touches only rust extract + rust interface arm)."
+  },
+  "goldens_rebaselined": [],
+  "goldens_note": "No golden required re-baselining. The kind field uses skip_serializing_if=Option::is_none; rust now emits it additively. No existing rust extract/interface golden asserted kind absence, so all suites stayed GREEN with zero edits. No construct dropped, no name/line changed.",
+  "json_delta": "extract.classes[] and interface.classes[] for RUST files now include an additive \"kind\" string (\"struct\"|\"enum\"|\"trait\") for struct_item/enum_item/trait_item carriers (interface also \"class\" for a standalone impl_item carrier), where the field was previously omitted (kind==None, skipped by skip_serializing_if). No existing field, name, line, or entity count changes. structure output unchanged (already emitted these kinds).",
+  "committed": true,
+  "status": "closed"
+}

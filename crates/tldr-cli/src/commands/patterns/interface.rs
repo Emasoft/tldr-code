@@ -1782,6 +1782,17 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // `EntityKind::Module` / `EntityKind::TypeAlias` that structure emits.
         Language::Ocaml => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (rust): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth — same answer `extract`/`structure` use). The
+        // node kinds reaching here are exactly `class_node_kinds(Rust)` =
+        // {`struct_item`, `impl_item`, `trait_item`, `enum_item`}, which map to
+        // `struct`/`class`/`trait`/`enum`. Additive — formerly `kind: None`.
+        // (Free `fn`s are FunctionInfo, not classes; impl-block methods are
+        // folded into their owner's `methods`, so no method/function kind
+        // ambiguity arises in this class-carrier population.)
+        Language::Rust => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }

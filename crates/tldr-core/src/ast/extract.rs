@@ -3741,7 +3741,14 @@ fn collect_rust_struct_defs(node: &Node, source: &str, classes: &mut Vec<ClassIn
                 decorators: Vec::new(),
                 line_number,
                 line_end,
-                kind: None,
+                // RC2-META Stage 3 (rust): populate the carrier `kind` from the
+                // canonical [`crate::ast::entity::classify_node`] discriminator
+                // (single source of truth — same answer structure/interface use)
+                // so `extract` reports `kind:"struct"`/`"enum"`/`"trait"` for
+                // `struct_item`/`enum_item`/`trait_item` instead of `None`.
+                // Additive — no existing field/name/line changes.
+                kind: crate::ast::entity::classify_node(child, Language::Rust, source)
+                    .map(|k| k.as_str().to_string()),
                 modifiers: Vec::new(),
                 events: Vec::new(),
                 errors: Vec::new(),
