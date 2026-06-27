@@ -5306,6 +5306,46 @@ fn member_patterns_match(
     false
 }
 
+/// RC3-1: for a STRUCTURAL member-access taint source (e.g. Solidity
+/// `msg.sender`, `tx.origin`), return the RECEIVER identifier as the tainted
+/// variable name.
+///
+/// The matched node IS the caller-controlled expression: `msg.sender` is itself
+/// the tainted value, so its receiver `msg` is the correct positional variable.
+/// Emitting it directly is strictly more accurate than the line-text re-scan
+/// ([`extract_source_var_from_statement`]), which — on a non-assignment
+/// statement like `emit TransferSingle(msg.sender, …)` or
+/// `ERC1155TokenReceiver(to).onERC1155Received(msg.sender, …)` — grabs an
+/// unrelated identifier off the same physical line (the event name
+/// `TransferSingle`, the cast type `ERC1155TokenReceiver`) and emits it as a
+/// false-positive source variable (reproduced live on solidity-solmate
+/// ERC1155.sol:67/72).
+///
+/// Fires ONLY when the descendant is a member-access node whose
+/// `(receiver, field)` matches one of the supplied patterns with a CONCRETE
+/// (non-empty, non-`*`) receiver — i.e. exactly the structural-exact arm of
+/// [`member_patterns_match`]. It therefore never broadens detection beyond what
+/// already matched structurally and never fires for call-name / wildcard /
+/// raw-substring matches (those have no single positional receiver to emit).
+fn member_access_source_receiver(
+    descendant: &tree_sitter::Node,
+    source: &[u8],
+    language: Language,
+    member_patterns: &[(&str, &str)],
+) -> Option<String> {
+    let (rcv, field) =
+        extract_member_access_receiver_and_field(descendant, source, language)?;
+    for (pat_rcv, pat_field) in member_patterns {
+        if pat_rcv.is_empty() || *pat_rcv == "*" {
+            continue;
+        }
+        if rcv == *pat_rcv && field == *pat_field && is_valid_identifier(&rcv) {
+            return Some(rcv);
+        }
+    }
+    None
+}
+
 /// W2-pre: Regex-free first-argument extraction for AST-detected calls.
 ///
 /// Walks the matched call node's children to find its `arguments` list (or the
@@ -6084,6 +6124,25 @@ pub fn detect_sources_ast(
                     // `fread(buf, ...)`). Walks the descendant's `arguments`
                     // list and returns the first identifier-shaped child.
                     .or_else(|| extract_first_identifier_arg_ast(descendant, source, language))
+                    // RC3-1 (solidity member-access source FP): when the
+                    // matched descendant IS a structural member-access source
+                    // node (`msg.sender`, `tx.origin`, …) in a non-assignment
+                    // position, the tainted expression is the node itself —
+                    // emit its RECEIVER identifier (`msg`/`tx`) positionally
+                    // rather than letting the line-text re-scan below grab an
+                    // unrelated identifier off the same physical line (the
+                    // `emit` event name `TransferSingle`, the cast type
+                    // `ERC1155TokenReceiver`). Placed AFTER the assignment-LHS
+                    // and first-arg extractors so genuine assignment cases
+                    // (incl. the `type(uint256).max` regression) still win.
+                    .or_else(|| {
+                        member_access_source_receiver(
+                            descendant,
+                            source,
+                            language,
+                            pattern.member_patterns,
+                        )
+                    })
                     // M5 carry-forward (field_access_info-extension-v1): for
                     // call-shaped sources whose only arguments are string
                     // literals (e.g., Elixir `IO.gets("> ")` in a pipe chain,
@@ -10358,6 +10417,112 @@ fn run(input: &str) {
                 .any(|s| s.line == 3 && s.source_type == TaintSourceType::UserInput),
             "the genuine msg.sender UserInput source on line 3 must remain; got: {:?}",
             sources
+        );
+    }
+
+    /// RC3-1 (FP): a Solidity member-access taint source (`msg.sender`,
+    /// `msg.value`, `tx.origin`, …) that appears in a NON-assignment position —
+    /// an `emit` event argument, an external-call argument, an explicit cast
+    /// receiver — must be attributed to its own RECEIVER identifier (`msg` /
+    /// `tx`), NOT to an unrelated identifier grabbed by the line-text re-scan
+    /// (the event name `TransferSingle`, the cast type `ERC1155TokenReceiver`).
+    ///
+    /// GENERALIZATION GATE: this covers EVERY Solidity member-access source
+    /// variant in the symptom class — both receivers (`msg`, `tx`) across the
+    /// emit-argument and cast-call shapes — plus the assignment-LHS case (which
+    /// must still win) and the `type(uint256).max` keyword regression (which
+    /// must still NOT seed a `type` source).
+    #[test]
+    fn rc3_solidity_member_access_source_attributed_to_receiver() {
+        use crate::ast::ParserPool;
+        let pool = ParserPool::new();
+
+        // Helper: parse a Solidity snippet and return its AST sources.
+        let sources_of = |code: &str| {
+            let tree = pool.parse(code, Language::Solidity).unwrap();
+            let root = tree.root_node();
+            detect_sources_ast(&root, code.as_bytes(), Language::Solidity, None)
+        };
+
+        // --- Variant 1: msg.sender as an `emit` event argument (solmate
+        // ERC1155.sol:67). The FP attributed the source to the event name
+        // `TransferSingle`; the real receiver is `msg`. ---
+        let emit_code = "contract T {\n    event TransferSingle(address operator);\n    function f(address from, address to, uint256 id, uint256 amount) public {\n        emit TransferSingle(msg.sender, from, to, id, amount);\n    }\n}\n";
+        let s = sources_of(emit_code);
+        assert!(
+            !s.iter().any(|x| x.var == "TransferSingle"),
+            "event name `TransferSingle` must NOT be a taint source var; got: {:?}",
+            s
+        );
+        assert!(
+            s.iter().any(|x| x.var == "msg" && x.source_type == TaintSourceType::UserInput),
+            "msg.sender in an emit-arg must be attributed to receiver `msg`; got: {:?}",
+            s
+        );
+
+        // --- Variant 2: msg.sender as an explicit-cast external-call argument
+        // inside a `require(... ? ... : ERC1155TokenReceiver(to).onERC1155Received(
+        // msg.sender, ...) == ...)` — the exact solmate ERC1155.sol:72 shape, a
+        // NON-assignment position. The FP attributed the source to the cast type
+        // `ERC1155TokenReceiver`; the real receiver is `msg`. ---
+        let cast_code = "interface ERC1155TokenReceiver {\n    function onERC1155Received(address a, address b, uint256 c, uint256 d, bytes calldata e) external returns (bytes4);\n}\ncontract T {\n    function f(address to, address from, uint256 id, uint256 amount, bytes calldata data) public {\n        require(\n            to.code.length == 0\n                ? to != address(0)\n                : ERC1155TokenReceiver(to).onERC1155Received(msg.sender, from, id, amount, data) ==\n                    ERC1155TokenReceiver.onERC1155Received.selector,\n            \"UNSAFE_RECIPIENT\"\n        );\n    }\n}\n";
+        let s = sources_of(cast_code);
+        assert!(
+            !s.iter().any(|x| x.var == "ERC1155TokenReceiver"),
+            "cast type `ERC1155TokenReceiver` must NOT be a taint source var; got: {:?}",
+            s
+        );
+        assert!(
+            s.iter().any(|x| x.var == "msg" && x.source_type == TaintSourceType::UserInput),
+            "msg.sender in a cast-call arg must be attributed to receiver `msg`; got: {:?}",
+            s
+        );
+
+        // --- Variant 3: tx.origin as a require() argument — the OTHER receiver
+        // (`tx`) in the member-access source bank must also resolve positionally,
+        // never to the call name `require`. ---
+        let tx_code = "contract T {\n    function f() public {\n        require(tx.origin == address(0), \"no\");\n    }\n}\n";
+        let s = sources_of(tx_code);
+        assert!(
+            !s.iter().any(|x| x.var == "require"),
+            "call name `require` must NOT be a taint source var; got: {:?}",
+            s
+        );
+        assert!(
+            s.iter().any(|x| x.var == "tx" && x.source_type == TaintSourceType::UserInput),
+            "tx.origin in a require-arg must be attributed to receiver `tx`; got: {:?}",
+            s
+        );
+
+        // --- Variant 4: msg.value as a call argument — same receiver `msg`,
+        // different field, proving the fix keys on the structural match, not on
+        // the `sender` field text. ---
+        let value_code = "contract T {\n    function pay(address to) public {\n        to.transfer(msg.value);\n    }\n}\n";
+        let s = sources_of(value_code);
+        assert!(
+            s.iter().any(|x| x.var == "msg" && x.source_type == TaintSourceType::UserInput),
+            "msg.value in a call-arg must be attributed to receiver `msg`; got: {:?}",
+            s
+        );
+
+        // --- Preservation 1: an ASSIGNMENT LHS must still win over the receiver
+        // (find_parent_assignment_var is tried first). ---
+        let assign_code = "contract T {\n    function f() public {\n        address caller = msg.sender;\n    }\n}\n";
+        let s = sources_of(assign_code);
+        assert!(
+            s.iter().any(|x| x.var == "caller"),
+            "an assigned member-access source must keep its LHS var `caller`; got: {:?}",
+            s
+        );
+
+        // --- Preservation 2: the type(uint256).max keyword regression — the
+        // member-access receiver fix must NOT re-introduce a `type` source. ---
+        let type_code = "contract T {\n    function f(address from, uint256 amount) public {\n        uint256 allowed = allowance[from][msg.sender];\n        if (allowed != type(uint256).max) allowance[from][msg.sender] = allowed - amount;\n    }\n}\n";
+        let s = sources_of(type_code);
+        assert!(
+            !s.iter().any(|x| x.var == "type"),
+            "Solidity `type` keyword must NOT be a taint source var; got: {:?}",
+            s
         );
     }
 
