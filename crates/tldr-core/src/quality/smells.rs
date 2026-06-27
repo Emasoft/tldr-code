@@ -1830,6 +1830,20 @@ fn lazy_element_findings_from_classes(classes: &[crate::types::ClassInfo]) -> Ve
             ) {
                 continue;
             }
+            // RC5-ruby-module (v0.5.0 RC-CAMPAIGN): a genuinely-empty type whose
+            // AST flavor is `module` is a pure namespace declaration, not an
+            // anaemic "lazy" class. `ClassInfo.kind == "module"` is recorded
+            // straight from the tree-sitter-ruby `module` node kind by the
+            // extractor `entry_kind` switch (extractor.rs), so this is an
+            // AST-driven flavor check, NOT a name/text heuristic. The root
+            // `module RubyLsp` of a gem (0 methods / 0 fields) is a namespace
+            // SonarQube/RuboCop never flag. The exemption is gated on
+            // zero-member so a mixin module carrying real members is unaffected,
+            // and is kind-scoped so ordinary `class`/`struct` (kind != "module")
+            // stay flagged when anaemic.
+            if class.kind.as_deref() == Some("module") && method_count == 0 && field_count == 0 {
+                continue;
+            }
             // also exempt any (near-)zero-member type whose bases include a
             // sealed parent declared in this module (sealed-hierarchy
             // membership = marker-interface analog).
@@ -8095,6 +8109,62 @@ class Empty {}
             findings.iter().any(|f| f.name == "Empty"),
             "Plain anaemic Scala class MUST still be a lazy_element; got {:?}",
             findings.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_ruby_module_lazy_element_generalization() {
+        // RC5-ruby-module: a Ruby `module` carries `ClassInfo.kind == "module"`,
+        // a flavor recorded straight from the tree-sitter-ruby `module` AST node
+        // kind (extractor.rs `entry_kind` switch) — NOT a text/name heuristic.
+        // A zero-member module is a pure namespace declaration (e.g. the root
+        // `module RubyLsp` of a gem), never an anaemic "lazy" class; SonarQube /
+        // RuboCop do not flag empty namespaces. Pre-fix the 0/0 module surfaced
+        // as a lazy_element FP because the exemption block only knew Scala
+        // `case_object`/`sealed_*`.
+        //
+        // GENERALIZATION GATE — assert the fix covers the whole symptom class,
+        // not just one example:
+        //   (a) a zero-member Ruby module is exempt,
+        //   (b) Scala `case object` stays exempt (sibling exemption preserved,
+        //       no cross-language regression),
+        //   (c) a genuinely-trivial ordinary `class` (kind == "class") STILL
+        //       flags — the exemption is kind-scoped, not a blanket suppression.
+
+        // (a) + (c): both kinds live in one Ruby file so the assertion proves
+        // the exemption keys on `kind`, not on language.
+        let ruby_src = r#"
+module RubyLsp
+end
+
+class TrivialClass
+end
+"#;
+        let (_d1, rb_path) = write_tmp("rc5_module.rb", ruby_src);
+        let rb = detect_lazy_elements_with_path(ruby_src, "ruby", Some(&rb_path));
+        assert!(
+            rb.iter().all(|f| f.name != "RubyLsp"),
+            "Ruby empty `module RubyLsp` (0/0) must NOT be a lazy_element; got {:?}",
+            rb.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+        assert!(
+            rb.iter().any(|f| f.name == "TrivialClass"),
+            "A genuinely-trivial Ruby `class TrivialClass` (0/0) MUST still flag; got {:?}",
+            rb.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
+        );
+
+        // (b): the Scala `case object` exemption (the only prior occupant of the
+        // exemption block) must remain intact.
+        let scala_src = r#"
+sealed trait BenchQueueType
+case object RingBufferPow2Type extends BenchQueueType
+"#;
+        let (_d2, sc_path) = write_tmp("rc5_obj.scala", scala_src);
+        let sc = detect_lazy_elements_with_path(scala_src, "scala", Some(&sc_path));
+        assert!(
+            sc.iter().all(|f| f.name != "RingBufferPow2Type"),
+            "Scala `case object` must remain exempt after the module fix; got {:?}",
+            sc.iter().map(|f| (&f.name, &f.reason)).collect::<Vec<_>>()
         );
     }
 
