@@ -359,9 +359,15 @@ fn is_node_public(node: Node, source: &[u8], lang: Language) -> bool {
             }
             is_rust_pub(node, source)
         }
-        Language::Go => name_str.chars().next().is_some_and(|c| c.is_uppercase()),
-        Language::Python | Language::Ruby | Language::Lua | Language::Luau => {
-            !name_str.starts_with('_')
+        // rc2-meta-stage4 (visibility unification): the name-based visibility
+        // rules (Go uppercase-export; Python/Ruby/Lua/Luau leading-underscore)
+        // are routed through the SHARED `is_public_for_lang` model — the same
+        // single source of truth `is_method_public` already consults for these
+        // languages — so the class-axis and member-axis visibility projections
+        // can never drift apart. Membership-preserving (identical predicate),
+        // it merely de-duplicates the rule into one place.
+        Language::Go | Language::Python | Language::Ruby | Language::Lua | Language::Luau => {
+            is_public_for_lang(name_str, lang)
         }
         Language::Java | Language::CSharp => has_public_modifier(node, source),
         Language::C | Language::Cpp => !is_c_static(node, source),
@@ -2193,11 +2199,13 @@ fn collect_methods_from_body(
 /// Check if a method is public based on language conventions.
 fn is_method_public(name: &str, node: Node, source: &[u8], lang: Language) -> bool {
     match lang {
-        Language::Python | Language::Ruby | Language::Lua | Language::Luau => {
+        // rc2-meta-stage4 (visibility unification): name-based languages share
+        // the single `is_public_for_lang` model (mirrors the class-axis
+        // `is_node_public`), so member-axis and class-axis visibility agree.
+        Language::Python | Language::Ruby | Language::Lua | Language::Luau | Language::Go => {
             is_public_for_lang(name, lang)
         }
         Language::Rust => is_rust_pub(node, source),
-        Language::Go => name.chars().next().is_some_and(|c| c.is_uppercase()),
         Language::Java | Language::CSharp => has_public_modifier(node, source),
         // interface-per-lang-v1 (v0.4.2 M-022): exclude scala `private`
         // / `protected` methods from the public method list.
