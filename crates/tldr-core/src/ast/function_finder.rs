@@ -764,7 +764,24 @@ pub fn find_function_node_by_name_and_line<'a>(
     while let Some(node) = stack.pop() {
         if func_kinds.contains(&node.kind()) {
             let node_line = node.start_position().row as u32 + 1;
-            if node_line == target_line {
+            // RC6-halstead-imports-invariant (v0.5.0 RC-CAMPAIGN): the extractor
+            // anchors `FunctionInfo.line` to the DECL-KEYWORD line via
+            // `decl_keyword_line_from_node`, which skips leading
+            // annotation/attribute/modifier children (`@Deprecated`,
+            // `@Override`, `@inlinable`, `[Obsolete]`, ...). For an annotated
+            // declaration the tree-sitter node STARTS on the annotation line,
+            // so matching only `node.start_position()` misses the function
+            // whenever `target_line` is the (lower) decl-keyword line. The
+            // resolver then returned `None` and the halstead caller fell back to
+            // `find_function_node` (first same-name node) — BROADCASTING one
+            // overload's metrics across every same-name sibling
+            // (kotlin/java/scala/swift/csharp `@Deprecated minus`, `@Override`
+            // methods, etc.). Accept EITHER anchor (raw node start OR
+            // decl-keyword line) so the annotated overload resolves to its own
+            // node. Still name-guarded below, so the broadened line match cannot
+            // capture a differently-named sibling.
+            let decl_line = crate::ast::extract::decl_keyword_line_from_node(&node);
+            if node_line == target_line || decl_line == target_line {
                 if let Some(name) = get_function_name(node, language, source) {
                     let stripped = name.strip_prefix('#').unwrap_or(&name);
                     let short = name.rsplit('.').next().unwrap_or(&name);
@@ -1709,6 +1726,133 @@ pub fn find_function_bounds_from_path_or_source(
 mod tests {
     use super::*;
     use crate::ast::parser::parse;
+
+    // -- RC6 halstead line-aware resolver: annotation-overload generalization --
+
+    /// RC6-halstead-imports-invariant (v0.5.0 RC-CAMPAIGN): generalization
+    /// guard for [`find_function_node_by_name_and_line`] across EVERY
+    /// annotation/attribute-prefixed language in the symptom class
+    /// (kotlin / java / scala / swift / csharp).
+    ///
+    /// For each language a same-name overload PAIR is declared where the
+    /// SECOND overload carries a leading annotation/attribute, so its
+    /// tree-sitter node STARTS on the annotation line while the extractor
+    /// anchors `FunctionInfo.line` to the decl-keyword line (one line below).
+    /// Before the fix the resolver matched only `node.start_position()`, so a
+    /// lookup at the decl-keyword line returned `None` and the halstead caller
+    /// fell back to the FIRST same-name node — broadcasting identical metrics
+    /// onto every overload. After the fix the resolver also matches the
+    /// decl-keyword line, so each overload resolves to its own distinct node.
+    ///
+    /// This is the anti-treadmill generalization assertion: a one-language
+    /// version of this test would pass on a fix that only re-anchors one
+    /// grammar. Every grammar in the class is exercised.
+    #[test]
+    fn rc6_halstead_resolver_anchors_annotated_overloads_across_languages() {
+        struct Case {
+            lang: Language,
+            name: &'static str,
+            src: &'static str,
+            /// Decl line of the UNannotated overload (node start == decl line).
+            first_line: u32,
+            /// Decl-keyword line of the annotated overload (node start is the
+            /// annotation line, strictly ABOVE this).
+            annotated_decl_line: u32,
+        }
+
+        let cases = vec![
+            Case {
+                lang: Language::Kotlin,
+                name: "foo",
+                src: "fun foo(a: Int): Int {\n    return a + a + a + a\n}\n\n@Deprecated(\"x\")\nfun foo(): Int = 0\n",
+                first_line: 1,
+                annotated_decl_line: 6,
+            },
+            Case {
+                lang: Language::Java,
+                name: "foo",
+                src: "class C {\n    int foo(int a) {\n        return a + a + a + a;\n    }\n\n    @Override\n    int foo() {\n        return 0;\n    }\n}\n",
+                first_line: 2,
+                annotated_decl_line: 7,
+            },
+            Case {
+                lang: Language::Scala,
+                name: "foo",
+                src: "class C {\n  def foo(a: Int): Int = a + a + a + a\n\n  @deprecated(\"x\")\n  def foo(): Int = 0\n}\n",
+                first_line: 2,
+                annotated_decl_line: 5,
+            },
+            Case {
+                lang: Language::Swift,
+                name: "foo",
+                src: "struct C {\n    func foo(a: Int) -> Int {\n        return a + a + a + a\n    }\n\n    @inlinable\n    func foo() -> Int {\n        return 0\n    }\n}\n",
+                first_line: 2,
+                annotated_decl_line: 7,
+            },
+            Case {
+                lang: Language::CSharp,
+                name: "Foo",
+                src: "class C {\n    int Foo(int a) {\n        return a + a + a + a;\n    }\n\n    [Obsolete]\n    int Foo() {\n        return 0;\n    }\n}\n",
+                first_line: 2,
+                annotated_decl_line: 7,
+            },
+        ];
+
+        for c in &cases {
+            let tree = parse(c.src, c.lang).unwrap();
+            let root = tree.root_node();
+
+            // The annotated overload must resolve by its DECL-KEYWORD line.
+            // (Before the fix this returned None -> broadcast.)
+            let annotated =
+                find_function_node_by_name_and_line(root, c.name, c.annotated_decl_line, c.lang, c.src);
+            assert!(
+                annotated.is_some(),
+                "{:?}: annotated overload `{}` did not resolve at decl-keyword line {} \
+                 (broadcast bug: resolver returns None, halstead falls back to the first \
+                 same-name node and re-uses its metrics)",
+                c.lang,
+                c.name,
+                c.annotated_decl_line,
+            );
+            let annotated = annotated.unwrap();
+
+            // The unannotated overload resolves by its own line (unchanged).
+            let first =
+                find_function_node_by_name_and_line(root, c.name, c.first_line, c.lang, c.src);
+            assert!(
+                first.is_some(),
+                "{:?}: first overload `{}` did not resolve at line {}",
+                c.lang,
+                c.name,
+                c.first_line,
+            );
+            let first = first.unwrap();
+
+            // Distinctness: the two overloads must be DIFFERENT nodes, else
+            // halstead would emit identical (broadcast) metrics for both.
+            assert_ne!(
+                annotated.start_byte(),
+                first.start_byte(),
+                "{:?}: annotated and first `{}` resolved to the SAME node (broadcast)",
+                c.lang,
+                c.name,
+            );
+
+            // The annotated node is resolved by its decl-keyword line even
+            // though its tree-sitter start row is the annotation line ABOVE it —
+            // exactly the desync the fix targets.
+            let node_start = annotated.start_position().row as u32 + 1;
+            assert!(
+                node_start < c.annotated_decl_line,
+                "{:?}: expected the annotated node to START above its decl-keyword line \
+                 (node_start={node_start}, decl_line={}); without that gap the old \
+                 resolver would already match and there would be no broadcast",
+                c.lang,
+                c.annotated_decl_line,
+            );
+        }
+    }
 
     // -- TypeScript generator function tests --
 

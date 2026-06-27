@@ -165,6 +165,43 @@ fn cognitive_line(file: &Path, symbol: &str) -> u64 {
         .unwrap_or_else(|| panic!("cognitive: symbol `{symbol}` not found in {}", file.display()))
 }
 
+/// Recursively collect every `(line, volume)` pair carried by an object whose
+/// `name == target` and which exposes a Halstead `metrics.volume`. Used by the
+/// RC6 halstead broadcast guard below.
+fn collect_halstead_volumes(v: &Value, target: &str, out: &mut Vec<(u64, f64)>) {
+    match v {
+        Value::Object(map) => {
+            if map.get("name").and_then(|n| n.as_str()) == Some(target) {
+                if let (Some(line), Some(vol)) = (
+                    map.get("line").and_then(|l| l.as_u64()),
+                    map.get("metrics")
+                        .and_then(|m| m.get("volume"))
+                        .and_then(|x| x.as_f64()),
+                ) {
+                    out.push((line, vol));
+                }
+            }
+            for child in map.values() {
+                collect_halstead_volumes(child, target, out);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr {
+                collect_halstead_volumes(child, target, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every `(line, volume)` Halstead row named `symbol` in `file`.
+fn halstead_volumes(file: &Path, symbol: &str) -> Vec<(u64, f64)> {
+    let v = run_json(&["halstead", file.to_str().unwrap(), "--format", "json"]);
+    let mut out = Vec::new();
+    collect_halstead_volumes(&v, symbol, &mut out);
+    out
+}
+
 /// Minimum `source_line` across all contract conditions for `symbol`. The
 /// per-function conditions are all anchored to the function's decl line, so
 /// the minimum is the function line we care about. Returns None when the
@@ -301,5 +338,66 @@ fn cl10_java_cognitive_contracts_agree_with_extract() {
         contracts_l, extract_l,
         "DRIFT(java/contracts): `{sym}` contracts source_line={contracts_l} \
          extract={extract_l} (conditions must anchor to the decl-keyword line)"
+    );
+}
+
+// =============================================================================
+// HALSTEAD: per-overload metrics must NOT broadcast across same-name siblings
+// =============================================================================
+//
+// RC6-halstead-imports-invariant (v0.5.0 RC-CAMPAIGN). The same decl-keyword
+// line-drift that this file pins for `structure`/`cognitive`/`contracts` ALSO
+// silently corrupted `halstead`: the line-aware resolver
+// (`find_function_node_by_name_and_line`) matched only the tree-sitter node's
+// raw `start_position()`, but the extractor anchors `FunctionInfo.line` to the
+// decl-keyword line (one line below a leading `@Deprecated` / `@Override` /
+// `@inlinable` / `[Obsolete]`). For an annotated overload the lookup therefore
+// missed, fell back to `find_function_node` (the FIRST same-name node), and
+// broadcast that node's metrics onto every same-name sibling.
+//
+// `halstead` was ABSENT from the original cl10 harness — exactly why the drift
+// slipped through. A naive line-FIELD-equality invariant would be GREEN on the
+// broken binary (the per-row `line` fields already agree at the decl line; only
+// the resolved *metrics* are wrong). So this guard asserts METRIC-DISTINCTNESS:
+// the maximum Halstead volume across the `minus` overloads of LocalDate.kt is
+// attained by EXACTLY ONE overload. On the broken binary the large multiline
+// `minus(period: DatePeriod)` (~298) is broadcast onto the `@Deprecated`
+// one-liner `minus(unit:)` so the max is attained twice; after the fix each
+// overload resolves to its own node and the max is unique.
+#[test]
+fn cl10_kotlin_halstead_no_overload_broadcast() {
+    let Some(root) = corpus_or_skip("/tmp/tldr_corpora/kotlin-datetime") else {
+        return;
+    };
+    let file = root.join("core/common/src/LocalDate.kt");
+    if !file.exists() {
+        eprintln!("SKIP: fixture not present: {}", file.display());
+        return;
+    }
+
+    let volumes = halstead_volumes(&file, "minus");
+    assert!(
+        volumes.len() >= 2,
+        "expected multiple `minus` overloads in {}, got {volumes:?}",
+        file.display()
+    );
+
+    // The annotated one-liner overload must NOT share the multiline overload's
+    // volume. Concretely: the maximum volume is attained by exactly one row.
+    let max_vol = volumes
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(f64::MIN, f64::max);
+    let at_max: Vec<u64> = volumes
+        .iter()
+        .filter(|(_, v)| (*v - max_vol).abs() < 1e-6)
+        .map(|(line, _)| *line)
+        .collect();
+    assert_eq!(
+        at_max.len(),
+        1,
+        "BROADCAST(kotlin/halstead): `minus` max volume {max_vol:.2} attained by lines {at_max:?} \
+         (must be unique — the annotated one-liner overload is reusing the multiline overload's \
+         metrics). All overloads: {volumes:?}"
     );
 }
