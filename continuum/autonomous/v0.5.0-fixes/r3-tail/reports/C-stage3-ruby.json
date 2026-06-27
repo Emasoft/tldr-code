@@ -1,0 +1,63 @@
+{
+  "task": "fix-R3-rc2-meta-stage3-ruby",
+  "language": "ruby",
+  "stage": 3,
+  "result": "success",
+  "single_source_of_truth": "crate::ast::entity::classify_node (no new per-language kind table)",
+  "classify_node_ruby_rules": {
+    "class": "Class -> \"class\"",
+    "module": "Module -> \"module\"",
+    "method": "Method -> \"method\"",
+    "singleton_method": "Method -> \"method\""
+  },
+  "files_changed": [
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_ruby_v1.rs"
+  ],
+  "json_delta": {
+    "extract": {
+      "field": "classes[].kind",
+      "before": "null/omitted (skip_serializing_if=Option::is_none) for every ruby class and module",
+      "after": "Some(\"class\") for `class` nodes; Some(\"module\") for `module` nodes",
+      "wiring": "extract_ruby_class_info + extract_ruby_module_info now set kind = classify_node(node, Ruby, source).map(as_str)"
+    },
+    "interface": {
+      "field": "classes[].kind",
+      "before": "omitted for every ruby container (Ruby absent from ts_js_entry_kind -> None)",
+      "after": "\"class\" for `class` nodes; \"module\" for `module` nodes",
+      "wiring": "ts_js_entry_kind gains a Language::Ruby arm delegating to classify_node_kind(node_kind, Ruby).map(as_str)"
+    },
+    "structure": {
+      "field": "definitions[].kind",
+      "before": "ALREADY correct (\"class\"/\"module\"/\"method\"/\"function\")",
+      "after": "unchanged (no edit) — extract/interface now AGREE with it"
+    }
+  },
+  "additive": true,
+  "name_line_changes": "none",
+  "goldens_rebaselined": [],
+  "goldens_note": "No snapshot golden files; all per-lang assertions are inline. No existing assertion weakened, no construct dropped, no name/line change.",
+  "char_tests": [
+    "rc2_meta_stage3_ruby_v1::extract_populates_ruby_class_module_kinds",
+    "rc2_meta_stage3_ruby_v1::interface_populates_ruby_class_module_kinds",
+    "rc2_meta_stage3_ruby_v1::structure_extract_interface_agree_on_ruby_kinds"
+  ],
+  "tests": {
+    "tldr-core --lib": "5277 passed; 0 failed",
+    "rc2_meta_stage3_ruby_v1": "3 passed",
+    "is_public_visibility_v1": "7 passed",
+    "cfg_ruby_v1": "10 passed",
+    "rc2_meta_stage3_scala_v1": "3 passed",
+    "rc2_meta_stage3_typescript_v1": "4 passed",
+    "rc2_meta_stage3_rust_v1": "passed",
+    "rc2_meta_stage3_java_v1": "4 passed",
+    "rc2_meta_stage3_csharp_v1": "4 passed",
+    "structure_method_infos_all_langs_v1": "4 passed"
+  },
+  "preexisting_unrelated_failures": [
+    "cross_language_extraction_v2::todo_autodetect_works_for_java (todo autodetect; not a ruby/kind path)",
+    "cross_language_extraction_v2::todo_autodetect_works_for_kotlin (todo autodetect; not a ruby/kind path)",
+    "interface_per_lang_v1::javascript_prototype_assignments_emitted (uses hardcoded stale target/release/tldr v0.4.1; not rebuilt per --no-release constraint)"
+  ]
+}

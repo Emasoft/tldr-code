@@ -6985,7 +6985,13 @@ fn extract_ruby_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (ruby): populate the carrier `kind` from the canonical
+        // [`crate::ast::entity::classify_node`] discriminator (single source of
+        // truth — same answer structure/interface use) so `extract` reports
+        // `kind:"class"` for a `class` node instead of `None`. Additive — no
+        // existing field/name/line changes.
+        kind: crate::ast::entity::classify_node(*node, Language::Ruby, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -7017,7 +7023,12 @@ fn extract_ruby_module_info(node: &Node, source: &str) -> ClassInfo {
         decorators: vec!["module".to_string()],
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (ruby): populate the carrier `kind` from the canonical
+        // [`crate::ast::entity::classify_node`] discriminator (single source of
+        // truth — same answer structure/interface use) so `extract` reports
+        // `kind:"module"` for a `module` node instead of `None`. Additive.
+        kind: crate::ast::entity::classify_node(*node, Language::Ruby, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),

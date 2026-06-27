@@ -1861,6 +1861,15 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // `kind: None`.
         Language::CSharp => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (ruby): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth — same answer `extract`/`structure` use). The
+        // node kinds reaching here are exactly `class_node_kinds(Ruby)` =
+        // {`class`, `module`}, which map to `class`/`module`. Additive — formerly
+        // `kind: None`. (Ruby modules are class-like carriers; their methods are
+        // folded into `methods`, so no method/function ambiguity arises here.)
+        Language::Ruby => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
