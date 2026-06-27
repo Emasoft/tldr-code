@@ -1,0 +1,39 @@
+{
+  "report": "rc2-meta-stage3-c",
+  "language": "c",
+  "stage": 3,
+  "result": "success",
+  "summary": "Wired the canonical classify_node_kind discriminator into the C arm of interface's ts_js_entry_kind so a C struct now carries kind:\"struct\" (single source of truth). extract has no classes for C by design (no-op) and structure.definitions already emitted the canonical kinds (struct/enum/function). Additive kind population only.",
+  "files_changed": [
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_c_v1.rs"
+  ],
+  "classify_node_wiring": "none added to entity.rs; reused existing classify_node_kind(C, struct_specifier)=Struct (entity.rs:342-349). EntityKind already maps struct->Struct, union->Struct, enum->Enum, typedef path covered by structure entry-kind.",
+  "json_delta": {
+    "command": "interface",
+    "scope": "C files only",
+    "change": "Each interface.classes[] entry whose source node is a `struct_specifier` now SERIALIZES \"kind\": \"struct\". Previously the `kind` field was OMITTED entirely (Option::None + skip_serializing_if). Purely additive: a new key appears on existing C struct ClassInfo objects; no existing key's value, name, or lineno changes.",
+    "before": "{ \"name\": \"Point\", \"lineno\": 1, \"bases\": [], \"methods\": [], \"private_method_count\": 0 }",
+    "after": "{ \"name\": \"Point\", \"kind\": \"struct\", \"lineno\": 1, \"bases\": [], \"methods\": [], \"private_method_count\": 0 }",
+    "extract_delta": "none (C extract has no classes by design)",
+    "structure_delta": "none (definitions[] already emit kind struct/enum/function for C)"
+  },
+  "char_tests": [
+    "crates/tldr-cli/tests/rc2_meta_stage3_c_v1.rs::interface_populates_c_struct_kind",
+    "crates/tldr-cli/tests/rc2_meta_stage3_c_v1.rs::structure_reports_c_canonical_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_c_v1.rs::structure_interface_agree_on_c_struct_kind"
+  ],
+  "tests": {
+    "new_suite": "rc2_meta_stage3_c_v1: 3 passed",
+    "tldr_core_lib": "5277 passed, 0 failed (skip-list applied)",
+    "interface_per_lang_v1": "7 passed, 1 PRE-EXISTING-RED (javascript_prototype_assignments_emitted — top-level functions[] extraction, independent of ts_js_entry_kind / this C-only change)",
+    "cl6_interface_v1": "5 passed",
+    "fix_cl4_interface_v1": "7 passed",
+    "interface_extraction_ocaml_elixir_v1": "6 passed",
+    "cpp_interface_macro_filter_v1": "passed",
+    "w1_interface_utf8_v1": "passed",
+    "cross_command_consistency_v3": "5 passed"
+  },
+  "goldens_rebaselined": [],
+  "committed": true
+}

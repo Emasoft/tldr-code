@@ -1879,6 +1879,21 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // method/function ambiguity arises at the class-kind level.)
         Language::Python => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (c): populate the `interface` `ClassInfo.kind` from the
+        // canonical, string-keyed `classify_node_kind` discriminator (single
+        // source of truth — same answer `structure` uses). C has no classes in
+        // the `extract` family (`extract_classes_detailed` is a no-op for C) and
+        // `interface`'s `class_node_kinds(C)` = {`struct_specifier`}, so the only
+        // node kind reaching here is `struct_specifier`, which the canonical
+        // classifier maps to `EntityKind::Struct` (`union_specifier` -> Struct,
+        // `enum_specifier` -> Enum are likewise covered should the class-carrier
+        // set ever widen). Additive — formerly `kind: None` (omitted from JSON);
+        // `interface` now reports `kind:"struct"` for a C struct in agreement with
+        // `structure`'s `definitions[]` entry-kind. C has no classes, no methods,
+        // and no `class`/`union` carriers in `class_node_kinds(C)`, so no
+        // method/function or struct/union ambiguity arises here.
+        Language::C => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
