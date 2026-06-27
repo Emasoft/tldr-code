@@ -1,0 +1,67 @@
+{
+  "language": "java",
+  "stage": "rc2-meta STAGE 3",
+  "result": "success",
+  "implemented": "Wired the canonical classify_node / classify_node_kind discriminator into the PRODUCTION extract + interface families for Java so ClassInfo.kind is populated (additive). Also added a Java gate in structure's classify_definition_node so structure stops dropping Java enum/record. No new per-language kind table — classify_node is the single source of truth.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-core/src/ast/extractor.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_java_v1.rs"
+  ],
+  "edits": [
+    {
+      "file": "crates/tldr-core/src/ast/extract.rs",
+      "fn": "extract_java_classes_detailed",
+      "change": "ClassInfo.kind was hardcoded None; now kind = classify_node(child, Language::Java, source).map(|k| k.as_str().to_string()). class_declaration->\"class\", interface_declaration->\"interface\", enum_declaration->\"enum\", record_declaration->\"class\" (EntityKind::Class). Additive."
+    },
+    {
+      "file": "crates/tldr-cli/src/commands/patterns/interface.rs",
+      "fn": "ts_js_entry_kind",
+      "change": "Added Language::Java arm delegating to classify_node_kind(node_kind, lang).map(as_str). Node kinds reaching here are exactly class_node_kinds(Java) = {class_declaration, interface_declaration, enum_declaration} -> class/interface/enum. Additive (was None)."
+    },
+    {
+      "file": "crates/tldr-cli/src/commands/patterns/interface.rs",
+      "fn": "extract_function_info",
+      "change": "Generalized the FunctionInfo.kind canonical population gate from Elixir-only to (Elixir || Java) so any Java function/method node routed through this producer is tagged method/constructor via classify_node. Additive."
+    },
+    {
+      "file": "crates/tldr-core/src/ast/extractor.rs",
+      "fn": "classify_definition_node",
+      "change": "Added a Language::Java match arm setting is_class=true for enum_declaration and record_declaration (mirroring the existing TS/Scala/Solidity language-gated arms). structure previously DROPPED Java enums and records entirely; now it surfaces them in definitions[] (enum->kind:\"enum\", record->default kind:\"class\"). Additive surfacing — agrees with extract."
+    }
+  ],
+  "classify_node_used": true,
+  "new_entitykind_variant_needed": false,
+  "char_tests": [
+    "crates/tldr-cli/tests/rc2_meta_stage3_java_v1.rs::extract_populates_java_container_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_java_v1.rs::interface_populates_java_container_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_java_v1.rs::structure_extract_interface_agree_on_java_kinds",
+    "crates/tldr-cli/tests/rc2_meta_stage3_java_v1.rs::structure_surfaces_java_enum_and_record"
+  ],
+  "char_test_result": "4 passed (RED before fix: extract/interface kind None and structure dropped Color enum)",
+  "targeted_tests": {
+    "tldr-core --lib": "5273 passed; 0 failed; 342 ignored",
+    "rc2_meta_stage3_java_v1": "4 passed",
+    "rc2_meta_stage3_typescript_v1": "5 passed",
+    "rc2_meta_stage3_rust_v1": "3 passed",
+    "rc2_meta_stage3_scala_v1": "3 passed",
+    "rc2_meta_stage3_go_v1": "3 passed",
+    "m002_java_cross_pipeline_v1": "11 passed",
+    "fix_cl4_interface_v1": "7 passed",
+    "cl6_interface_v1": "8 passed",
+    "b3_structure_polyglot_bound_scala_classify_v1": "9 passed",
+    "structure_method_infos_all_langs_v1": "passed"
+  },
+  "pre_existing_unrelated_failures": [
+    "cross_language_extraction_v2::todo_autodetect_works_for_java (todo/dead-code command returns 0 items; fixture has no enum/record; structure output for plain class is byte-identical under my change)",
+    "cross_language_extraction_v2::todo_autodetect_works_for_kotlin (Kotlin path — never touched by this Java-gated diff)",
+    "interface_per_lang_v1::javascript_prototype_assignments_emitted (JavaScript prototype-export path — never touched by this Java-gated diff)"
+  ],
+  "pre_existing_failure_analysis": "All three failures exercise code paths my diff provably never modifies (every edit is Language::Java-gated). The Kotlin and JavaScript cases involve languages I did not touch at all. The java todo case uses a fixture with no enum/record, so its definition set is unchanged. Most likely cause is the un-codesigned debug test binary's daemon spawn path returning empty results (per project MEMORY: macOS SIGKILLs an un-codesigned tldr binary). Not a regression from rc2-meta-stage3-java.",
+  "goldens_rebaselined": [],
+  "goldens_note": "No existing golden/snapshot files required rebaselining. All affected assertions are live inline assertions; the touched suites already passed with the additive kind field. New coverage added via rc2_meta_stage3_java_v1.rs. No golden dropped a construct or changed any name/line, so no STOP condition triggered.",
+  "json_delta": "extract: classes[].kind now emitted for Java (\"class\"/\"interface\"/\"enum\" for class/interface/enum declarations, \"class\" for records) instead of being omitted (was None -> skip_serializing_if). interface: classes[].kind now emitted for Java (\"class\"/\"interface\"/\"enum\") instead of omitted. structure: definitions[] now INCLUDES Java enum (kind:\"enum\") and record (kind:\"class\") entries that were previously dropped entirely; existing Java class/interface/method/field definitions unchanged. All changes additive — no field renamed, no name/line of any pre-existing entry changed.",
+  "committed": true,
+  "status": "closed"
+}

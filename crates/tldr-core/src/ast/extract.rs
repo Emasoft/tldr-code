@@ -4187,7 +4187,15 @@ fn extract_java_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Cl
                 decorators: Vec::new(),
                 line_number,
                 line_end,
-                kind: None,
+                // RC2-META Stage 3 (java): populate the carrier `kind` from the
+                // canonical [`crate::ast::entity::classify_node`] discriminator
+                // (single source of truth — same answer structure/interface use)
+                // so `extract` reports `kind:"class"`/`"interface"`/`"enum"` for
+                // `class_declaration`/`interface_declaration`/`enum_declaration`
+                // and `kind:"class"` for `record_declaration` instead of `None`.
+                // Additive — no existing field/name/line changes.
+                kind: crate::ast::entity::classify_node(child, Language::Java, source)
+                    .map(|k| k.as_str().to_string()),
                 modifiers: Vec::new(),
                 events: Vec::new(),
                 errors: Vec::new(),

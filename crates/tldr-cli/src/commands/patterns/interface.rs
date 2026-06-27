@@ -1436,9 +1436,14 @@ pub fn extract_function_info(func_node: Node, source: &[u8], lang: Language) -> 
     // `classify_node` discriminator so `interface` reports `defmacro`/
     // `defmacrop` as kind="macro" and `def`/`defp` as kind="function" — the
     // #57 bidirectional seam (structure's `definitions` now agrees on
-    // kind="macro" for the same nodes). Gated on Elixir so every other
-    // language keeps `kind: None` (omitted from JSON).
-    let kind = if lang == Language::Elixir {
+    // kind="macro" for the same nodes).
+    //
+    // RC2-META Stage 3 (java): extend the same canonical population to Java so
+    // `interface` reports `method_declaration` as kind="method" and
+    // `constructor_declaration` as kind="constructor", in agreement with
+    // `structure`/`extract`. Every other (non-elixir, non-java) language keeps
+    // `kind: None` (omitted from JSON via `skip_serializing_if`).
+    let kind = if lang == Language::Elixir || lang == Language::Java {
         let src_str = std::str::from_utf8(source).unwrap_or("");
         tldr_core::ast::entity::classify_node(func_node, lang, src_str)
             .map(|k| k.as_str().to_string())
@@ -1807,6 +1812,15 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // folded into their owner's `methods`, so no method/function kind
         // ambiguity arises in this class-carrier population.)
         Language::Rust => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (java): populate the `interface` `ClassInfo.kind`
+        // from the canonical, string-keyed `classify_node_kind` discriminator
+        // (single source of truth — same answer `extract`/`structure` use). The
+        // node kinds reaching here are exactly `class_node_kinds(Java)` =
+        // {`class_declaration`, `interface_declaration`, `enum_declaration`},
+        // which map to `class`/`interface`/`enum`. Additive — formerly
+        // `kind: None`.
+        Language::Java => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
         _ => None,
     }

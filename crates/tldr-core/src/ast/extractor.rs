@@ -3870,6 +3870,25 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
                 is_class = true;
             }
         }
+        Language::Java => {
+            // RC2-META Stage 3 (java): Java `enum E { ... }` (`enum_declaration`)
+            // and `record P(...) {}` (`record_declaration`) are top-level
+            // TYPE-DEFINING containers that the canonical `classify_node_kind`
+            // maps to `EntityKind::Enum` / `EntityKind::Class` (both class-axis,
+            // see `EntityKind::is_class_axis`). They were ABSENT from the shared
+            // `is_class` list above, so `structure`'s `definitions[]` DROPPED
+            // every Java enum and record even though the `extract` family already
+            // surfaces them (`extract_java_classes_detailed`). Surface them here
+            // (Scala/Solidity precedent: language-gated so the shared names —
+            // `enum_declaration` also exists in C#/PHP/Kotlin/Solidity — cannot
+            // collide). The reported kind string is refined to "enum" (record
+            // falls through to the default "class") by the entry-kind switch in
+            // `collect_definitions`. Additive: structure now AGREES with extract
+            // on (name, kind) instead of dropping the construct.
+            if matches!(kind, "enum_declaration" | "record_declaration") {
+                is_class = true;
+            }
+        }
         Language::Ocaml => {
             if kind == "type_definition" {
                 is_class = true;
