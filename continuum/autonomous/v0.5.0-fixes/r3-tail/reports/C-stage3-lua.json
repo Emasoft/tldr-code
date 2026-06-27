@@ -1,0 +1,64 @@
+{
+  "fix_id": "fix-R3-rc2-meta-stage3-lua",
+  "stage": "STAGE 3 — universal kind population (additive)",
+  "language": "lua",
+  "campaign": "v0.5.0 CLOSEOUT",
+  "summary": "Wire the canonical classify_node discriminator into the PRODUCTION interface path so FunctionInfo.kind is populated (additive) for Lua/Luau functions. Lua is the minimal Stage-3 case: it has NO native class/method/macro surface, so the ONLY construct classify_node soundly classifies is a plain function (function_declaration / function_definition_statement -> EntityKind::Function). Single source of truth: crate::ast::entity::classify_node / EntityKind::Function. No new per-language kind table. The Lua table-convention 'class' keeps its heuristic kind:\"table\" (NOT expressible via classify_node; deliberately preserved — no class kind invented for tables).",
+  "repro_before": {
+    "fixture": "/tmp/rc2_lua.lua (local M={} table-class with M.new/M:greet; top-level local function helper, compute; return-table exporting new=M.new, helper, compute, VERSION)",
+    "interface.functions[].kind": "helper=None, compute=None (omitted via skip_serializing_if)",
+    "interface.values[]": "new=value (alias of static method M.new — pre-existing routing), VERSION=value",
+    "structure.definitions[].kind": "M.new=method, M:greet=method, helper=function, compute=function (already populated in Stage 2 via family-1 entry-kind switch)",
+    "extract.classes[].kind": "M=table (heuristic, pre-rc2-ts); extract.functions[] have NO kind field"
+  },
+  "implementation": {
+    "ast_driven": true,
+    "regex_or_hardcode": false,
+    "classifier": "crate::ast::entity::classify_node(node, Language::Lua|Luau, source) -> Function for function_declaration/function_definition_statement/local_function (landed Stage 2; unchanged here). EntityKind::Function.as_str() = \"function\".",
+    "edits": [
+      "crates/tldr-cli/src/commands/patterns/interface.rs: extract_function_info — added Language::Lua/Luau to the kind gate, so walker-collected exported functions carry kind via classify_node (was None for all non-elixir/non-java).",
+      "crates/tldr-cli/src/commands/patterns/interface.rs: reconcile_lua_exports — synthesized (branch-nested / accumulator) function exports now set kind = Some(EntityKind::Function.as_str()) (was None), so every exported Lua function carries kind:\"function\" uniformly regardless of which path emits it."
+    ]
+  },
+  "json_delta": {
+    "command_interface": "interface.functions[] for Lua/Luau now emits additive field \"kind\":\"function\" for every exported function (function_declaration / function_definition_statement -> EntityKind::Function). Previously the field was omitted (serde skip_serializing_if Option::is_none). No name/line/signature/is_async/value change. interface.values[] and interface.classes[] UNCHANGED.",
+    "command_structure": "UNCHANGED (already emitted kind=function/method in Stage 2; the method distinction for table-qualified function T.m / function T:m is structural and is NOT routed through classify_node, so it is preserved).",
+    "command_extract": "UNCHANGED. extract.classes[] Lua table-class keeps kind:\"table\" (heuristic, not a classify_node answer, no EntityKind variant for it). extract FunctionInfo has no kind field (as in all prior Stage-3 commits).",
+    "axis": "The single new kind string is function-axis (\"function\"). The Stage-2 string-keyed consumers (function_finder, agreement test) remain byte-identical. Purely additive — no field removed, no value changed."
+  },
+  "scope_notes": [
+    "Lua has no class/method/macro/trait/enum native surface. classify_node(Lua) supports ONLY Function. Per the task spec, kind is populated ONLY for what classify_node soundly supports; no class kind is invented for the table convention.",
+    "The Lua table-convention class (extract.classes M -> kind:\"table\") is a synthetic construct assembled from multiple table-qualified function declarations — there is NO single AST node classify_node can classify, and \"table\" is not an EntityKind variant. Routing it through classify_node would regress it, so it is intentionally left untouched.",
+    "interface routes the export `new = M.new` to values[] (the module-symbol table does not track the table-qualified static method M.new as a top-level function) — pre-existing behaviour, unrelated to this additive-kind change. The genuine top-level functions helper/compute are the function-axis carriers.",
+    "structure's method/function distinction for Lua (is_lua_table_qualified_function) is structural and cannot be expressed by classify_node (which sees function_declaration for both forms); it is therefore left as-is to avoid regressing the method kind. structure already agrees with classify_node on plain functions (kind=function)."
+  ],
+  "tests": {
+    "char_test_file": "crates/tldr-cli/tests/rc2_meta_stage3_lua_v1.rs",
+    "char_tests": [
+      "interface_populates_lua_function_kinds — helper=function, compute=function (RED before: kind None/omitted)",
+      "structure_interface_agree_on_plain_lua_function_kind — structure==interface==\"function\" for helper, compute",
+      "extract_lua_table_class_kind_preserved — extract.classes M keeps kind:\"table\" (regression guard)"
+    ],
+    "red_before_green_after": true,
+    "core_lib": "cargo test -p tldr-core --lib (skip-list) => 5280 passed; 0 failed; 342 ignored",
+    "cli_suites_green": [
+      "rc2_meta_stage3_lua_v1 (3 passed)",
+      "fix_cl9_lua_v1 (2 passed)",
+      "interface_extraction_ocaml_elixir_v1 (6 passed)",
+      "cl6_interface_v1 (8 passed)",
+      "structure_method_infos_all_langs_v1 (4 passed)",
+      "w1_interface_utf8_v1 (5 passed)"
+    ],
+    "unrelated_failures_pre_existing": [
+      "interface_per_lang_v1::javascript_prototype_assignments_emitted — JS-only (Application prototype carrier dropped); the suite never references `kind` and the Lua-only change cannot affect it; confirmed pre-existing in prior Stage-3 commits (see C-stage3-php.json)."
+    ]
+  },
+  "goldens_rebaselined": [],
+  "goldens_note": "No snapshot/golden files exist for the Lua interface kind path; all assertions are inline. The change is additive (new optional FunctionInfo.kind only), so no existing inline assertion required weakening or re-baselining. No golden dropped a construct or changed a name/line.",
+  "files_changed": [
+    "crates/tldr-cli/src/commands/patterns/interface.rs",
+    "crates/tldr-cli/tests/rc2_meta_stage3_lua_v1.rs",
+    "continuum/autonomous/v0.5.0-fixes/r3-tail/reports/C-stage3-lua.json"
+  ],
+  "status": "closed"
+}

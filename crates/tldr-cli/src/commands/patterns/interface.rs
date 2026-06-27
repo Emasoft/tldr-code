@@ -1456,7 +1456,20 @@ pub fn extract_function_info(func_node: Node, source: &[u8], lang: Language) -> 
     // `constructor_declaration` as kind="constructor", in agreement with
     // `structure`/`extract`. Every other (non-elixir, non-java) language keeps
     // `kind: None` (omitted from JSON via `skip_serializing_if`).
-    let kind = if lang == Language::Elixir || lang == Language::Java {
+    //
+    // RC2-META Stage 3 (lua/luau): Lua has no `class`/`method`/`macro` surface —
+    // a module's public functions are plain `function_declaration` /
+    // `function_definition_statement` nodes, which the canonical `classify_node`
+    // maps to `EntityKind::Function`. Populating the additive `kind` here makes
+    // `interface` report `kind:"function"` for every exported Lua/Luau function,
+    // in agreement with what `structure`'s `definitions` already emits
+    // (kind="function"). No class kind is invented for the table-convention
+    // "classes" (those have no single AST node `classify_node` can classify).
+    let kind = if lang == Language::Elixir
+        || lang == Language::Java
+        || lang == Language::Lua
+        || lang == Language::Luau
+    {
         let src_str = std::str::from_utf8(source).unwrap_or("");
         tldr_core::ast::entity::classify_node(func_node, lang, src_str)
             .map(|k| k.as_str().to_string())
@@ -3207,7 +3220,15 @@ fn reconcile_lua_exports(
                     docstring: None,
                     lineno: export.lineno,
                     is_async: false,
-                    kind: None,
+                    // RC2-META Stage 3 (lua/luau): a branch-nested / accumulator
+                    // export the function-walker missed is still a Lua function
+                    // (`export.is_function`), which `classify_node` classifies as
+                    // `EntityKind::Function`. Tag the additive `kind` from the
+                    // canonical enum string (single source of truth — same answer
+                    // `extract_function_info` produces for the walker-collected
+                    // exports) so every exported function carries `kind:"function"`
+                    // uniformly, regardless of which path emitted it.
+                    kind: Some(tldr_core::ast::entity::EntityKind::Function.as_str().to_string()),
                 });
             }
         } else {
