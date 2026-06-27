@@ -436,13 +436,21 @@ impl PatternMiner {
         lang: Option<Language>,
     ) -> TldrResult<Vec<(std::path::PathBuf, Language)>> {
         if path.is_file() {
-            let file_lang = lang.or_else(|| Language::from_path(path)).ok_or_else(|| {
-                TldrError::UnsupportedLanguage(
-                    path.extension()
-                        .map(|e| e.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                )
-            })?;
+            // RC4-A (v0.5.0 RC-CAMPAIGN): route the single-file autodetect
+            // through the shared per-file header resolver so a C++ public
+            // header kept as `.h` (content sniff / same-dir `.cpp` sibling) is
+            // classified as `cpp`, not force-bucketed to `c` by the
+            // single-bucket `from_path`. `lang.or_else` keeps an explicit
+            // `--lang` override authoritative (`--lang c` on a `.h` is honored).
+            let file_lang = lang
+                .or_else(|| Language::from_path_with_siblings(path))
+                .ok_or_else(|| {
+                    TldrError::UnsupportedLanguage(
+                        path.extension()
+                            .map(|e| e.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                    )
+                })?;
             return Ok(vec![(path.to_path_buf(), file_lang)]);
         }
 
@@ -463,7 +471,16 @@ impl PatternMiner {
             // producing pathological tree-sitter ASTs and pushing
             // `tldr patterns` past 60 s on a 122-luau-file repo (BEFORE
             // measurement: timeout >60s; AFTER: <2s).
-            let detected = Language::from_path(&file_path);
+            // RC4-A (v0.5.0 RC-CAMPAIGN): resolve the C-vs-C++ identity of a
+            // `.h` header per-file (content sniff / same-dir C++ sibling) via
+            // the shared resolver already consumed by
+            // structure/extract/inheritance/health/loc/interface, instead of
+            // the single-bucket `from_path` that hard-maps every `.h` to `c`.
+            // The explicit `--lang` guard below is preserved verbatim: it
+            // still filters to files whose (now header-aware) detection
+            // matches the override, so a genuine C `.h` under `--lang c` is
+            // honored while a C++ `.h` is not force-parsed as C.
+            let detected = Language::from_path_with_siblings(&file_path);
             let file_lang = match (lang, detected) {
                 // User specified language and file matches: use it.
                 (Some(forced), Some(d)) if d == forced => forced,
@@ -958,6 +975,115 @@ mod tests {
         assert!(
             filtered.is_some(),
             "TypeCoveragePattern with coverage_overall 0.85 should survive threshold 0.5"
+        );
+    }
+
+    // =========================================================================
+    // RC4-A: `.h` headers in C++ projects must bucket as cpp, not c
+    // =========================================================================
+
+    /// `collect_files` (and therefore the `files_by_language` histogram of
+    /// `tldr patterns`) must resolve the C-vs-C++ identity of a `.h` header
+    /// per-file through `Language::from_path_with_siblings` /
+    /// `resolve_header_language`, exactly like
+    /// `structure`/`extract`/`inheritance`/`health`/`loc`/`interface`.
+    ///
+    /// Pre-fix `tldr patterns` used the single-bucket `Language::from_path`,
+    /// which hard-maps every `.h` to `Language::C`, so a C++ header
+    /// (`namespace`/`class`/`template`) was force-parsed by the C grammar and
+    /// credited to `c` (live re-measure on cpp-fmt: `c: 26` for 25 C++ `.h` +
+    /// 1 real `.c`; expected post-fix `c: 1`, `cpp: 71`).
+    ///
+    /// This is the GENERALIZATION test for the whole `.h` misbucket class — it
+    /// asserts EVERY variant of the symptom class, not just one:
+    ///   1. C++ `.h` resolved by CONTENT SNIFF (no sibling) -> cpp, never c.
+    ///   2. C++ `.h` resolved by SAME-DIR `.cpp` SIBLING (plain content) -> cpp.
+    ///   3. a genuine C `.h` (no C++ content, no C++ sibling) -> c, never cpp.
+    ///   4. an explicit `--lang c` on a `.h` is still HONORED (-> c).
+    #[test]
+    fn test_h_header_buckets_cpp_not_c_across_all_variants() {
+        use std::io::Write;
+
+        // ---- Variant 1: C++ `.h` via content sniff (no sibling) ----------
+        let d1 = tempfile::tempdir().expect("tempdir");
+        let h1 = d1.path().join("buffer.h");
+        let mut f1 = std::fs::File::create(&h1).unwrap();
+        writeln!(
+            f1,
+            "namespace fmt {{\ntemplate <typename T>\nclass Buffer {{\npublic:\n  void grow(int n);\n  void clear();\n}};\n}}\n"
+        )
+        .unwrap();
+
+        let r1 = detect_patterns(d1.path(), None).expect("patterns over cpp-content .h");
+        let by1 = &r1.metadata.language_distribution.files_by_language;
+        assert_eq!(
+            by1.get("c").copied().unwrap_or(0),
+            0,
+            "a C++ `.h` (namespace/class/template content) must NOT be credited to `c`; got {:?}",
+            by1
+        );
+        assert!(
+            by1.get("cpp").copied().unwrap_or(0) >= 1,
+            "a C++ `.h` resolved by content sniff must bucket as `cpp`; got {:?}",
+            by1
+        );
+
+        // ---- Variant 2: C++ `.h` via same-dir `.cpp` sibling -------------
+        // Plain (sniff-inconclusive) header content; the `.cpp` sibling is the
+        // positive evidence that flips it to C++.
+        let d2 = tempfile::tempdir().expect("tempdir");
+        let h2 = d2.path().join("widget.h");
+        let mut f2 = std::fs::File::create(&h2).unwrap();
+        writeln!(f2, "int widget_init(int code);\nint widget_run(void);\n").unwrap();
+        let cpp2 = d2.path().join("widget.cpp");
+        let mut g2 = std::fs::File::create(&cpp2).unwrap();
+        writeln!(g2, "int widget_init(int code) {{ return code; }}\n").unwrap();
+
+        let r2 = detect_patterns(d2.path(), None).expect("patterns over .h+.cpp sibling");
+        let by2 = &r2.metadata.language_distribution.files_by_language;
+        assert_eq!(
+            by2.get("c").copied().unwrap_or(0),
+            0,
+            "a plain `.h` next to a `.cpp` sibling must bucket as `cpp`, never `c`; got {:?}",
+            by2
+        );
+        assert!(
+            by2.get("cpp").copied().unwrap_or(0) >= 2,
+            "both the `.h` (via sibling) and the `.cpp` must be credited to `cpp`; got {:?}",
+            by2
+        );
+
+        // ---- Variant 3: genuine C `.h` (no C++ content, no C++ sibling) --
+        let d3 = tempfile::tempdir().expect("tempdir");
+        let h3 = d3.path().join("list.h");
+        let mut f3 = std::fs::File::create(&h3).unwrap();
+        writeln!(
+            f3,
+            "struct list {{ int value; struct list *next; }};\nint list_len(struct list *l);\n"
+        )
+        .unwrap();
+
+        let r3 = detect_patterns(d3.path(), None).expect("patterns over pure-C .h");
+        let by3 = &r3.metadata.language_distribution.files_by_language;
+        assert_eq!(
+            by3.get("cpp").copied().unwrap_or(0),
+            0,
+            "a pure-C `.h` (no C++ content, no C++ sibling) must NOT be credited to `cpp`; got {:?}",
+            by3
+        );
+        assert!(
+            by3.get("c").copied().unwrap_or(0) >= 1,
+            "a pure-C `.h` must remain bucketed as `c`; got {:?}",
+            by3
+        );
+
+        // ---- Variant 4: explicit `--lang c` on a `.h` is still honored ---
+        let r4 = detect_patterns(d3.path(), Some(Language::C)).expect("patterns --lang c");
+        let by4 = &r4.metadata.language_distribution.files_by_language;
+        assert!(
+            by4.get("c").copied().unwrap_or(0) >= 1,
+            "explicit `--lang c` on a `.h` must still be honored and bucket as `c`; got {:?}",
+            by4
         );
     }
 }
