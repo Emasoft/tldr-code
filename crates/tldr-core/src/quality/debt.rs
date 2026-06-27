@@ -1206,6 +1206,37 @@ fn extract_universal_functions_for_debt(
             recursion_depth + 1,
         );
     }
+
+    // RC4-B (v0.5.0 RC-CAMPAIGN) debt double-count: this universal walker
+    // emits the same physical function twice whenever a language's
+    // `get_function_node_kinds` registers overlapping (nested) node kinds.
+    // OCaml is the live instance — it lists BOTH `value_definition` (the
+    // outer wrapper) and `let_binding` (the inner definition), so every
+    // `let f x = ..` (and every anonymous `let () = ..`) matches at the
+    // wrapper AND the inner node at the identical (name, start_line). Left
+    // unchecked, every function-level SQALE issue (long_param_list,
+    // deep_nesting, complexity.*, cognitive.*, halstead.*, ...) is emitted
+    // twice and the debt total is inflated ~2x for the affected language.
+    //
+    // Dedup by (name, start_line) at the top-level frame (recursion_depth
+    // == 0, after the whole subtree has been collected), mirroring the
+    // OCaml dedup in `metrics/cognitive.rs`. The fix lives in the walker —
+    // NOT in `get_function_node_kinds` at the root — because that two-kind
+    // list has 10+ consumers and a root edit would under-count
+    // `let a = .. and b = ..` multi-bindings. The (name, start_line) key is
+    // the only structurally-sound invariant for the walker: no two distinct
+    // source functions share both name and start line, so distinct bindings
+    // are preserved — `let a = .. and b = ..` (same line, different names)
+    // and repeated `let () = ..` side-effect bindings (same name, different
+    // lines) all survive — while the wrapper/inner duplicate at the
+    // identical name+line collapses. Applied for every language routed
+    // through this walker so the whole symptom class is closed (it is a
+    // no-op for non-overlapping grammars).
+    if recursion_depth == 0 {
+        let mut seen: std::collections::HashSet<(String, u32)> =
+            std::collections::HashSet::new();
+        functions.retain(|f| seen.insert((f.name.clone(), f.start_line)));
+    }
 }
 
 /// Build a single [`FunctionInfoForDebt`] from a function-kind AST

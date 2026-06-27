@@ -2861,3 +2861,216 @@ mod java_debt_stackoverflow_v1_tests {
         );
     }
 }
+
+// =============================================================================
+// RC4-B: debt double-count dedup (v0.5.0 RC-CAMPAIGN)
+// =============================================================================
+//
+// Root cause: `extract_universal_functions_for_debt` (the cross-language
+// debt function walker) emits the SAME physical function twice whenever a
+// language's `get_function_node_kinds` registers overlapping (nested) node
+// kinds. OCaml is the live instance: it registers BOTH `value_definition`
+// (the outer wrapper) and `let_binding` (the inner definition), so every
+// `let f x = ..` (and every anonymous `let () = ..`) matches at the wrapper
+// AND the inner node — at the identical (name, start_line). Left unchecked
+// this doubles every function-level SQALE issue (long_param_list,
+// deep_nesting, complexity.*, cognitive.*, ...) and inflates the debt total
+// ~2x for the affected language(s).
+//
+// Fix: a (name, start_line) dedup at the top-level frame of the universal
+// walker (mirrors the OCaml dedup in `metrics/cognitive.rs`). The key is
+// (name, start_line) — NOT name alone — so genuinely distinct bindings
+// survive: `let a = .. and b = ..` (same line, different names) and
+// repeated anonymous `let () = ..` bindings (same name, different lines).
+mod rc4b_debt_dedup_tests {
+    use super::fixtures::*;
+    use super::*;
+
+    /// Helper: a (line, rule, element) triple uniquely identifies a
+    /// function-level debt finding. No triple may appear more than once —
+    /// a repeat is the double-count symptom.
+    fn function_level_keys(issues: &[DebtIssue]) -> Vec<(u32, String, String)> {
+        issues
+            .iter()
+            .filter_map(|i| {
+                i.element
+                    .as_ref()
+                    .map(|el| (i.line, i.rule.clone(), el.clone()))
+            })
+            .collect()
+    }
+
+    /// CORE SYMPTOM (named + anonymous OCaml bindings): every
+    /// function-level debt issue is counted exactly once, and distinct
+    /// anonymous `let () = ..` bindings are preserved as separate findings
+    /// (NOT collapsed into one whole-file aggregate by a name-only dedup).
+    #[test]
+    fn test_ocaml_debt_function_issues_not_double_counted() {
+        let dir = TestDir::new().expect("Failed to create test dir");
+
+        // `compute_score`: 8 params (> 5) -> exactly ONE long_param_list.
+        // Two anonymous `let () = ..` bindings, each 5 nested `if`
+        // expressions deep (> 4) -> exactly ONE deep_nesting each, at two
+        // DISTINCT lines.
+        let src = r#"
+let compute_score a b c d e f g h =
+  a + b + c + d + e + f + g + h
+
+let () =
+  if a1 then
+    (if a2 then
+      (if a3 then
+        (if a4 then
+          (if a5 then print_string "x" else ())
+         else ())
+       else ())
+     else ())
+  else ()
+
+let () =
+  if b1 then
+    (if b2 then
+      (if b3 then
+        (if b4 then
+          (if b5 then print_string "y" else ())
+         else ())
+       else ())
+     else ())
+  else ()
+"#;
+        let file = dir.add_file("dedup.ml", src).unwrap();
+        let (issues, _) = analyze_file(&file, None, Some(Language::Ocaml))
+            .expect("ocaml debt analysis should succeed");
+
+        // (1) No function-level finding is emitted twice. This is the
+        //     direct double-count assertion and covers BOTH the named
+        //     wrapper/inner overlap and the anonymous wrapper/inner overlap.
+        let keys = function_level_keys(&issues);
+        let mut seen = std::collections::HashSet::new();
+        let dups: Vec<_> = keys.iter().filter(|k| !seen.insert((*k).clone())).collect();
+        assert!(
+            dups.is_empty(),
+            "OCaml function-level debt issue double-counted \
+             (value_definition + let_binding emitted the same function twice): {:#?}\nall issues: {:#?}",
+            dups,
+            issues
+        );
+
+        // (2) The named 8-param function contributes exactly ONE
+        //     long_param_list (15 min), not two (30 min).
+        let lpl: Vec<_> = issues
+            .iter()
+            .filter(|i| i.rule == "long_param_list")
+            .collect();
+        assert_eq!(
+            lpl.len(),
+            1,
+            "compute_score long_param_list must be counted once, got {}: {:#?}",
+            lpl.len(),
+            lpl
+        );
+        assert_eq!(
+            lpl.iter().map(|i| i.debt_minutes).sum::<u32>(),
+            15,
+            "long_param_list SQALE minutes must not be doubled"
+        );
+
+        // (3) The two anonymous `let () = ..` bindings each contribute
+        //     exactly ONE deep_nesting finding, at two DISTINCT lines.
+        //     A name-only dedup would wrongly collapse both "()" bindings
+        //     into a single whole-file aggregate — assert they stay
+        //     separate (the (name, start_line) key requirement).
+        let nesting: Vec<_> = issues
+            .iter()
+            .filter(|i| i.rule == "deep_nesting")
+            .collect();
+        assert_eq!(
+            nesting.len(),
+            2,
+            "two anonymous `let () = ..` bindings must yield 2 deep_nesting \
+             findings (each once, distinct lines), got {}: {:#?}",
+            nesting.len(),
+            nesting
+        );
+        let distinct_lines: std::collections::HashSet<u32> =
+            nesting.iter().map(|i| i.line).collect();
+        assert_eq!(
+            distinct_lines.len(),
+            2,
+            "anonymous bindings must not be credited a whole-file aggregate \
+             (deep_nesting findings collapsed onto one line): {:#?}",
+            nesting
+        );
+        assert_eq!(
+            nesting.iter().map(|i| i.debt_minutes).sum::<u32>(),
+            30,
+            "deep_nesting SQALE minutes must reflect 2 distinct bindings, not 2x of one"
+        );
+    }
+
+    /// The (name, start_line) key must NOT under-count `let a = .. and
+    /// b = ..` multi-bindings (the plan's explicit risk for a node-kinds
+    /// ROOT edit). Two same-line `and`-chained functions have distinct
+    /// names, so BOTH must survive the dedup.
+    #[test]
+    fn test_ocaml_debt_dedup_preserves_and_chained_bindings() {
+        let dir = TestDir::new().expect("Failed to create test dir");
+        // `f` and `g` are distinct functions chained with `and`; both have
+        // 6 params (> 5). They must produce TWO long_param_list findings.
+        let src = r#"
+let rec f a b c d e g_ = a + b + c + d + e + g_
+and g a b c d e f_ = a + b + c + d + e + f_
+"#;
+        let file = dir.add_file("multibind.ml", src).unwrap();
+        let (issues, _) = analyze_file(&file, None, Some(Language::Ocaml))
+            .expect("ocaml debt analysis should succeed");
+
+        let lpl: Vec<&DebtIssue> = issues
+            .iter()
+            .filter(|i| i.rule == "long_param_list")
+            .collect();
+        let elements: std::collections::HashSet<String> = lpl
+            .iter()
+            .filter_map(|i| i.element.clone())
+            .collect();
+        assert_eq!(
+            lpl.len(),
+            2,
+            "`let f .. and g ..` must yield 2 long_param_list findings \
+             (dedup must key on (name, start_line), not name): {:#?}",
+            issues
+        );
+        assert_eq!(
+            elements.len(),
+            2,
+            "both distinct `and`-chained bindings (f, g) must be preserved: {:?}",
+            elements
+        );
+    }
+
+    /// Non-regression: the universal-walker dedup must be a no-op for a
+    /// language whose function node kinds do NOT nest (here Kotlin, which
+    /// also routes through `extract_universal_functions_for_debt`). A
+    /// single 8-param function must still be reported exactly once — the
+    /// dedup must not erase legitimate single findings.
+    #[test]
+    fn test_kotlin_debt_single_function_not_dropped_by_dedup() {
+        let dir = TestDir::new().expect("Failed to create test dir");
+        let src = "fun wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int): Int {\n    return a + b + c + d + e + f + g + h\n}\n";
+        let file = dir.add_file("wide.kt", src).unwrap();
+        let (issues, _) = analyze_file(&file, None, Some(Language::Kotlin))
+            .expect("kotlin debt analysis should succeed");
+
+        let lpl: Vec<&DebtIssue> = issues
+            .iter()
+            .filter(|i| i.rule == "long_param_list")
+            .collect();
+        assert_eq!(
+            lpl.len(),
+            1,
+            "single Kotlin 8-param function must yield exactly one \
+             long_param_list (universal dedup must not over-collapse): {:#?}",
+            issues
+        );
+    }
+}
