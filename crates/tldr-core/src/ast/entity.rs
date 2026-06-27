@@ -339,12 +339,30 @@ pub fn classify_node_kind(kind: &str, language: Language) -> Option<EntityKind> 
             "record_declaration" => Class,
             _ => return None,
         },
-        Language::C | Language::Cpp => match kind {
+        Language::C => match kind {
             "function_definition" | "declaration" => Function,
             "field_declaration" => Method,
             "class_specifier" => Class,
             "struct_specifier" | "union_specifier" => Struct,
             "enum_specifier" => Enum,
+            _ => return None,
+        },
+        // RC2-META Stage 3 (cpp): the C++ container/type alphabet is a strict
+        // superset of C's. `class`/`struct`/`enum` keep their C mappings;
+        // `union` -> Struct (a union is a struct-axis aggregate). C++-only
+        // type-defining constructs the bare node-kind string fully decides:
+        //   `namespace N {...}`      (namespace_definition) -> Module
+        //   `typedef int MyInt;`     (type_definition)      -> TypeAlias ("type")
+        //   `using Alias = double;`  (alias_declaration)    -> TypeAlias ("type")
+        // Split out from the shared C arm so C semantics stay byte-identical.
+        Language::Cpp => match kind {
+            "function_definition" | "declaration" => Function,
+            "field_declaration" => Method,
+            "class_specifier" => Class,
+            "struct_specifier" | "union_specifier" => Struct,
+            "enum_specifier" => Enum,
+            "namespace_definition" => Module,
+            "type_definition" | "alias_declaration" => TypeAlias,
             _ => return None,
         },
         Language::Ruby => match kind {
@@ -854,6 +872,60 @@ mod classify_tests {
         );
         let en = find_kind(root, "enum_declaration").expect("enum");
         assert_eq!(classify_node(en, Language::TypeScript, src), Some(EntityKind::Enum));
+    }
+
+    /// RC2-META Stage 3 (cpp) grammar ground truth: the canonical classifier maps
+    /// each C++ construct to its `EntityKind` so `extract`/`interface`/`structure`
+    /// agree. class -> Class, struct/union -> Struct, enum / `enum class` -> Enum,
+    /// namespace -> Module, typedef / using-alias -> TypeAlias.
+    #[test]
+    fn cpp_grammar_ground_truth() {
+        let src = "namespace ns {\nclass Foo {};\nstruct Bar {};\nunion U { int i; float f; };\nenum Color { Red };\nenum class Dir { N };\ntypedef int MyInt;\nusing Alias = double;\n}\n";
+        let tree = parse(src, Language::Cpp).unwrap();
+        let root = tree.root_node();
+
+        let ns = find_kind(root, "namespace_definition").expect("namespace");
+        assert_eq!(classify_node(ns, Language::Cpp, src), Some(EntityKind::Module));
+
+        let class = find_kind(root, "class_specifier").expect("class");
+        assert_eq!(classify_node(class, Language::Cpp, src), Some(EntityKind::Class));
+
+        let strukt = find_kind(root, "struct_specifier").expect("struct");
+        assert_eq!(classify_node(strukt, Language::Cpp, src), Some(EntityKind::Struct));
+
+        let uni = find_kind(root, "union_specifier").expect("union");
+        assert_eq!(classify_node(uni, Language::Cpp, src), Some(EntityKind::Struct));
+
+        let en = find_kind(root, "enum_specifier").expect("enum");
+        assert_eq!(classify_node(en, Language::Cpp, src), Some(EntityKind::Enum));
+
+        let typedef = find_kind(root, "type_definition").expect("typedef");
+        assert_eq!(classify_node(typedef, Language::Cpp, src), Some(EntityKind::TypeAlias));
+
+        let alias = find_kind(root, "alias_declaration").expect("using-alias");
+        assert_eq!(classify_node(alias, Language::Cpp, src), Some(EntityKind::TypeAlias));
+
+        // Serialized strings used by extract/interface/structure.
+        assert_eq!(EntityKind::Module.as_str(), "module");
+        assert_eq!(EntityKind::Struct.as_str(), "struct");
+        assert_eq!(EntityKind::TypeAlias.as_str(), "type");
+    }
+
+    /// RC2-META Stage 3 (cpp): the C arm of `classify_node_kind` must stay
+    /// byte-identical — C++-only kinds (`namespace_definition`, `type_definition`,
+    /// `alias_declaration`) must NOT be classified for C.
+    #[test]
+    fn cpp_typedef_namespace_are_cpp_only() {
+        assert_eq!(classify_node_kind("namespace_definition", Language::Cpp), Some(EntityKind::Module));
+        assert_eq!(classify_node_kind("type_definition", Language::Cpp), Some(EntityKind::TypeAlias));
+        assert_eq!(classify_node_kind("alias_declaration", Language::Cpp), Some(EntityKind::TypeAlias));
+        // C semantics unchanged.
+        assert_eq!(classify_node_kind("namespace_definition", Language::C), None);
+        assert_eq!(classify_node_kind("type_definition", Language::C), None);
+        assert_eq!(classify_node_kind("alias_declaration", Language::C), None);
+        // C++ class/struct/union/enum preserved.
+        assert_eq!(classify_node_kind("class_specifier", Language::Cpp), Some(EntityKind::Class));
+        assert_eq!(classify_node_kind("union_specifier", Language::Cpp), Some(EntityKind::Struct));
     }
 
     #[test]

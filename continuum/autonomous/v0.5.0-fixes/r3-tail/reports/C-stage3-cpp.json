@@ -1,0 +1,29 @@
+{
+  "stage": "rc2-meta-stage3",
+  "language": "cpp",
+  "result": "success",
+  "implemented": "Wired the canonical classify_node / classify_node_kind discriminator into the PRODUCTION extract + interface ClassInfo.kind producers for C++ (additive). Structure already reported class/struct/enum for cpp and is unchanged. Split the shared C|Cpp arm of classify_node_kind so cpp gains namespace_definition->Module and typedef/using-alias->TypeAlias while C stays byte-identical; union_specifier already -> Struct.",
+  "files_changed": [
+    "crates/tldr-core/src/ast/entity.rs",
+    "crates/tldr-core/src/ast/extract.rs",
+    "crates/tldr-cli/src/commands/patterns/interface.rs"
+  ],
+  "json_delta": {
+    "extract.classes[].kind (cpp)": "was None (field omitted via skip_serializing_if); now 'class' for class_specifier, 'struct' for struct_specifier, and 'class' for the macro-misparse-recovered class.",
+    "interface.classes[].kind (cpp)": "was None (omitted); now 'class' for class_specifier, 'struct' for struct_specifier (class_node_kinds(Cpp) members).",
+    "structure.definitions[].kind (cpp)": "UNCHANGED — already 'class'/'struct'/'enum' via the legacy entry-kind switch + classify_definition_node.",
+    "classify_node_kind capability (cpp)": "now recognizes namespace_definition->'module' and type_definition/alias_declaration->'type' (and union_specifier->'struct' as before). Inert additive at present: extract/interface/structure do not yet enumerate namespaces/typedefs/unions as class carriers, so no construct is added or dropped — additive kind only."
+  },
+  "char_tests": [
+    "tldr-core ast::entity::classify_tests::cpp_grammar_ground_truth — class->Class, struct/union->Struct, enum/enum-class->Enum, namespace->Module, typedef/using->TypeAlias",
+    "tldr-core ast::entity::classify_tests::cpp_typedef_namespace_are_cpp_only — cpp gains namespace/typedef/alias mappings; C arm stays None (byte-identical)",
+    "tldr-core ast::extract::tests::cpp_extract_populates_class_kind — extract ClassInfo.kind == 'class'/'struct' (was None)"
+  ],
+  "lib_test": "cargo test -p tldr-core --lib: 5280 passed, 0 failed, 342 ignored. cargo test -p tldr-cli --lib guards (interface_node_kind_tables_match_classify_node, diff_class_node_kinds_match_classify_node, explain_node_kind_tables_match_classify_node): 3 passed.",
+  "targeted_tests": "tldr-cli --test m040_cpp_macro_class_v1 (5 ok), p19_secondary_fixes_v1 (8 ok incl cpp structure/class-count), cpp_interface_macro_filter_v1 (5 ok). interface_per_lang_v1::javascript_prototype_assignments_emitted FAILED — PRE-EXISTING stale-binary artifact: the suite shells out to target/release/tldr (mtime 04:28, predates these edits at 04:50); not rebuilt per campaign rule 'DO NOT cargo build --release'. Failure is independent of this diff (no JS path touched).",
+  "goldens_rebaselined": [],
+  "goldens_note": "No goldens dropped a construct or changed a name/line. Change is additive kind-only; no in-process golden asserted cpp kind==None, so nothing required re-baseline. Integration goldens that shell to target/release/tldr are the orchestrator's post-rebuild verify step.",
+  "committed": true,
+  "status": "closed",
+  "skip_list_applied": ["concurrent_add_entry_is_bounded_cas_safe", "daemon_status_from_other_cwd_reports_running", "change_impact_line_attribution", "coupling_path_preserves_user_supplied"]
+}

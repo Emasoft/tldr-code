@@ -6595,7 +6595,14 @@ fn extract_cpp_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Cla
                         decorators: Vec::new(),
                         line_number,
                         line_end,
-                        kind: None,
+                        // RC2-META Stage 3 (cpp): the macro-misparse recovery has
+                        // already established this entry is a `class` (a
+                        // `class MACRO Name : Base {…}` header that tree-sitter-cpp
+                        // mangled into a `function_definition`/`declaration`). Tag
+                        // it with the canonical class kind so the recovered class
+                        // agrees with the clean `class_specifier` path above
+                        // instead of an undifferentiated `kind: None`. Additive.
+                        kind: Some(crate::ast::entity::EntityKind::Class.as_str().to_string()),
                         modifiers: Vec::new(),
                         events: Vec::new(),
                         errors: Vec::new(),
@@ -6659,7 +6666,14 @@ fn extract_cpp_class_info(node: &Node, source: &str) -> ClassInfo {
         decorators: Vec::new(),
         line_number,
         line_end,
-        kind: None,
+        // RC2-META Stage 3 (cpp): populate the carrier `kind` from the canonical
+        // [`crate::ast::entity::classify_node`] discriminator (single source of
+        // truth — same answer structure/interface use). The node reaching here is
+        // a `class_specifier` (-> "class") or `struct_specifier` (-> "struct"), in
+        // agreement with `structure`'s `definitions[]` entry-kind. Additive — no
+        // existing name/line/base/method change.
+        kind: crate::ast::entity::classify_node(*node, Language::Cpp, source)
+            .map(|k| k.as_str().to_string()),
         modifiers: Vec::new(),
         events: Vec::new(),
         errors: Vec::new(),
@@ -11268,6 +11282,23 @@ int global_var = 0;
             !constants.iter().any(|c| c.name == "global_var"),
             "Should not extract non-const global_var"
         );
+    }
+
+    /// RC2-META Stage 3 (cpp): `extract` populates `ClassInfo.kind` via the
+    /// canonical classifier — `class` -> "class", `struct` -> "struct" — instead
+    /// of the former `kind: None`.
+    #[test]
+    fn cpp_extract_populates_class_kind() {
+        use crate::ast::parser::parse;
+
+        let source = "class Foo : public Base {\npublic:\n  void m();\n};\nstruct Bar {\n  int y;\n};\n";
+        let tree = parse(source, Language::Cpp).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Cpp);
+
+        let foo = classes.iter().find(|c| c.name == "Foo").expect("Foo class");
+        assert_eq!(foo.kind.as_deref(), Some("class"), "Foo: {foo:?}");
+        let bar = classes.iter().find(|c| c.name == "Bar").expect("Bar struct");
+        assert_eq!(bar.kind.as_deref(), Some("struct"), "Bar: {bar:?}");
     }
 
     #[test]

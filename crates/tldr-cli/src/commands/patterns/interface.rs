@@ -1894,6 +1894,19 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // method/function or struct/union ambiguity arises here.
         Language::C => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
             .map(|k| k.as_str().to_string()),
+        // RC2-META Stage 3 (cpp): populate the `interface` `ClassInfo.kind` from
+        // the canonical, string-keyed `classify_node_kind` discriminator (single
+        // source of truth — same answer `extract`/`structure` use). The node
+        // kinds reaching here are exactly `class_node_kinds(Cpp)` =
+        // {`struct_specifier`, `class_specifier`}, which the canonical classifier
+        // maps to `EntityKind::Struct` / `EntityKind::Class`. Additive — formerly
+        // `kind: None` (omitted from JSON via the `skip_serializing_if` guard);
+        // `interface` now reports `kind:"class"` / `kind:"struct"` in agreement
+        // with `extract`/`structure`. (`union_specifier` -> Struct,
+        // `enum_specifier` -> Enum are likewise covered should the class-carrier
+        // set ever widen.)
+        Language::Cpp => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+            .map(|k| k.as_str().to_string()),
         _ => None,
     }
 }
