@@ -3156,6 +3156,74 @@ fn compute_lua_api_check_context(content: &str, language: ApiLanguage) -> LuaApi
             }
         }
 
+        // lu001-loopvar-param-binder-v1 (v0.5.0 RC5-LU001): for-loop
+        // variables and function parameters are in-scope bindings, exactly
+        // like a `local` declaration. A later bare `x = ...` whose LHS is one
+        // of them is a reassignment of that binding, NOT an implicit global.
+        // Pre-fix `visit()` harvested only `local` names, so a loop var or a
+        // function parameter that was later reassigned without `local` leaked
+        // as an LU001 `implicit-global` false positive. We fold them into the
+        // same `local_names_in_scope` union the LU001 gate consults. The
+        // grammar node names below are shared between `tree-sitter-lua` and
+        // `tree-sitter-luau` (verified against both `node-types.json`); this
+        // mirrors the AST shapes harvested by `extract_lua_params` /
+        // `extract_luau_params` (`ast/extract.rs`).
+        if kind == "for_numeric_clause" {
+            // `for i = start, end[, step] do` — the loop variable is the
+            // `name` field, an `identifier` node.
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if name_node.kind() == "identifier" {
+                    if let Ok(name) = std::str::from_utf8(&source[name_node.byte_range()]) {
+                        ctx.local_names_in_scope.insert(name.to_string());
+                    }
+                }
+            }
+        }
+
+        if kind == "for_generic_clause" {
+            // `for k, v in iter do` — the loop variables live in a
+            // `variable_list` child, the SAME node shape harvested for the
+            // `local x, y = ...` form, so reuse the existing collector.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "variable_list" {
+                    collect_variable_list_identifiers(child, source, ctx);
+                }
+            }
+        }
+
+        if kind == "parameters" {
+            // Function parameters. Mirror `extract_lua_params` /
+            // `extract_luau_params`: a bare `identifier` child (Lua param,
+            // Luau untyped param) or a `parameter` wrapper whose first
+            // `identifier` child is the name (Luau typed param `name: T`).
+            // Varargs (`...` / `vararg_expression`) are not LHS identifiers
+            // and are ignored.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "identifier" => {
+                        if let Ok(name) = std::str::from_utf8(&source[child.byte_range()]) {
+                            ctx.local_names_in_scope.insert(name.to_string());
+                        }
+                    }
+                    "parameter" => {
+                        let mut inner = child.walk();
+                        for ic in child.children(&mut inner) {
+                            if ic.kind() == "identifier" {
+                                if let Ok(name) = std::str::from_utf8(&source[ic.byte_range()])
+                                {
+                                    ctx.local_names_in_scope.insert(name.to_string());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             visit(child, source, ctx);
@@ -5824,6 +5892,92 @@ mod tests {
             !ctx.comment_line_set.contains(&4),
             "line 4 (local a = 1) is real code, not a comment"
         );
+    }
+
+    /// lu001-loopvar-param-binder-v1 (v0.5.0 RC5-LU001): a bare `x = ...`
+    /// assignment whose LHS is a **for-loop variable** (numeric or generic)
+    /// or a **function parameter** is a reassignment of an in-scope binding,
+    /// NOT an implicit global. Pre-fix `visit()` only harvested `local`
+    /// declarations, so the for-loop loop var and the function param leaked
+    /// as LU001 implicit-global false positives.
+    ///
+    /// GENERALIZATION GATE (anti-treadmill): this single fixture exercises
+    /// EVERY variant in the symptom class at once —
+    ///   - a `local` reassign (`total = ...`, must STAY suppressed),
+    ///   - a numeric-for loop var (`i = ...`, `for_numeric_clause`),
+    ///   - a generic-for loop var (`name = ...`, `for_generic_clause`),
+    ///   - a function parameter (`factor = ...`, `parameters`),
+    /// and asserts that ONLY the genuine top-level implicit global
+    /// (`REAL_GLOBAL = 5`) survives. A fix that closes only one variant
+    /// fails this test.
+    const LU001_LOOPVAR_PARAM_SRC: &str = "local function process(items, factor)\n\tlocal total = 0\n\tfor i = 1, #items do\n\t\ti = i + 0\n\t\ttotal = total + items[i]\n\tend\n\tfor _, name in ipairs(items) do\n\t\tname = tostring(name)\n\t\tprint(name)\n\tend\n\tfactor = factor or 1\n\treturn total\nend\n\nREAL_GLOBAL = 5\n";
+
+    #[test]
+    fn test_lu001_loopvar_and_param_reassign_not_flagged_luau() {
+        let dir = TempDir::new().unwrap();
+        let path = write_tmp(&dir, "process.luau", LU001_LOOPVAR_PARAM_SRC);
+        let rules = rules_for_language(ApiLanguage::Luau);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Luau).unwrap();
+        let lu001: Vec<_> = findings.iter().filter(|f| f.rule.id == "LU001").collect();
+        assert_eq!(
+            lu001.len(),
+            1,
+            "only the genuine implicit global must be flagged; loop vars + params + local reassign must be suppressed, got {:?}",
+            lu001.iter().map(|f| (f.line, &f.code_context)).collect::<Vec<_>>()
+        );
+        assert!(
+            lu001[0].code_context.contains("REAL_GLOBAL"),
+            "the surviving finding must be the real global REAL_GLOBAL, got {:?}",
+            lu001[0].code_context
+        );
+    }
+
+    /// The LU001 rule + its AST context builder are shared between Lua and
+    /// Luau (same grammar node names). The same fixture must therefore
+    /// suppress the same FP class under the plain-Lua language path.
+    #[test]
+    fn test_lu001_loopvar_and_param_reassign_not_flagged_lua() {
+        let dir = TempDir::new().unwrap();
+        let path = write_tmp(&dir, "process.lua", LU001_LOOPVAR_PARAM_SRC);
+        let rules = rules_for_language(ApiLanguage::Lua);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Lua).unwrap();
+        let lu001: Vec<_> = findings.iter().filter(|f| f.rule.id == "LU001").collect();
+        assert_eq!(
+            lu001.len(),
+            1,
+            "Lua path must also suppress loop vars + params + local reassign, got {:?}",
+            lu001.iter().map(|f| (f.line, &f.code_context)).collect::<Vec<_>>()
+        );
+        assert!(
+            lu001[0].code_context.contains("REAL_GLOBAL"),
+            "the surviving finding must be the real global REAL_GLOBAL, got {:?}",
+            lu001[0].code_context
+        );
+    }
+
+    /// Direct unit test on the context builder: numeric-for vars, generic-for
+    /// vars, and function params must all land in `local_names_in_scope`
+    /// alongside the `local`-declared name, for BOTH Lua and Luau.
+    #[test]
+    fn test_lua_context_collects_loop_vars_and_params() {
+        for lang in [ApiLanguage::Lua, ApiLanguage::Luau] {
+            let ctx = compute_lua_api_check_context(LU001_LOOPVAR_PARAM_SRC, lang);
+            for name in ["total", "i", "name", "factor"] {
+                assert!(
+                    ctx.local_names_in_scope.contains(name),
+                    "{:?}: expected in-scope binding {:?} in local_names_in_scope, got {:?}",
+                    lang,
+                    name,
+                    ctx.local_names_in_scope
+                );
+            }
+            // A genuine global must NOT be harvested as an in-scope binding.
+            assert!(
+                !ctx.local_names_in_scope.contains("REAL_GLOBAL"),
+                "{:?}: REAL_GLOBAL is a global, not an in-scope binding",
+                lang
+            );
+        }
     }
 
     // =====================================================================
