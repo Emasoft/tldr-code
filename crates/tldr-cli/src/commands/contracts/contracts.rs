@@ -1712,6 +1712,45 @@ fn find_function_recursive<'a>(
             // recursion reaches them.
             || child.kind() == "expression_statement"
             || child.kind() == "object"
+            // fix-PW2-F2-contracts-nested (v0.5.0 BACKLOG): the curated
+            // descent-allowlist above omitted function *body* scopes and the
+            // IIFE/closure wrapper chain, so a function nested inside another
+            // function's body was unreachable and `contracts` reported
+            // "function 'X' not found". The name-match arms higher in this
+            // loop already `return` immediately on a hit, so descending into
+            // these scopes only triggers for NON-matching enclosing functions
+            // — preserving top-level/class resolution while reaching nested
+            // definitions. Three real-repo manifestations drove the set:
+            //
+            //   * JS  — `debounce` inside the lodash `runInContext` IIFE:
+            //     `variable_declaration > variable_declarator >
+            //      parenthesized_expression > call_expression >
+            //      function_expression > statement_block > function_declaration`.
+            //   * Lua — `clean_value` nested in `gen_scopes`:
+            //     `function_declaration > block > function_declaration`
+            //     (`block` was already listed, but the enclosing
+            //     non-matching `function_declaration` was not, so its body
+            //     block was never reached).
+            //   * Swift — `cancelAllRequests` inside the GLR-mis-parsed
+            //     `open class Session: @unchecked Sendable {` (reduced to
+            //     `function_declaration > ERROR > ERROR > function_declaration`)
+            //     and the well-formed func-in-func case
+            //     (`function_declaration > function_body > statements >
+            //      function_declaration`).
+            //
+            // All AST-driven; bounded by MAX_AST_DEPTH.
+            || child.kind() == "statement_block"        // JS/TS function/block body
+            || child.kind() == "function_body"          // Swift function body
+            || child.kind() == "statements"             // Swift function-body statement list
+            || child.kind() == "function_declaration"   // recurse into non-matching fn (Lua/Swift/JS nested)
+            || child.kind() == "function_expression"    // JS IIFE / named function expression
+            || child.kind() == "variable_declaration"   // JS `var x = (IIFE)()` / Lua locals
+            || child.kind() == "lexical_declaration"    // JS `const x = (IIFE)()`
+            || child.kind() == "variable_declarator"    // JS declarator holding the IIFE value
+            || child.kind() == "parenthesized_expression" // JS IIFE `( ... )`
+            || child.kind() == "call_expression"        // JS IIFE invocation `( ... )()`
+            || child.kind() == "member_expression"      // JS IIFE `( ... ).call(this)` outer wrapper
+            || child.kind() == "ERROR"                  // Swift GLR mis-parse recovery wrapper
         {
             if let Some(found) =
                 find_function_recursive(child, function_name, source, config, depth + 1)
