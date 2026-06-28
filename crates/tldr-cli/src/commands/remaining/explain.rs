@@ -2369,6 +2369,27 @@ fn locate_call_in_caller_file(
     )
 }
 
+/// Outcome of `enrich_with_project_graph`'s per-definition caller
+/// resolution. fix-PW3-B1-explain-resolver: the explain orchestrator uses
+/// this to decide whether the name-union caller walkers (per-file
+/// `find_callers` + the `enrich_with_references` reference scan) are safe
+/// to run, or whether the project call graph's per-DEFINITION resolution
+/// must be treated as authoritative (ambiguous / overloaded names).
+struct CallerResolution {
+    /// Whether the project call graph was built. `false` => the caller
+    /// must fall back to the name-only walkers (graph-failure fallback).
+    graph_built: bool,
+    /// Number of DISTINCT definition files for `function` across the
+    /// project. `> 1` => the name is an overload / homonym set, so the
+    /// name-only caller walkers conflate callers of distinct definitions.
+    definition_count: usize,
+    /// The per-definition caller set for the SUBJECT definition (target
+    /// rows whose file matches the subject file, plus mis-attributed
+    /// phantom/extension rows). Authoritative caller list for ambiguous
+    /// names.
+    subject_callers: Vec<CallInfo>,
+}
+
 /// Enrich `report.callers` and `report.callees` with cross-file results
 /// derived from the project-wide call graph (`build_project_call_graph` /
 /// `impact_analysis_with_ast_fallback`) — the same data source used by
@@ -2383,11 +2404,17 @@ fn enrich_with_project_graph(
     file: &std::path::Path,
     function: &str,
     language: Language,
-) {
+) -> CallerResolution {
     let project_root = explain_project_root(file);
     let graph = match build_project_call_graph(&project_root, language, None, true) {
         Ok(g) => g,
-        Err(_) => return,
+        Err(_) => {
+            return CallerResolution {
+                graph_built: false,
+                definition_count: 0,
+                subject_callers: Vec::new(),
+            }
+        }
     };
 
     // critical-regressions-v1 (P13.AGG13-2): when the user supplies a Swift
@@ -2400,6 +2427,13 @@ fn enrich_with_project_graph(
     // truly lives in the user-supplied file by AST scan; if so, accept
     // callers from any homonym target.
     let function_defined_in_file = function_is_defined_in_file(file, function, language);
+    // fix-PW3-B1-explain-resolver: accumulate the per-DEFINITION caller set
+    // for the subject definition and count how many distinct definitions of
+    // the name exist project-wide, so the orchestrator can treat the project
+    // graph as the authoritative caller source for ambiguous / overloaded
+    // names instead of the conflating name-union walkers.
+    let mut subject_callers: Vec<CallInfo> = Vec::new();
+    let mut definition_count: usize = 0;
     // Callers: use the same path `tldr impact` uses so the results agree.
     if let Ok(impact) = impact_analysis_with_ast_fallback(
         &graph,
@@ -2409,14 +2443,52 @@ fn enrich_with_project_graph(
         &project_root,
         language,
     ) {
+        // Distinct definition files = the ambiguity signal. `impact.targets`
+        // is keyed PER-DEFINITION (`file:Type.method`), so more than one
+        // distinct definition file means `function` is an overload / homonym
+        // set that name-only caller discovery conflates.
+        let resolve_target = |p: &std::path::Path| -> std::path::PathBuf {
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                project_root.join(p)
+            };
+            abs.canonicalize().unwrap_or(abs)
+        };
+        definition_count = impact
+            .targets
+            .values()
+            .map(|t| resolve_target(&t.file))
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+
         for tree in impact.targets.values() {
             // Only enrich when the target's file matches our subject file —
             // explain is per-function-per-file, so cross-file callers of a
-            // homonym in a different file should not be merged in. The
-            // `function_defined_in_file` escape hatch covers the Swift
-            // extension case described above.
-            if !paths_equivalent(&tree.file, file) && !function_defined_in_file {
-                continue;
+            // homonym in a different file should not be merged in.
+            if !paths_equivalent(&tree.file, file) {
+                // fix-PW3-B1-explain-resolver: the `function_defined_in_file`
+                // escape hatch (AGG13-2) exists so a Swift `extension Heap`
+                // method whose call-graph `dst_file` was mis-attributed to a
+                // SIBLING file — one that does NOT itself define the method —
+                // still recovers its callers. Restrict it to exactly that
+                // case: a homonym target in another file may contribute
+                // callers ONLY when that file does not ITSELF define the
+                // function. A file that genuinely defines its own same-named
+                // function (cpp `size` in another header, solidity
+                // `safeTransferFrom` in another contract, ocaml `of_values`
+                // in another module) is a DISTINCT definition — merging its
+                // callers is the homonym-conflation bug.
+                let other_file = if tree.file.is_absolute() {
+                    tree.file.clone()
+                } else {
+                    project_root.join(&tree.file)
+                };
+                let is_phantom_of_subject = function_defined_in_file
+                    && !function_is_defined_in_file(&other_file, function, language);
+                if !is_phantom_of_subject {
+                    continue;
+                }
             }
             for caller in &tree.callers {
                 let caller_file = caller.file.display().to_string();
@@ -2425,9 +2497,6 @@ fn enrich_with_project_graph(
                 if explain_names_match(&caller_name, function)
                     && paths_equivalent(&caller.file, file)
                 {
-                    continue;
-                }
-                if caller_already_present(&report.callers, &caller_name, &caller_file) {
                     continue;
                 }
                 // language-specific-bugs-v1 (P14.AGG14-16): the call-graph
@@ -2453,6 +2522,22 @@ fn enrich_with_project_graph(
                     function,
                 )
                 .unwrap_or(0);
+                // fix-PW3-B1-explain-resolver: record the per-definition
+                // caller (self-deduped) so the orchestrator can use it as the
+                // authoritative list for ambiguous names.
+                if !caller_already_present(&subject_callers, &caller_name, &caller_file) {
+                    subject_callers.push(CallInfo::new(
+                        caller_name.clone(),
+                        caller_file.clone(),
+                        line,
+                    ));
+                }
+                // Existing behaviour: append to the report (deduped) so the
+                // unambiguous / fallback path keeps the per-file walker seed
+                // plus these cross-file callers.
+                if caller_already_present(&report.callers, &caller_name, &caller_file) {
+                    continue;
+                }
                 report
                     .callers
                     .push(CallInfo::new(caller_name, caller_file, line));
@@ -2610,6 +2695,12 @@ fn enrich_with_project_graph(
                 callee.file = display;
             }
         }
+    }
+
+    CallerResolution {
+        graph_built: true,
+        definition_count,
+        subject_callers,
     }
 }
 
@@ -3261,7 +3352,8 @@ impl ExplainArgs {
             language,
         );
 
-        // Find callers
+        // Find callers — name-only per-file walker (seed). De-conflated
+        // below for ambiguous names.
         report.callers = find_callers(root, source_bytes, &function, &file_path, func_kinds);
 
         // explain-cross-command-consistency-v1 (P11.BUG-AGG-1): the
@@ -3271,18 +3363,35 @@ impl ExplainArgs {
         // `tldr references` / `tldr context` so the four commands agree
         // on relationships. Same-file results are preserved; only
         // additional cross-file edges get appended.
-        enrich_with_project_graph(&mut report, &self.file, &function, language);
+        let caller_resolution =
+            enrich_with_project_graph(&mut report, &self.file, &function, language);
 
-        // ux-and-explain-completeness-v1 (P12.AGG12-1): some languages
-        // under-report call edges in the project call graph (e.g. C#,
-        // Kotlin, Scala class-method invocations). For those, `tldr
-        // references` still surfaces real call sites via text+AST
-        // verification. Mirror that data source so explain's caller list
-        // matches the "real" set users see from `tldr references`.
-        // Path-aware dedup means same-file walker results and
-        // call-graph results that already populated the list won't be
-        // duplicated.
-        enrich_with_references(&mut report, &self.file, &function, language);
+        // fix-PW3-B1-explain-resolver: when `function` is AMBIGUOUS (more
+        // than one definition of the same name across the project —
+        // overloads / homonyms), the name-only per-file walker above and the
+        // name-union reference scan below both conflate callers of DISTINCT
+        // definitions (cpp `size`: 69 callers spanning gmock/gtest/ranges/…;
+        // solidity `safeTransferFrom`: 22 across 3 contracts; ocaml
+        // `of_values`: 2 across 2 modules). The project call graph already
+        // resolved callers PER-DEFINITION, so replace the conflated walker
+        // seed with the subject definition's callers and skip the reference
+        // union. Unambiguous names (a single definition) and the
+        // graph-build-failure case keep the legacy name-based enrichment +
+        // its class-heavy-language under-reporting fallback unchanged.
+        if caller_resolution.graph_built && caller_resolution.definition_count > 1 {
+            report.callers = caller_resolution.subject_callers;
+        } else {
+            // ux-and-explain-completeness-v1 (P12.AGG12-1): some languages
+            // under-report call edges in the project call graph (e.g. C#,
+            // Kotlin, Scala class-method invocations). For those, `tldr
+            // references` still surfaces real call sites via text+AST
+            // verification. Mirror that data source so explain's caller list
+            // matches the "real" set users see from `tldr references`.
+            // Path-aware dedup means same-file walker results and
+            // call-graph results that already populated the list won't be
+            // duplicated.
+            enrich_with_references(&mut report, &self.file, &function, language);
+        }
 
         // cross-cmd-path-shape-v1 (v0.4.2 bug-A5): unify every
         // emitted `callers[].file` and `callees[].file` to the
