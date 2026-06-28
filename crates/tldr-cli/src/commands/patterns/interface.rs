@@ -2808,7 +2808,7 @@ pub fn extract_interface_with_lang(
     let decorator_kinds = decorator_node_kinds(lang);
 
     // Extract public functions and classes
-    let (mut functions, classes) = collect_top_level_definitions(
+    let (mut functions, mut classes) = collect_top_level_definitions(
         root,
         source_bytes,
         lang,
@@ -2818,6 +2818,33 @@ pub fn extract_interface_with_lang(
     );
 
     let mut values: Vec<ValueInfo> = Vec::new();
+
+    // A3a-js-ts-export-engine (v0.5.0 BACKLOG): resolve the full set of
+    // JavaScript / TypeScript export idioms that pre-class and ESM modules use
+    // to declare their public API. Run AFTER `collect_top_level_definitions`
+    // (which already captured `export function` / `export class` via the
+    // `export_statement` wrapper) so member-assignment, reverse-binding,
+    // export-const/arrow-const and object-literal-default exports are folded in
+    // alongside the direct declarations. `values[]` carries the non-function
+    // exported names (identifier re-exports, primitive/object const exports)
+    // so every resolved export still surfaces in `all_exports`.
+    if matches!(lang, Language::JavaScript | Language::TypeScript) {
+        collect_js_member_exports(
+            root,
+            source_bytes,
+            lang,
+            &mut functions,
+            &mut classes,
+            &mut values,
+        );
+        collect_js_declared_exports(
+            root,
+            source_bytes,
+            &mut functions,
+            &mut classes,
+            &mut values,
+        );
+    }
 
     // rc2-lua-interface-return-table-convention: a Lua/Luau module's public
     // surface is exactly the field set of the table it `return`s at end of
@@ -2848,10 +2875,17 @@ pub fn extract_interface_with_lang(
         // functions), and route non-function exports to `values[]`.
         reconcile_lua_exports(&exports, &mut functions, &mut values)
     } else {
+        // schema-cleanup-v1 BUG-22 + A3a-js-ts-export-engine: the export name
+        // set is the union of public function, class and value names. `values`
+        // is empty for every language except Lua/Luau (handled above) and
+        // JS/TS, so chaining it here is a no-op elsewhere while letting JS/TS
+        // non-function exports (identifier re-exports, const/object values)
+        // appear in `all_exports`.
         let mut names: Vec<String> = functions
             .iter()
             .map(|f| f.name.clone())
             .chain(classes.iter().map(|c| c.name.clone()))
+            .chain(values.iter().map(|v| v.name.clone()))
             .collect();
         names.sort();
         names.dedup();
@@ -3564,36 +3598,50 @@ fn needs_deep_walk(lang: Language) -> bool {
     )
 }
 
-/// interface-per-lang-v1 (v0.4.2 M-022): scan a JS/TS file for top-level
-/// member-export forms that pre-class JavaScript modules used to declare
-/// public API:
+/// interface-per-lang-v1 (v0.4.2 M-022) + A3a-js-ts-export-engine (v0.5.0):
+/// scan a JS/TS file for top-level member-export forms that pre-class and
+/// CommonJS JavaScript modules use to declare their public API:
 ///
 /// * `Foo.prototype.bar = function (...) { ... }`     -> method `bar` on `Foo`
 /// * `Foo.prototype.bar = (...) => { ... }`           -> method `bar` on `Foo`
 /// * `exports.X = function (...) { ... }`             -> top-level function `X`
 /// * `module.exports.X = function (...) { ... }`      -> top-level function `X`
+/// * `<alias>.X = function (...) { ... }`             -> top-level function `X`
+/// * `<alias>.X = <expr>` (non-function)             -> exported value `X`
 ///
-/// The walker scans direct children of the file root for
-/// `expression_statement > assignment_expression`. Without this, Express
-/// `app.render`, `app.handle`, etc. were invisible to `tldr interface`.
+/// `<alias>` is any identifier bound to `module.exports` / the default export
+/// — either forward (`var app = exports = module.exports = {}`) or reverse
+/// (`module.exports = res` / `export default axios`), resolved by
+/// [`collect_js_module_export_aliases`]. The reverse form is the Express
+/// `lib/response.js` (`module.exports = res; res.send = function … {}`) and
+/// axios `lib/axios.js` (`export default axios; axios.all = function … {}`)
+/// idiom — without alias resolution the entire public surface was invisible to
+/// `tldr interface` (empty `all_exports`/`functions`/`classes`).
+///
+/// Non-function member RHS values (identifier / member re-exports such as
+/// `axios.spread = spread`) are routed to `values[]` so they still surface in
+/// `all_exports` rather than being dropped.
 fn collect_js_member_exports(
     root: Node,
     source: &[u8],
     lang: Language,
     functions: &mut Vec<FunctionInfo>,
     classes: &mut Vec<ClassInfo>,
+    values: &mut Vec<ValueInfo>,
 ) {
     use std::collections::HashSet;
     let mut existing_funcs: HashSet<(String, u32)> = HashSet::new();
     for f in functions.iter() {
         existing_funcs.insert((f.name.clone(), f.lineno));
     }
+    let mut existing_values: HashSet<String> = values.iter().map(|v| v.name.clone()).collect();
 
     // First pass: collect identifiers that alias `module.exports` /
-    // `exports`. Express's `lib/application.js` does
-    // `var app = exports = module.exports = {};` — every subsequent
-    // `app.X = function …` is part of the public API but would
-    // otherwise be invisible because `app` is just an identifier.
+    // `exports` (forward and reverse bindings). Express's `lib/application.js`
+    // does `var app = exports = module.exports = {};` — every subsequent
+    // `app.X = function …` is part of the public API but would otherwise be
+    // invisible because `app` is just an identifier. The reverse form
+    // (`module.exports = res; res.send = …`) is resolved the same way.
     let module_export_aliases = collect_js_module_export_aliases(root, source);
 
     let mut cursor = root.walk();
@@ -3606,31 +3654,34 @@ fn collect_js_member_exports(
             Some(c) if c.kind() == "assignment_expression" => c,
             _ => continue,
         };
-        let lhs = match assign.child_by_field_name("left") {
-            Some(n) => n,
+        // A possibly-chained assignment `res.contentType = res.type =
+        // function … {}` binds EVERY left-hand member to the same terminal
+        // value. Resolve all of them (Express `lib/response.js` declares
+        // `res.set`/`res.header` and `res.contentType`/`res.type` this way).
+        let (lhs_nodes, final_rhs) = js_unchain_assignment(assign);
+        let final_rhs = match final_rhs {
+            Some(r) => r,
             None => continue,
         };
-        let rhs = match assign.child_by_field_name("right") {
-            Some(n) => n,
-            None => continue,
-        };
-        if !is_js_function_value(rhs) {
-            continue;
-        }
-        // Inspect the LHS member expression. We accept either:
-        //   - <ident>.prototype.<name>         -> attach to class <ident>
-        //   - exports.<name>                   -> top-level function
-        //   - module.exports.<name>            -> top-level function
-        //   - module.exports = <function>      -> ignored (default export)
-        let resolved = resolve_js_export_lhs(lhs, source, &module_export_aliases);
+        let rhs_is_func = is_js_function_value(final_rhs);
         let lineno = assign.start_position().row as u32 + 1;
-        let signature = extract_js_member_signature(rhs, source);
-        let is_async = is_js_function_async(rhs, source);
-        match resolved {
+        // Inspect each LHS member expression. We accept any of:
+        //   - <ident>.prototype.<name>         -> method on class <ident>
+        //   - exports.<name>                   -> top-level export
+        //   - module.exports.<name>            -> top-level export
+        //   - <alias>.<name>                   -> top-level export
+        for lhs in lhs_nodes {
+            let resolved = resolve_js_export_lhs(lhs, source, &module_export_aliases);
+            match resolved {
             Some(JsExportTarget::Prototype { class_name, member }) => {
-                if !is_public_name(&member) {
+                // Prototype data members (non-function RHS) are not part of the
+                // callable method surface; only function-valued assignments are
+                // recorded as methods.
+                if !rhs_is_func || !is_public_name(&member) {
                     continue;
                 }
+                let signature = extract_js_member_signature(final_rhs, source);
+                let is_async = is_js_function_async(final_rhs, source);
                 let class_entry = classes
                     .iter_mut()
                     .find(|c| c.name == class_name);
@@ -3669,24 +3720,77 @@ fn collect_js_member_exports(
                 if !is_public_name(&name) {
                     continue;
                 }
-                let key = (name.clone(), lineno);
-                if existing_funcs.contains(&key) {
-                    continue;
+                if rhs_is_func {
+                    let key = (name.clone(), lineno);
+                    if existing_funcs.contains(&key)
+                        || functions.iter().any(|f| f.name == name)
+                    {
+                        continue;
+                    }
+                    existing_funcs.insert(key);
+                    functions.push(FunctionInfo {
+                        name,
+                        signature: extract_js_member_signature(final_rhs, source),
+                        docstring: None,
+                        lineno,
+                        is_async: is_js_function_async(final_rhs, source),
+                        kind: None,
+                    });
+                } else {
+                    // Non-function member export (identifier / member / literal
+                    // re-export). Surface the name as an exported value so it
+                    // is not dropped from `all_exports`.
+                    if functions.iter().any(|f| f.name == name)
+                        || classes.iter().any(|c| c.name == name)
+                        || !existing_values.insert(name.clone())
+                    {
+                        continue;
+                    }
+                    values.push(ValueInfo {
+                        name,
+                        lineno,
+                        kind: Some(js_value_kind(final_rhs)),
+                    });
                 }
-                existing_funcs.insert(key);
-                functions.push(FunctionInfo {
-                    name,
-                    signature,
-                    docstring: None,
-                    lineno,
-                    is_async,
-                    kind: None,
-                });
             }
             None => {}
+            }
         }
     }
     let _ = lang;
+}
+
+/// Unchain a (possibly nested) assignment expression `a = b = … = <value>`,
+/// returning every left-hand-side node and the terminal (rightmost) value.
+/// Pure AST traversal of the `assignment_expression` `left`/`right` fields.
+fn js_unchain_assignment<'a>(assign: Node<'a>) -> (Vec<Node<'a>>, Option<Node<'a>>) {
+    let mut lhss = Vec::new();
+    let mut current = assign;
+    loop {
+        if let Some(l) = current.child_by_field_name("left") {
+            lhss.push(l);
+        }
+        match current.child_by_field_name("right") {
+            Some(r) if r.kind() == "assignment_expression" => current = r,
+            other => return (lhss, other),
+        }
+    }
+}
+
+/// AST-derived value-kind discriminator for a JS/TS export RHS node, mirroring
+/// the additive `ValueInfo::kind` slot used by Lua. Pure node-kind mapping (no
+/// regex / source-text heuristics).
+fn js_value_kind(node: Node) -> String {
+    match node.kind() {
+        "object" => "object",
+        "array" => "array",
+        "string" | "template_string" => "string",
+        "number" => "number",
+        "true" | "false" => "boolean",
+        "identifier" | "member_expression" => "reference",
+        _ => "value",
+    }
+    .to_string()
 }
 
 /// Resolved target of a JS member-export assignment LHS.
@@ -3751,9 +3855,19 @@ fn resolve_js_export_lhs(
     None
 }
 
-/// interface-per-lang-v1 (v0.4.2 M-022): scan the program root for
-/// `var X = exports = module.exports = ...` (or `let`/`const`) and
-/// return the set of identifier names bound to `module.exports`.
+/// interface-per-lang-v1 (v0.4.2 M-022) + A3a-js-ts-export-engine (v0.5.0):
+/// scan the program root for identifiers bound to `module.exports` / the
+/// default export, in BOTH binding directions, and return the alias set:
+///
+/// * forward: `var X = exports = module.exports = ...` (or `let`/`const`) —
+///   `X` aliases the exports object.
+/// * reverse (CJS): `module.exports = X;` / `exports = X;` — the local `X`
+///   becomes the exports object (Express `lib/response.js`).
+/// * reverse (ESM): `export default X;` — the local `X` is the default export
+///   (axios `lib/axios.js`).
+///
+/// Every subsequent `<alias>.member = …` assignment is then resolved as part
+/// of the module's public surface by [`collect_js_member_exports`].
 fn collect_js_module_export_aliases(
     root: Node,
     source: &[u8],
@@ -3761,35 +3875,401 @@ fn collect_js_module_export_aliases(
     let mut aliases = std::collections::HashSet::new();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
-        let kind = child.kind();
-        if !matches!(kind, "lexical_declaration" | "variable_declaration") {
-            continue;
-        }
-        let mut ic = child.walk();
-        for decl in child.children(&mut ic) {
-            if decl.kind() != "variable_declarator" {
-                continue;
+        match child.kind() {
+            // Forward binding: `var X = module.exports[ = …]`.
+            "lexical_declaration" | "variable_declaration" => {
+                let mut ic = child.walk();
+                for decl in child.children(&mut ic) {
+                    if decl.kind() != "variable_declarator" {
+                        continue;
+                    }
+                    let name_node = match decl.child_by_field_name("name") {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    let value = match decl.child_by_field_name("value") {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    if name_node.kind() != "identifier" {
+                        continue;
+                    }
+                    // The value can be `exports = module.exports = {}` (a
+                    // chained assignment_expression), or directly
+                    // `module.exports`. Walk the chain looking for either form.
+                    if js_value_is_module_exports_chain(value, source) {
+                        aliases.insert(node_text(name_node, source).to_string());
+                    }
+                }
             }
-            let name_node = match decl.child_by_field_name("name") {
-                Some(n) => n,
-                None => continue,
-            };
-            let value = match decl.child_by_field_name("value") {
-                Some(v) => v,
-                None => continue,
-            };
-            if name_node.kind() != "identifier" {
-                continue;
+            // Reverse binding (CJS): `module.exports = X;` / `exports = X;`.
+            "expression_statement" => {
+                if let Some(assign) = child.child(0) {
+                    if assign.kind() == "assignment_expression" {
+                        let lhs = assign.child_by_field_name("left");
+                        let rhs = assign.child_by_field_name("right");
+                        if let (Some(lhs), Some(rhs)) = (lhs, rhs) {
+                            if rhs.kind() == "identifier"
+                                && js_value_is_module_exports_chain(lhs, source)
+                            {
+                                aliases.insert(node_text(rhs, source).to_string());
+                            }
+                        }
+                    }
+                }
             }
-            // The value can be `exports = module.exports = {}` (a
-            // chained assignment_expression), or directly
-            // `module.exports`. Walk the chain looking for either form.
-            if js_value_is_module_exports_chain(value, source) {
-                aliases.insert(node_text(name_node, source).to_string());
+            // Reverse binding (ESM): `export default X;`.
+            "export_statement" => {
+                if js_export_statement_is_default(child) {
+                    if let Some(value) = child.child_by_field_name("value") {
+                        if value.kind() == "identifier" {
+                            aliases.insert(node_text(value, source).to_string());
+                        }
+                    }
+                }
             }
+            _ => {}
         }
     }
     aliases
+}
+
+/// True when an `export_statement` is a default export (`export default …`),
+/// detected by the presence of a `default` child token.
+fn js_export_statement_is_default(node: Node) -> bool {
+    let mut cursor = node.walk();
+    let is_default = node.children(&mut cursor).any(|c| c.kind() == "default");
+    is_default
+}
+
+/// A3a-js-ts-export-engine (v0.5.0 BACKLOG): resolve the *declared* JS/TS
+/// export idioms that `collect_js_member_exports` (member assignments) and the
+/// `export_statement` direct-declaration walk (`export function` / `export
+/// class`) do not already cover:
+///
+/// * `export const f = (…) => …;` / `export const g = function (…) {…}`
+///   (arrow-const / function-const)           -> function `f` / `g`
+/// * `export const C = class {…}`              -> class `C`
+/// * `export const X = <literal | ref>`        -> exported value `X`
+/// * `export default { a() {}, b: () => …, c }` / `module.exports = { … }`
+///   (object literal)                          -> each member as function / value
+/// * `export default <local>` / `module.exports = <local>` where `<local>` is
+///   `const <local> = () => …` / `function` / `class` / `{ … }`
+///                                             -> function / class / object members
+///
+/// Names are deduplicated across `functions` / `classes` / `values`
+/// (first-writer-wins) so an export already captured by the direct walk or the
+/// member-assignment pass is never duplicated.
+fn collect_js_declared_exports(
+    root: Node,
+    source: &[u8],
+    functions: &mut Vec<FunctionInfo>,
+    classes: &mut Vec<ClassInfo>,
+    values: &mut Vec<ValueInfo>,
+) {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            "export_statement" => {
+                // `export const X = …;` (declaration field carries the binding).
+                if let Some(decl) = child.child_by_field_name("declaration") {
+                    if matches!(decl.kind(), "lexical_declaration" | "variable_declaration") {
+                        collect_js_declarator_exports(decl, source, functions, classes, values);
+                    }
+                    continue;
+                }
+                // `export default …;`
+                if js_export_statement_is_default(child) {
+                    if let Some(value) = child.child_by_field_name("value") {
+                        add_js_default_export(value, source, root, functions, classes, values);
+                    }
+                }
+            }
+            "expression_statement" => {
+                // `module.exports = …;` / `exports = …;` whole-object default.
+                if let Some(assign) = child.child(0) {
+                    if assign.kind() != "assignment_expression" {
+                        continue;
+                    }
+                    if let (Some(lhs), Some(rhs)) = (
+                        assign.child_by_field_name("left"),
+                        assign.child_by_field_name("right"),
+                    ) {
+                        // Only the whole-object form (`module.exports = …`),
+                        // NOT member assignments (`module.exports.x = …`), which
+                        // `collect_js_member_exports` already resolves.
+                        if js_value_is_module_exports_chain(lhs, source) {
+                            add_js_default_export(rhs, source, root, functions, classes, values);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Classify each `variable_declarator` of an `export const/let/var` binding and
+/// route it to `functions` (arrow / function value), `classes` (class
+/// expression value) or `values` (any other literal / reference).
+fn collect_js_declarator_exports(
+    decl: Node,
+    source: &[u8],
+    functions: &mut Vec<FunctionInfo>,
+    classes: &mut Vec<ClassInfo>,
+    values: &mut Vec<ValueInfo>,
+) {
+    let mut ic = decl.walk();
+    for d in decl.children(&mut ic) {
+        if d.kind() != "variable_declarator" {
+            continue;
+        }
+        let name_node = match d.child_by_field_name("name") {
+            Some(n) if n.kind() == "identifier" => n,
+            _ => continue,
+        };
+        let name = node_text(name_node, source).to_string();
+        let lineno = name_node.start_position().row as u32 + 1;
+        let value = d.child_by_field_name("value");
+        classify_js_named_export(&name, lineno, value, source, functions, classes, values);
+    }
+}
+
+/// Resolve a `export default <expr>` / `module.exports = <expr>` value to its
+/// exported surface: object literals expand to members, function/class values
+/// surface under the binding name, and a bare local identifier is resolved to
+/// its top-level declaration first.
+fn add_js_default_export(
+    value: Node,
+    source: &[u8],
+    root: Node,
+    functions: &mut Vec<FunctionInfo>,
+    classes: &mut Vec<ClassInfo>,
+    values: &mut Vec<ValueInfo>,
+) {
+    match value.kind() {
+        "object" => expand_js_object_members(value, source, functions, values),
+        "identifier" => {
+            // Resolve `export default local` / `module.exports = local` to the
+            // local's top-level declaration and classify that.
+            let name = node_text(value, source).to_string();
+            if let Some(decl_value) = resolve_js_local_decl_value(root, source, &name) {
+                if decl_value.kind() == "object" {
+                    expand_js_object_members(decl_value, source, functions, values);
+                } else {
+                    let lineno = decl_value.start_position().row as u32 + 1;
+                    // Only surface the local itself when it is a function/class
+                    // literal; namespace objects built via calls (e.g.
+                    // `Object.create(...)`, `createInstance(...)`) expose their
+                    // API through `<local>.member = …` assignments, already
+                    // resolved by `collect_js_member_exports`.
+                    if is_js_function_value(decl_value) || js_is_class_value(decl_value) {
+                        classify_js_named_export(
+                            &name,
+                            lineno,
+                            Some(decl_value),
+                            source,
+                            functions,
+                            classes,
+                            values,
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Find the top-level `const/let/var <name> = <value>` declaration and return
+/// its value node, if any.
+fn resolve_js_local_decl_value<'a>(
+    root: Node<'a>,
+    source: &[u8],
+    name: &str,
+) -> Option<Node<'a>> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if !matches!(child.kind(), "lexical_declaration" | "variable_declaration") {
+            continue;
+        }
+        let mut ic = child.walk();
+        for d in child.children(&mut ic) {
+            if d.kind() != "variable_declarator" {
+                continue;
+            }
+            if let Some(n) = d.child_by_field_name("name") {
+                if n.kind() == "identifier" && node_text(n, source) == name {
+                    return d.child_by_field_name("value");
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Expand an object-literal export (`export default { … }` /
+/// `module.exports = { … }`) into its members: `method_definition` and
+/// function/arrow-valued `pair`s become functions; every other member
+/// (`pair` with a literal/reference value, `shorthand_property_identifier`)
+/// becomes an exported value.
+fn expand_js_object_members(
+    object: Node,
+    source: &[u8],
+    functions: &mut Vec<FunctionInfo>,
+    values: &mut Vec<ValueInfo>,
+) {
+    let mut cursor = object.walk();
+    for member in object.children(&mut cursor) {
+        match member.kind() {
+            "method_definition" => {
+                let name = match member.child_by_field_name("name") {
+                    Some(n) => node_text(n, source).to_string(),
+                    None => continue,
+                };
+                let lineno = member.start_position().row as u32 + 1;
+                let signature = member
+                    .child_by_field_name("parameters")
+                    .map(|p| node_text(p, source).to_string())
+                    .unwrap_or_default();
+                let is_async = is_js_function_async(member, source);
+                push_js_function(functions, values, name, signature, lineno, is_async);
+            }
+            "pair" => {
+                let key = match member.child_by_field_name("key") {
+                    Some(k) => k,
+                    None => continue,
+                };
+                // Only stable identifier / string keys yield a name.
+                let name = match key.kind() {
+                    "property_identifier" => node_text(key, source).to_string(),
+                    "string" => node_text(key, source)
+                        .trim_matches(|c| c == '"' || c == '\'')
+                        .to_string(),
+                    _ => continue,
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                let lineno = member.start_position().row as u32 + 1;
+                match member.child_by_field_name("value") {
+                    Some(v) if is_js_function_value(v) => {
+                        let signature = extract_js_member_signature(v, source);
+                        let is_async = is_js_function_async(v, source);
+                        push_js_function(functions, values, name, signature, lineno, is_async);
+                    }
+                    Some(v) => {
+                        push_js_value(functions, values, name, lineno, js_value_kind(v));
+                    }
+                    None => {}
+                }
+            }
+            "shorthand_property_identifier" => {
+                let name = node_text(member, source).to_string();
+                let lineno = member.start_position().row as u32 + 1;
+                push_js_value(functions, values, name, lineno, "reference".to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// True when a node is a class value (`class C {}` / anonymous `class {}`).
+fn js_is_class_value(node: Node) -> bool {
+    matches!(node.kind(), "class" | "class_declaration")
+}
+
+/// Route a single named export (`<name> = <value>`) to the correct bucket.
+fn classify_js_named_export(
+    name: &str,
+    lineno: u32,
+    value: Option<Node>,
+    source: &[u8],
+    functions: &mut Vec<FunctionInfo>,
+    classes: &mut Vec<ClassInfo>,
+    values: &mut Vec<ValueInfo>,
+) {
+    match value {
+        Some(v) if is_js_function_value(v) => {
+            let signature = extract_js_member_signature(v, source);
+            let is_async = is_js_function_async(v, source);
+            push_js_function(functions, values, name.to_string(), signature, lineno, is_async);
+        }
+        Some(v) if js_is_class_value(v) => {
+            if !js_name_taken(functions, classes, values, name) {
+                classes.push(ClassInfo {
+                    name: name.to_string(),
+                    kind: Some("class".to_string()),
+                    lineno,
+                    bases: Vec::new(),
+                    methods: Vec::new(),
+                    private_method_count: 0,
+                });
+            }
+        }
+        Some(v) => {
+            push_js_value(functions, values, name.to_string(), lineno, js_value_kind(v));
+        }
+        None => {}
+    }
+}
+
+/// True when `name` is already recorded in any export bucket.
+fn js_name_taken(
+    functions: &[FunctionInfo],
+    classes: &[ClassInfo],
+    values: &[ValueInfo],
+    name: &str,
+) -> bool {
+    functions.iter().any(|f| f.name == name)
+        || classes.iter().any(|c| c.name == name)
+        || values.iter().any(|v| v.name == name)
+}
+
+/// Push a resolved function export, deduplicated by name across all buckets.
+fn push_js_function(
+    functions: &mut Vec<FunctionInfo>,
+    values: &mut [ValueInfo],
+    name: String,
+    signature: String,
+    lineno: u32,
+    is_async: bool,
+) {
+    if name.is_empty() {
+        return;
+    }
+    if functions.iter().any(|f| f.name == name) || values.iter().any(|v| v.name == name) {
+        return;
+    }
+    functions.push(FunctionInfo {
+        name,
+        signature,
+        docstring: None,
+        lineno,
+        is_async,
+        kind: None,
+    });
+}
+
+/// Push a resolved value export, deduplicated by name across all buckets.
+fn push_js_value(
+    functions: &[FunctionInfo],
+    values: &mut Vec<ValueInfo>,
+    name: String,
+    lineno: u32,
+    kind: String,
+) {
+    if name.is_empty() {
+        return;
+    }
+    if functions.iter().any(|f| f.name == name) || values.iter().any(|v| v.name == name) {
+        return;
+    }
+    values.push(ValueInfo {
+        name,
+        lineno,
+        kind: Some(kind),
+    });
 }
 
 /// Returns true when the expression is `module.exports`, `exports`, or
@@ -3941,16 +4421,11 @@ fn collect_top_level_definitions(
         flatten_class_methods_to_functions(&classes, &mut functions);
     }
 
-    // interface-per-lang-v1 (v0.4.2 M-022): javascript prototype
-    // assignments (`Foo.prototype.bar = function () {}`) and
-    // module-export forms (`exports.create = function () {}`,
-    // `module.exports.foo = function () {}`) are how pre-ES6 modules
-    // (Express, much of node's core) declare their public API. Without
-    // this pass they were invisible to `tldr interface`.
-    if matches!(lang, Language::JavaScript | Language::TypeScript) {
-        collect_js_member_exports(root, source, lang, &mut functions, &mut classes);
-    }
-
+    // A3a-js-ts-export-engine (v0.5.0 BACKLOG): the JavaScript / TypeScript
+    // member-assignment, reverse-binding and declared-export idioms are now
+    // resolved at the `extract_interface` call site (so the `values[]` channel
+    // is threadable). `collect_top_level_definitions` is intentionally left to
+    // the language-agnostic direct-declaration walk for JS/TS here.
     (functions, classes)
 }
 
@@ -5381,6 +5856,175 @@ export function processData(input: string): number {
             .find(|c| c.name == "UserService")
             .expect("UserService present");
         assert_eq!(svc.kind.as_deref(), Some("class"));
+    }
+
+    // ====================================================================
+    // A3a-js-ts-export-engine (v0.5.0 BACKLOG): JS/TS export idiom resolver.
+    // GENERALIZATION: every idiom shape (reverse-binding, export-default-object,
+    // export-const, arrow-const) must resolve exports for BOTH js AND ts.
+    // ====================================================================
+
+    /// Helper: assert `all_exports` contains every expected name.
+    fn assert_exports(info: &InterfaceInfo, expected: &[&str]) {
+        for name in expected {
+            assert!(
+                info.all_exports.iter().any(|e| e == name),
+                "expected export `{}` in all_exports={:?} (functions={:?}, classes={:?}, values={:?})",
+                name,
+                info.all_exports,
+                info.functions.iter().map(|f| &f.name).collect::<Vec<_>>(),
+                info.classes.iter().map(|c| &c.name).collect::<Vec<_>>(),
+                info.values.iter().map(|v| &v.name).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    /// Shape: reverse-binding CommonJS — `module.exports = res;` followed by
+    /// `res.member = function …`. This is Express `lib/response.js`. Resolve for
+    /// both .js and .ts.
+    #[test]
+    fn test_export_engine_reverse_binding_cjs_js_and_ts() {
+        let source = r#"
+var res = Object.create(proto);
+module.exports = res;
+res.status = function status(code) { return code; };
+res.send = function send(body) { return body; };
+res.json = (obj) => obj;
+"#;
+        for (path, lang) in [("response.js", "js"), ("response.ts", "ts")] {
+            let info = extract_interface(Path::new(path), source).unwrap();
+            assert_exports(&info, &["status", "send", "json"]);
+            assert!(
+                info.functions.iter().any(|f| f.name == "send"),
+                "[{lang}] send must be a resolved function, got {:?}",
+                info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// Shape: reverse-binding ESM — `export default axios;` followed by
+    /// `axios.member = function …` and identifier re-exports. axios
+    /// `lib/axios.js`. Resolve for both .js and .ts.
+    #[test]
+    fn test_export_engine_reverse_binding_esm_default_js_and_ts() {
+        let source = r#"
+const axios = createInstance(defaults);
+axios.all = function all(promises) { return promises; };
+axios.formToJSON = (thing) => thing;
+axios.spread = spread;
+export default axios;
+"#;
+        for path in ["axios.js", "axios.ts"] {
+            let info = extract_interface(Path::new(path), source).unwrap();
+            // function-valued members resolve as functions
+            assert_exports(&info, &["all", "formToJSON"]);
+            // identifier re-export surfaces as a value (not dropped)
+            assert_exports(&info, &["spread"]);
+        }
+    }
+
+    /// Shape: export-default object literal — members become exports. Resolve
+    /// for both .js and .ts.
+    #[test]
+    fn test_export_engine_export_default_object_js_and_ts() {
+        let source = r#"
+export default {
+  one() { return 1; },
+  two: function() { return 2; },
+  three: () => 3,
+  version: 42,
+};
+"#;
+        for path in ["mod.js", "mod.ts"] {
+            let info = extract_interface(Path::new(path), source).unwrap();
+            assert_exports(&info, &["one", "two", "three", "version"]);
+            assert!(
+                info.functions.iter().any(|f| f.name == "one")
+                    && info.functions.iter().any(|f| f.name == "three"),
+                "object method + arrow member must be functions"
+            );
+            assert!(
+                info.values.iter().any(|v| v.name == "version"),
+                "non-function member must be a value"
+            );
+        }
+    }
+
+    /// Shape: `module.exports = { … }` CJS object default. Resolve for both
+    /// .js and .ts.
+    #[test]
+    fn test_export_engine_module_exports_object_js_and_ts() {
+        let source = r#"
+function helper(a) { return a; }
+module.exports = {
+  helper: helper,
+  build: function build() { return 1; },
+  run: () => 2,
+};
+"#;
+        for path in ["cjs.js", "cjs.ts"] {
+            let info = extract_interface(Path::new(path), source).unwrap();
+            assert_exports(&info, &["helper", "build", "run"]);
+        }
+    }
+
+    /// Shape: export-const + arrow-const — `export const f = (…) => …` and
+    /// `export const g = function …`. Resolve for both .js and .ts.
+    #[test]
+    fn test_export_engine_export_const_arrow_js_and_ts() {
+        let source = r#"
+export const alpha = (x) => x + 1;
+export const beta = function beta(y) { return y * 2; };
+export const VERSION = "1.0.0";
+export const Widget = class Widget {};
+"#;
+        for path in ["consts.js", "consts.ts"] {
+            let info = extract_interface(Path::new(path), source).unwrap();
+            assert_exports(&info, &["alpha", "beta", "VERSION", "Widget"]);
+            assert!(
+                info.functions.iter().any(|f| f.name == "alpha"),
+                "arrow-const export must be a function"
+            );
+            assert!(
+                info.values.iter().any(|v| v.name == "VERSION"),
+                "primitive const export must be a value"
+            );
+        }
+    }
+
+    /// Shape: reverse-binding ESM with a single arrow local default —
+    /// `const delta = () => …; export default delta;`. Resolve for both langs.
+    #[test]
+    fn test_export_engine_default_arrow_local_js_and_ts() {
+        let source = r#"
+const delta = (z) => z * 3;
+export default delta;
+"#;
+        for path in ["d.js", "d.ts"] {
+            let info = extract_interface(Path::new(path), source).unwrap();
+            assert_exports(&info, &["delta"]);
+            assert!(
+                info.functions.iter().any(|f| f.name == "delta"),
+                "default-exported arrow local must resolve as a function"
+            );
+        }
+    }
+
+    /// Regression guard: a private (non-exported) local must NOT leak into the
+    /// export surface.
+    #[test]
+    fn test_export_engine_private_local_not_exported() {
+        let source = r#"
+const privateHelper = (x) => x;
+export const publicFn = (y) => y;
+"#;
+        let info = extract_interface(Path::new("p.ts"), source).unwrap();
+        assert_exports(&info, &["publicFn"]);
+        assert!(
+            !info.all_exports.iter().any(|e| e == "privateHelper"),
+            "private local must not be exported, got {:?}",
+            info.all_exports
+        );
     }
 
     #[test]
