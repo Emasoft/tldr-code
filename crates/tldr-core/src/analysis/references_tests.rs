@@ -542,7 +542,31 @@ mod find_references_basic_tests {
             report.stats.files_searched >= 3,
             "Should search at least 3 files"
         );
-        assert_eq!(report.stats.candidates_found, report.total_references);
+        // fix-PW1-B7-refs-stringFP: text search over-approximates, then AST
+        // verification filters out occurrences inside string literals / docstrings
+        // (the `login` fixtures contain "...login." docstrings such as
+        // "Log successful login."). Verification can only *reduce* the candidate
+        // set, never inflate it — so `total_references <= candidates_found`.
+        // Pre-fix these docstring matches leaked through as references and this
+        // assertion was an (incorrect) strict equality.
+        assert!(
+            report.total_references <= report.stats.candidates_found,
+            "AST verification must not inflate references: total={} candidates={}",
+            report.total_references,
+            report.stats.candidates_found
+        );
+        assert!(
+            !report
+                .references
+                .iter()
+                .any(|r| r.context.contains("\"\"\"")),
+            "docstring occurrences of 'login' must be excluded, got: {:?}",
+            report
+                .references
+                .iter()
+                .map(|r| r.context.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Test finding references to a class

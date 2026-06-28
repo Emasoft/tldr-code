@@ -980,6 +980,21 @@ fn find_exact_match_node(
         }
     }
 
+    // fix-PW1-B7-refs-stringFP: no exact identifier child matched, which means
+    // the candidate position resolved to a node spanning non-code text — almost
+    // always the symbol word appearing inside a string literal / docstring /
+    // comment (e.g. `string_content`, `encapsed_string`). Such occurrences are
+    // NOT references; emitting them as `confidence: 0.5, is_valid: true` inflated
+    // counts by 31-49% on real corpora. Gate the textual fallback on the node
+    // not being in an invalid (string/comment) context.
+    if is_in_invalid_context(node, language) {
+        return Some(VerifiedReference {
+            kind: ReferenceKind::Other,
+            confidence: 1.0,
+            is_valid: false,
+        });
+    }
+
     // If no exact match found, return unverified
     Some(VerifiedReference {
         kind: ReferenceKind::Other,
@@ -1012,6 +1027,18 @@ fn is_in_invalid_context(node: &Node, language: Language) -> bool {
     ];
 
     if invalid_self_kinds.contains(&node_kind) {
+        return true;
+    }
+
+    // fix-PW1-B7-refs-stringFP: the fixed list above misses grammar-specific
+    // string/comment leaf kinds (PHP `encapsed_string`, Ruby/PHP heredoc bodies,
+    // `*_string_content`, doc-comment variants, …). When a candidate position
+    // resolves directly to such a node the symbol is plain string/comment text,
+    // not a reference. This mirrors the AST-node-kind classification already
+    // used for ancestors in the generic branch below — it inspects tree-sitter
+    // node *kinds*, never the source text.
+    if node_kind.contains("string") || node_kind.contains("comment") || node_kind.contains("heredoc")
+    {
         return true;
     }
 
@@ -5260,6 +5287,90 @@ let _ = print_string (greet "Alice")
             contexts.iter().any(|c| c.trim_start().starts_with("let _ = lock")),
             "bare `lock` should be kept, got refs: {contexts:?}"
         );
+    }
+
+    /// fix-PW1-B7-refs-stringFP (v0.5.0 BACKLOG): a symbol word that occurs
+    /// only as plain text inside a string literal / docstring must NOT be
+    /// reported as a reference. Pre-fix, when `descendant_for_point_range`
+    /// resolved a candidate to a string-content (or comment) node whose text
+    /// did not equal the symbol, `find_exact_match_node` fell through to a
+    /// `confidence: 0.5, is_valid: true` fallback, inflating reference counts
+    /// by 31-49% on real corpora (flask `Flask`, symfony-console `Command`).
+    ///
+    /// Generalization (anti-treadmill gate): the exclusion is AST-node-kind
+    /// driven in `is_in_invalid_context`, so it must hold for EVERY language in
+    /// the symptom class. This test asserts it for PHP and Python (the named
+    /// class) plus Rust (representing "+all").
+    #[test]
+    fn test_references_excludes_string_literal_matches_all_langs() {
+        use std::io::Write;
+
+        struct Case {
+            lang: &'static str,
+            file: &'static str,
+            src: &'static [u8],
+            symbol: &'static str,
+            /// Context fragments that are string-literal occurrences — excluded.
+            banned: &'static [&'static str],
+            /// A real code occurrence that must be kept.
+            required: &'static str,
+        }
+
+        let cases = [
+            Case {
+                lang: "python",
+                file: "w.py",
+                src: b"class Widget:\n    \"\"\"Docstring naming Widget here.\"\"\"\n\n    def build(self):\n        label = \"a Widget label string\"\n        return Widget()\n",
+                symbol: "Widget",
+                banned: &["Docstring naming Widget", "a Widget label string"],
+                required: "return Widget()",
+            },
+            Case {
+                lang: "php",
+                file: "c.php",
+                src: b"<?php\nclass Command {\n    public function run(): void {\n        $msg = 'run the Command now';\n        throw new LogicException(\"Command failed badly\");\n        new Command();\n    }\n}\n",
+                symbol: "Command",
+                banned: &["run the Command now", "Command failed badly"],
+                required: "new Command()",
+            },
+            Case {
+                lang: "rust",
+                file: "w.rs",
+                src: b"struct Widget;\nfn build() -> Widget {\n    let _m = \"make a Widget string\";\n    Widget\n}\n",
+                symbol: "Widget",
+                banned: &["make a Widget string"],
+                required: "-> Widget",
+            },
+        ];
+
+        for c in &cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let mut f = std::fs::File::create(root.join(c.file)).unwrap();
+            f.write_all(c.src).unwrap();
+
+            let opts = ReferencesOptions::new()
+                .with_language(c.lang.to_string())
+                .with_scope(SearchScope::Workspace);
+            let report = find_references(c.symbol, root, &opts).unwrap();
+
+            let contexts: Vec<&str> =
+                report.references.iter().map(|r| r.context.as_str()).collect();
+
+            for bad in c.banned {
+                assert!(
+                    !contexts.iter().any(|ctx| ctx.contains(bad)),
+                    "[{}] string-literal occurrence {bad:?} must be excluded, got refs: {contexts:?}",
+                    c.lang
+                );
+            }
+            assert!(
+                contexts.iter().any(|ctx| ctx.contains(c.required)),
+                "[{}] real code occurrence {:?} must be kept, got refs: {contexts:?}",
+                c.lang,
+                c.required
+            );
+        }
     }
 
     // =========================================================================
