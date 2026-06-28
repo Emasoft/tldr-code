@@ -945,6 +945,29 @@ impl CallGraphLanguageSupport for OcamlHandler {
         let mut funcs = Vec::new();
         let mut classes = Vec::new();
 
+        // Free-function twin of `OcamlHandler::find_named_child_text`: look up a
+        // node's text by field name, falling back to the first child of
+        // `fallback_kind`. `collect_defs` is a nested free fn and cannot reach
+        // `&self`, so this mirrors that helper for the `class_definition` arm.
+        fn field_or_kind_text(
+            node: &Node,
+            field_name: &str,
+            fallback_kind: &str,
+            source: &[u8],
+        ) -> Option<String> {
+            if let Some(named) = node.child_by_field_name(field_name) {
+                return Some(get_node_text(&named, source).to_string());
+            }
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == fallback_kind {
+                        return Some(get_node_text(&child, source).to_string());
+                    }
+                }
+            }
+            None
+        }
+
         fn collect_defs(
             node: Node,
             source: &[u8],
@@ -997,6 +1020,16 @@ impl CallGraphLanguageSupport for OcamlHandler {
                     return;
                 }
                 "value_definition" | "let_binding" => {
+                    // F4a-definition-ocaml: a `let` binding is a value/function
+                    // definition regardless of the enclosing module. OCaml
+                    // modules (`module M = struct ... end`) are *namespaces*,
+                    // not classes/objects, so their members must report as
+                    // `kind=function`, never `method`. Only `method`
+                    // declarations inside an `object`/`class` body are true
+                    // methods — those are emitted by the `class_definition` arm
+                    // below. `module_path` is still threaded through for module
+                    // and class-method qualification; it no longer drives the
+                    // function-vs-method axis for plain `let` bindings.
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
                             if child.kind() == "let_binding" || child.kind() == "value_definition" {
@@ -1021,18 +1054,9 @@ impl CallGraphLanguageSupport for OcamlHandler {
                                             let line = node.start_position().row as u32 + 1;
                                             let end_line = node.end_position().row as u32 + 1;
 
-                                            if module_path.is_empty() {
-                                                funcs.push(FuncDef::function(
-                                                    func_name, line, end_line,
-                                                ));
-                                            } else {
-                                                funcs.push(FuncDef::method(
-                                                    func_name,
-                                                    module_path.join("."),
-                                                    line,
-                                                    end_line,
-                                                ));
-                                            }
+                                            funcs.push(FuncDef::function(
+                                                func_name, line, end_line,
+                                            ));
                                         }
                                     }
                                 }
@@ -1047,19 +1071,83 @@ impl CallGraphLanguageSupport for OcamlHandler {
                                 let line = node.start_position().row as u32 + 1;
                                 let end_line = node.end_position().row as u32 + 1;
 
-                                if module_path.is_empty() {
-                                    funcs.push(FuncDef::function(func_name, line, end_line));
-                                } else {
-                                    funcs.push(FuncDef::method(
-                                        func_name,
-                                        module_path.join("."),
-                                        line,
-                                        end_line,
-                                    ));
-                                }
+                                funcs.push(FuncDef::function(func_name, line, end_line));
                             }
                         }
                     }
+                }
+                "class_definition" => {
+                    // F4a-definition-ocaml: the *only* OCaml constructs whose
+                    // members are genuine methods are `class`/`object`
+                    // expressions. Each `method <name> = ...` inside an
+                    // `object_expression` is emitted as `FuncDef::method` so
+                    // `definition` reports `kind=method` (and the class itself
+                    // is recorded as a `ClassDef`, mirroring the
+                    // `module_definition` arm). We `return` to avoid descending
+                    // into method bodies, where local `let ... in` bindings
+                    // would otherwise leak out as spurious top-level functions.
+                    for i in 0..node.child_count() {
+                        let Some(binding) = node.child(i) else {
+                            continue;
+                        };
+                        if binding.kind() != "class_binding" {
+                            continue;
+                        }
+
+                        let Some(class_name) = field_or_kind_text(&binding, "name", "class_name", source)
+                        else {
+                            continue;
+                        };
+                        if class_name.is_empty() {
+                            continue;
+                        }
+
+                        let class_line = binding.start_position().row as u32 + 1;
+                        let class_end = binding.end_position().row as u32 + 1;
+                        classes.push(ClassDef::simple(&class_name, class_line, class_end));
+
+                        // Qualify the owning-class name with the enclosing module
+                        // path so the builder's `Class.method` index alias lines
+                        // up with the call-graph caller keys produced by
+                        // `process_class_body_calls`.
+                        let class_qual = if module_path.is_empty() {
+                            class_name
+                        } else {
+                            format!("{}.{}", module_path.join("."), class_name)
+                        };
+
+                        let Some(body) = binding.child_by_field_name("body") else {
+                            continue;
+                        };
+                        if body.kind() != "object_expression" {
+                            continue;
+                        }
+                        for j in 0..body.child_count() {
+                            let Some(member) = body.child(j) else {
+                                continue;
+                            };
+                            if member.kind() != "method_definition" {
+                                continue;
+                            }
+                            let Some(method_name) =
+                                field_or_kind_text(&member, "name", "method_name", source)
+                            else {
+                                continue;
+                            };
+                            if method_name.is_empty() {
+                                continue;
+                            }
+                            let m_line = member.start_position().row as u32 + 1;
+                            let m_end = member.end_position().row as u32 + 1;
+                            funcs.push(FuncDef::method(
+                                method_name,
+                                class_qual.clone(),
+                                m_line,
+                                m_end,
+                            ));
+                        }
+                    }
+                    return;
                 }
                 _ => {}
             }
@@ -1106,6 +1194,109 @@ mod tests {
                 .unwrap_or_default(),
             Err(_) => HashMap::new(),
         }
+    }
+
+    fn extract_definitions(source: &str) -> (Vec<FuncDef>, Vec<ClassDef>) {
+        let handler = OcamlHandler::new();
+        let tree = handler.parse_source(source).expect("ocaml source parses");
+        handler
+            .extract_definitions(source, Path::new("test.ml"), &tree)
+            .expect("extract_definitions succeeds")
+    }
+
+    /// F4a-definition-ocaml — GENERALIZATION across the OCaml
+    /// definition-kind symptom class.
+    ///
+    /// Symptom: `definition` reported every `let` binding nested inside a
+    /// `module M = struct ... end` as `kind=method` (FuncDef::method, which
+    /// drives `SymbolKind::Method` in the `definition` command). OCaml modules
+    /// are namespaces, not classes, so module members are *functions*.
+    ///
+    /// The class spans EVERY shape that produces a definition kind:
+    ///   * top-level `let`                            -> function
+    ///   * `let` inside `module = struct`             -> function (was method)
+    ///   * `let rec` inside a module                  -> function (was method)
+    ///   * `let` inside a *nested* module             -> function (was method)
+    ///   * `method` inside `class = object`           -> method (must stay/become method)
+    ///
+    /// A single-variant assertion would not catch a regression that, say, only
+    /// fixed the non-recursive module case, so every variant is asserted here.
+    #[test]
+    fn test_f4a_module_level_let_is_function_object_method_is_method() {
+        let source = r#"
+let top_level x = x + 1
+
+module M = struct
+  let in_module y = y * 2
+  let rec fact n = if n = 0 then 1 else n * fact (n - 1)
+
+  module Inner = struct
+    let deep z = z - 1
+  end
+end
+
+class counter = object
+  val mutable count = 0
+  method incr = count <- count + 1
+  method get = count
+end
+"#;
+        let (funcs, classes) = extract_definitions(source);
+
+        let by_name = |name: &str| -> FuncDef {
+            funcs
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected a definition named `{name}`, got {:?}",
+                        funcs.iter().map(|f| &f.name).collect::<Vec<_>>()
+                    )
+                })
+                .clone()
+        };
+
+        // --- `let` bindings: every variant must be a function. ---
+        for name in ["top_level", "in_module", "fact", "deep"] {
+            let f = by_name(name);
+            assert!(
+                !f.is_method,
+                "`let {name}` must be kind=function (is_method=false), got is_method=true"
+            );
+            assert!(
+                f.class_name.is_none(),
+                "`let {name}` must carry no owning class, got {:?}",
+                f.class_name
+            );
+        }
+
+        // --- `method` declarations: must be real methods of their class. ---
+        for name in ["incr", "get"] {
+            let m = by_name(name);
+            assert!(
+                m.is_method,
+                "`method {name}` must be kind=method (is_method=true), got is_method=false"
+            );
+            assert_eq!(
+                m.class_name.as_deref(),
+                Some("counter"),
+                "`method {name}` must belong to class `counter`"
+            );
+        }
+
+        // The class itself is recorded as a class-like definition.
+        assert!(
+            classes.iter().any(|c| c.name == "counter"),
+            "class `counter` must be emitted as a ClassDef, got {:?}",
+            classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // A local `let ... in` inside a method body must NOT leak as a
+        // top-level definition (guards the `return` in the class arm).
+        assert!(
+            !funcs.iter().any(|f| f.name == "count"),
+            "the `val count` / method-local bindings must not surface as functions"
+        );
     }
 
     // -------------------------------------------------------------------------
