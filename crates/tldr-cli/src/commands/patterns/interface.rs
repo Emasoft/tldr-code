@@ -2070,6 +2070,38 @@ fn find_body_node<'a>(class_node: Node<'a>, lang: Language) -> Option<Node<'a>> 
             // Fallback: use the class node itself
             Some(class_node)
         }
+        // A3c-interface-ocaml (v0.5.0 BACKLOG): `module M = struct ... end` is
+        // a `module_definition` wrapping a `module_binding` whose `body` field
+        // is the module expression. For a structure body (`struct ... end`) the
+        // body node is a `structure` (or `module_content`); its direct children
+        // are the `value_definition` / `let_binding` items that
+        // `collect_methods_from_body` enumerates into `methods[]` (the same
+        // `method_node_kinds(Ocaml)` set). The default arm below only scans the
+        // *direct* children of `module_definition` for a "body"/"block"-named
+        // node, but OCaml's struct body lives one level deeper inside
+        // `module_binding`, so every OCaml module previously surfaced with
+        // `methods: []`. Functor applications / module aliases
+        // (`module M = Make (X)`, `module M = N`) carry a `module_application` /
+        // `module_path` body with no struct items and correctly continue to
+        // yield no methods. `type_definition` (the other `class_node_kinds(Ocaml)`
+        // member) has no `module_binding` child and falls through to `None`,
+        // matching its zero-method type-alias semantics. Mirrors the canonical
+        // OCaml descent used by the callgraph extractor
+        // (crates/tldr-core/src/callgraph/languages/ocaml.rs: module_binding.body
+        // -> "structure" | "module_content").
+        Language::Ocaml => {
+            let mut cursor = class_node.walk();
+            for child in class_node.children(&mut cursor) {
+                if child.kind() == "module_binding" {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        if matches!(body.kind(), "structure" | "module_content") {
+                            return Some(body);
+                        }
+                    }
+                }
+            }
+            None
+        }
         _ => {
             // Default: try common body kinds
             let mut cursor = class_node.walk();
@@ -6017,6 +6049,128 @@ type alias_t = int
                 .iter()
                 .map(|c| (&c.name, &c.kind))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// A3c-interface-ocaml (v0.5.0 BACKLOG): `tldr interface` must enumerate
+    /// the `let`/value methods of an OCaml module's `struct ... end` body —
+    /// previously every module surfaced with `methods: []` because
+    /// `find_body_node` had no OCaml arm and the default scan never reached
+    /// the `structure` body nested one level down inside `module_binding`.
+    ///
+    /// GENERALIZATION: this asserts the fix covers EVERY OCaml module-binding
+    /// variant in the symptom class, not just the one plain form:
+    ///   * plain          `module M = struct .. end`            (dune form)
+    ///   * signature-annot `module M : sig .. end = struct .. end` (lwt form,
+    ///                      e.g. `Basic_helpers`, `Resolution_loop`)
+    ///   * functor         `module Make (X) = struct .. end`     (dune dag.ml)
+    ///   * nested          inner module enumerates its own methods
+    /// and that the no-body variants correctly yield ZERO methods (no false
+    /// positives):
+    ///   * functor-application `module M = Make (X)`             (lwt Storage_map)
+    ///   * module alias        `module M = N`                    (lwt Lwt_sequence)
+    #[test]
+    fn test_interface_ocaml_module_methods_enumerated_all_variants() {
+        let source = r#"
+module Plain = struct
+  let plain_a x = x + 1
+  let plain_b y = y * 2
+end
+
+module Annotated : sig
+  val ann_a : int -> int
+end = struct
+  let ann_a x = x + 1
+  let ann_b y = y - 1
+end
+
+module Make (V : sig end) = struct
+  let make_a v = v
+  let make_b v = v
+end
+
+module Outer = struct
+  let outer_a x = x
+  module Inner = struct
+    let inner_a y = y
+  end
+end
+
+module AliasMod = Plain
+module AppliedMod = Make (struct end)
+"#;
+        let info = extract_interface(Path::new("variants.ml"), source).unwrap();
+        let methods_of = |n: &str| -> Vec<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == n)
+                .map(|c| c.methods.iter().map(|m| m.name.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        // Plain struct: both let-bindings enumerate.
+        assert_eq!(
+            methods_of("Plain"),
+            vec!["plain_a".to_string(), "plain_b".to_string()],
+            "plain `module M = struct .. end` must enumerate its let methods; \
+             classes={:?}",
+            info.classes
+                .iter()
+                .map(|c| (&c.name, c.methods.len()))
+                .collect::<Vec<_>>()
+        );
+
+        // Signature-annotated struct (the lwt form): the STRUCT body's
+        // let-bindings enumerate (not the sig's `val`s) — the `body` field
+        // resolves to the `struct` side of `: sig .. end = struct .. end`.
+        assert_eq!(
+            methods_of("Annotated"),
+            vec!["ann_a".to_string(), "ann_b".to_string()],
+            "`module M : sig .. end = struct .. end` must enumerate the struct \
+             body's let methods; got {:?}",
+            methods_of("Annotated")
+        );
+
+        // Functor with a struct body: methods enumerate.
+        assert_eq!(
+            methods_of("Make"),
+            vec!["make_a".to_string(), "make_b".to_string()],
+            "functor `module Make (X) = struct .. end` must enumerate its let \
+             methods; got {:?}",
+            methods_of("Make")
+        );
+
+        // Outer module: its OWN let-binding enumerates; the nested module is a
+        // separate class entry, NOT folded into Outer's methods.
+        assert_eq!(
+            methods_of("Outer"),
+            vec!["outer_a".to_string()],
+            "outer module must enumerate only its own let methods (nested module \
+             is a separate class); got {:?}",
+            methods_of("Outer")
+        );
+
+        // Nested module now surfaces as its own class with its methods.
+        assert_eq!(
+            methods_of("Inner"),
+            vec!["inner_a".to_string()],
+            "nested OCaml module must surface as its own class with enumerated \
+             methods; classes={:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // No-body variants: functor application + alias must yield ZERO methods
+        // (the body is a `module_application` / `module_path`, not a `structure`).
+        assert!(
+            methods_of("AliasMod").is_empty(),
+            "module alias `module M = N` must yield no methods; got {:?}",
+            methods_of("AliasMod")
+        );
+        assert!(
+            methods_of("AppliedMod").is_empty(),
+            "functor application `module M = Make (X)` must yield no methods; \
+             got {:?}",
+            methods_of("AppliedMod")
         );
     }
 
