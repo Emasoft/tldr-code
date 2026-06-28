@@ -901,7 +901,41 @@ fn explicit_or_inferred_visibility(
         // with no in-repo caller is at most *possibly* dead, never definitive.
         return matches!(kw, "public" | "open" | "internal" | "external");
     }
+    // fix-PW5-bug8-dead-php-visibility (v0.5.0 BACKLOG): some extractors record
+    // the access modifier as a *decorator* ("private"/"protected"/"public")
+    // instead of populating the `visibility` field — PHP is the canonical case
+    // (`private function findByName()`). An explicit modifier in the decorator
+    // list is authoritative and must win over the leading-underscore name
+    // heuristic, otherwise a non-underscored `private`/`protected` member is
+    // wrongly reported as `is_public:true`.
+    if let Some(visible) = visibility_from_decorators(decorators) {
+        return visible;
+    }
     infer_visibility_from_name(name, language, has_decorator, decorators)
+}
+
+/// Map an explicit access-modifier decorator to a visibility boolean.
+///
+/// Returns:
+///   - `Some(false)` when a `private` / `protected` / `fileprivate` modifier is
+///     present (not publicly reachable for dead-code analysis),
+///   - `Some(true)` when only a `public` modifier is present,
+///   - `None` when no visibility modifier is among the decorators (caller then
+///     falls back to the name-based heuristic).
+///
+/// `private`/`protected` take precedence over `public` so a contradictory
+/// modifier set resolves to the most restrictive (and safe) interpretation.
+fn visibility_from_decorators(decorators: &[String]) -> Option<bool> {
+    if decorators
+        .iter()
+        .any(|d| matches!(d.as_str(), "private" | "protected" | "fileprivate"))
+    {
+        return Some(false);
+    }
+    if decorators.iter().any(|d| d == "public") {
+        return Some(true);
+    }
+    None
 }
 
 /// Infer visibility from function name based on language conventions.
@@ -3275,6 +3309,97 @@ mod tests {
             report.possibly_dead.iter().any(|f| f.name == "Token.orphanExternal"),
             "an uncalled external fn must be possibly_dead; got {:?}",
             report.possibly_dead.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// fix-PW5-bug8-dead-php-visibility: PHP records the access modifier as a
+    /// *decorator* (`"private"`/`"protected"`/`"public"`) rather than populating
+    /// the `visibility` field. An explicit visibility decorator is authoritative
+    /// and must win over the leading-underscore name heuristic — a PHP
+    /// `private function findByName()` has no leading underscore yet is not
+    /// publicly reachable, so it must report `is_public:false`.
+    #[test]
+    fn test_php_visibility_decorator_overrides_underscore_heuristic() {
+        use crate::types::Language;
+
+        // Unit-level: the decorator modifier is authoritative when the explicit
+        // `visibility` field is absent (None), regardless of name shape.
+        assert!(
+            !explicit_or_inferred_visibility(
+                None,
+                "findByName",
+                Language::Php,
+                true,
+                &["private".to_string()]
+            ),
+            "PHP `private` decorator must make is_public=false even without a leading underscore"
+        );
+        assert!(
+            !explicit_or_inferred_visibility(
+                None,
+                "doStuff",
+                Language::Php,
+                true,
+                &["protected".to_string()]
+            ),
+            "PHP `protected` decorator is non-public for dead-code reachability"
+        );
+        assert!(
+            explicit_or_inferred_visibility(
+                None,
+                "create",
+                Language::Php,
+                true,
+                &["public".to_string(), "static".to_string()]
+            ),
+            "PHP `public` decorator stays public"
+        );
+        // Regression: behaviour for names is preserved when no visibility
+        // modifier is present among the decorators.
+        assert!(
+            explicit_or_inferred_visibility(None, "handle", Language::Php, false, &[]),
+            "PHP method with no visibility signal and no underscore stays public"
+        );
+        assert!(
+            !explicit_or_inferred_visibility(None, "_helper", Language::Php, false, &[]),
+            "PHP leading-underscore name heuristic still applies as a fallback"
+        );
+
+        // Integration-level: the produced FunctionRef carries the corrected
+        // is_public flag through collect_all_functions.
+        let modules = module_with_class(
+            "HandlerStack.php",
+            Language::Php,
+            "HandlerStack",
+            Some("class"),
+            vec![
+                method("findByName", None, vec!["private"]),
+                method("addProxy", None, vec!["private", "static"]),
+                method("create", None, vec!["public", "static"]),
+                method("setHandler", None, vec!["public"]),
+            ],
+        );
+        let funcs = collect_all_functions(&modules);
+        let vis = |full: &str| funcs.iter().find(|f| f.name == full).map(|f| f.is_public);
+        assert_eq!(
+            vis("HandlerStack.findByName"),
+            Some(false),
+            "private method (no underscore) must be is_public:false"
+        );
+        assert_eq!(
+            vis("HandlerStack.addProxy"),
+            Some(false),
+            "private static method (no underscore) must be is_public:false"
+        );
+        assert_eq!(
+            vis("HandlerStack.create"),
+            Some(true),
+            "public static method must stay is_public:true"
+        );
+        assert_eq!(
+            vis("HandlerStack.setHandler"),
+            Some(true),
+            "public method must stay is_public:true"
         );
     }
 
