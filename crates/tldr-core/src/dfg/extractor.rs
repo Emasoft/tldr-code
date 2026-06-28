@@ -5831,6 +5831,26 @@ impl<'a> DfgBuilder<'a> {
             }
         }
 
+        // ---- C++ templated callee / cast-operator name -----------------------
+        // fix-PW1-C3-nonvar-tokens (v0.5.0 BACKLOG, Wave 1 row C3): a C++
+        // templated invocation `name<Args>(args)` parses as
+        //   call_expression { function: template_function { name: identifier,
+        //                                                    arguments } }.
+        // The `name` field of a `template_function` is a function / cast-operator
+        // / template name — `reinterpret_cast`, `static_cast`, `const_cast`,
+        // `dynamic_cast`, `make_unique`, `std::vector` — never a local-variable
+        // read. (cpp-fmt `as_chars` flagged `reinterpret_cast` as definite-
+        // uninitialized.) The four cast forms are C++ keywords but reach the
+        // `identifier` arm here, so suppress them structurally by position rather
+        // than by a keyword stoplist (which would miss `make_unique` etc.).
+        if kind == "template_function" {
+            if let Some(name) = parent.child_by_field_name("name") {
+                if name.id() == node.id() {
+                    return Some(false);
+                }
+            }
+        }
+
         // ---- Kotlin infix-function operator position --------------------------
         // fix-R2-themeC (v0.5.0 CLOSEOUT, RC1): Kotlin INFIX functions
         // (`shl`/`or`/`downTo`/`shr`/`and`/`xor`/`ushr`/`until`/`step`, and any
@@ -5912,6 +5932,28 @@ impl<'a> DfgBuilder<'a> {
             if parent.child(0).map(|c| c.id()) != Some(node.id()) {
                 return Some(false);
             }
+            // fix-PW1-C3-nonvar-tokens (v0.5.0 BACKLOG, Wave 1 row C3): the
+            // RECEIVER itself is a NON-use when it is a type / companion-object /
+            // enum reference rather than a value. Kotlin's grammar cannot
+            // distinguish `DateTimeUnit.MONTH` (type receiver) from `list.size`
+            // (value receiver) structurally, but the language convention is
+            // strict — types, objects and companions are PascalCase while locals
+            // and parameters are camelCase. A PascalCase receiver
+            // (`DateTimeUnit`, `Int`, `YearMonthProgression`) is therefore a
+            // compile-time-resolved reference, never a local read. Guarded by
+            // `generic_local_names` so a genuine local that shadows such a name
+            // (which would carry its own Definition) keeps its reads. (Mirrors
+            // the sanctioned Scala/C# uppercase-receiver disambiguation already
+            // used elsewhere in this analyzer.)
+            let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+            if text
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+                && !self.generic_local_names.contains(text)
+            {
+                return Some(false);
+            }
         }
 
         // ---- Scoped / qualified path segments -------------------------------
@@ -5924,6 +5966,18 @@ impl<'a> DfgBuilder<'a> {
         // C++ `ns::item` — `qualified_identifier` wraps `[scope]
         // namespace_identifier` + `[name]`; neither segment is a local use.
         if kind == "qualified_identifier" {
+            return Some(false);
+        }
+        // fix-PW1-C3-nonvar-tokens (v0.5.0 BACKLOG, Wave 1 row C3): Scala
+        // `pkg.Type` / `obj.Type` qualified type paths parse as
+        //   stable_type_identifier { identifier(qualifier)  type_identifier(name) }.
+        // EVERY segment is a package / object / type path element, never a
+        // local-variable read — including the leading lowercase package
+        // qualifier (`mutable.HashMap`, `immutable.TreeSet`) which the
+        // uppercase-only Scala heuristic in `extract_refs_from_node` does not
+        // catch (scala-zio `newMutableMap` flagged `mutable` as definite-
+        // uninitialized).
+        if kind == "stable_type_identifier" {
             return Some(false);
         }
 
@@ -9591,6 +9645,111 @@ let map_s f l =
             list_uses.is_empty(),
             "OCaml module path `List` must not be a local use, got use lines {:?}",
             list_uses
+        );
+    }
+
+    // =====================================================================
+    // fix-PW1-C3-nonvar-tokens (v0.5.0 BACKLOG, Wave 1 row C3)
+    // =====================================================================
+    // Non-variable tokens that share the bare-`identifier` node kind with
+    // genuine local reads were mis-collected as variable USES and then
+    // reported `definite uninitialized` by reaching-defs. One generic
+    // structural predicate (`generic_non_use_position`) must reject all three
+    // language variants in the symptom class:
+    //   * C++   — a templated callee / cast keyword is the `name` field of a
+    //             `template_function` (`reinterpret_cast<T>(x)`,
+    //             `static_cast<T>(x)`, `make_unique<T>()`).
+    //   * Kotlin— a PascalCase RECEIVER of a `navigation_expression` is a
+    //             type / companion-object / enum reference (`DateTimeUnit.MONTH`,
+    //             `Int.MAX_VALUE`, `YearMonthProgression.fromClosedRange(...)`).
+    //   * Scala — every segment of a `stable_type_identifier` qualified type
+    //             path is a package / object / type element (`mutable.HashMap`).
+    //
+    // GENERALIZATION GATE: this single test asserts EVERY variant in the class,
+    // not one — a single-language version would be an anti-treadmill failure.
+    #[test]
+    fn c3_nonvar_tokens_not_recorded_as_uninitialized_uses() {
+        fn uninit(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            let cfg = crate::cfg::get_cfg_context(source, func, lang).unwrap();
+            let report = crate::dfg::reaching::build_reaching_defs_report(
+                &cfg,
+                &dfg.refs,
+                std::path::PathBuf::from("test"),
+            );
+            report
+                .uninitialized
+                .iter()
+                .map(|u| u.var.clone())
+                .collect()
+        }
+        fn uses(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            dfg.refs
+                .iter()
+                .filter(|r| r.ref_type == RefType::Use)
+                .map(|r| r.name.clone())
+                .collect()
+        }
+
+        // ---- C++ : templated cast / callee name (`template_function.name`) ----
+        let cpp = r#"
+const char* as_chars(const unsigned char* data) {
+  return reinterpret_cast<const char*>(static_cast<const void*>(data));
+}
+"#;
+        let cpp_uses = uses(cpp, "as_chars", Language::Cpp);
+        let cpp_uninit = uninit(cpp, "as_chars", Language::Cpp);
+        for kw in ["reinterpret_cast", "static_cast"] {
+            assert!(
+                !cpp_uses.contains(&kw.to_string()),
+                "C++ cast keyword `{kw}` wrongly recorded as a variable use; uses={cpp_uses:?}"
+            );
+            assert!(
+                !cpp_uninit.contains(&kw.to_string()),
+                "C++ cast keyword `{kw}` wrongly flagged uninitialized; uninit={cpp_uninit:?}"
+            );
+        }
+
+        // ---- Kotlin : type / companion navigation receivers -------------------
+        let kt = r#"
+fun downTo(that: YearMonth): YearMonthProgression =
+    YearMonthProgression.fromClosedRange(this, that, -1, DateTimeUnit.MONTH, Int.MAX_VALUE)
+"#;
+        let kt_uses = uses(kt, "downTo", Language::Kotlin);
+        let kt_uninit = uninit(kt, "downTo", Language::Kotlin);
+        for t in ["DateTimeUnit", "YearMonthProgression", "Int"] {
+            assert!(
+                !kt_uses.contains(&t.to_string()),
+                "Kotlin type-receiver `{t}` wrongly recorded as a variable use; uses={kt_uses:?}"
+            );
+            assert!(
+                !kt_uninit.contains(&t.to_string()),
+                "Kotlin type-receiver `{t}` wrongly flagged uninitialized; uninit={kt_uninit:?}"
+            );
+        }
+        // The genuine member selectors (`.MONTH`, `.MAX_VALUE`, `.fromClosedRange`)
+        // were already suppressed; `that` (a real param read) must survive.
+        assert!(
+            kt_uses.contains(&"that".to_string()),
+            "Kotlin genuine local read `that` lost; uses={kt_uses:?}"
+        );
+
+        // ---- Scala : qualified-type-path qualifier (`mutable`) ----------------
+        let scala = r#"
+def newMutableMap(n: Int): mutable.HashMap[K, V] = {
+  new mutable.HashMap[K, V](n, 0.75d)
+}
+"#;
+        let scala_uses = uses(scala, "newMutableMap", Language::Scala);
+        let scala_uninit = uninit(scala, "newMutableMap", Language::Scala);
+        assert!(
+            !scala_uses.contains(&"mutable".to_string()),
+            "Scala package qualifier `mutable` wrongly recorded as a variable use; uses={scala_uses:?}"
+        );
+        assert!(
+            !scala_uninit.contains(&"mutable".to_string()),
+            "Scala package qualifier `mutable` wrongly flagged uninitialized; uninit={scala_uninit:?}"
         );
     }
 }
