@@ -6206,9 +6206,21 @@ fn extract_c_function_info(node: &Node, source: &str) -> FunctionInfo {
     let name = extract_c_function_name(node, source).unwrap_or_default();
 
     let params = extract_c_params(node, source);
-    let return_type = node
-        .child_by_field_name("type")
-        .map(|n| get_node_text(&n, source));
+    // The `type` field carries only the base type; pointer indirection lives in
+    // the declarator chain. Re-attach the `*`s so `void *f(...)` reports
+    // `void *` and `sds **g(...)` reports `sds **`, not a stripped base type.
+    let return_type = node.child_by_field_name("type").map(|n| {
+        let base = get_node_text(&n, source);
+        let depth = node
+            .child_by_field_name("declarator")
+            .map(|d| c_return_pointer_depth(&d))
+            .unwrap_or(0);
+        if depth > 0 {
+            format!("{} {}", base, "*".repeat(depth))
+        } else {
+            base
+        }
+    });
 
     let docstring = extract_c_docstring(node, source);
     let line_number = node.start_position().row as u32 + 1;
@@ -6236,18 +6248,11 @@ fn extract_c_function_info(node: &Node, source: &str) -> FunctionInfo {
 fn extract_c_function_name(node: &Node, source: &str) -> Option<String> {
     let declarator = node.child_by_field_name("declarator")?;
 
-    if declarator.kind() == "function_declarator" {
-        return extract_name_from_function_declarator(&declarator, source);
-    }
-
-    // Sometimes the declarator is a pointer_declarator wrapping a function_declarator
-    if declarator.kind() == "pointer_declarator" {
-        let mut cursor = declarator.walk();
-        for child in declarator.children(&mut cursor) {
-            if child.kind() == "function_declarator" {
-                return extract_name_from_function_declarator(&child, source);
-            }
-        }
+    // The declarator may be the `function_declarator` directly, or wrapped in
+    // one-or-more `pointer_declarator`s for pointer-returning functions
+    // (`void *f`, `sds **g`). Unwrap any pointer depth before reading the name.
+    if let Some(func_decl) = unwrap_c_function_declarator(&declarator) {
+        return extract_name_from_function_declarator(&func_decl, source);
     }
 
     // Fallback: declarator is directly an identifier (rare)
@@ -6321,6 +6326,50 @@ fn extract_name_from_declarator_inner(node: &Node, source: &str) -> Option<Strin
     }
 }
 
+/// Unwrap a declarator chain (any depth of `pointer_declarator`) to the inner
+/// `function_declarator`. Pointer-returning functions wrap the function
+/// declarator in one `pointer_declarator` per `*` (`void *f` -> 1 level,
+/// `sds **g` -> 2 nested levels). Returns `None` when the chain does not bottom
+/// out on a function declarator (e.g. a plain object declaration).
+fn unwrap_c_function_declarator<'tree>(node: &Node<'tree>) -> Option<Node<'tree>> {
+    if node.kind() == "function_declarator" {
+        return Some(*node);
+    }
+    if node.kind() == "pointer_declarator" {
+        if let Some(inner) = node.child_by_field_name("declarator") {
+            return unwrap_c_function_declarator(&inner);
+        }
+        // Some grammars don't expose the `declarator` field on the wrapper —
+        // fall back to scanning children for the nested declarator.
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = unwrap_c_function_declarator(&child) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Count the pointer-indirection depth of a function's return type by walking
+/// the declarator chain down to the `function_declarator`. Each
+/// `pointer_declarator` wrapper contributes one `*` (`void *f(...)` -> 1,
+/// `sds **g(...)` -> 2). The `type` field omits these stars, so they must be
+/// re-attached for the reported return type to be faithful.
+fn c_return_pointer_depth(node: &Node) -> usize {
+    match node.kind() {
+        "function_declarator" => 0,
+        "pointer_declarator" => node
+            .child_by_field_name("declarator")
+            .map(|inner| 1 + c_return_pointer_depth(&inner))
+            .unwrap_or(0),
+        _ => node
+            .child_by_field_name("declarator")
+            .map(|inner| c_return_pointer_depth(&inner))
+            .unwrap_or(0),
+    }
+}
+
 fn extract_c_params(node: &Node, source: &str) -> Vec<String> {
     let mut params = Vec::new();
 
@@ -6330,24 +6379,11 @@ fn extract_c_params(node: &Node, source: &str) -> Vec<String> {
         None => return params,
     };
 
-    let func_decl = if declarator.kind() == "function_declarator" {
-        declarator
-    } else if declarator.kind() == "pointer_declarator" {
-        // Find function_declarator inside pointer_declarator
-        let mut found = None;
-        let mut cursor = declarator.walk();
-        for child in declarator.children(&mut cursor) {
-            if child.kind() == "function_declarator" {
-                found = Some(child);
-                break;
-            }
-        }
-        match found {
-            Some(f) => f,
-            None => return params,
-        }
-    } else {
-        return params;
+    // Unwrap any pointer-return wrapper depth (`void *f`, `sds **g`) to reach
+    // the `function_declarator` that carries the parameter list.
+    let func_decl = match unwrap_c_function_declarator(&declarator) {
+        Some(f) => f,
+        None => return params,
     };
 
     if let Some(params_node) = func_decl.child_by_field_name("parameters") {
@@ -11257,6 +11293,68 @@ int mutable_var = 42;
             !constants.iter().any(|c| c.name == "mutable_var"),
             "Should not extract non-const mutable_var"
         );
+    }
+
+    #[test]
+    fn test_c_pointer_return_types_and_params_preserved() {
+        // A3d-surface-c-pointer: pointer-returning C functions must keep BOTH
+        // their pointer return type (the `*`s, not a base type with the
+        // indirection stripped) AND their full parameter list. This is the
+        // anti-treadmill generalization gate for the C symptom class — it
+        // covers every pointer variant: single `*`, double `**`, void
+        // pointer, and typedef-base pointer (`sds`). A non-pointer return is
+        // included to confirm the unchanged path still works.
+        use crate::ast::parser::parse;
+
+        let source = r#"
+char *make_buf(int size, const char *name) { return 0; }
+void *alloc_ptr(unsigned long size) { return 0; }
+sds *split_one(const char *line, int *argc) { return 0; }
+sds **split_two(const char *line, int n) { return 0; }
+int plain(int x) { return x; }
+"#;
+        let tree = parse(source, Language::C).unwrap();
+        let info = extract_from_tree(
+            &tree,
+            source,
+            Language::C,
+            std::path::Path::new("ptr.c"),
+            None,
+        )
+        .unwrap();
+
+        let by_name = |n: &str| {
+            info.functions
+                .iter()
+                .find(|f| f.name == n)
+                .unwrap_or_else(|| panic!("missing function {n}: {:?}", info.functions))
+        };
+
+        // Single pointer.
+        let make_buf = by_name("make_buf");
+        assert_eq!(make_buf.return_type.as_deref(), Some("char *"));
+        assert_eq!(make_buf.params, vec!["size", "name"]);
+
+        // void pointer.
+        let alloc_ptr = by_name("alloc_ptr");
+        assert_eq!(alloc_ptr.return_type.as_deref(), Some("void *"));
+        assert_eq!(alloc_ptr.params, vec!["size"]);
+
+        // typedef-base single pointer.
+        let split_one = by_name("split_one");
+        assert_eq!(split_one.return_type.as_deref(), Some("sds *"));
+        assert_eq!(split_one.params, vec!["line", "argc"]);
+
+        // Double pointer: previously dropped the name AND all params because
+        // the nested pointer_declarator was not unwrapped.
+        let split_two = by_name("split_two");
+        assert_eq!(split_two.return_type.as_deref(), Some("sds **"));
+        assert_eq!(split_two.params, vec!["line", "n"]);
+
+        // Non-pointer return is unchanged.
+        let plain = by_name("plain");
+        assert_eq!(plain.return_type.as_deref(), Some("int"));
+        assert_eq!(plain.params, vec!["x"]);
     }
 
     #[test]

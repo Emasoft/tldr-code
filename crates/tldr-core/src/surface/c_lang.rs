@@ -227,11 +227,22 @@ fn build_c_api_entry(
     }
 
     let params = c_param_names(&func_decl, source);
+    // The declaration's `type` field carries only the base type (e.g. `void`,
+    // `sds`); any pointer indirection lives in the declarator chain. Re-attach
+    // those `*`s so `void *f(...)` reports `void *`, not a stripped `void`.
+    let pointer_depth = return_pointer_depth(&declarator);
     let return_type = node
         .child_by_field_name("type")
         .and_then(|n| n.utf8_text(source).ok())
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(|base| {
+            if pointer_depth > 0 {
+                format!("{} {}", base, "*".repeat(pointer_depth))
+            } else {
+                base
+            }
+        });
 
     let params_vec: Vec<Param> = params
         .into_iter()
@@ -284,6 +295,26 @@ fn unwrap_function_declarator<'tree>(node: &Node<'tree>) -> Option<Node<'tree>> 
         _ => node
             .child_by_field_name("declarator")
             .and_then(|inner| unwrap_function_declarator(&inner)),
+    }
+}
+
+/// Count the pointer-indirection depth of a function's return type by walking
+/// the declarator chain from the outer declarator down to the
+/// `function_declarator`. Each `pointer_declarator` wrapper contributes one
+/// `*` (e.g. `void *f(...)` -> 1, `sds **g(...)` -> 2). The declaration's
+/// `type` field omits these stars, so they must be re-attached for the
+/// surface return type to be faithful.
+fn return_pointer_depth(node: &Node) -> usize {
+    match node.kind() {
+        "function_declarator" => 0,
+        "pointer_declarator" => node
+            .child_by_field_name("declarator")
+            .map(|inner| 1 + return_pointer_depth(&inner))
+            .unwrap_or(0),
+        _ => node
+            .child_by_field_name("declarator")
+            .map(|inner| return_pointer_depth(&inner))
+            .unwrap_or(0),
     }
 }
 
@@ -442,6 +473,72 @@ mod tests {
             .collect();
         assert!(names.iter().any(|name| name.ends_with(".add")));
         assert!(!names.iter().any(|name| name.ends_with(".hidden")));
+    }
+
+    #[test]
+    fn test_c_pointer_return_types_preserved_in_surface() {
+        // A3d-surface-c-pointer: header-derived surface entries for
+        // pointer-returning C functions must keep their pointer return type
+        // (the `*`s) AND their parameters. Anti-treadmill generalization gate
+        // for the C symptom class: single `*`, double `**`, void pointer, and
+        // typedef-base pointer (`sds`), plus a non-pointer control.
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "include/api.h",
+            concat!(
+                "void *alloc_ptr(unsigned long size);\n",
+                "char *make_buf(int size, const char *name);\n",
+                "sds *split_one(const char *line, int *argc);\n",
+                "sds **split_two(const char *line, int n);\n",
+                "int plain(int x);\n",
+            ),
+        );
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_c_api_surface(&resolved, false, None).unwrap();
+        let find = |suffix: &str| {
+            surface
+                .apis
+                .iter()
+                .find(|a| a.qualified_name.ends_with(suffix))
+                .unwrap_or_else(|| panic!("missing {suffix}: {:?}", surface.apis))
+        };
+        let param_names = |entry: &ApiEntry| -> Vec<String> {
+            entry
+                .signature
+                .as_ref()
+                .map(|s| s.params.iter().map(|p| p.name.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        let alloc = find(".alloc_ptr");
+        assert_eq!(alloc.return_type.as_deref(), Some("void *"));
+        assert_eq!(param_names(alloc), vec!["size"]);
+
+        let make_buf = find(".make_buf");
+        assert_eq!(make_buf.return_type.as_deref(), Some("char *"));
+        assert_eq!(param_names(make_buf), vec!["size", "name"]);
+
+        let one = find(".split_one");
+        assert_eq!(one.return_type.as_deref(), Some("sds *"));
+        assert_eq!(param_names(one), vec!["line", "argc"]);
+
+        // Double pointer return.
+        let two = find(".split_two");
+        assert_eq!(two.return_type.as_deref(), Some("sds **"));
+        assert_eq!(param_names(two), vec!["line", "n"]);
+
+        // Non-pointer control is unchanged.
+        let plain = find(".plain");
+        assert_eq!(plain.return_type.as_deref(), Some("int"));
+        assert_eq!(param_names(plain), vec!["x"]);
     }
 
     #[test]
