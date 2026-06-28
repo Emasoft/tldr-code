@@ -707,6 +707,14 @@ impl LanguageSemantics for TypeScriptSemantics {
             "import_statement" => {
                 self.detect_import(node, source, file_path, signals);
             }
+            // fix-CF1-S20: Express detection is resolved once per file at the
+            // module root (`program`). The import gate has to be visible to
+            // *every* route member-call in the file regardless of source
+            // order, which a per-call pass cannot guarantee — so the whole
+            // file is reasoned about structurally from the root.
+            "program" => {
+                self.detect_express(node, source, file_path, signals);
+            }
             _ => {}
         }
     }
@@ -855,16 +863,12 @@ impl TypeScriptSemantics {
             signals.test_idioms.detected_framework = Some("jest".to_string());
         }
 
-        if (call_text.contains(".get(")
-            || call_text.contains(".post(")
-            || call_text.contains(".put(")
-            || call_text.contains(".delete("))
-            && call_text.contains("req")
-            && call_text.contains("res")
-        {
-            let evidence = create_evidence_from(node, source, file_path);
-            signals.api_conventions.express_routes.push(evidence);
-        }
+        // fix-CF1-S20: Express route detection was a substring scan
+        // (`.get(` + `req` + `res` anywhere in the call text) that fired on
+        // incidental tokens in lodash (`_.get(request, 'a.result')`) and
+        // axios (`axios.get(url, { responseType, signal: req.signal })`).
+        // It is now a structural member-call match resolved at the module
+        // root — see `TypeScriptSemantics::detect_express`.
 
         if call_text.contains("typeof ") {
             let evidence = create_evidence_from(node, source, file_path);
@@ -903,6 +907,179 @@ impl TypeScriptSemantics {
             let evidence = create_evidence_from(node, source, file_path);
             signals.import_patterns.star_imports.push(evidence);
         }
+    }
+
+    /// fix-CF1-S20: structurally decide whether this file is an Express
+    /// application and, if so, push route evidence.
+    ///
+    /// Runs once per file (dispatched on the `program` root). It walks the
+    /// AST once collecting two facts:
+    ///
+    /// * whether the file imports/requires the `express` package
+    ///   (`import ... from 'express'` or `require('express')`), and
+    /// * every member-call whose method is an Express verb/app method
+    ///   (`app.get(...)`, `router.use(...)`, `app.listen(...)`).
+    ///
+    /// A call is counted as Express evidence when EITHER
+    ///
+    /// 1. it is an HTTP-verb route call that takes a callback **handler** as a
+    ///    direct argument (`app.get('/', (req, res) => …)`) — the unmistakable
+    ///    routing idiom that `axios.get(url, config)` and lodash
+    ///    `_.get(obj, path)` never exhibit (they pass no handler function), so
+    ///    this branch recognises the Express repo's own examples even though
+    ///    they `require('../..')` rather than the literal `'express'`; OR
+    /// 2. the file actually imports/requires `express` (the import gate) and
+    ///    the call is any Express app/router method — this admits
+    ///    `app.use(mw)` / `app.listen(port)` which, ungated, are too generic
+    ///    (koa/connect/redux also expose `.use`).
+    ///
+    /// This replaces the previous substring scan, so neither lodash nor axios
+    /// (which import neither `express` nor pass route handlers) can match.
+    fn detect_express(
+        &self,
+        root: Node,
+        source: &str,
+        file_path: &Path,
+        signals: &mut PatternSignals,
+    ) {
+        let mut imports_express = false;
+        // (node, is_handler_route, is_app_method)
+        let mut candidates: Vec<(Node, bool, bool)> = Vec::new();
+        collect_express_facts(root, source, &mut imports_express, &mut candidates);
+
+        for (node, is_handler_route, is_app_method) in candidates {
+            if is_handler_route || (imports_express && is_app_method) {
+                let evidence = create_evidence_from(node, source, file_path);
+                signals.api_conventions.express_routes.push(evidence);
+            }
+        }
+    }
+}
+
+/// HTTP verbs that, as a member-call carrying a callback handler, are the
+/// Express routing idiom (`app.get('/', (req, res) => …)`).
+const EXPRESS_ROUTE_VERBS: &[&str] =
+    &["get", "post", "put", "delete", "patch", "head", "options", "all"];
+
+/// Express app/router methods. Behind the import gate, any of these on a
+/// member-call is Express evidence; `use`/`listen`/`route` are included here
+/// (not in [`EXPRESS_ROUTE_VERBS`]) because they are too generic to count
+/// without an `express` import.
+const EXPRESS_APP_METHODS: &[&str] = &[
+    "get", "post", "put", "delete", "patch", "head", "options", "all", "use", "listen", "route",
+];
+
+/// Strip a single layer of surrounding JS string quotes (`'`, `"`, or
+/// backtick) from `s`. Returns `s` unchanged when it is not quoted.
+fn unquote(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        if (first == b'\'' || first == b'"' || first == b'`') && *bytes.last().unwrap() == first {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// The trailing method identifier of a member-call `obj.method(...)`.
+///
+/// Returns `Some("method")` only when `node` is a `call_expression` whose
+/// callee (`function` field) is a `member_expression`; `None` for plain
+/// `f(...)` calls or non-calls. Pure tree-sitter node-kind/field walk.
+fn member_call_method(node: Node, source: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    if func.kind() != "member_expression" {
+        return None;
+    }
+    let prop = func.child_by_field_name("property")?;
+    Some(node_text(prop, source))
+}
+
+/// True when a call node has a function expression as a DIRECT argument
+/// (`f(a, (req, res) => …)` / `f(a, function () {})`). A function nested
+/// inside an object/array argument (e.g. an axios config `{ onUpload: fn }`)
+/// is intentionally NOT matched — only top-level callback handlers count.
+fn has_direct_function_argument(node: Node) -> bool {
+    let Some(args) = node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let has_fn = args.named_children(&mut cursor).any(|c| {
+        matches!(
+            c.kind(),
+            "arrow_function" | "function" | "function_expression" | "generator_function"
+        )
+    });
+    has_fn
+}
+
+/// The module specifier string of an ES `import_statement`, structurally
+/// (the lone `string` child) — `import x from 'm'` -> `Some("m")`.
+fn es_import_module(node: Node, source: &str) -> Option<String> {
+    if node.kind() != "import_statement" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "string" {
+            return Some(unquote(node_text(child, source).trim()).to_string());
+        }
+    }
+    None
+}
+
+/// The module specifier string of a `require('m')` call, structurally — the
+/// callee identifier must be `require` and the first string argument is `m`.
+fn require_module(node: Node, source: &str) -> Option<String> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    if func.kind() != "identifier" || node_text(func, source) != "require" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    for child in args.named_children(&mut cursor) {
+        if child.kind() == "string" {
+            return Some(unquote(node_text(child, source).trim()).to_string());
+        }
+    }
+    None
+}
+
+/// Single structural walk gathering the Express facts for a file: whether it
+/// imports/requires `express`, and every candidate Express member-call tagged
+/// with `(is_handler_route, is_app_method)`. See
+/// [`TypeScriptSemantics::detect_express`] for how the tags are combined.
+fn collect_express_facts<'a>(
+    node: Node<'a>,
+    source: &str,
+    imports_express: &mut bool,
+    candidates: &mut Vec<(Node<'a>, bool, bool)>,
+) {
+    if es_import_module(node, source).as_deref() == Some("express")
+        || require_module(node, source).as_deref() == Some("express")
+    {
+        *imports_express = true;
+    }
+
+    if let Some(method) = member_call_method(node, source) {
+        let is_handler_route =
+            EXPRESS_ROUTE_VERBS.contains(&method.as_str()) && has_direct_function_argument(node);
+        let is_app_method = EXPRESS_APP_METHODS.contains(&method.as_str());
+        if is_handler_route || is_app_method {
+            candidates.push((node, is_handler_route, is_app_method));
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_express_facts(child, source, imports_express, candidates);
     }
 }
 
@@ -1441,6 +1618,10 @@ fn typescript_node_map() -> LanguageNodeMap {
         .insert("call_expression", vec![SignalAction::CallSemantics]);
     map.dispatch
         .insert("import_statement", vec![SignalAction::CallSemantics]);
+    // fix-CF1-S20: the module root drives the once-per-file structural
+    // Express detection (`TypeScriptSemantics::detect_express`).
+    map.dispatch
+        .insert("program", vec![SignalAction::CallSemantics]);
     map.dispatch.insert(
         "await_expression",
         vec![SignalAction::PushEvidence(SignalTarget::AsyncAwait)],
@@ -1604,5 +1785,96 @@ mod grammar_tests {
                 }
             }
         }
+    }
+}
+
+/// fix-CF1-S20: Express `framework` detection must be a structural member-call
+/// match gated on a real `express` import — NOT a substring scan. These tests
+/// pin the cross-language contract: Express is detected on a real Express app
+/// in BOTH JavaScript and TypeScript, and is NOT falsely detected on lodash or
+/// axios (whose `.get`/`.post` member-calls carry no route handler and which
+/// import neither `express`).
+#[cfg(test)]
+mod express_detection_tests {
+    use crate::ast::parser::ParserPool;
+    use crate::patterns::detector::PatternDetector;
+    use crate::types::Language;
+
+    /// Parse `source` as `lang`, run the single-pass pattern detector, and
+    /// report whether any Express route evidence was collected (the signal
+    /// that drives `framework: "express"`).
+    fn express_detected(source: &str, lang: Language) -> bool {
+        let pool = ParserPool::new();
+        let tree = pool.parse(source, lang).expect("fixture should parse");
+        let detector = PatternDetector::new(lang, std::path::PathBuf::from("fixture"));
+        let signals = detector.detect_all(&tree, source);
+        !signals.api_conventions.express_routes.is_empty()
+    }
+
+    // A real Express app — CommonJS (`require`) flavour. The route handler
+    // `(req, res) => …` is the structural idiom.
+    const EXPRESS_APP_JS: &str = r#"
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => { res.send('ok'); });
+app.post('/users', function (req, res) { res.sendStatus(201); });
+app.listen(3000);
+"#;
+
+    // A real Express app — ES-module/TypeScript flavour.
+    const EXPRESS_APP_TS: &str = r#"
+import express from 'express';
+const app = express();
+app.get('/users', (req: Request, res: Response) => { res.json([]); });
+app.use((req, res, next) => { next(); });
+app.listen(3000);
+"#;
+
+    // lodash: `_.get(obj, path)` shares the `.get(` member-call SHAPE but
+    // carries no handler and imports lodash, not express. The identifiers
+    // deliberately embed the `req`/`res` substrings that fooled the old scan
+    // (`request`, `result`).
+    const LODASH_JS: &str = r#"
+const _ = require('lodash');
+function pick(request) {
+  const value = _.get(request, 'body.result', null);
+  return _.get(request, ['meta', 'response']);
+}
+"#;
+
+    // axios: `axios.get(url, config)` — an HTTP client, not a router. The
+    // config object embeds `responseType`/`req.signal` to embed the old
+    // scan's `req`/`res` trigger substrings inside the call text.
+    const AXIOS_TS: &str = r#"
+import axios from 'axios';
+async function load(req: { signal: AbortSignal }) {
+  const res = await axios.get('/api/users', { responseType: 'json', signal: req.signal });
+  await axios.post('/api/users', { name: 'x' });
+  return res.data;
+}
+"#;
+
+    #[test]
+    fn express_detected_on_real_app_js_and_ts() {
+        assert!(
+            express_detected(EXPRESS_APP_JS, Language::JavaScript),
+            "Express must be detected on a real JavaScript Express app"
+        );
+        assert!(
+            express_detected(EXPRESS_APP_TS, Language::TypeScript),
+            "Express must be detected on a real TypeScript Express app"
+        );
+    }
+
+    #[test]
+    fn express_not_falsely_detected_on_lodash_or_axios_js_and_ts() {
+        assert!(
+            !express_detected(LODASH_JS, Language::JavaScript),
+            "Express must NOT be detected on lodash (JavaScript) — `_.get` is object access, not a route"
+        );
+        assert!(
+            !express_detected(AXIOS_TS, Language::TypeScript),
+            "Express must NOT be detected on axios (TypeScript) — `axios.get` is an HTTP call, not a route"
+        );
     }
 }
