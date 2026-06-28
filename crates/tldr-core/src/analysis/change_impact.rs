@@ -849,6 +849,60 @@ fn parse_git_diff_output(
     }
 }
 
+/// whatbreaks-subdir-pathfix-v1 (v0.5.0 BACKLOG B-whatbreaks-subdir): resolve a
+/// changed-file entry to the on-disk path fed to `extract_file`, WITHOUT
+/// doubling a subdir prefix.
+///
+/// A changed-file path reaches `change_impact` in one of three shapes:
+///   1. **absolute** (git detection with an absolute `project`, or an explicit
+///      absolute change set) — used verbatim.
+///   2. **relative to the current working directory**, already carrying the
+///      project's leading components. This is the shape the `whatbreaks`
+///      wrapper passes: `project_path.join(target)` where `project_path` is a
+///      relative subdir (the command was run from the repo root). Naively
+///      re-joining `project_root` is exactly what DOUBLED the prefix
+///      (`Ast/Ast/src/Ast.cpp`, `bin/bin/target.ml`, `Src/X/Src/X/...`),
+///      making `extract_file` fail with "Path not found" and degenerating
+///      `affected_functions` to 0. When the literal path already resolves on
+///      disk it is honoured as-is.
+///   3. **relative to `project_root`** (the classic project-relative shape,
+///      e.g. produced from a different CWD) — falls back to
+///      `project_root.join(file)`, preserving the original behaviour.
+///
+/// Existence is probed against the real filesystem (no string heuristics), so
+/// the resolution is language-agnostic and only ever selects an interpretation
+/// that actually points at a file.
+///
+/// Resolution order is chosen to be strictly non-regressing: the
+/// project-relative interpretation (the documented contract, and the one the
+/// `change-impact` CLI's CL-10 re-base relies on) WINS whenever it resolves; the
+/// literal CWD-relative path is only consulted when `project_root.join(file)`
+/// does NOT exist — i.e. exactly the doubled-prefix case — and the final
+/// `project_root.join` fallback preserves the original behaviour when neither
+/// interpretation resolves.
+fn resolve_changed_file_path(file: &Path, project_root: &Path) -> PathBuf {
+    if file.is_absolute() {
+        return file.to_path_buf();
+    }
+    // Project-relative interpretation first (original contract). When it points
+    // at a real file, use it verbatim — this keeps every pre-existing caller,
+    // including the change-impact single-file CLI, byte-for-byte identical.
+    let joined = project_root.join(file);
+    if joined.exists() {
+        return joined;
+    }
+    // `joined` did not resolve. The classic cause is a DOUBLED subdir prefix:
+    // `file` is already relative to the CWD and carries the project's leading
+    // components (the shape the `whatbreaks` wrapper passes). If that literal
+    // path exists, honour it rather than the doubled `joined`.
+    if file.exists() {
+        return file.to_path_buf();
+    }
+    // Neither interpretation resolves: preserve the original `project_root.join`
+    // so error reporting downstream is unchanged.
+    joined
+}
+
 /// Find functions defined in the given files.
 ///
 /// Uses two passes to ensure completeness:
@@ -887,11 +941,7 @@ fn find_functions_in_files(
     // Pass 2: AST extraction to find ALL functions, including standalone ones
     // that have no call graph edges at all
     for file in files {
-        let absolute_path = if file.is_absolute() {
-            file.clone()
-        } else {
-            project_root.join(file)
-        };
+        let absolute_path = resolve_changed_file_path(file, project_root);
 
         match crate::ast::extract_file(&absolute_path, Some(project_root)) {
             Ok(module_info) => {
@@ -954,11 +1004,10 @@ fn enrich_affected_functions_from_ast(
     }
 
     for (rel_file, indices) in indices_by_file {
-        let absolute_path = if rel_file.is_absolute() {
-            rel_file.clone()
-        } else {
-            project_root.join(&rel_file)
-        };
+        // whatbreaks-subdir-pathfix-v1: same anti-doubling resolution as
+        // `find_functions_in_files` so enrichment parses the real file rather
+        // than a doubled `project_root/<subdir>/<subdir>/...` path.
+        let absolute_path = resolve_changed_file_path(&rel_file, project_root);
 
         let module_info = match crate::ast::extract_file(&absolute_path, Some(project_root)) {
             Ok(m) => m,
