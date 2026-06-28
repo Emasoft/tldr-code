@@ -303,12 +303,47 @@ impl CppHandler {
                     match func_node.kind() {
                         "identifier" => {
                             // Direct call: func()
-                            let target = get_node_text(&func_node, source).to_string();
-                            let call_type = if defined_funcs.contains(&target) {
-                                CallType::Intra
+                            let bare = get_node_text(&func_node, source).to_string();
+
+                            // fix-PW2-B3-calls-cpp: re-qualify an unqualified
+                            // call to a sibling member of the enclosing class.
+                            //
+                            // When a method is defined OUT OF LINE
+                            // (`void Class::method() { sibling(); }`), the body's
+                            // bare `sibling()` call only matches a definition that
+                            // tree-sitter-cpp registered under its qualified name
+                            // (`Class::sibling`) — the bare `sibling` is never in
+                            // `defined_funcs`. Without re-qualification the call
+                            // site keeps the bare target, the builder can't bind it
+                            // to the qualified node, and the sibling looks dead.
+                            //
+                            // The caller is itself already qualified
+                            // (`Class::method` / `ns::Class::method`), so the
+                            // enclosing scope is the caller minus its final
+                            // `::component`. Sibling members share that exact
+                            // prefix in the same file, so `<prefix>::<bare>` is the
+                            // sibling's registered name. Inline members are
+                            // untouched: their bare name is already in
+                            // `defined_funcs`, so the first arm wins and the target
+                            // stays bare (preserving existing behaviour). Free
+                            // functions have no `::` in the caller, so the sibling
+                            // path never triggers.
+                            let (target, call_type) = if defined_funcs.contains(&bare) {
+                                (bare, CallType::Intra)
+                            } else if let Some(qualified) =
+                                caller.rsplit_once("::").map(|(prefix, _)| {
+                                    format!("{}::{}", prefix, bare)
+                                })
+                            {
+                                if defined_funcs.contains(&qualified) {
+                                    (qualified, CallType::Intra)
+                                } else {
+                                    (bare, CallType::Direct)
+                                }
                             } else {
-                                CallType::Direct
+                                (bare, CallType::Direct)
                             };
+
                             calls.push(CallSite::new(
                                 caller.to_string(),
                                 target,
@@ -1303,6 +1338,112 @@ public:
                 CallType::Intra,
                 "Call to same-file top-level function should be Intra"
             );
+        }
+
+        // fix-PW2-B3-calls-cpp: an unqualified call to a sibling member made
+        // from an OUT-OF-LINE method definition (`void Class::method() { ... }`)
+        // must resolve to the qualified sibling. tree-sitter-cpp registers the
+        // out-of-line sibling only under its qualified name (`Class::sibling`),
+        // never as a bare `sibling`, so the bare call site must be re-qualified
+        // against the caller's class scope or the same-file edge is lost
+        // (producing a false dead-code positive). Mirrors tinyxml2's
+        // `XMLUtil::GetCharacterRef` -> `XMLUtil::ConvertUTF32ToUTF8`.
+        #[test]
+        fn test_unqualified_sibling_call_from_out_of_line_method() {
+            let source = r#"
+struct XMLUtil {
+    static void ConvertUTF32ToUTF8( unsigned long input, char* output, int* length );
+    static const char* GetCharacterRef( const char* p, char* value, int* length );
+};
+
+const char* XMLUtil::GetCharacterRef(const char* p, char* value, int* length) {
+    ConvertUTF32ToUTF8(0, value, length);
+    return p;
+}
+
+void XMLUtil::ConvertUTF32ToUTF8( unsigned long input, char* output, int* length ) {
+}
+"#;
+            let calls = extract_calls(source);
+            let gcr = calls
+                .get("XMLUtil::GetCharacterRef")
+                .or_else(|| calls.get("GetCharacterRef"))
+                .expect("XMLUtil::GetCharacterRef should have call sites");
+            let sibling = gcr
+                .iter()
+                .find(|c| c.target == "XMLUtil::ConvertUTF32ToUTF8")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "unqualified sibling call must resolve to the qualified sibling \
+                         XMLUtil::ConvertUTF32ToUTF8 (no false dead-code). Got: {:?}",
+                        gcr
+                    )
+                });
+            assert_eq!(
+                sibling.call_type,
+                CallType::Intra,
+                "resolved same-file sibling call should be Intra"
+            );
+        }
+
+        // Generalization variant: the same out-of-line sibling pattern nested
+        // inside a `namespace` block. The sibling is registered as both
+        // `XMLUtil::sibling` and `ns::XMLUtil::sibling`; re-qualifying against
+        // the caller's class prefix (`XMLUtil`) must still match.
+        #[test]
+        fn test_unqualified_sibling_call_in_namespace_out_of_line() {
+            let source = r#"
+namespace tinyxml2 {
+struct XMLUtil {
+    static void ConvertUTF32ToUTF8( unsigned long input );
+    static void GetCharacterRef( const char* p );
+};
+}
+
+namespace tinyxml2 {
+void XMLUtil::GetCharacterRef( const char* p ) {
+    ConvertUTF32ToUTF8( 0 );
+}
+
+void XMLUtil::ConvertUTF32ToUTF8( unsigned long input ) {
+}
+}
+"#;
+            let calls = extract_calls(source);
+            let gcr = calls
+                .get("XMLUtil::GetCharacterRef")
+                .or_else(|| calls.get("GetCharacterRef"))
+                .expect("namespaced XMLUtil::GetCharacterRef should have call sites");
+            let sibling = gcr
+                .iter()
+                .find(|c| c.target == "XMLUtil::ConvertUTF32ToUTF8")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "namespaced unqualified sibling call must resolve to qualified \
+                         XMLUtil::ConvertUTF32ToUTF8. Got: {:?}",
+                        gcr
+                    )
+                });
+            assert_eq!(sibling.call_type, CallType::Intra);
+        }
+
+        // Regression guard: a genuinely external bare call from a free function
+        // (caller has no class scope) must stay Direct and bare — re-qualifying
+        // must NOT fabricate sibling edges where no enclosing class exists.
+        #[test]
+        fn test_unqualified_external_call_from_free_function_unchanged() {
+            let source = r#"
+void main() {
+    some_external_func();
+}
+"#;
+            let calls = extract_calls(source);
+            let main_calls = calls.get("main").unwrap();
+            let ext = main_calls
+                .iter()
+                .find(|c| c.target == "some_external_func")
+                .unwrap();
+            assert_eq!(ext.call_type, CallType::Direct);
         }
     }
 
