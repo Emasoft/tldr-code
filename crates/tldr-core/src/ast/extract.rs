@@ -3127,7 +3127,16 @@ fn extract_go_params(node: &Node, source: &str) -> Vec<String> {
     if let Some(params_node) = node.child_by_field_name("parameters") {
         let mut cursor = params_node.walk();
         for child in params_node.children(&mut cursor) {
-            if child.kind() == "parameter_declaration" {
+            // fix-PW3-B6 (v0.5.0 BACKLOG): tree-sitter-go emits a variadic
+            // parameter (`opts ...OptionFunc`) as a DISTINCT
+            // `variadic_parameter_declaration` node, not a `parameter_declaration`.
+            // Matching only the latter silently dropped every `...T` param from
+            // the structured signature (extract/explain/context/surface). A
+            // variadic param is never grouped (`a, b ...T` is invalid Go), so it
+            // has exactly one `identifier` name child. Handle both node kinds.
+            if child.kind() == "parameter_declaration"
+                || child.kind() == "variadic_parameter_declaration"
+            {
                 // Go allows grouped parameters: `a, b, c int` produces a single
                 // parameter_declaration with multiple identifier children as names.
                 // child_by_field_name("name") only returns the first one, so we
@@ -3308,7 +3317,14 @@ fn extract_go_interface_methods_recursive(
             if let Some(params_node) = child.child_by_field_name("parameters") {
                 let mut param_cursor = params_node.walk();
                 for param in params_node.children(&mut param_cursor) {
-                    if param.kind() == "parameter_declaration" {
+                    // fix-PW3-B6 (v0.5.0 BACKLOG): an interface method's variadic
+                    // param (`Printf(format string, args ...any)`) parses as a
+                    // `variadic_parameter_declaration`, not a `parameter_declaration`.
+                    // Match both so the `...T` param is not dropped from the
+                    // interface method signature — mirroring `extract_go_params`.
+                    if param.kind() == "parameter_declaration"
+                        || param.kind() == "variadic_parameter_declaration"
+                    {
                         // Go groups same-typed params: `name, value string` is a
                         // single `parameter_declaration` with multiple identifier
                         // children. `child_by_field_name("name")` returns only the
@@ -13278,6 +13294,121 @@ class C {{
             vec!["a".to_string(), "b".to_string()],
             "top-level func named returns must NOT be counted as params, got {:?}",
             f.params
+        );
+    }
+
+    // =========================================================================
+    // fix-PW3-B6 (v0.5.0 BACKLOG): Go variadic parameters were dropped from
+    // EVERY structured signature path because the param walkers matched only
+    // `parameter_declaration` and ignored the distinct `variadic_parameter_declaration`
+    // node (tree-sitter-go emits `opts ...OptionFunc` as `variadic_parameter_declaration`
+    // with an `identifier` name child, NOT a `parameter_declaration`). This dropped
+    // the `...T` param from extract/explain/context/surface. The symptom class is
+    // every Go variadic variant: top-level func, concrete method, interface method,
+    // and variadic mixed with regular/grouped params. Generalization: all must
+    // report the variadic param's name.
+    // =========================================================================
+
+    /// Top-level func whose ONLY param is variadic: `New(opts ...OptionFunc)` => ["opts"].
+    #[test]
+    fn test_extract_go_toplevel_variadic_only_param() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\nfunc New(opts ...OptionFunc) *T {{\n\treturn nil\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "New")
+            .expect("New func");
+        assert_eq!(
+            f.params,
+            vec!["opts".to_string()],
+            "variadic-only param must be reported, got {:?}",
+            f.params
+        );
+    }
+
+    /// Top-level func mixing regular, grouped and variadic params:
+    /// `Mixed(a, b int, rest ...Handler)` => ["a", "b", "rest"].
+    #[test]
+    fn test_extract_go_toplevel_variadic_mixed_with_grouped() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\nfunc Mixed(a, b int, rest ...Handler) error {{\n\treturn nil\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let f = info
+            .functions
+            .iter()
+            .find(|f| f.name == "Mixed")
+            .expect("Mixed func");
+        assert_eq!(
+            f.params,
+            vec!["a".to_string(), "b".to_string(), "rest".to_string()],
+            "grouped (a, b) plus variadic (rest) must all be reported, got {:?}",
+            f.params
+        );
+    }
+
+    /// Concrete method (pointer receiver) with variadic param:
+    /// `func (group *RouterGroup) Use(middleware ...HandlerFunc)` => ["middleware"].
+    /// Exercises the `extract_go_params` path via `extract_go_function_info`.
+    #[test]
+    fn test_extract_go_method_variadic_param() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\ntype RouterGroup struct{{}}\nfunc (group *RouterGroup) Use(middleware ...HandlerFunc) IRoutes {{\n\treturn nil\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let m = info
+            .classes
+            .iter()
+            .flat_map(|c| c.methods.iter())
+            .find(|m| m.name == "Use")
+            .expect("Use method");
+        assert_eq!(
+            m.params,
+            vec!["middleware".to_string()],
+            "concrete method variadic param must be reported, got {:?}",
+            m.params
+        );
+    }
+
+    /// Interface method with regular + variadic params:
+    /// `Printf(format string, args ...any)` => ["format", "args"].
+    /// Exercises the interface-method walker in `extract_go_interface_methods_recursive`.
+    #[test]
+    fn test_extract_go_interface_method_variadic_param() {
+        let mut file = NamedTempFile::with_suffix(".go").unwrap();
+        write!(
+            file,
+            "package p\ntype Logger interface {{\n\tPrintf(format string, args ...any)\n}}\n"
+        )
+        .unwrap();
+
+        let info = extract_file(file.path(), None).unwrap();
+        let m = info
+            .classes
+            .iter()
+            .flat_map(|c| c.methods.iter())
+            .find(|m| m.name == "Printf")
+            .expect("Printf interface method");
+        assert_eq!(
+            m.params,
+            vec!["format".to_string(), "args".to_string()],
+            "interface method regular+variadic params must both be reported, got {:?}",
+            m.params
         );
     }
 }
