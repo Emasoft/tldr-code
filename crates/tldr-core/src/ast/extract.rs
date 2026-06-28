@@ -6787,7 +6787,16 @@ fn extract_cpp_functions_detailed(node: &Node, source: &str, functions: &mut Vec
                 // 72/180). A nameless top-level entity is never a real free
                 // function, so drop it at the source. (The dead-analysis guard
                 // remains as defense-in-depth.)
-                if !info.name.trim().is_empty() {
+                //
+                // fix-PW4-E2-structure-cpp-macro (v0.5.0 BACKLOG): tree-sitter-cpp
+                // GLR error-recovery promotes object-like macros to
+                // `function_definition` nodes (fmtlib headers). Drop the
+                // misparse so `FMT_BEGIN_NAMESPACE`/`FMT_CATCH`/`FMT_CONSTEXPR20`
+                // never surface as free functions. See
+                // `is_cpp_macro_misparse_function` for the AST signatures.
+                if !info.name.trim().is_empty()
+                    && !is_cpp_macro_misparse_function(&child, &info.name, source)
+                {
                     functions.push(info);
                 }
             }
@@ -6848,6 +6857,177 @@ fn is_inside_cpp_class(node: &Node) -> bool {
         }
     }
     false
+}
+
+/// fix-PW4-E2-structure-cpp-macro (v0.5.0 BACKLOG): is this `function_definition`
+/// actually an object-like macro that tree-sitter-cpp's GLR error-recovery
+/// promoted to a function?
+///
+/// Three misparse shapes observed in real headers (fmtlib `include/fmt/*.h`):
+///
+/// 1. `FMT_BEGIN_NAMESPACE` (an object-like macro) mis-lands in the
+///    return-type slot and the following `namespace` keyword falls into the
+///    declarator slot as a bare `identifier` — yielding a free "function"
+///    literally named `namespace` whose body spans the whole namespace block
+///    (e.g. base.h `namespace` 919-1742). The resolved NAME is the reserved
+///    keyword `namespace`, which can never be a function identifier.
+///
+/// 2. `FMT_CATCH(...) {}` (a function-like macro used as a statement) parses as
+///    an UNTYPED `function_definition` whose `function_declarator` name is the
+///    macro token `FMT_CATCH` (base.h/std.h method context, format-inl.h free).
+///
+/// 3. `if FMT_CONSTEXPR20 (...) {...}` — the macro after `if` parses as an
+///    untyped `function_definition` named `FMT_CONSTEXPR20` under an `ERROR`
+///    (args.h 188-191).
+///
+/// Root-cause discriminator (AST + name only, no source regex):
+///   * A name that is a reserved C++ keyword is never a real function.
+///   * A real C++ free function ALWAYS carries a return type. A real
+///     constructor/destructor/operator is named after its class / has `~` /
+///     contains `operator`. So an UNTYPED definition whose name is an
+///     object-like-macro token (ALL-CAPS, the C/C++ macro naming convention)
+///     and is not the enclosing type's constructor is a macro misparse.
+///
+/// Functions that legitimately use a macro in the RETURN-TYPE slot
+/// (`FMT_CONSTEXPR auto to_unsigned(...)`, `FMT_CONSTEXPR void set_type(...)`)
+/// keep a real `function_declarator` name (lowercase) AND a `type` field, so
+/// they are never matched here.
+fn is_cpp_macro_misparse_function(node: &Node, name: &str, source: &str) -> bool {
+    // (1) The resolved name is a reserved C++ keyword (the `namespace` symptom
+    //     and any sibling mis-promotion that lands a keyword in the declarator
+    //     slot). Keywords are not valid identifiers, so this never drops a real
+    //     function.
+    if is_cpp_reserved_keyword(name) {
+        return true;
+    }
+
+    // (2) Untyped definition named after an object-like macro token.
+    if node.child_by_field_name("type").is_none() && is_cpp_object_like_macro_token(name) {
+        // Keep a genuine constructor: an untyped method whose name equals the
+        // enclosing class/struct name is a constructor, not a macro. (Free
+        // functions have no enclosing type, so this only ever fires in a class
+        // body; an ALL-CAPS class is rare but legal.)
+        if let Some(class_name) = enclosing_cpp_type_name(node, source) {
+            if class_name == name {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    false
+}
+
+/// Returns the name of the nearest enclosing C++ `class_specifier` /
+/// `struct_specifier`, mirroring the name-resolution used by
+/// [`extract_cpp_class_info`] (the `name` field, falling back to the first
+/// `type_identifier` child). Used only to spare ALL-CAPS-named constructors
+/// from the macro-misparse guard.
+fn enclosing_cpp_type_name(node: &Node, source: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if matches!(parent.kind(), "class_specifier" | "struct_specifier") {
+            return parent
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source))
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let mut cursor = parent.walk();
+                    for child in parent.children(&mut cursor) {
+                        if child.kind() == "type_identifier" {
+                            let text = get_node_text(&child, source);
+                            if !text.is_empty() {
+                                return Some(text);
+                            }
+                        }
+                    }
+                    None
+                });
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// True when `name` is exactly a reserved C++ keyword — these can never be a
+/// function identifier, so any "function" the AST walk resolves to one is a
+/// parser artifact (chiefly `namespace` from the `FMT_BEGIN_NAMESPACE`
+/// misparse). The set is the C++ keyword list that can plausibly leak into a
+/// declarator slot under GLR error-recovery.
+fn is_cpp_reserved_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "namespace"
+            | "template"
+            | "class"
+            | "struct"
+            | "union"
+            | "enum"
+            | "using"
+            | "typedef"
+            | "typename"
+            | "if"
+            | "else"
+            | "for"
+            | "while"
+            | "do"
+            | "switch"
+            | "case"
+            | "default"
+            | "return"
+            | "break"
+            | "continue"
+            | "goto"
+            | "try"
+            | "catch"
+            | "throw"
+            | "public"
+            | "private"
+            | "protected"
+            | "friend"
+            | "virtual"
+            | "explicit"
+            | "inline"
+            | "static"
+            | "const"
+            | "constexpr"
+            | "consteval"
+            | "constinit"
+            | "operator"
+            | "new"
+            | "delete"
+            | "this"
+            | "sizeof"
+            | "decltype"
+            | "noexcept"
+            | "extern"
+            | "mutable"
+            | "volatile"
+            | "register"
+            | "thread_local"
+    )
+}
+
+/// True when `name` follows the universal C/C++ object-like-macro naming
+/// convention: a non-empty token of ASCII upper-case letters, digits and
+/// underscores, containing at least one letter and NO lower-case letter
+/// (`FMT_CATCH`, `FMT_CONSTEXPR20`, `FMT_BEGIN_EXPORT`). Normal functions
+/// (lowercase / camelCase), destructors (`~Foo`) and operators (`operator+`,
+/// which carries lower-case `operator`) never match.
+fn is_cpp_object_like_macro_token(name: &str) -> bool {
+    let mut saw_letter = false;
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() {
+            saw_letter = true;
+        } else if ch.is_ascii_digit() || ch == '_' {
+            // allowed, not a letter
+        } else {
+            // lower-case letter, symbol (`~`, `:`, `<`, …), or non-ASCII → not
+            // an object-like macro token.
+            return false;
+        }
+    }
+    saw_letter
 }
 
 fn extract_cpp_classes_detailed(node: &Node, source: &str, classes: &mut Vec<ClassInfo>) {
@@ -7032,7 +7212,17 @@ fn extract_cpp_methods_from_body(body: &Node, source: &str, methods: &mut Vec<Fu
                 if info.visibility.is_none() {
                     info.visibility = current_access.clone();
                 }
-                methods.push(info);
+                // fix-PW4-E2-structure-cpp-macro (v0.5.0 BACKLOG): an
+                // object-like macro the grammar promoted to a
+                // `function_definition` inside a class body (e.g.
+                // `FMT_CATCH(...) {}` inside `~iterator_buffer`) is not a real
+                // method. Suppress it (the constructor guard inside the helper
+                // keeps a legitimately ALL-CAPS-named constructor).
+                if !info.name.trim().is_empty()
+                    && !is_cpp_macro_misparse_function(&child, &info.name, source)
+                {
+                    methods.push(info);
+                }
             }
             "declaration" => {
                 // Handle inline method declarations that have a body
@@ -11681,6 +11871,144 @@ int global_var = 0;
         assert_eq!(foo.kind.as_deref(), Some("class"), "Foo: {foo:?}");
         let bar = classes.iter().find(|c| c.name == "Bar").expect("Bar struct");
         assert_eq!(bar.kind.as_deref(), Some("struct"), "Bar: {bar:?}");
+    }
+
+    /// fix-PW4-E2-structure-cpp-macro (v0.5.0 BACKLOG): C++ object-like macros
+    /// that tree-sitter-cpp's GLR error-recovery promotes to
+    /// `function_definition` nodes must NOT be emitted as functions/methods.
+    ///
+    /// GENERALIZATION: covers every misparse variant in the symptom class
+    /// witnessed on the cpp-fmt corpus, and pins that real functions/methods
+    /// (including a macro-in-return-type function and a real constructor) are
+    /// unaffected.
+    #[test]
+    fn cpp_object_like_macros_not_emitted_as_functions() {
+        use crate::ast::parser::parse;
+
+        // Mirrors the fmtlib header shapes:
+        //  * `FMT_BEGIN_NAMESPACE` -> free "function" named `namespace`
+        //  * `FMT_CATCH(...) {}`   -> free + method "function" named FMT_CATCH
+        //  * `if FMT_CONSTEXPR20 (...)` -> free "function" named FMT_CONSTEXPR20
+        //  * `FMT_CONSTEXPR void ...` -> REAL function (macro in return type)
+        //  * a real constructor inside a class
+        let source = r#"
+FMT_BEGIN_NAMESPACE
+namespace detail {
+
+FMT_CONSTEXPR auto to_unsigned(int value) -> unsigned {
+  return static_cast<unsigned>(value);
+}
+
+void use_constexpr_if(int x) {
+  if FMT_CONSTEXPR20 (need_copy<int>::value) {
+    handle(x);
+  } else {
+    other(x);
+  }
+}
+
+void free_with_catch() {
+  FMT_TRY { run(); }
+  FMT_CATCH(...) {}
+}
+
+class iterator_buffer {
+ public:
+  iterator_buffer() {}
+  auto out() -> int { return 0; }
+  ~iterator_buffer() {
+    FMT_TRY { flush(); }
+    FMT_CATCH(...) {}
+  }
+};
+
+}
+FMT_END_NAMESPACE
+"#;
+        let tree = parse(source, Language::Cpp).unwrap();
+
+        let functions = extract_functions_detailed(&tree, source, Language::Cpp);
+        let fn_names: Vec<&str> = functions.iter().map(|f| f.name.as_str()).collect();
+
+        // --- macro misparses must be gone (every variant) ---
+        assert!(
+            !fn_names.contains(&"namespace"),
+            "`FMT_BEGIN_NAMESPACE` misparse must not surface a free fn named \
+             `namespace`. Got: {fn_names:?}"
+        );
+        assert!(
+            !fn_names.contains(&"FMT_CATCH"),
+            "`FMT_CATCH(...)` must not surface as a free function. Got: {fn_names:?}"
+        );
+        assert!(
+            !fn_names.contains(&"FMT_CONSTEXPR20"),
+            "`if FMT_CONSTEXPR20 (...)` must not surface as a free function. \
+             Got: {fn_names:?}"
+        );
+        // Defensive: no ALL-CAPS object-like-macro token leaks as a free fn.
+        assert!(
+            !fn_names.iter().any(|n| is_cpp_object_like_macro_token(n)),
+            "no object-like macro token should be a free function. Got: {fn_names:?}"
+        );
+
+        // --- real functions are unaffected ---
+        assert!(
+            fn_names.contains(&"to_unsigned"),
+            "`FMT_CONSTEXPR auto to_unsigned(...)` (macro in return-type slot) \
+             is a REAL function and must be kept. Got: {fn_names:?}"
+        );
+        assert!(
+            fn_names.contains(&"use_constexpr_if"),
+            "real function `use_constexpr_if` must be kept. Got: {fn_names:?}"
+        );
+        assert!(
+            fn_names.contains(&"free_with_catch"),
+            "real function `free_with_catch` must be kept. Got: {fn_names:?}"
+        );
+
+        // --- methods: FMT_CATCH inside the destructor must not be a method,
+        //     but the real constructor / destructor / accessor must survive ---
+        let classes = extract_classes_detailed(&tree, source, Language::Cpp);
+        let buf = classes
+            .iter()
+            .find(|c| c.name == "iterator_buffer")
+            .expect("iterator_buffer class");
+        let method_names: Vec<&str> = buf.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            !method_names.contains(&"FMT_CATCH"),
+            "`FMT_CATCH(...)` inside the destructor must not be a method. \
+             Got: {method_names:?}"
+        );
+        assert!(
+            method_names.contains(&"iterator_buffer"),
+            "real constructor must be kept. Got: {method_names:?}"
+        );
+        assert!(
+            method_names.contains(&"out"),
+            "real accessor `out` must be kept. Got: {method_names:?}"
+        );
+    }
+
+    /// Unit guard for the macro-token / keyword classifiers so the
+    /// discriminator's intent is pinned independently of tree-sitter.
+    #[test]
+    fn cpp_macro_token_and_keyword_classifiers() {
+        assert!(is_cpp_object_like_macro_token("FMT_CATCH"));
+        assert!(is_cpp_object_like_macro_token("FMT_CONSTEXPR20"));
+        assert!(is_cpp_object_like_macro_token("FMT_BEGIN_EXPORT"));
+        assert!(is_cpp_object_like_macro_token("A"));
+        // not macro tokens:
+        assert!(!is_cpp_object_like_macro_token("to_unsigned"));
+        assert!(!is_cpp_object_like_macro_token("FooBar"));
+        assert!(!is_cpp_object_like_macro_token("~Foo"));
+        assert!(!is_cpp_object_like_macro_token("operator+"));
+        assert!(!is_cpp_object_like_macro_token("123"));
+        assert!(!is_cpp_object_like_macro_token(""));
+
+        assert!(is_cpp_reserved_keyword("namespace"));
+        assert!(is_cpp_reserved_keyword("template"));
+        assert!(!is_cpp_reserved_keyword("FMT_CATCH"));
+        assert!(!is_cpp_reserved_keyword("to_unsigned"));
     }
 
     #[test]
