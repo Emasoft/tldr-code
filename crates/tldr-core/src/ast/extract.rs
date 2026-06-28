@@ -5250,18 +5250,152 @@ fn extract_luau_return_type(node: &Node, source: &str) -> Option<String> {
 // Swift detailed extraction
 // =============================================================================
 //
+
+/// Swift type-declaration keyword tokens that tree-sitter-swift can leave
+/// stranded as a bare child of a `function_declaration` node when its GLR
+/// error-recovery mis-parses a real type header.
+const SWIFT_TYPE_KEYWORDS: &[&str] =
+    &["class", "struct", "enum", "actor", "protocol", "extension"];
+
+/// misparsed-swift-class-header-recovery-v1 (v0.5.0 BACKLOG E3a):
+/// Detect a `function_declaration` node that tree-sitter-swift actually
+/// produced for a *type header* via error recovery.
+///
+/// On large bodies (emergent — minimal reductions parse cleanly, and the
+/// trigger is NOT any single token: stripping `@unchecked` does not fix it)
+/// the grammar reduces `open class Session: @unchecked Sendable { … }` to a
+/// `function_declaration` whose children are `modifiers`, a stranded
+/// `class`/`struct`/`enum`/`actor`/`protocol`/`extension` keyword token, and
+/// an `ERROR` node holding the real type name + the leading slice of the body.
+/// A *well-formed* `class func` / `static func` also carries a `class` keyword
+/// token, so the ERROR child is the load-bearing discriminator: a healthy
+/// declaration never has one.
+///
+/// Returns `(keyword, type_name)` when `node` is such a mis-parsed header.
+fn swift_misparsed_type_header(node: &Node, source: &str) -> Option<(&'static str, String)> {
+    if node.kind() != "function_declaration" {
+        return None;
+    }
+    let mut keyword: Option<&'static str> = None;
+    let mut error_child: Option<Node> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(kw) = SWIFT_TYPE_KEYWORDS.iter().find(|k| **k == child.kind()) {
+            keyword = Some(*kw);
+        } else if child.kind() == "ERROR" && error_child.is_none() {
+            error_child = Some(child);
+        }
+    }
+    // BOTH a type keyword AND a recovery ERROR are required: this is the
+    // signature that separates a mis-parsed header from a healthy `class func`.
+    let keyword = keyword?;
+    let error_child = error_child?;
+    // The real type name is the first identifier inside the ERROR (the token
+    // that immediately follows the keyword), not the node's own `name` field
+    // (which tree-sitter fills from the absorbed trailing method).
+    let name = swift_first_identifier(&error_child, source).unwrap_or_default();
+    Some((keyword, name))
+}
+
+/// Pre-order search for the first `simple_identifier` / `type_identifier`
+/// within `node` — used to recover a mis-parsed type's name out of the
+/// stranded `ERROR` subtree.
+fn swift_first_identifier(node: &Node, source: &str) -> Option<String> {
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "simple_identifier" || n.kind() == "type_identifier" {
+            return Some(get_node_text(&n, source));
+        }
+        let mut cursor = n.walk();
+        let kids: Vec<Node> = n.children(&mut cursor).collect();
+        for k in kids.into_iter().rev() {
+            stack.push(k);
+        }
+    }
+    None
+}
+
+/// True for the stray `}` that tree-sitter leaves as a top-level `ERROR`
+/// node where the mis-parsed class body actually closes. Used as the
+/// right boundary when re-gathering the flattened class members.
+fn swift_is_stray_close_brace(node: &Node, source: &str) -> bool {
+    node.kind() == "ERROR" && get_node_text(node, source).trim() == "}"
+}
+
+/// Node kinds that count as Swift methods inside a (recovered) type body.
+fn swift_is_method_decl(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration" | "init_declaration" | "deinit_declaration"
+    )
+}
+
+/// Collect method declarations that live *inside* a mis-parsed header node
+/// (i.e. nested under its `ERROR` child), stopping at nested type boundaries
+/// so a nested `enum`/`struct`'s own methods are not mis-attributed to the
+/// outer class. The header node itself is the caller; we walk its descendants.
+fn collect_swift_recovered_inner_methods(
+    node: &Node,
+    source: &str,
+    methods: &mut Vec<FunctionInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if swift_is_method_decl(kind) {
+            // A nested mis-parsed header is a type, not a method.
+            if swift_misparsed_type_header(&child, source).is_some() {
+                continue;
+            }
+            methods.push(extract_swift_function_info(&child, source, true));
+        } else if kind == "class_declaration"
+            || kind == "struct_declaration"
+            || kind == "class_body"
+            || kind == "struct_body"
+        {
+            // Nested type — its members belong to it, not the outer class.
+        } else {
+            collect_swift_recovered_inner_methods(&child, source, methods);
+        }
+    }
+}
+
 fn extract_swift_functions_detailed(node: &Node, source: &str, functions: &mut Vec<FunctionInfo>) {
     let mut cursor = node.walk();
 
+    // misparsed-swift-class-header-recovery-v1 (v0.5.0 BACKLOG E3a): when a
+    // type header mis-parses, the grammar flattens the *rest* of its body out
+    // as following top-level siblings. Suppress those flattened methods from
+    // the free-function list (they belong to the recovered class) until the
+    // stray `}` that marks the real class close.
+    let mut suppress_flattened_members = false;
     for child in node.children(&mut cursor) {
+        if suppress_flattened_members && swift_is_stray_close_brace(&child, source) {
+            suppress_flattened_members = false;
+            continue;
+        }
         match child.kind() {
             "function_declaration" => {
+                if swift_misparsed_type_header(&child, source).is_some() {
+                    // Mis-parsed class header: emitted as a class by
+                    // `extract_swift_classes_detailed`, never a free function.
+                    // Its trailing members flatten as the following siblings.
+                    suppress_flattened_members = true;
+                    continue;
+                }
+                if suppress_flattened_members {
+                    // Flattened method of the recovered class — not free.
+                    continue;
+                }
                 // Skip methods inside class/struct bodies -- those are handled
                 // by extract_swift_classes_detailed
                 if !is_inside_swift_type(&child) {
                     let info = extract_swift_function_info(&child, source, false);
                     functions.push(info);
                 }
+            }
+            "init_declaration" | "deinit_declaration" if suppress_flattened_members => {
+                // Flattened initializer/deinitializer of the recovered class.
             }
             "class_declaration" | "struct_declaration" | "class_body" | "struct_body" => {
                 // Don't recurse into class/struct bodies for top-level function extraction
@@ -5502,18 +5636,136 @@ fn is_inside_swift_type(node: &Node) -> bool {
 }
 
 fn extract_swift_classes_detailed(node: &Node, source: &str, classes: &mut Vec<ClassInfo>) {
-    let mut cursor = node.walk();
+    let cursor = &mut node.walk();
+    let children: Vec<Node> = node.children(cursor).collect();
 
-    for child in node.children(&mut cursor) {
+    let mut i = 0;
+    while i < children.len() {
+        let child = children[i];
         match child.kind() {
             "class_declaration" | "struct_declaration" => {
                 let info = extract_swift_class_info(&child, source);
                 classes.push(info);
             }
+            "function_declaration" => {
+                // misparsed-swift-class-header-recovery-v1 (v0.5.0 BACKLOG E3a):
+                // recover a type header that tree-sitter mis-reduced to a
+                // `function_declaration`. Mirrors the C++ macro-decorated-class
+                // recovery precedent (`extractor.rs::collect_definitions`).
+                if let Some((keyword, name)) = swift_misparsed_type_header(&child, source) {
+                    let recovered = recover_swift_misparsed_class(
+                        &child,
+                        keyword,
+                        name,
+                        &children,
+                        i,
+                        source,
+                    );
+                    classes.push(recovered);
+                    // Still surface any *nested* types declared inside the
+                    // mis-parsed header (they live under its ERROR child) so
+                    // they keep their own ClassInfo entries.
+                    extract_swift_classes_detailed(&child, source, classes);
+                } else {
+                    // Healthy free function — recurse for nested types only.
+                    extract_swift_classes_detailed(&child, source, classes);
+                }
+            }
             _ => {
                 extract_swift_classes_detailed(&child, source, classes);
             }
         }
+        i += 1;
+    }
+}
+
+/// misparsed-swift-class-header-recovery-v1 (v0.5.0 BACKLOG E3a): build a
+/// [`ClassInfo`] for a type whose header tree-sitter mis-parsed as a
+/// `function_declaration`. Re-gathers the class members from two places the
+/// grammar scattered them: (1) the method declarations nested inside the
+/// header's `ERROR` child, and (2) the trailing members the grammar flattened
+/// out as following top-level siblings, up to the stray `}` that marks the
+/// real class close.
+fn recover_swift_misparsed_class(
+    header: &Node,
+    keyword: &'static str,
+    name: String,
+    siblings: &[Node],
+    header_index: usize,
+    source: &str,
+) -> ClassInfo {
+    let mut methods = Vec::new();
+    collect_swift_recovered_inner_methods(header, source, &mut methods);
+
+    // Walk the flattened trailing siblings until the stray close brace.
+    let line_number = decl_keyword_line_from_node(header);
+    let mut line_end = header.end_position().row as u32 + 1;
+    let mut j = header_index + 1;
+    while j < siblings.len() {
+        let sib = siblings[j];
+        if swift_is_stray_close_brace(&sib, source) {
+            line_end = sib.end_position().row as u32 + 1;
+            break;
+        }
+        if swift_is_method_decl(sib.kind())
+            && swift_misparsed_type_header(&sib, source).is_none()
+        {
+            methods.push(extract_swift_function_info(&sib, source, true));
+        }
+        // Nested `class_declaration` / `struct_declaration` siblings are
+        // emitted as their own ClassInfo by the caller's main loop — do not
+        // fold them in here.
+        line_end = sib.end_position().row as u32 + 1;
+        j += 1;
+    }
+
+    // Best-effort base list from any `inheritance_specifier` stranded in the
+    // header (e.g. `Sendable`).
+    let mut bases = Vec::new();
+    let mut stack: Vec<Node> = vec![*header];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "inheritance_specifier" || n.kind() == "annotated_inheritance_specifier" {
+            if let Some(b) = swift_first_identifier(&n, source) {
+                if !bases.contains(&b) {
+                    bases.push(b);
+                }
+            }
+        }
+        // Do not descend into the flattened method bodies looking for bases.
+        if swift_is_method_decl(n.kind()) {
+            continue;
+        }
+        let mut c = n.walk();
+        for k in n.children(&mut c) {
+            stack.push(k);
+        }
+    }
+
+    // Map the recovered keyword to the SAME kind string a healthy parse would
+    // yield via `classify_node` (tree-sitter-swift folds class/actor/extension
+    // into one node → "class"; struct/enum keep their keyword; protocol → the
+    // interface kind), so a recovered type is indistinguishable from a
+    // normally-parsed one to every downstream consumer.
+    let kind = match keyword {
+        "struct" => "struct",
+        "enum" => "enum",
+        "protocol" => "interface",
+        _ => "class", // class | actor | extension
+    };
+
+    ClassInfo {
+        name,
+        bases,
+        docstring: extract_swift_docstring_before(header, source),
+        methods,
+        fields: Vec::new(),
+        decorators: Vec::new(),
+        line_number,
+        line_end,
+        kind: Some(kind.to_string()),
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -11715,6 +11967,135 @@ enum Color {
         assert_eq!(kind_of("Animal").as_deref(), Some("class"), "classes: {classes:?}");
         assert_eq!(kind_of("Point").as_deref(), Some("struct"), "classes: {classes:?}");
         assert_eq!(kind_of("Color").as_deref(), Some("enum"), "classes: {classes:?}");
+    }
+
+    /// misparsed-swift-class-header-recovery-v1 (v0.5.0 BACKLOG E3a):
+    /// REGRESSION GUARD — the recovery must NOT false-fire on healthy Swift.
+    /// A `class func` / `static func` static method carries a `class` keyword
+    /// token but has no recovery `ERROR`, so it stays a free/method function and
+    /// the host type is still a proper `class`/`struct`/`enum`/`actor`/
+    /// `protocol`/`extension` with its real name. This covers EVERY keyword in
+    /// the symptom class so a single-variant pass cannot mask a regression.
+    #[test]
+    fn test_swift_misparse_recovery_does_not_fire_on_healthy_types() {
+        use crate::ast::parser::parse;
+
+        let source = r#"
+class Factory {
+    class func make() -> Factory { return Factory() }
+    static func other() {}
+    func instance() {}
+}
+
+struct S { func a() {} }
+enum E { case x; func b() {} }
+actor A { func c() {} }
+protocol P { func d() }
+extension Factory { func ext() {} }
+"#;
+        let tree = parse(source, Language::Swift).unwrap();
+        let classes = extract_classes_detailed(&tree, source, Language::Swift);
+        let funcs = extract_functions_detailed(&tree, source, Language::Swift);
+
+        // Every healthy type-family keyword the recovery recognises survives
+        // intact under its REAL name with the SAME kind a normal parse yields
+        // (tree-sitter-swift folds `actor`/`extension` into "class"; the
+        // existing `classify_node` precedent). This is the cross-variant
+        // safety proof: the recovery's ERROR gate must not false-fire on any
+        // well-formed declaration.
+        for (name, kind) in [
+            ("Factory", "class"),
+            ("S", "struct"),
+            ("E", "enum"),
+            ("A", "class"), // actor folds to "class" (classify_node precedent)
+        ] {
+            assert!(
+                classes
+                    .iter()
+                    .any(|c| c.name == name && c.kind.as_deref() == Some(kind)),
+                "healthy {kind} {name} must survive intact. classes: {:?}",
+                classes.iter().map(|c| (&c.name, &c.kind)).collect::<Vec<_>>()
+            );
+        }
+        // The static `class func make` carries a `class` keyword token but no
+        // recovery ERROR, so it must NOT be mistaken for a mis-parsed header:
+        // no class name leaks into free functions and no method is recovered
+        // as a class.
+        assert!(
+            !funcs.iter().any(|f| f.name == "Factory" || f.name == "make"),
+            "class func must not surface as a free function. funcs: {:?}",
+            funcs.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            classes.iter().all(|c| c.name != "make"),
+            "static method must not be recovered as a class"
+        );
+    }
+
+    /// misparsed-swift-class-header-recovery-v1 (v0.5.0 BACKLOG E3a):
+    /// GENERALIZATION / REPRO — on the real corpus file (Alamofire
+    /// `Session.swift`, ~1450 lines) tree-sitter-swift mis-parses the
+    /// `open class Session: @unchecked Sendable {` header into a
+    /// `function_declaration` and flattens the whole body. After recovery,
+    /// `Session` must come back as `kind == "class"` carrying its ~40+ methods,
+    /// and the mis-parsed `webSocketRequest` header must NOT appear as a
+    /// top-level free function spanning the whole class (lines 30..538).
+    #[test]
+    fn test_swift_misparsed_class_header_recovery_session_swift() {
+        use crate::ast::parser::parse;
+
+        let path = "/Users/cosimo/.tldr-audit/corpora/swift-alamofire/Source/Core/Session.swift";
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            // Corpus file is environment-specific; skip cleanly when absent so
+            // the suite stays green off the audit box.
+            Err(_) => return,
+        };
+        let tree = parse(&source, Language::Swift).unwrap();
+        let classes = extract_classes_detailed(&tree, &source, Language::Swift);
+        let funcs = extract_functions_detailed(&tree, &source, Language::Swift);
+
+        let session = classes
+            .iter()
+            .find(|c| c.name == "Session" && c.line_number == 30)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Session must be recovered as a class anchored at line 30. classes: {:?}",
+                    classes
+                        .iter()
+                        .map(|c| (&c.name, &c.kind, c.line_number))
+                        .collect::<Vec<_>>()
+                )
+            });
+
+        assert_eq!(
+            session.kind.as_deref(),
+            Some("class"),
+            "Session must be kind=class, not a function"
+        );
+        assert!(
+            session.methods.len() >= 38,
+            "recovered Session must carry its (~44) methods, got {}",
+            session.methods.len()
+        );
+
+        // The mis-parsed header must NOT leak as a free function, and none of
+        // Session's methods (e.g. `download`, `upload`, `webSocketRequest`)
+        // should be flattened into the top-level free-function list.
+        assert!(
+            !funcs
+                .iter()
+                .any(|f| f.line_number == 30 && f.name == "webSocketRequest"),
+            "mis-parsed class header must not appear as a free function"
+        );
+        for leaked in ["download", "upload", "performDataRequest", "retrier"] {
+            assert!(
+                !funcs.iter().any(|f| f.name == leaked),
+                "method {leaked} must stay a Session method, not a free function. \
+                 free funcs: {:?}",
+                funcs.iter().map(|f| &f.name).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
