@@ -544,14 +544,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                 // use crate::module::{A, B};
                 // Extract the path and names
                 if let Some(arg) = child.child_by_field_name("argument") {
-                    let (module, names) = parse_rust_use_path(&arg, source);
-                    imports.push(ImportInfo {
-                        module,
-                        names,
-                        is_from: Some(true),
-                        alias: None,
-                        line: stmt_line,
-                    });
+                    push_rust_use_imports(&arg, source, stmt_line, imports);
                 }
             }
             "mod_item" => {
@@ -603,61 +596,83 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
     }
 }
 
-fn parse_rust_use_path(node: &Node, source: &str) -> (String, Vec<String>) {
-    // Use proper AST traversal for complex use statements
-    let mut imports = Vec::new();
-    collect_rust_use_paths(node, source, String::new(), &mut imports);
+/// Parse a Rust `use` argument subtree into one or more [`ImportInfo`] entries.
+///
+/// fix-PW3-bug11 (nested `use` group flattening): a nested group such as
+/// `use std::{cmp::Ordering, fs::Metadata, io, time::SystemTime}` carries
+/// leaves that belong to *different* module paths. The previous
+/// implementation collapsed every leaf under the FIRST leaf's module
+/// (`std::cmp`) and silently dropped every `as` alias. We instead walk the
+/// tree into `(module, name, alias)` leaf triples (see
+/// [`collect_rust_use_paths`]) and:
+///
+/// * emit each aliased leaf as its own entry with `alias = Some(..)` and the
+///   ORIGINAL name in `names` — mirroring the Python `aliased_import`
+///   precedent so a single `alias` field never has to hold two renames; and
+/// * group every non-aliased leaf under its OWN module path, preserving
+///   first-appearance order.
+fn push_rust_use_imports(node: &Node, source: &str, line: u32, imports: &mut Vec<ImportInfo>) {
+    let mut leaves: Vec<(String, String, Option<String>)> = Vec::new();
+    collect_rust_use_paths(node, source, String::new(), &mut leaves);
 
-    // If we collected imports, use the first one's module and all names
-    if !imports.is_empty() {
-        // Find the common module prefix
-        let first_module = imports[0].0.clone();
-        let names: Vec<String> = imports.into_iter().map(|(_, name)| name).collect();
-        return (first_module, names);
+    if leaves.is_empty() {
+        // Defensive fallback for grammar shapes the AST walk does not cover:
+        // surface the raw path text as a single bare module reference.
+        let text = get_node_text(node, source);
+        let module = text.trim_end_matches("::").trim().to_string();
+        if !module.is_empty() {
+            imports.push(ImportInfo {
+                module,
+                names: Vec::new(),
+                is_from: Some(true),
+                alias: None,
+                line,
+            });
+        }
+        return;
     }
 
-    // Fallback to simple text parsing for edge cases
-    let text = get_node_text(node, source);
-
-    // Simple heuristic: split on :: and handle {a, b}
-    if let Some(brace_pos) = text.find('{') {
-        let module = text[..brace_pos].trim_end_matches("::").to_string();
-        let names_part = &text[brace_pos..];
-        let names: Vec<String> = names_part
-            .trim_matches(|c| c == '{' || c == '}')
-            .split(',')
-            .map(|s| {
-                // Handle "self" and aliases like "HashMap as Map"
-                let s = s.trim();
-                if let Some(as_pos) = s.find(" as ") {
-                    s[..as_pos].trim().to_string()
-                } else {
-                    s.to_string()
-                }
-            })
-            .filter(|s| !s.is_empty())
-            .collect();
-        (module, names)
-    } else {
-        // No braces - extract last segment as name
-        let parts: Vec<&str> = text.split("::").collect();
-        if parts.len() > 1 {
-            let module = parts[..parts.len() - 1].join("::");
-            let name = parts.last().unwrap().to_string();
-            (module, vec![name])
+    // Order-preserving accumulator. Aliased leaves are standalone; non-aliased
+    // leaves coalesce into the first entry sharing their exact module path.
+    let mut entries: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+    for (module, name, alias) in leaves {
+        if alias.is_some() {
+            entries.push((module, vec![name], alias));
+        } else if let Some(existing) = entries
+            .iter_mut()
+            .find(|(m, _, a)| a.is_none() && *m == module)
+        {
+            existing.1.push(name);
         } else {
-            (text, Vec::new())
+            entries.push((module, vec![name], None));
         }
+    }
+
+    for (module, names, alias) in entries {
+        imports.push(ImportInfo {
+            module,
+            names,
+            is_from: Some(true),
+            alias,
+            line,
+        });
     }
 }
 
-/// Recursively collect all imports from a Rust use tree
-/// Handles nested use groups like `use std::{io::{self, Read}, collections::HashMap}`
+/// Recursively collect all leaves from a Rust use tree as
+/// `(module, name, alias)` triples.
+///
+/// Handles nested use groups like `use std::{io::{self, Read},
+/// collections::HashMap}`. Each leaf is attributed to its OWN module path
+/// (the path segments accumulated through every enclosing `scoped_use_list`),
+/// NOT the first leaf's module. The third element carries the `as` alias when
+/// the leaf came from a `use_as_clause` (`HashMap as Map`); it is `None`
+/// otherwise.
 fn collect_rust_use_paths(
     node: &Node,
     source: &str,
     prefix: String,
-    imports: &mut Vec<(String, String)>,
+    imports: &mut Vec<(String, String, Option<String>)>,
 ) {
     match node.kind() {
         "scoped_identifier" | "identifier" => {
@@ -674,9 +689,9 @@ fn collect_rust_use_paths(
             if parts.len() > 1 {
                 let module = parts[..parts.len() - 1].join("::");
                 let name = parts.last().unwrap().to_string();
-                imports.push((module, name));
+                imports.push((module, name, None));
             } else {
-                imports.push((String::new(), full_path));
+                imports.push((String::new(), full_path, None));
             }
         }
         "scoped_use_list" => {
@@ -707,9 +722,21 @@ fn collect_rust_use_paths(
             }
         }
         "use_as_clause" => {
-            // Handle `HashMap as Map`
+            // Handle `HashMap as Map`, `sync::Arc as Rc`, `self as myio`.
+            //
+            // fix-PW3-bug11: the alias was previously dropped. Capture it from
+            // the `alias` field and attach it to the leaf(s) the `path` field
+            // produces (a use-as path is a single path, so this is normally
+            // exactly one leaf).
             if let Some(path_node) = node.child_by_field_name("path") {
+                let alias = node
+                    .child_by_field_name("alias")
+                    .map(|n| get_node_text(&n, source));
+                let before = imports.len();
                 collect_rust_use_paths(&path_node, source, prefix, imports);
+                for leaf in imports.iter_mut().skip(before) {
+                    leaf.2 = alias.clone();
+                }
             }
         }
         "use_wildcard" => {
@@ -742,11 +769,11 @@ fn collect_rust_use_paths(
                 (false, true) => prefix,
                 (false, false) => format!("{}::{}", prefix, path),
             };
-            imports.push((module, "*".to_string()));
+            imports.push((module, "*".to_string(), None));
         }
         "self" => {
             // Handle `{self, Read}` - self imports the module itself
-            imports.push((prefix, "self".to_string()));
+            imports.push((prefix, "self".to_string(), None));
         }
         _ => {
             // Recursively check children
@@ -2867,6 +2894,182 @@ mod tests {
         assert!(
             imports.iter().any(|i| i.module == "bar"),
             "bare `mod bar;` should still be emitted, got {:?}",
+            imports
+        );
+    }
+
+    // ========================================================================
+    // fix-PW3-bug11 (nested `use` group flattening): a nested group
+    // `use std::{cmp::Ordering, fs::Metadata, io, time::SystemTime}` must
+    // attribute EACH leaf to its OWN module path instead of collapsing every
+    // leaf under the first leaf's module (`std::cmp`), and `as` aliases inside
+    // the group must be preserved (previously dropped).
+    // ========================================================================
+
+    /// Core bug: each leaf under its real module, not the first leaf's module.
+    #[test]
+    fn test_rust_nested_use_group_attributes_each_leaf_to_real_module() {
+        let source = "use std::{cmp::Ordering, fs::Metadata, io, time::SystemTime};";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        let has = |m: &str, n: &str| {
+            imports
+                .iter()
+                .any(|i| i.module == m && i.names.iter().any(|x| x == n))
+        };
+        assert!(
+            has("std::cmp", "Ordering"),
+            "Ordering must be under std::cmp, got {:?}",
+            imports
+        );
+        assert!(
+            has("std::fs", "Metadata"),
+            "Metadata must be under std::fs, got {:?}",
+            imports
+        );
+        assert!(has("std", "io"), "io must be under std, got {:?}", imports);
+        assert!(
+            has("std::time", "SystemTime"),
+            "SystemTime must be under std::time, got {:?}",
+            imports
+        );
+
+        // Regression guard: the bug collapsed every leaf under std::cmp.
+        let cmp_names: Vec<&String> = imports
+            .iter()
+            .filter(|i| i.module == "std::cmp")
+            .flat_map(|i| i.names.iter())
+            .collect();
+        assert_eq!(
+            cmp_names,
+            vec!["Ordering"],
+            "std::cmp must ONLY contain Ordering, got {:?}",
+            cmp_names
+        );
+    }
+
+    /// `as` aliases inside a nested group are preserved (Python
+    /// `aliased_import` precedent: original name in `names`, alias in `alias`).
+    #[test]
+    fn test_rust_nested_use_group_preserves_as_aliases() {
+        let source = "use {anyhow::Context as AnyhowContext, bstr::ByteVec};";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        let ctx = imports
+            .iter()
+            .find(|i| i.module == "anyhow")
+            .expect("anyhow import present");
+        assert!(
+            ctx.names.iter().any(|n| n == "Context"),
+            "names keep the original name, got {:?}",
+            ctx
+        );
+        assert_eq!(
+            ctx.alias.as_deref(),
+            Some("AnyhowContext"),
+            "alias preserved, got {:?}",
+            ctx
+        );
+
+        let bstr = imports
+            .iter()
+            .find(|i| i.module == "bstr")
+            .expect("bstr import present");
+        assert!(bstr.names.iter().any(|n| n == "ByteVec"));
+        assert_eq!(bstr.alias, None, "non-aliased leaf has no alias");
+    }
+
+    /// Generalization: single non-grouped alias `use std::sync::Arc as Rc;`.
+    #[test]
+    fn test_rust_single_use_as_alias_preserved() {
+        let source = "use std::sync::Arc as Rc;";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert_eq!(imports.len(), 1, "one import, got {:?}", imports);
+        assert_eq!(imports[0].module, "std::sync");
+        assert_eq!(imports[0].names, vec!["Arc".to_string()]);
+        assert_eq!(imports[0].alias.as_deref(), Some("Rc"));
+    }
+
+    /// Generalization: deeply-nested subgroup + alias share a module.
+    #[test]
+    fn test_rust_nested_subgroup_with_alias() {
+        let source = "use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert!(
+            imports.iter().any(|i| i.module == "std::sync::atomic"
+                && i.names.iter().any(|n| n == "AtomicBool")
+                && i.alias.is_none()),
+            "AtomicBool under std::sync::atomic with no alias, got {:?}",
+            imports
+        );
+        assert!(
+            imports.iter().any(|i| i.module == "std::sync::atomic"
+                && i.names.iter().any(|n| n == "Ordering")
+                && i.alias.as_deref() == Some("AtomicOrdering")),
+            "Ordering as AtomicOrdering preserved, got {:?}",
+            imports
+        );
+    }
+
+    /// Generalization: deep multi-submodule crate group, each leaf real module.
+    #[test]
+    fn test_rust_deep_crate_group_each_leaf_real_module() {
+        let source = "use crate::{flags::lowargs::{A, B}, search::C};";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert!(
+            imports.iter().any(|i| i.module == "crate::flags::lowargs"
+                && i.names.iter().any(|n| n == "A")
+                && i.names.iter().any(|n| n == "B")),
+            "A,B under crate::flags::lowargs, got {:?}",
+            imports
+        );
+        assert!(
+            imports
+                .iter()
+                .any(|i| i.module == "crate::search" && i.names.iter().any(|n| n == "C")),
+            "C under crate::search, got {:?}",
+            imports
+        );
+        // Guard: C must NOT leak into crate::flags::lowargs (the old bug).
+        let lowargs: Vec<&String> = imports
+            .iter()
+            .filter(|i| i.module == "crate::flags::lowargs")
+            .flat_map(|i| i.names.iter())
+            .collect();
+        assert!(
+            !lowargs.iter().any(|n| *n == "C"),
+            "C must NOT be attributed to crate::flags::lowargs, got {:?}",
+            lowargs
+        );
+    }
+
+    /// Generalization: `self as alias` inside a group keeps module + alias.
+    #[test]
+    fn test_rust_self_alias_in_group() {
+        let source = "use std::io::{self as myio, Read};";
+        let tree = parse(source, Language::Rust).unwrap();
+        let imports = extract_imports_from_tree(&tree, source, Language::Rust).unwrap();
+
+        assert!(
+            imports.iter().any(|i| i.module == "std::io"
+                && i.names.iter().any(|n| n == "self")
+                && i.alias.as_deref() == Some("myio")),
+            "self as myio preserved under std::io, got {:?}",
+            imports
+        );
+        assert!(
+            imports
+                .iter()
+                .any(|i| i.module == "std::io" && i.names.iter().any(|n| n == "Read")),
+            "Read under std::io, got {:?}",
             imports
         );
     }
