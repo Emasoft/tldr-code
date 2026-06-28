@@ -899,6 +899,37 @@ pub fn interpret_similarity(score: f64) -> String {
     }
 }
 
+/// Interpret a whole-target token-overlap (Dice) score for the `dice` command.
+///
+/// Unlike [`interpret_similarity`] — which is used by the structural clone
+/// pipeline where matches are window-aligned, contiguous, and verified — this
+/// interprets a *whole-target token-multiset* (bag) overlap. Bag overlap is
+/// order-insensitive and is inflated by shared language vocabulary (keywords,
+/// operators, and normalized identifier/literal placeholders), so a high score
+/// does NOT by itself imply a clone: two unrelated, similar-size files of the
+/// same language routinely overlap by 0.70-0.87. This interpretation therefore
+/// reports the magnitude of lexical overlap WITHOUT asserting a clone type, and
+/// directs the user to structural verification via `tldr clones`.
+///
+/// G-dice-clone-label (v0.5.0 backlog): introduced so `dice` stops contradicting
+/// `clones` (which correctly reports 0 clones for such pairs). The structural
+/// [`interpret_similarity`] is intentionally left untouched so the `clones`
+/// command output stays byte-identical (no global re-threshold).
+pub fn interpret_dice_similarity(score: f64) -> String {
+    match score {
+        s if s >= 0.95 => {
+            "Near-identical token sets (run `tldr clones` to confirm structural cloning)"
+                .to_string()
+        }
+        s if s >= 0.80 => {
+            "High token overlap (run `tldr clones` to check for structural cloning)".to_string()
+        }
+        s if s >= 0.60 => "Moderate token overlap".to_string(),
+        s if s >= 0.40 => "Some token overlap".to_string(),
+        _ => "Low token overlap (different code)".to_string(),
+    }
+}
+
 /// Classify clone type based on similarity score
 ///
 /// Uses epsilon tolerance for floating point comparison (S8-P1-T5).
@@ -1670,5 +1701,171 @@ mod tests {
         let frag = CloneFragment::new(PathBuf::from("test.rs"), 1, 10, 50).with_preview(s);
         let preview = frag.preview.unwrap();
         assert!(preview.ends_with("..."));
+    }
+
+    // -------------------------------------------------------------------------
+    // G-dice-clone-label (v0.5.0 backlog)
+    //
+    // `tldr dice` compares two *whole* targets via a token-multiset (bag) Dice
+    // coefficient. Bag overlap is order-insensitive and is inflated by shared
+    // language vocabulary, so two unrelated, similar-size, same-language files
+    // routinely score 0.70-0.87 — which the *structural* interpreter labels a
+    // "likely Type-2 clone" / "Type-3 clone candidate", contradicting the
+    // `clones` command (which correctly reports 0 clones for those files).
+    //
+    // The fix gives `dice` a clone-neutral whole-file interpretation while
+    // leaving the structural `interpret_similarity` byte-identical so the
+    // `clones` command output is unchanged (no global re-threshold).
+    // -------------------------------------------------------------------------
+
+    /// Phrases that assert a specific clone classification. The whole-file Dice
+    /// interpretation used by `tldr dice` must never emit these.
+    const CLONE_TYPE_ASSERTIONS: &[&str] = &[
+        "Type-2 clone",
+        "Type-3 clone",
+        "Type-1/2 clone",
+        "clone candidate",
+    ];
+
+    #[test]
+    fn dice_interpretation_never_asserts_clone_type_across_full_band() {
+        // Sweep the entire [0,1] range, including the 0.70-0.87 false-positive
+        // band that previously produced clone-type assertions for unrelated
+        // similar-size files.
+        let mut s = 0.0;
+        while s <= 1.0001 {
+            let interp = interpret_dice_similarity(s);
+            for bad in CLONE_TYPE_ASSERTIONS {
+                assert!(
+                    !interp.contains(bad),
+                    "dice interpretation for score {s:.2} must not assert `{bad}`, got: {interp}"
+                );
+            }
+            s += 0.01;
+        }
+    }
+
+    #[test]
+    fn dice_interpretation_still_distinguishes_high_and_low_overlap() {
+        // The fix must not flatten the signal: high vs low overlap must still
+        // produce different, informative descriptions.
+        let high = interpret_dice_similarity(0.85);
+        let low = interpret_dice_similarity(0.10);
+        assert_ne!(high, low);
+        assert!(
+            low.to_lowercase().contains("low"),
+            "low overlap should be described as low, got: {low}"
+        );
+    }
+
+    #[test]
+    fn structural_interpret_similarity_is_unchanged_no_global_rethreshold() {
+        // Guards the MUST-NOT constraint: the structural clone interpreter used
+        // by ClonePair::new (the `clones` pipeline) keeps its exact strings so
+        // `clones` output stays byte-identical.
+        assert_eq!(
+            interpret_similarity(0.97),
+            "Near-identical (exact or trivial differences)"
+        );
+        assert_eq!(
+            interpret_similarity(0.92),
+            "Very high similarity (Type-1/2 clone)"
+        );
+        assert_eq!(
+            interpret_similarity(0.83),
+            "High similarity (likely Type-2 clone)"
+        );
+        assert_eq!(
+            interpret_similarity(0.73),
+            "Moderate similarity (Type-3 clone candidate)"
+        );
+        assert_eq!(
+            interpret_similarity(0.55),
+            "Some similarity (possible shared ancestry)"
+        );
+        assert_eq!(interpret_similarity(0.20), "Low similarity (different code)");
+    }
+
+    #[test]
+    fn dice_and_structural_diverge_in_false_positive_band() {
+        // The crux of the bug: at a score the structural interpreter labels a
+        // "Type-2 clone", the whole-file Dice interpreter must NOT, because dice
+        // has no structural evidence — only order-insensitive bag overlap.
+        let score = 0.83;
+        assert!(interpret_similarity(score).contains("Type-2 clone"));
+        assert!(!interpret_dice_similarity(score).contains("Type-2 clone"));
+        assert!(!interpret_dice_similarity(score).contains("clone candidate"));
+    }
+
+    /// Faithful replication of the `tldr dice` computation pipeline so the fix
+    /// can be validated end-to-end (real tokenization included) at the library
+    /// level. `dice.rs::run` does exactly: `normalize_tokens` (mode = All for
+    /// both targets) -> `compute_dice_similarity` -> `interpret_dice_similarity`.
+    fn dice_pipeline(src_a: &str, src_b: &str, lang: &str) -> (f64, String) {
+        let t1 = normalize_tokens(src_a, lang, NormalizationMode::All).unwrap();
+        let t2 = normalize_tokens(src_b, lang, NormalizationMode::All).unwrap();
+        let coeff = compute_dice_similarity(&t1, &t2);
+        (coeff, interpret_dice_similarity(coeff))
+    }
+
+    /// GENERALIZATION (every variant in the symptom class): `tldr dice` on two
+    /// unrelated, similar-size, same-language files must not assert a clone type
+    /// — for *every* supported language, exercising real per-language
+    /// tokenization. Witness language is Python (per the slice spec).
+    #[test]
+    fn dice_unrelated_files_never_labeled_clone_all_languages() {
+        // (lang, ext-irrelevant, unrelated source A, unrelated source B).
+        // Same language + similar size => high token-multiset overlap despite
+        // unrelated semantics — the exact input that produced false labels.
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "python",
+                "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n\ndef mul(a, b):\n    return a * b\n",
+                "def greet(name):\n    return \"hi \" + name\n\ndef shout(text):\n    return text.upper()\n\ndef repeat(text, n):\n    return text * n\n",
+            ),
+            (
+                "rust",
+                "fn add(a: i32, b: i32) -> i32 { a + b }\nfn sub(a: i32, b: i32) -> i32 { a - b }\nfn mul(a: i32, b: i32) -> i32 { a * b }\n",
+                "fn greet(name: String) -> String { format!(\"hi {}\", name) }\nfn shout(text: String) -> String { text.to_uppercase() }\nfn first(items: Vec<i32>) -> i32 { items[0] }\n",
+            ),
+            (
+                "typescript",
+                "function add(a: number, b: number): number { return a + b; }\nfunction sub(a: number, b: number): number { return a - b; }\nfunction mul(a: number, b: number): number { return a * b; }\n",
+                "function greet(name: string): string { return \"hi \" + name; }\nfunction shout(text: string): string { return text.toUpperCase(); }\nfunction repeat(text: string, n: number): string { return text.repeat(n); }\n",
+            ),
+            (
+                "go",
+                "package m\nfunc add(a int, b int) int { return a + b }\nfunc sub(a int, b int) int { return a - b }\nfunc mul(a int, b int) int { return a * b }\n",
+                "package m\nfunc greet(name string) string { return \"hi \" + name }\nfunc first(items []int) int { return items[0] }\nfunc count(items []int) int { return len(items) }\n",
+            ),
+            (
+                "java",
+                "class A {\n  int add(int a, int b) { return a + b; }\n  int sub(int a, int b) { return a - b; }\n  int mul(int a, int b) { return a * b; }\n}\n",
+                "class B {\n  String greet(String name) { return \"hi \" + name; }\n  String shout(String text) { return text.toUpperCase(); }\n  int first(int[] items) { return items[0]; }\n}\n",
+            ),
+        ];
+
+        let mut max_coeff = 0.0_f64;
+        for (lang, a, b) in cases {
+            let (coeff, interp) = dice_pipeline(a, b, lang);
+            for bad in CLONE_TYPE_ASSERTIONS {
+                assert!(
+                    !interp.contains(bad),
+                    "[{lang}] dice on unrelated files must not assert `{bad}` \
+                     (coeff={coeff:.3}); got: {interp}"
+                );
+            }
+            max_coeff = max_coeff.max(coeff);
+        }
+
+        // Regression-guard sanity: at least one language's unrelated pair must
+        // land in the inflated-overlap regime where the OLD structural
+        // interpreter WOULD have asserted a clone — otherwise the fixtures are
+        // too trivial to exercise the bug.
+        assert!(
+            interpret_similarity(max_coeff).contains("clone"),
+            "test fixtures too weak: max whole-file overlap {max_coeff:.3} never \
+             reaches the band the old interpreter would have mislabeled a clone"
+        );
     }
 }

@@ -10,7 +10,7 @@ use clap::Args;
 use serde::Serialize;
 
 use tldr_core::analysis::{
-    compute_dice_similarity, interpret_similarity, normalize_tokens, NormalizationMode,
+    compute_dice_similarity, interpret_dice_similarity, normalize_tokens, NormalizationMode,
 };
 
 use crate::output::{OutputFormat, OutputWriter};
@@ -95,7 +95,10 @@ impl DiceArgs {
             target1: self.target1.clone(),
             target2: self.target2.clone(),
             dice_coefficient: dice,
-            interpretation: interpret_similarity(dice),
+            // G-dice-clone-label: whole-target token-multiset (bag) overlap is
+            // not structural evidence of cloning, so use the clone-neutral
+            // interpretation rather than the structural `interpret_similarity`.
+            interpretation: interpret_dice_similarity(dice),
             tokens1_count: tokens1.len(),
             tokens2_count: tokens2.len(),
         };

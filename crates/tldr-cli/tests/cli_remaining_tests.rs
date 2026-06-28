@@ -1964,6 +1964,110 @@ fn test_dice_help() {
 }
 
 // =============================================================================
+// G-dice-clone-label (v0.5.0 backlog)
+//
+// `tldr dice` computes a whole-target token-multiset (bag) Dice coefficient.
+// Bag overlap is order-insensitive and inflated by shared language vocabulary,
+// so two unrelated, similar-size, same-language files routinely score 0.70-0.87
+// and were labeled "likely Type-2 clone" / "Type-3 clone candidate" — directly
+// contradicting `clones` (which reports 0 clones). The interpretation must be
+// clone-neutral for the whole-file case across EVERY language.
+// =============================================================================
+
+/// Run `tldr dice` on two files and return the parsed JSON.
+fn run_dice_json(file1: &std::path::Path, file2: &std::path::Path) -> serde_json::Value {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("tldr"))
+        .args([
+            "dice",
+            file1.to_str().unwrap(),
+            file2.to_str().unwrap(),
+            "-q",
+        ])
+        .output()
+        .expect("Failed to execute tldr dice");
+    assert!(
+        output.status.success(),
+        "dice command should succeed (stderr: {})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("dice output not JSON: {e}\n{stdout}"))
+}
+
+/// Two UNRELATED but boilerplate-similar source fragments per language. Same
+/// language + similar size => high token-multiset overlap, even though the code
+/// is unrelated. This is exactly the input that produced the false clone label.
+fn unrelated_pair_for(lang: &str) -> (&'static str, &'static str, &'static str) {
+    match lang {
+        "python" => (
+            "py",
+            "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n\ndef mul(a, b):\n    return a * b\n",
+            "def greet(name):\n    return \"hi \" + name\n\ndef shout(text):\n    return text.upper()\n\ndef repeat(text, n):\n    return text * n\n",
+        ),
+        "rust" => (
+            "rs",
+            "fn add(a: i32, b: i32) -> i32 { a + b }\nfn sub(a: i32, b: i32) -> i32 { a - b }\nfn mul(a: i32, b: i32) -> i32 { a * b }\n",
+            "fn greet(name: String) -> String { format!(\"hi {}\", name) }\nfn shout(text: String) -> String { text.to_uppercase() }\nfn first(items: Vec<i32>) -> i32 { items[0] }\n",
+        ),
+        "typescript" => (
+            "ts",
+            "function add(a: number, b: number): number { return a + b; }\nfunction sub(a: number, b: number): number { return a - b; }\nfunction mul(a: number, b: number): number { return a * b; }\n",
+            "function greet(name: string): string { return \"hi \" + name; }\nfunction shout(text: string): string { return text.toUpperCase(); }\nfunction repeat(text: string, n: number): string { return text.repeat(n); }\n",
+        ),
+        "go" => (
+            "go",
+            "package m\nfunc add(a int, b int) int { return a + b }\nfunc sub(a int, b int) int { return a - b }\nfunc mul(a int, b int) int { return a * b }\n",
+            "package m\nfunc greet(name string) string { return \"hi \" + name }\nfunc first(items []int) int { return items[0] }\nfunc count(items []int) int { return len(items) }\n",
+        ),
+        "java" => (
+            "java",
+            "class A {\n  int add(int a, int b) { return a + b; }\n  int sub(int a, int b) { return a - b; }\n  int mul(int a, int b) { return a * b; }\n}\n",
+            "class B {\n  String greet(String name) { return \"hi \" + name; }\n  String shout(String text) { return text.toUpperCase(); }\n  int first(int[] items) { return items[0]; }\n}\n",
+        ),
+        _ => unreachable!("unsupported language in test: {lang}"),
+    }
+}
+
+/// Generalization across the symptom class (every supported language): `tldr
+/// dice` on two unrelated similar-size files must NOT assert a clone type, while
+/// still reporting the coefficient.
+#[test]
+fn test_dice_unrelated_files_not_labeled_clone_all_langs() {
+    let clone_assertions = ["Type-2 clone", "Type-3 clone", "clone candidate"];
+
+    for lang in ["python", "rust", "typescript", "go", "java"] {
+        let (ext, src_a, src_b) = unrelated_pair_for(lang);
+        let temp = TempDir::new().unwrap();
+        let file_a = temp.path().join(format!("a.{ext}"));
+        let file_b = temp.path().join(format!("b.{ext}"));
+        fs::write(&file_a, src_a).unwrap();
+        fs::write(&file_b, src_b).unwrap();
+
+        let json = run_dice_json(&file_a, &file_b);
+
+        // Coefficient is still computed.
+        assert!(
+            json.get("dice_coefficient").and_then(|v| v.as_f64()).is_some(),
+            "[{lang}] dice_coefficient missing: {json}"
+        );
+
+        // The interpretation must not assert a clone classification.
+        let interp = json
+            .get("interpretation")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        for bad in clone_assertions {
+            assert!(
+                !interp.contains(bad),
+                "[{lang}] dice on unrelated files must not assert `{bad}`; \
+                 coefficient={:?} interpretation={interp:?}",
+                json.get("dice_coefficient")
+            );
+        }
+    }
+}
+
+// =============================================================================
 // Daemon Router Tests
 // =============================================================================
 
