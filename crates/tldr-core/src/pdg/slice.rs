@@ -603,8 +603,31 @@ fn slice_lines(
     // block); the union keeps OCaml's coarse `let .. in` block reachable while
     // the per-line ref filter prevents over-inclusion.
     //
+    // cf1-s13 (anti over-inclusion gate): this block-half recovery is a FALLBACK
+    // for a criterion the precise closures cannot reach — it has neither a data
+    // dependence (the def-use closure above admitted nothing) nor a control
+    // dependence (no guarding predicate). When EITHER exists, steps (2)/(3)
+    // already carry the slice precisely and the blunt half-recovery only drags
+    // in unrelated block siblings: an OCaml `let res` pulling in the independent
+    // `let start` that shares its coarse entry block, or a Solidity bare
+    // declaration pulling in a sibling assignment that shares the post-`require`
+    // body block. So only run it when the criterion is dependency-isolated.
+    //
     // Skipped under an explicit `variable` filter (pure data slice on that var).
-    if variable.is_none() {
+    let data_found = lines.len() > 1;
+    let control_found = pdg.edges.iter().any(|e| {
+        matches!(e.dep_type, DependenceType::Control)
+            && pdg.nodes.iter().any(|n| {
+                n.id == e.target_id
+                    && criterion_line >= n.lines.0
+                    && criterion_line <= n.lines.1
+            })
+            && pdg
+                .nodes
+                .iter()
+                .any(|n| n.id == e.source_id && n.lines.0 <= criterion_line)
+    });
+    if variable.is_none() && !data_found && !control_found {
         let block_lo = pdg
             .nodes
             .iter()
@@ -758,7 +781,18 @@ fn slice_lines(
         .iter()
         .min_by_key(|n| n.lines.0)
         .map(|n| n.lines);
+    // cf1-s13: a genuine signature block is TIGHT — it precedes the body and is
+    // followed by separate statement/branch blocks. When the opening block
+    // instead spans the WHOLE function (OCaml lowers a `let .. in` chain to a
+    // single coarse entry block whose range reaches the function's last line),
+    // its "first use" lands deep in the body and the naive `[bstart, first_use-1]`
+    // span swallows body `let` bindings as if they were parameters — re-pulling
+    // the very `let start` the over-inclusion gate just excluded. For such a
+    // coarse block the OCaml signature is exactly its first line (the `let f x =`
+    // keyword line carries the parameters), so clamp the span there.
+    let function_last_line = pdg.nodes.iter().map(|n| n.lines.1).max().unwrap_or(0);
     let signature_span: Option<(u32, u32)> = opening_block.and_then(|(bstart, bend)| {
+        let coarse_whole_function = bend >= function_last_line;
         let first_use_line = pdg
             .dfg
             .refs
@@ -767,9 +801,13 @@ fn slice_lines(
             .map(|r| r.line)
             .filter(|&l| l >= bstart && l <= bend)
             .min();
-        let sig_end = match first_use_line {
-            Some(u) if u > bstart => u - 1,
-            _ => bstart,
+        let sig_end = if coarse_whole_function {
+            bstart
+        } else {
+            match first_use_line {
+                Some(u) if u > bstart => u - 1,
+                _ => bstart,
+            }
         };
         let has_param_def = pdg.dfg.refs.iter().any(|r| {
             matches!(
@@ -1564,6 +1602,114 @@ def foo():
         assert_eq!(
             plain, rich_lines,
             "rich slice lines should match plain slice lines"
+        );
+    }
+
+    // =========================================================================
+    // CF1-S13 (v0.5.0 RC CF-wave): `tldr slice` PDG-correctness across the
+    // 'slice' symptom class — JavaScript `switch_case`, OCaml `let .. in`, and
+    // Solidity bare declaration + `require` guard. Each sub-case asserts a
+    // distinct correctness property that the pre-fix block-derived PDG /
+    // block-half recovery violated. One test, every language in the class
+    // (anti-treadmill gate).
+    // =========================================================================
+
+    #[test]
+    fn test_slice_cf1s13_switch_case_and_guards_all_langs() {
+        // --- JavaScript: a criterion INSIDE a `switch_case` body. The generic
+        // switch lowering only models `switch_entry` arms (Swift), so JS case
+        // bodies (`switch_body > switch_case`) were covered by NO CFG block and
+        // the slice collapsed to EMPTY. It must be non-empty, contain the
+        // criterion, and reach the controlling `switch` predicate.
+        let js = r#"
+function classify(val) {
+  var out;
+  switch (val) {
+    case 'a':
+      out = compute(val);
+      break;
+    default:
+      out = 0;
+  }
+  return out;
+}
+"#;
+        // Line 6 is `out = compute(val);` (inside `case 'a':`).
+        let js_slice =
+            get_slice(js, "classify", 6, SliceDirection::Backward, None, Language::JavaScript)
+                .unwrap();
+        assert!(
+            !js_slice.is_empty(),
+            "JS: slice of a switch_case-body criterion must NOT be empty; got {js_slice:?}"
+        );
+        assert!(
+            js_slice.contains(&6),
+            "JS: slice must contain the criterion line 6; got {js_slice:?}"
+        );
+        assert!(
+            js_slice.contains(&4),
+            "JS: slice must reach the controlling `switch (val)` predicate @4; got {js_slice:?}"
+        );
+
+        // --- OCaml: a `let .. in` chain compiles to a single coarse entry
+        // block. Block-half recovery + signature cohesion then pulled in EVERY
+        // preceding ref line, so backward-of `res` wrongly included the
+        // independent `let start` binding. `res` has no data/control dependency
+        // on `start`; it must be EXCLUDED.
+        let ml = r#"
+let process fd =
+  let start = timer_start () in
+  let res = run fd in
+  stop_timer start;
+  res
+"#;
+        // Line 6 is `res`; line 3 is `let start = timer_start () in` (no dep).
+        let ml_slice =
+            get_slice(ml, "process", 6, SliceDirection::Backward, None, Language::Ocaml).unwrap();
+        assert!(
+            ml_slice.contains(&6),
+            "OCaml: slice must contain the criterion `res`@6; got {ml_slice:?}"
+        );
+        assert!(
+            !ml_slice.contains(&3),
+            "OCaml: backward slice of `res` must EXCLUDE the independent \
+             `let start`@3 (no dependency); got {ml_slice:?}"
+        );
+
+        // --- Solidity: a bare declaration after a `require` guard and an
+        // unrelated sibling declaration. Block-half recovery pulled in the
+        // sibling `uint256 c = b;` (which the bare `uint256 d;` does NOT depend
+        // on). The require guard, which genuinely control-dominates the
+        // declaration, must be included via control-dependence — consistently —
+        // while the unrelated sibling is excluded.
+        let sol = r#"
+contract C {
+    function f(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(a > 0, "bad");
+        uint256 c = b;
+        uint256 d;
+        d = c + 1;
+        return d;
+    }
+}
+"#;
+        // Line 6 is `uint256 d;` (bare decl); 5 is the unrelated `uint256 c = b;`;
+        // 4 is the `require` guard.
+        let sol_slice =
+            get_slice(sol, "f", 6, SliceDirection::Backward, None, Language::Solidity).unwrap();
+        assert!(
+            sol_slice.contains(&6),
+            "Solidity: slice must contain the bare-decl criterion @6; got {sol_slice:?}"
+        );
+        assert!(
+            sol_slice.contains(&4),
+            "Solidity: bare-decl slice must include the controlling `require` guard @4; \
+             got {sol_slice:?}"
+        );
+        assert!(
+            !sol_slice.contains(&5),
+            "Solidity: bare-decl slice must NOT pull in the unrelated sibling \
+             `uint256 c = b;`@5; got {sol_slice:?}"
         );
     }
 }

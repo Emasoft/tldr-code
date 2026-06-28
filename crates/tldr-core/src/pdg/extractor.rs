@@ -136,6 +136,76 @@ fn build_pdg(function_name: &str, cfg: CfgInfo, dfg: DfgInfo) -> TldrResult<PdgI
         }
     }
 
+    // cf1-s13 (slice switch_case body recovery): some front-ends lower a
+    // multi-arm construct without emitting a basic block per arm body. The
+    // canonical case is a JavaScript `switch`, whose arms are nested under
+    // `switch_body > switch_case`/`switch_default` rather than the
+    // `switch_entry` children the generic switch lowering recognises — so the
+    // case-body STATEMENTS are covered by no CFG block at all. A slice criterion
+    // on such a line maps to no PDG node and the slice collapses to empty.
+    //
+    // Recover these structurally (no string/name heuristics): any DFG-referenced
+    // line that lies inside the function's block span yet is covered by NO CFG
+    // block is a real statement the lowering dropped. Model it as its own
+    // statement node and wire a control-dependence edge from the innermost
+    // enclosing predicate — the Branch/LoopHeader block whose range starts
+    // before the line and that has a CFG successor starting after it (control
+    // rejoins past the gap), i.e. the switch dispatch for that case body. This
+    // generalises to any collapsed arm body and leaves fully-covered functions
+    // (every other language here) untouched.
+    let covers = |line: u32| nodes.iter().any(|n| line >= n.lines.0 && line <= n.lines.1);
+    let span_lo = nodes.iter().map(|n| n.lines.0).min().unwrap_or(0);
+    let span_hi = nodes.iter().map(|n| n.lines.1).max().unwrap_or(0);
+    let mut gap_lines: Vec<u32> = dfg
+        .refs
+        .iter()
+        .map(|r| r.line)
+        .filter(|&l| l >= span_lo && l <= span_hi && !covers(l))
+        .collect();
+    gap_lines.sort_unstable();
+    gap_lines.dedup();
+    let mut next_id = nodes.iter().map(|n| n.id).max().map(|m| m + 1).unwrap_or(0);
+    for line in gap_lines {
+        let (defs, uses) = find_defs_uses_in_range(&dfg, (line, line));
+        let node_id = next_id;
+        next_id += 1;
+        nodes.push(PdgNode {
+            id: node_id,
+            node_type: "statement".to_string(),
+            lines: (line, line),
+            definitions: defs,
+            uses,
+        });
+        // Innermost enclosing predicate: latest-starting Branch/LoopHeader block
+        // that begins before `line` and rejoins (a successor block starts) after
+        // it.
+        let mut best: Option<(u32, usize)> = None;
+        for b in &cfg.blocks {
+            if !matches!(
+                b.block_type,
+                crate::types::BlockType::Branch | crate::types::BlockType::LoopHeader
+            ) || b.lines.0 >= line
+            {
+                continue;
+            }
+            let rejoins = cfg.edges.iter().any(|e| {
+                e.from == b.id
+                    && cfg.blocks.iter().any(|s| s.id == e.to && s.lines.0 > line)
+            });
+            if rejoins && best.is_none_or(|(bs, _)| b.lines.0 > bs) {
+                best = Some((b.lines.0, b.id));
+            }
+        }
+        if let Some((_, pred_id)) = best {
+            edges.push(PdgEdge {
+                source_id: pred_id,
+                target_id: node_id,
+                dep_type: DependenceType::Control,
+                label: "control_switch_case".to_string(),
+            });
+        }
+    }
+
     Ok(PdgInfo {
         function: function_name.to_string(),
         cfg,
