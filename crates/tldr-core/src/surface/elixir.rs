@@ -100,10 +100,7 @@ fn extract_from_elixir_file(
     let tree = parse(&source, Language::Elixir)?;
     let module_info =
         extract_from_tree(&tree, &source, Language::Elixir, file_path, Some(root_dir))?;
-    let relative_path = file_path
-        .strip_prefix(root_dir)
-        .unwrap_or(file_path)
-        .to_path_buf();
+    let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
     let mut apis = Vec::new();
 

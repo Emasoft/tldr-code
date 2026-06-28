@@ -202,10 +202,7 @@ fn extract_from_cpp_headers(
         })?;
 
         let module_path = compute_module_path(file_path, root_dir, package_name);
-        let relative_path = file_path
-            .strip_prefix(root_dir)
-            .unwrap_or(file_path)
-            .to_path_buf();
+        let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
         let mut scopes: Vec<Scope> = Vec::new();
         // m112-surface-garbage-cleanup-v1 (Wave 17e / M-112):
@@ -654,10 +651,7 @@ fn extract_from_cpp_source_file(
     let tree = parse(&source, Language::Cpp)?;
     let module_info = extract_from_tree(&tree, &source, Language::Cpp, file_path, Some(root_dir))?;
     let module_path = compute_module_path(file_path, root_dir, package_name);
-    let relative_path = file_path
-        .strip_prefix(root_dir)
-        .unwrap_or(file_path)
-        .to_path_buf();
+    let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
     let mut apis = Vec::new();
     for func in module_info.functions {

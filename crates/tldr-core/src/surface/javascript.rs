@@ -123,10 +123,7 @@ fn extract_from_javascript_file(
     let module_info = extract_from_tree(&tree, &source, parse_language, file_path, Some(root_dir))?;
 
     let module_path = compute_js_module_path(file_path, root_dir, package_name);
-    let relative_path = file_path
-        .strip_prefix(root_dir)
-        .unwrap_or(file_path)
-        .to_path_buf();
+    let relative_path = super::resolve::location_relative_path(file_path, root_dir);
     let flow_type_exports = collect_flow_type_exports(&source);
 
     let mut apis = Vec::new();
@@ -349,10 +346,7 @@ fn synthesize_js_local_export_aliases(
         }
 
         let module_path = compute_js_module_path(file_path, root_dir, package_name);
-        let relative_path = file_path
-            .strip_prefix(root_dir)
-            .unwrap_or(file_path)
-            .to_path_buf();
+        let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
         for (statement, line) in collect_js_export_statements(&source) {
             let trimmed = statement.trim();
@@ -437,10 +431,7 @@ fn synthesize_js_reexport_aliases(
         let Ok(source) = std::fs::read_to_string(file_path) else {
             continue;
         };
-        let relative_path = file_path
-            .strip_prefix(root_dir)
-            .unwrap_or(file_path)
-            .to_path_buf();
+        let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
         for reexport in parse_js_reexports(&source, file_path, root_dir, package_name) {
             match reexport {

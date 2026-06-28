@@ -110,10 +110,7 @@ fn extract_from_lua_file(
     let tree = parse(&source, Language::Lua)?;
     let module_info = extract_from_tree(&tree, &source, Language::Lua, file_path, Some(root_dir))?;
     let module_path = compute_module_path(file_path, root_dir, package_name);
-    let relative_path = file_path
-        .strip_prefix(root_dir)
-        .unwrap_or(file_path)
-        .to_path_buf();
+    let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
     let exported_table = returned_module_table(&source);
     let returned_keys = returned_table_keys(&source);

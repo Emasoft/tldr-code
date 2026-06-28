@@ -16,6 +16,30 @@ use crate::TldrResult;
 use super::language_profile::{entrypoint_candidates, is_noise_dir};
 use super::types::ResolvedPackage;
 
+/// Build the relative path stored in a surface entry's `Location::file`.
+///
+/// `file_path.strip_prefix(root_dir)` yields an *empty* path when the resolved
+/// target is a single file (`root_dir == file_path`), which is exactly the
+/// shape `resolve_target` produces for a single-file surface invocation. An
+/// empty `location.file` is useless to consumers, so fall back to the file's
+/// own name in that case. For multi-file packages this returns the file path
+/// relative to the package root, unchanged.
+///
+/// This is the shared root-cause fix for the single-file `location.file == ""`
+/// bug across every non-Python surface frontend (previously only Python had
+/// the fallback inline).
+pub(crate) fn location_relative_path(file_path: &Path, root_dir: &Path) -> PathBuf {
+    let stripped = file_path.strip_prefix(root_dir).unwrap_or(file_path);
+    if stripped.as_os_str().is_empty() {
+        file_path
+            .file_name()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| file_path.to_path_buf())
+    } else {
+        stripped.to_path_buf()
+    }
+}
+
 /// Resolve a Python package name to its source directory.
 ///
 /// Uses `python3 -c "import <pkg>; print(<pkg>.__file__)"` to find the
@@ -2398,5 +2422,122 @@ def foo(): pass
             result.is_err(),
             "introspect_builtin_module should fail for non-existent modules"
         );
+    }
+
+    // ---- location_relative_path (shared single-file fallback) ----
+
+    #[test]
+    fn location_relative_path_falls_back_to_file_name_for_single_file_target() {
+        // Single-file surface target: root_dir == file_path, so strip_prefix
+        // yields an empty path. Without the fallback, location.file would be "".
+        let file = Path::new("/site-packages/widget/core.rs");
+        assert_eq!(
+            location_relative_path(file, file),
+            PathBuf::from("core.rs"),
+            "single-file target must fall back to the file name"
+        );
+
+        // Normal multi-file package: strip the root prefix as before.
+        let root = Path::new("/site-packages/widget");
+        assert_eq!(
+            location_relative_path(file, root),
+            PathBuf::from("core.rs"),
+            "file directly under root strips to its name"
+        );
+        let nested = Path::new("/site-packages/widget/sub/thing.rs");
+        assert_eq!(
+            location_relative_path(nested, root),
+            PathBuf::from("sub/thing.rs"),
+            "nested file strips to its relative path"
+        );
+    }
+
+    /// Anti-treadmill generalization gate (slice A1-surface-fileempty).
+    ///
+    /// Every non-Python surface frontend computed `location.file` via
+    /// `strip_prefix(root_dir)`, which collapses to "" for a single-file
+    /// target (`root_dir == file_path`). This drives a single-file surface
+    /// extraction through the real per-language frontend for a representative
+    /// sample of the symptom class and asserts every entry carries a
+    /// non-empty, file-name location.
+    #[test]
+    fn single_file_surface_emits_nonempty_location_across_languages() {
+        type Extract =
+            fn(&ResolvedPackage, bool, Option<usize>) -> TldrResult<crate::surface::types::ApiSurface>;
+
+        struct Case {
+            lang: &'static str,
+            file_name: &'static str,
+            source: &'static str,
+            extract: Extract,
+        }
+
+        let cases = vec![
+            Case {
+                lang: "go",
+                file_name: "version.go",
+                source: "package gin\n\nfunc Hello() string { return \"hi\" }\n",
+                extract: super::super::go::extract_go_api_surface,
+            },
+            Case {
+                lang: "rust",
+                file_name: "lib.rs",
+                source: "pub fn hello() -> i32 { 1 }\n",
+                extract: super::super::rust_lang::extract_rust_api_surface,
+            },
+            Case {
+                lang: "scala",
+                file_name: "MonadCancel.scala",
+                source: "package cats.effect.kernel\n\nobject MonadCancel {\n  def apply(): Int = 1\n}\n",
+                extract: super::super::scala::extract_scala_api_surface,
+            },
+            Case {
+                lang: "ruby",
+                file_name: "base.rb",
+                source: "module Sinatra\n  class Base\n    def call(env)\n      env\n    end\n  end\nend\n",
+                extract: super::super::ruby::extract_ruby_api_surface,
+            },
+        ];
+
+        for case in cases {
+            let dir = tempfile::TempDir::new().unwrap();
+            let file_path = dir.path().join(case.file_name);
+            std::fs::write(&file_path, case.source).unwrap();
+
+            // Single-file target: the resolver sets root_dir to the file itself.
+            let resolved = ResolvedPackage {
+                root_dir: file_path.clone(),
+                package_name: "pkg".to_string(),
+                is_pure_source: true,
+                public_names: None,
+            };
+
+            let surface = (case.extract)(&resolved, false, None)
+                .unwrap_or_else(|e| panic!("{}: extract failed: {:?}", case.lang, e));
+
+            assert!(
+                !surface.apis.is_empty(),
+                "{}: expected at least one API entry from the single-file target",
+                case.lang
+            );
+
+            for api in &surface.apis {
+                let loc = api.location.as_ref().unwrap_or_else(|| {
+                    panic!("{}: api {} has no location", case.lang, api.qualified_name)
+                });
+                assert!(
+                    !loc.file.as_os_str().is_empty(),
+                    "{}: api {} has empty location.file (single-file strip_prefix collapse)",
+                    case.lang,
+                    api.qualified_name
+                );
+                assert_eq!(
+                    loc.file,
+                    PathBuf::from(case.file_name),
+                    "{}: location.file should fall back to the file name for a single-file target",
+                    case.lang
+                );
+            }
+        }
     }
 }

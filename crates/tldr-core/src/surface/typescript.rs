@@ -125,10 +125,7 @@ fn extract_from_typescript_file(
     )?;
 
     let module_path = compute_ts_module_path(file_path, root_dir, package_name);
-    let relative_path = file_path
-        .strip_prefix(root_dir)
-        .unwrap_or(file_path)
-        .to_path_buf();
+    let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
     let mut apis = Vec::new();
 
@@ -424,10 +421,7 @@ fn synthesize_ts_reexport_aliases(
         let Ok(source) = std::fs::read_to_string(file_path) else {
             continue;
         };
-        let relative_path = file_path
-            .strip_prefix(root_dir)
-            .unwrap_or(file_path)
-            .to_path_buf();
+        let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
         for reexport in parse_ts_reexports(&source, file_path, root_dir, package_name) {
             match reexport {

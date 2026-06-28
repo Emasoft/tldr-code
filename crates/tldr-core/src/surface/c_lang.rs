@@ -117,10 +117,7 @@ fn extract_from_c_headers(
         })?;
 
         let module_path = compute_module_path(file_path, root_dir, package_name);
-        let relative_path = file_path
-            .strip_prefix(root_dir)
-            .unwrap_or(file_path)
-            .to_path_buf();
+        let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
         let tree = parse(&source, Language::C)?;
         let root = tree.root_node();
@@ -347,10 +344,7 @@ fn extract_from_c_source_file(
     let tree = parse(&source, Language::C)?;
     let module_info = extract_from_tree(&tree, &source, Language::C, file_path, Some(root_dir))?;
     let module_path = compute_module_path(file_path, root_dir, package_name);
-    let relative_path = file_path
-        .strip_prefix(root_dir)
-        .unwrap_or(file_path)
-        .to_path_buf();
+    let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
     let mut apis = Vec::new();
     for func in module_info.functions {
