@@ -416,10 +416,11 @@ pub fn analyze_cohesion_with_options(
     // PROJECT-WIDE declared-field map keyed on `(namespace_path, class)` up
     // front so the per-file extraction can resolve cross-translation-unit bare
     // members. Empty for non-C++ analyses (the helper only walks C++ files).
-    let global_declared = cpp_project_declared_fields(&file_paths);
+    let (global_declared, global_namespaces) = cpp_project_declared_fields(&file_paths);
 
     for file_path in &file_paths {
-        match extract_file_method_fields(file_path, &options, &global_declared) {
+        match extract_file_method_fields(file_path, &options, &global_declared, &global_namespaces)
+        {
             Ok(extractions) => {
                 for ext in extractions {
                     if ext.is_partial {
@@ -781,6 +782,7 @@ fn extract_file_method_fields(
     file_path: &Path,
     options: &CohesionOptions,
     global_declared: &HashMap<(Vec<String>, String), HashSet<String>>,
+    global_namespaces: &HashSet<String>,
 ) -> TldrResult<Vec<MethodFieldsExtraction>> {
     let source = std::fs::read_to_string(file_path)?;
     let mut language = Language::from_path(file_path).ok_or_else(|| {
@@ -821,7 +823,7 @@ fn extract_file_method_fields(
     // can use a namespace-qualified key.
     if matches!(language, Language::Cpp) {
         return Ok(extract_file_method_fields_cpp(
-            &root, &source, file_path, options, global_declared,
+            &root, &source, file_path, options, global_declared, global_namespaces,
         ));
     }
 
@@ -995,6 +997,45 @@ fn bare_field_config(language: Language) -> Option<BareFieldConfig> {
             // `parameter > [pattern] value_pattern`.
             shadow_decl_kinds: &["let_binding", "parameter"],
         }),
+        // fix-CF1-S7: Java references its OWN fields BARE (`balance`, not
+        // `this.balance`) — the dominant idiom (e.g. Retrofit). Only `field_access`
+        // is a member-access node here; a `this.foo()` / `obj.foo()` CALL is a
+        // `method_invocation` (NOT in this list) so it is walked normally and its
+        // arguments are still scanned for bare fields, while its method-name child
+        // never matches a declared FIELD. A foreign `obj.field` is a `field_access`
+        // whose object is not `this`, so its member is skipped (recurse into the
+        // object only) — the field-vs-foreign distinction is preserved.
+        Language::Java => Some(BareFieldConfig {
+            member_access_kinds: &["field_access"],
+            object_field: "object",
+            member_field: "field",
+            // method `formal_parameter > [name] identifier`; method-local
+            // `variable_declarator > [name] identifier`; for-each / catch binders.
+            shadow_decl_kinds: &[
+                "formal_parameter",
+                "variable_declarator",
+                "catch_formal_parameter",
+                "enhanced_for_statement",
+                "lambda_expression",
+            ],
+        }),
+        // fix-CF1-S7: Swift accesses stored properties BARE in extension methods
+        // (`_values.count`, not `self._values.count`). `navigation_expression`
+        // (`recv.member`) is the member-access node — handled specially in
+        // `bare_collect_field_hits` like Kotlin (positional receiver = first
+        // child, member in a `navigation_suffix`); a `self.`-qualified member is
+        // credited, a field used as a receiver (`_values.count`) is credited via
+        // the recursed receiver, and the trailing member of a foreign receiver is
+        // skipped. A `self.foo()` CALL is a `call_expression` wrapping the
+        // navigation, so the callee method-name is never a declared field.
+        Language::Swift => Some(BareFieldConfig {
+            member_access_kinds: &["navigation_expression"],
+            object_field: "",
+            member_field: "",
+            // method `parameter > simple_identifier`; method-local
+            // `property_declaration > pattern > simple_identifier`.
+            shadow_decl_kinds: &["parameter", "property_declaration"],
+        }),
         _ => None,
     }
 }
@@ -1120,6 +1161,42 @@ fn bare_record_shadow_name(
                 bare_collect_ocaml_pattern_names(&pat, source, out);
             }
         }
+        // fix-CF1-S7 — Java: `formal_parameter`/`variable_declarator`/
+        // `catch_formal_parameter`/`enhanced_for_statement` each expose the bound
+        // identifier via the `name` field; a lambda's parameter binders are the
+        // identifier leaves under the `parameters`/inferred-parameter child.
+        (Language::Java, "lambda_expression") => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                bare_collect_pattern_identifiers(&params, source, out);
+            }
+        }
+        (Language::Java, _) => {
+            if let Some(nm) = node.child_by_field_name("name") {
+                bare_insert_identifier_leaf(&nm, source, out);
+            }
+        }
+        // fix-CF1-S7 — Swift: a `parameter`'s binding name(s) are its direct
+        // `simple_identifier` children (external + internal name forms; over-
+        // collecting the external label is harmless — it only suppresses, never
+        // invents). A method-local `let`/`var` is a `property_declaration` whose
+        // `pattern` holds the bound `simple_identifier`(s).
+        (Language::Swift, "parameter") => {
+            let mut c = node.walk();
+            for ch in node.children(&mut c) {
+                if ch.kind() == "simple_identifier" {
+                    bare_insert_identifier_leaf(&ch, source, out);
+                }
+            }
+        }
+        (Language::Swift, "property_declaration") => {
+            if let Some(pat) = node.child_by_field_name("name") {
+                swift_collect_pattern_identifiers(&pat, source, out);
+            } else if let Some(pat) =
+                node.children(&mut node.walk()).find(|c| c.kind() == "pattern")
+            {
+                swift_collect_pattern_identifiers(&pat, source, out);
+            }
+        }
         _ => {}
     }
 }
@@ -1233,32 +1310,26 @@ fn bare_collect_field_hits(
 
     // Member-access node: recurse only into the object/receiver side.
     if config.member_access_kinds.contains(&kind) {
-        // Kotlin `navigation_expression` has no field names: receiver is the
-        // FIRST child, the member lives in a trailing `navigation_suffix`.
-        if language == Language::Kotlin {
+        // Kotlin/Swift `navigation_expression` has no member field name: the
+        // receiver is the FIRST child and the member is a trailing identifier
+        // (Kotlin) or a `navigation_suffix` (Swift). fix-CF1-S7 generalizes the
+        // former Kotlin-only branch to Swift (receiver is a `self_expression`).
+        if language == Language::Kotlin || language == Language::Swift {
             if let Some(receiver) = node.child(0) {
-                // `this.x` -> receiver is `this_expression`; the member is the
-                // genuine field. Credit it (matches the existing this-qualified
-                // behaviour) iff declared.
-                if receiver.kind() == "this_expression" {
-                    if let Some(suffix) = node
-                        .children(&mut node.walk())
-                        .find(|c| c.kind() == "navigation_suffix")
-                    {
-                        if let Some(member) = suffix
-                            .children(&mut suffix.walk())
-                            .find(|c| c.kind() == "simple_identifier")
-                        {
-                            if let Some(t) = node_text_of(&member, source) {
-                                if declared.contains(&t) {
-                                    out.insert(t);
-                                }
-                            }
+                // `this.x` / `self.x` -> the member is the genuine field; credit
+                // it iff declared (matches the existing this/self-qualified path).
+                if receiver.kind() == "this_expression"
+                    || receiver.kind() == "self_expression"
+                {
+                    if let Some(member) = nav_member_name(node, source) {
+                        if declared.contains(&member) {
+                            out.insert(member);
                         }
                     }
                 }
-                // Recurse into the receiver only (skip the navigation_suffix
-                // member name).
+                // Recurse into the receiver only (skip the member name). A
+                // declared field used AS a receiver (`_values.count`) is still
+                // credited because the receiver is itself walked.
                 bare_collect_field_hits(
                     &receiver, source, language, config, declared, shadowed, out,
                 );
@@ -1305,10 +1376,40 @@ fn bare_collect_field_hits(
     }
 }
 
+/// fix-CF1-S7: the member name of a Kotlin/Swift `navigation_expression`
+/// (`recv.member`). The member is either a trailing `identifier`/
+/// `simple_identifier` (Kotlin `this.x`) or lives inside a `navigation_suffix`
+/// (Swift `self.x`). The receiver (`child(0)`) is a `this_expression`/
+/// `self_expression`/identifier, never matched first because we scan trailing-
+/// first and the receiver is the leading child.
+fn nav_member_name(nav: &tree_sitter::Node, source: &str) -> Option<String> {
+    let mut cursor = nav.walk();
+    let children: Vec<tree_sitter::Node> = nav.children(&mut cursor).collect();
+    for ch in children.iter().rev() {
+        match ch.kind() {
+            "simple_identifier" | "identifier" => {
+                return node_text_of(ch, source).filter(|t| !t.is_empty());
+            }
+            "navigation_suffix" => {
+                let mut sc = ch.walk();
+                for s in ch.children(&mut sc) {
+                    if s.kind() == "simple_identifier" || s.kind() == "identifier" {
+                        return node_text_of(&s, source).filter(|t| !t.is_empty());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Whether `kind` is the language's BARE field-reference identifier node kind.
 fn bare_is_identifier_kind(language: Language, kind: &str) -> bool {
     match language {
-        Language::Kotlin => kind == "simple_identifier" || kind == "identifier",
+        Language::Kotlin | Language::Swift => {
+            kind == "simple_identifier" || kind == "identifier"
+        }
         Language::TypeScript | Language::JavaScript => kind == "identifier",
         // OCaml: a bare `val` READ leaf is `value_name` (under a `value_path`);
         // a `val` WRITE leaf is `instance_variable_name` (the direct child of a
@@ -3129,8 +3230,19 @@ fn lua_cohesion_split_qualified_name(
 /// across multiple headers still resolves the full member set.
 fn cpp_project_declared_fields(
     file_paths: &[PathBuf],
-) -> HashMap<(Vec<String>, String), HashSet<String>> {
+) -> (HashMap<(Vec<String>, String), HashSet<String>>, HashSet<String>) {
     let mut global: HashMap<(Vec<String>, String), HashSet<String>> = HashMap::new();
+    // fix-CF1-S7: the PROJECT-WIDE set of declared namespace names. An out-of-line
+    // definition `Ret detail::f(){…}` parses identically to a real out-of-line
+    // method `Ret Widget::m(){…}` — the scope segment (`detail` / `Widget`) is
+    // structurally indistinguishable. To avoid emitting a phantom class for a
+    // namespace-scoped FREE FUNCTION (fmt: `void detail::format_windows_error`),
+    // we record every `namespace_definition` name across the project and gate the
+    // out-of-line synthesis on it. The namespace may be declared in a DIFFERENT
+    // translation unit than the out-of-line definition (os.cc qualifies with
+    // `detail::` but `namespace detail` lives in base.h), so this must be project-
+    // wide, not per-file.
+    let mut namespaces: HashSet<String> = HashSet::new();
     // Default options suffice: declared-field collection does not depend on the
     // dunder/threshold knobs (those only filter emitted methods, not fields).
     let options = CohesionOptions {
@@ -3174,8 +3286,50 @@ fn cpp_project_declared_fields(
         for (key, fields) in per_file {
             global.entry(key).or_default().extend(fields);
         }
+        cpp_collect_namespace_names(&tree.root_node(), &source, &mut namespaces);
     }
-    global
+    (global, namespaces)
+}
+
+/// fix-CF1-S7: collect every declared C++ namespace name (bare segment) under a
+/// node. Handles both a simple `namespace_definition > namespace_identifier` and
+/// a C++17 nested `namespace a::b` (`nested_namespace_specifier` with several
+/// `namespace_identifier` leaves) — each segment is a candidate scope that an
+/// out-of-line free function could be qualified by.
+fn cpp_collect_namespace_names(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "namespace_definition" {
+        if let Some(name) = node.child_by_field_name("name") {
+            cpp_collect_ns_name_leaves(&name, source, out);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        cpp_collect_namespace_names(&child, source, out);
+    }
+}
+
+/// Collect `namespace_identifier`/`identifier` leaves under a namespace name node.
+fn cpp_collect_ns_name_leaves(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "namespace_identifier" || node.kind() == "identifier" {
+        if let Some(t) = node_text_of(node, source) {
+            if !t.is_empty() {
+                out.insert(t);
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        cpp_collect_ns_name_leaves(&child, source, out);
+    }
 }
 
 /// fix-cl-7-v1 (v0.5.0 DESIGN-TAIL, Facet A1+B1'): dedicated C++
@@ -3219,6 +3373,7 @@ fn extract_file_method_fields_cpp(
     file_path: &Path,
     options: &CohesionOptions,
     global_declared: &HashMap<(Vec<String>, String), HashSet<String>>,
+    global_namespaces: &HashSet<String>,
 ) -> Vec<MethodFieldsExtraction> {
     let mut out: Vec<MethodFieldsExtraction> = Vec::new();
 
@@ -3241,7 +3396,28 @@ fn extract_file_method_fields_cpp(
         HashMap::new();
     collect_cpp_out_of_line_extractions(root, source, &[], &mut out_of_line);
 
+    // fix-CF1-S7: the bare names of every class declared anywhere in the project
+    // (in-body `class`/`struct` specifiers). A qualified `Scope::name`
+    // out-of-line definition is structurally identical whether `Scope` is a class
+    // (`Widget::area`) or a namespace (`detail::format_windows_error`) — only the
+    // latter is a phantom (a free function, not a method). The gate below drops an
+    // entry whose class segment is a DECLARED NAMESPACE and is NOT a declared
+    // class. A name that is both (pathological) is kept.
+    let known_class_names: HashSet<&String> = global_declared
+        .keys()
+        .map(|(_, n)| n)
+        .chain(declared_by_class.keys().map(|(_, n)| n))
+        .collect();
+
     for ((namespace_path, class_name), defs) in out_of_line {
+        // fix-CF1-S7: skip a namespace-qualified free function masquerading as an
+        // out-of-line method (`detail::f` where `detail` is a namespace, not a
+        // class) so it is never synthesised as a phantom cohesion class.
+        if global_namespaces.contains(&class_name)
+            && !known_class_names.contains(&class_name)
+        {
+            continue;
+        }
         // Skip out-of-line methods already represented inline in an in-body
         // class extraction from THIS file (same span) so a single-TU header
         // does not double-count.
@@ -5141,8 +5317,16 @@ fn collect_rust_impl_methods(
         if child.kind() == "impl_item" {
             // Get the type being implemented
             if let Some(type_node) = child.child_by_field_name("type") {
-                if let Ok(type_name) = type_node.utf8_text(source.as_bytes()) {
-                    let type_name = type_name.to_string();
+                // fix-CF1-S7: an `impl<T> Foo<T>` / `impl &Foo` / `impl a::Foo`
+                // carries a wrapper node (`generic_type` / `reference_type` /
+                // `scoped_type_identifier`) as the impl `type`, whose full text
+                // (`Foo<T>`) never equals the bare struct-map key (`Foo`), so the
+                // methods were silently dropped (`extract_rust_structs` keys the
+                // map on the bare `name` `type_identifier`). Strip the wrapper down
+                // to the bare `type_identifier` by AST node-kind unwrap (no string
+                // munging) so the generic/reference/scoped impl re-associates with
+                // its struct.
+                if let Some(type_name) = rust_impl_base_type_name(&type_node, source) {
 
                     // Get the body of the impl block
                     if let Some(body) = child.child_by_field_name("body") {
@@ -5195,6 +5379,33 @@ fn rust_function_has_self(function_node: &tree_sitter::Node) -> bool {
         }
     }
     false
+}
+
+/// fix-CF1-S7: resolve the bare receiver-type name an `impl` block targets,
+/// stripping the structural wrappers tree-sitter-rust places around it. Pure
+/// node-kind recursion (no regex / text slicing):
+///   - `type_identifier`        -> the name itself (`impl Foo`).
+///   - `generic_type`           -> its base `type` (`impl<T> Foo<T>` -> `Foo`).
+///   - `reference_type`         -> its inner `type` (`impl &Foo`).
+///   - `scoped_type_identifier` -> its trailing `name` (`impl a::Foo` -> `Foo`).
+/// Returns `None` for shapes that are not a nameable struct receiver (e.g. a
+/// tuple/array/pointer type), which then add no methods — matching the prior
+/// behaviour where such an impl simply did not key into the struct map.
+fn rust_impl_base_type_name(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => node_text_of(node, source).filter(|s| !s.is_empty()),
+        "generic_type" | "reference_type" => {
+            let inner = node.child_by_field_name("type").or_else(|| node.named_child(0))?;
+            rust_impl_base_type_name(&inner, source)
+        }
+        "scoped_type_identifier" => {
+            let name = node
+                .child_by_field_name("name")
+                .or_else(|| node.named_child(node.named_child_count().checked_sub(1)?))?;
+            rust_impl_base_type_name(&name, source)
+        }
+        _ => None,
+    }
 }
 
 // =============================================================================
@@ -6076,24 +6287,207 @@ fn compute_class_cohesion(
 ///
 /// Uses AST-based extraction when possible, falling back to regex for
 /// languages where tree-sitter parsing fails or returns no results.
-/// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT, Fix 3): collect the set of intra-class
-/// method names that `method_source` invokes through a `self.`/`Self::`
-/// receiver. These become the canonical LCOM4 *call edges* (Hitz & Montazeri
-/// 1995): two field-disjoint methods are still connected when one calls the
-/// other. Purely AST-driven (no regex). Rust is the primary target of this fork;
-/// other languages keep field-only edges (a documented per-language follow-on)
-/// and so return an empty set here.
+/// fix-R3-r7-cl11 (v0.5.0 CLOSEOUT, Fix 3) + fix-CF1-S7: collect the set of
+/// intra-class method names that `method_source` invokes through a SELF/THIS
+/// (or implicit-`this` bare) receiver. These become the canonical LCOM4 *call
+/// edges* (Hitz & Montazeri 1995): two field-disjoint methods are still
+/// connected when one calls the other. Purely AST-driven (no regex, no type
+/// inference) — every collected name is later resolved against the class's OWN
+/// method set in [`lcom4_from_graph`], so a call to a free/foreign function with
+/// no matching method index simply adds no edge.
+///
+/// Per-language receivers:
+///   - Rust:   `self.m()` / `Self::m()` (a bare `m()` is a free fn, never a method).
+///   - Java:   bare `m()` (implicit `this`) and `this.m()` (NOT `obj.m()`).
+///   - Kotlin: bare `m()` and `this.m()`.
+///   - Swift:  bare `m()` and `self.m()`.
+///   - Go:     `<recv>.m()` only (bare calls are package funcs, not methods).
+/// Languages not listed keep field-only edges (return an empty set).
 fn extract_self_method_calls(method_source: &str, file_path: &Path) -> HashSet<String> {
     let mut calls = HashSet::new();
-    if !matches!(Language::from_path(file_path), Some(Language::Rust)) {
+    let lang = match Language::from_path(file_path) {
+        Some(l) => l,
+        None => return calls,
+    };
+    if !matches!(
+        lang,
+        Language::Rust
+            | Language::Java
+            | Language::Kotlin
+            | Language::Swift
+            | Language::Go
+    ) {
         return calls;
     }
-    let tree = match parse(method_source, Language::Rust) {
+    let tree = match parse(method_source, lang) {
         Ok(t) => t,
         Err(_) => return calls,
     };
-    collect_rust_self_calls(&tree.root_node(), method_source.as_bytes(), &mut calls);
+    let root = tree.root_node();
+    let src = method_source.as_bytes();
+    match lang {
+        Language::Rust => collect_rust_self_calls(&root, src, &mut calls),
+        Language::Java => collect_java_self_calls(&root, src, &mut calls),
+        Language::Kotlin => collect_kotlin_self_calls(&root, src, &mut calls),
+        Language::Swift => collect_swift_self_calls(&root, src, &mut calls),
+        Language::Go => {
+            if let Some(recv) = go_receiver_name(method_source) {
+                collect_go_self_calls(&root, src, &recv, &mut calls);
+            }
+        }
+        _ => {}
+    }
     calls
+}
+
+/// fix-CF1-S7: the receiver variable name of a Go method snippet
+/// (`func (r *T) m() {…}` -> `"r"`). `None` for a free function or an anonymous
+/// receiver (`func (*T) m()`), in which case no `<recv>.field` / `<recv>.m()`
+/// scoping is possible.
+fn go_receiver_name(method_source: &str) -> Option<String> {
+    let tree = parse(method_source, Language::Go).ok()?;
+    fn find(node: &tree_sitter::Node, source: &str) -> Option<String> {
+        if node.kind() == "method_declaration" {
+            let recv = node.child_by_field_name("receiver")?;
+            let mut c = recv.walk();
+            for ch in recv.children(&mut c) {
+                if ch.kind() == "parameter_declaration" {
+                    let name = ch
+                        .child_by_field_name("name")
+                        .or_else(|| {
+                            ch.children(&mut ch.walk()).find(|g| g.kind() == "identifier")
+                        })?;
+                    return node_text_of(&name, source).filter(|s| !s.is_empty());
+                }
+            }
+            return None;
+        }
+        let mut c = node.walk();
+        for ch in node.children(&mut c) {
+            if let Some(r) = find(&ch, source) {
+                return Some(r);
+            }
+        }
+        None
+    }
+    find(&tree.root_node(), method_source)
+}
+
+/// fix-CF1-S7 — Java self-method calls: a `method_invocation` with NO `object`
+/// (implicit `this`) or `object == this`. A foreign `obj.m()` (object is some
+/// other expression) is skipped — only the class's own methods become edges.
+fn collect_java_self_calls(node: &tree_sitter::Node, source: &[u8], out: &mut HashSet<String>) {
+    use crate::security::ast_utils::node_text;
+    if node.kind() == "method_invocation" {
+        let is_self = match node.child_by_field_name("object") {
+            None => true,
+            Some(obj) => node_text(&obj, source) == "this",
+        };
+        if is_self {
+            if let Some(name) = node.child_by_field_name("name") {
+                out.insert(node_text(&name, source).to_string());
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_java_self_calls(&child, source, out);
+    }
+}
+
+/// fix-CF1-S7 — Kotlin self-method calls: a `call_expression` whose callee
+/// (`child(0)`) is a bare `simple_identifier`/`identifier` (implicit `this`) or
+/// a `navigation_expression` whose receiver is `this_expression`.
+fn collect_kotlin_self_calls(node: &tree_sitter::Node, source: &[u8], out: &mut HashSet<String>) {
+    use crate::security::ast_utils::node_text;
+    if node.kind() == "call_expression" {
+        if let Some(callee) = node.child(0) {
+            match callee.kind() {
+                "simple_identifier" | "identifier" => {
+                    out.insert(node_text(&callee, source).to_string());
+                }
+                "navigation_expression" => {
+                    if let Some(recv) = callee.child(0) {
+                        if recv.kind() == "this_expression" {
+                            if let Ok(s) = std::str::from_utf8(source) {
+                                if let Some(m) = nav_member_name(&callee, s) {
+                                    out.insert(m);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_kotlin_self_calls(&child, source, out);
+    }
+}
+
+/// fix-CF1-S7 — Swift self-method calls: a `call_expression` whose callee
+/// (`child(0)`) is a bare `simple_identifier` (implicit `self`) or a
+/// `navigation_expression` whose receiver is `self_expression`. A field-as-
+/// receiver call (`_values.removeAll()`) is NOT a self-call (receiver is an
+/// identifier, not `self_expression`).
+fn collect_swift_self_calls(node: &tree_sitter::Node, source: &[u8], out: &mut HashSet<String>) {
+    use crate::security::ast_utils::node_text;
+    if node.kind() == "call_expression" {
+        if let Some(callee) = node.child(0) {
+            match callee.kind() {
+                "simple_identifier" => {
+                    out.insert(node_text(&callee, source).to_string());
+                }
+                "navigation_expression" => {
+                    if let Some(recv) = callee.child(0) {
+                        if recv.kind() == "self_expression" {
+                            if let Ok(s) = std::str::from_utf8(source) {
+                                if let Some(m) = nav_member_name(&callee, s) {
+                                    out.insert(m);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_swift_self_calls(&child, source, out);
+    }
+}
+
+/// fix-CF1-S7 — Go self-method calls: a `call_expression` whose `function` is a
+/// `selector_expression` whose `operand` is the method's receiver variable
+/// (`r.m()`). Bare calls are package functions, never receiver methods.
+fn collect_go_self_calls(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    receiver: &str,
+    out: &mut HashSet<String>,
+) {
+    use crate::security::ast_utils::node_text;
+    if node.kind() == "call_expression" {
+        if let Some(func) = node.child_by_field_name("function") {
+            if func.kind() == "selector_expression" {
+                if let Some(operand) = func.child_by_field_name("operand") {
+                    if node_text(&operand, source) == receiver {
+                        if let Some(field) = func.child_by_field_name("field") {
+                            out.insert(node_text(&field, source).to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_go_self_calls(&child, source, receiver, out);
+    }
 }
 
 /// Walk a Rust method body collecting `self.foo(..)` and `Self::foo(..)` callee
@@ -6156,6 +6550,20 @@ fn extract_field_accesses(method_source: &str, file_path: &Path) -> HashSet<Stri
         // field pattern matches), so the call-callee is excluded structurally.
         // No regex fallback for PHP — an empty AST result is the truth.
         Some(Language::Php) => php_method_field_accesses(method_source),
+        // fix-CF1-S7: Go member access is RECEIVER-scoped (`r.field`), but the
+        // per-method snippet was previously scanned with `receiver_name = None`,
+        // which falls back to a "any single-lowercase operand" heuristic and so
+        // credited `z.value` for ANY local `z` (gin: field_count ~37 vs the real
+        // ~13). Parse the method's own receiver name out of the snippet and
+        // restrict field accesses to `<recv>.field`; `r.method()` CALLS stay
+        // excluded structurally by the `call_expression`/`function` guard inside
+        // `extract_go_field_access`. An anonymous receiver (`func (*T) m()`, no
+        // name) yields `None` and keeps the legacy heuristic — it can access no
+        // fields anyway, so there is no regression.
+        Some(Language::Go) => {
+            let recv = go_receiver_name(method_source);
+            extract_field_accesses_ast(method_source, Language::Go, recv.as_deref())
+        }
         Some(language) => extract_field_accesses_ast(method_source, language, None),
         None => {
             // Unknown language: try regex fallback based on extension
