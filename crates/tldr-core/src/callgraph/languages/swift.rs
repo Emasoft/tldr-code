@@ -871,10 +871,31 @@ impl CallGraphLanguageSupport for SwiftHandler {
                     }
                 }
                 "function_declaration" => {
-                    // Top-level functions (not inside a class/extension)
-                    // Only process if parent is source_file
+                    // Register top-level functions, plus methods that error
+                    // recovery has orphaned out of their enclosing type.
+                    //
+                    // Normally a method sits under `class_body`/`protocol_body`
+                    // (handled by the `class_declaration`/`protocol_declaration`
+                    // arms) and a genuine local function sits under
+                    // `statements`/`function_body`. But when a type's body holds
+                    // a construct tree-sitter-swift mis-parses — e.g. a
+                    // `#if canImport(Darwin) && !canImport(...)` directive or an
+                    // attributed `@unchecked Sendable` conformance — the
+                    // enclosing `class`/`actor` is re-parsed as a
+                    // `function_declaration` (or an `ERROR` chain) and its
+                    // methods become nested `function_declaration`s whose parent
+                    // is that fake node, not a `class_body`. Such methods were
+                    // dropped, so go-to-definition reported "not found in scope"
+                    // (F4d: alamofire `Session.withAllRequests`). Treat a
+                    // `function_declaration`/`ERROR` parent as the error-recovery
+                    // shape and register the method so it stays resolvable.
                     if let Some(parent) = node.parent() {
-                        if parent.kind() == "source_file" {
+                        let parent_kind = parent.kind();
+                        let registerable = matches!(
+                            parent_kind,
+                            "source_file" | "function_declaration" | "ERROR"
+                        );
+                        if registerable {
                             if let Some(name_node) = node.child_by_field_name("name") {
                                 let func_name = get_node_text(&name_node, source_bytes).to_string();
                                 let fn_line = node.start_position().row as u32 + 1;
@@ -1102,6 +1123,131 @@ class MyClass {
 
             assert!(funcs.contains("staticMethod"));
             assert!(funcs.contains("classMethod"));
+        }
+
+        /// Helper: names of every `FuncDef` produced by `extract_definitions`.
+        fn def_func_names(source: &str) -> std::collections::HashSet<String> {
+            let handler = SwiftHandler::new();
+            let mut parser = tree_sitter::Parser::new();
+            parser
+                .set_language(&tree_sitter_python::LANGUAGE.into())
+                .unwrap();
+            let dummy = parser.parse("", None).unwrap();
+            let (funcs, _classes) = handler
+                .extract_definitions(source, Path::new("t.swift"), &dummy)
+                .unwrap();
+            funcs.into_iter().map(|f| f.name).collect()
+        }
+
+        /// F4d (v0.5.0 BACKLOG): Swift methods inside a type whose body
+        /// contains a construct tree-sitter mis-parses (e.g. a
+        /// `#if canImport(Darwin) && !canImport(...)` conditional-compilation
+        /// directive, or an attributed `@unchecked Sendable` conformance)
+        /// were dropped by `extract_definitions`. Under error recovery the
+        /// enclosing `class`/`actor` is re-parsed as a `function_declaration`
+        /// (or an `ERROR` chain), so its methods become nested
+        /// `function_declaration` nodes whose parent is NOT a `class_body`.
+        /// The old code only registered `function_declaration`s whose parent
+        /// was `source_file`, so go-to-definition reported "not found in
+        /// scope" (regression on alamofire `Session.withAllRequests`).
+        ///
+        /// Every method must be registered (resolvable by name) regardless of
+        /// the complex signature shape: labeled params, `@escaping @Sendable`
+        /// closures, and default-closure params (`= { true }`).
+        #[test]
+        fn test_misparsed_type_methods_are_registered() {
+            // Mirrors alamofire Source/Core/Session.swift: an `open class …:
+            // @unchecked Sendable` whose body holds a `#if … && …` block.
+            let source = r#"
+open class Session: @unchecked Sendable {
+    public func withAllRequests(perform action: @escaping @Sendable (Set<Request>) -> Void) {
+        rootQueue.async { action() }
+    }
+
+    #if canImport(Darwin) && !canImport(FoundationNetworking)
+    open func webSocketRequest(to url: String,
+                               shouldCreateTask: @escaping @Sendable () -> Bool = { true }) {
+        perform()
+    }
+    #endif
+
+    func plainMethod() {
+        helper()
+    }
+}
+"#;
+            let names = def_func_names(source);
+
+            // labeled param + @escaping @Sendable closure
+            assert!(
+                names.contains("withAllRequests"),
+                "labeled/@Sendable method dropped: {:?}",
+                names
+            );
+            // default-closure param `= { true }`
+            assert!(
+                names.contains("webSocketRequest"),
+                "default-closure method dropped: {:?}",
+                names
+            );
+            // plain method in the same mis-parsed body
+            assert!(
+                names.contains("plainMethod"),
+                "plain method in mis-parsed type dropped: {:?}",
+                names
+            );
+        }
+
+        /// Generalization: the same complex signatures, AND a properly parsed
+        /// type, must still register — the fix must not regress the happy path
+        /// nor over-register genuine local helper functions.
+        #[test]
+        fn test_complex_signatures_and_clean_types_still_register() {
+            // (1) standalone top-level funcs with complex signatures (clean parse)
+            let standalone = r#"
+public func withAllRequests(perform action: @escaping @Sendable (Set<Request>) -> Void) {
+    action()
+}
+
+func makeTask(shouldCreateTask: @escaping @Sendable () -> Bool = { true }) {
+    shouldCreateTask()
+}
+"#;
+            let names = def_func_names(standalone);
+            assert!(names.contains("withAllRequests"), "{:?}", names);
+            assert!(names.contains("makeTask"), "{:?}", names);
+
+            // (2) a cleanly parsed class — methods register, no duplication
+            let clean_class = r#"
+final class Clean {
+    func upload(multipartFormData: @escaping (Int) -> Void, with x: Int = 0) {
+        body()
+    }
+    func simple() {}
+}
+"#;
+            let names = def_func_names(clean_class);
+            assert!(names.contains("upload"), "{:?}", names);
+            assert!(names.contains("simple"), "{:?}", names);
+
+            // (3) genuine local helper functions must NOT leak as top-level
+            // definitions (their parent is `statements`, not the mis-parse
+            // shapes) — only the outer `outer` is a real top-level def.
+            let local_helper = r#"
+func outer() {
+    func innerHelper() {
+        work()
+    }
+    innerHelper()
+}
+"#;
+            let names = def_func_names(local_helper);
+            assert!(names.contains("outer"), "{:?}", names);
+            assert!(
+                !names.contains("innerHelper"),
+                "genuine local helper leaked as top-level def: {:?}",
+                names
+            );
         }
     }
 
