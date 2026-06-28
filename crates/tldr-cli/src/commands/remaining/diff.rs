@@ -118,9 +118,10 @@ impl ExtractedNode {
         body: impl Into<String>,
     ) -> Self {
         let body_str: String = body.into();
-        let normalized = normalize_body(&body_str);
+        let name_str: String = name.into();
+        let normalized = normalize_body(&body_str, &name_str);
         Self {
-            name: name.into(),
+            name: name_str,
             kind,
             line,
             end_line,
@@ -146,34 +147,90 @@ impl ExtractedNode {
     }
 }
 
+/// Strip inline `#` comments (balanced-quote heuristic) and surrounding
+/// whitespace from a single line, returning `None` when nothing remains.
+fn normalize_line(line: &str) -> Option<String> {
+    // Strip inline comments (simple approach: truncate at #)
+    let stripped = if let Some(pos) = line.find('#') {
+        // Make sure it's not inside a string
+        // Simple heuristic: if there's a # before any quote, strip it
+        let before_hash = &line[..pos];
+        let single_quotes = before_hash.matches('\'').count();
+        let double_quotes = before_hash.matches('"').count();
+        // If quotes are balanced (even count), it's a real comment
+        if single_quotes % 2 == 0 && double_quotes % 2 == 0 {
+            &line[..pos]
+        } else {
+            line
+        }
+    } else {
+        line
+    };
+    let trimmed = stripped.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Replace every whole-word occurrence of `name` in `line` with a single
+/// space. Used to erase a function's own identifier from a single-line body so
+/// that a pure rename (only the name changes) normalizes to identical text
+/// while unrelated bodies stay distinct. Whole-word matching (alphanumeric/`_`
+/// boundaries) avoids clobbering substrings of longer identifiers or keywords.
+fn strip_name_token(line: &str, name: &str) -> String {
+    if name.is_empty() {
+        return line.to_string();
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.find(name) {
+        let before = &rest[..pos];
+        let after = &rest[pos + name.len()..];
+        let prev_is_word = before.chars().next_back().is_some_and(is_word);
+        let next_is_word = after.chars().next().is_some_and(is_word);
+        out.push_str(before);
+        if prev_is_word || next_is_word {
+            // Part of a longer identifier — keep the occurrence verbatim.
+            out.push_str(name);
+        } else {
+            out.push(' ');
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Normalize body for comparison (remove whitespace variations and comments)
 /// For rename detection, we skip the first line (function/class signature)
 /// and only compare the actual body content.
-fn normalize_body(body: &str) -> String {
+///
+/// Single-line definitions (`let f x = expr`, `fn f() -> T { e }`) keep their
+/// body ON the signature line, so blindly dropping line 1 collapses the body to
+/// `""`. That made every single-line function compare equal to every other one
+/// (`compute_similarity("", "") == 1.0`), pairing unrelated OCaml `let`
+/// bindings as renames/moves at similarity 1.0. When no body survives on the
+/// following lines we instead keep the single line but erase the function
+/// `name`, so a pure rename still normalizes identically while unrelated
+/// bodies stay distinct. `name` is the extracted identifier of the
+/// function/class this body belongs to.
+fn normalize_body(body: &str, name: &str) -> String {
+    // Multi-line: the signature (carrying the rename-variable name) lives on
+    // line 1, so dropping it and keeping the remaining body is correct.
+    let rest: Vec<String> = body.lines().skip(1).filter_map(normalize_line).collect();
+    if !rest.is_empty() {
+        return rest.join("\n");
+    }
+    // Single-line definition: keep the body, but strip the function's own name
+    // so renames align and unrelated bodies do not collapse to "".
     body.lines()
-        .skip(1) // Skip signature line (def foo(): or class Bar:)
-        .map(|line| {
-            // Strip inline comments (simple approach: truncate at #)
-            let stripped = if let Some(pos) = line.find('#') {
-                // Make sure it's not inside a string
-                // Simple heuristic: if there's a # before any quote, strip it
-                let before_hash = &line[..pos];
-                let single_quotes = before_hash.matches('\'').count();
-                let double_quotes = before_hash.matches('"').count();
-                // If quotes are balanced (even count), it's a real comment
-                if single_quotes % 2 == 0 && double_quotes % 2 == 0 {
-                    &line[..pos]
-                } else {
-                    line
-                }
-            } else {
-                line
-            };
-            stripped.trim()
-        })
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+        .next()
+        .map(|line| strip_name_token(line, name))
+        .and_then(|line| normalize_line(&line))
+        .unwrap_or_default()
 }
 
 // =============================================================================
@@ -1151,11 +1208,15 @@ fn detect_changes(
 /// Compute similarity between two strings using Jaccard on lines,
 /// with a character-level fallback for short/single-line bodies.
 fn compute_similarity(a: &str, b: &str) -> f64 {
-    if a == b {
-        return 1.0;
-    }
+    // Two empty (contentless) bodies share no real evidence of a match. The
+    // empty check MUST precede the equality check: returning 1.0 for two empty
+    // normalized bodies paired unrelated single-line functions as renames/moves
+    // at similarity 1.0 (fix-PW5-bug12).
     if a.is_empty() || b.is_empty() {
         return 0.0;
+    }
+    if a == b {
+        return 1.0;
     }
 
     // Jaccard similarity on lines
@@ -2802,7 +2863,7 @@ fn build_class_node(
     // 1-indexed column (diff-column-one-indexed-v1).
     let column = node.start_position().column as u32 + 1;
     let body = node_text(node, source).to_string();
-    let normalized_body = normalize_body(&body);
+    let normalized_body = normalize_body(&body, &class_name);
 
     // Extract base classes
     let bases = extract_bases(node, source, lang);
@@ -4491,7 +4552,12 @@ function topLevel() { return 0; }
     #[test]
     fn test_compute_similarity() {
         assert_eq!(compute_similarity("abc", "abc"), 1.0);
-        assert_eq!(compute_similarity("", ""), 1.0); // two empty strings are equal
+        // fix-PW5-bug12: two empty (contentless) bodies share no real content,
+        // so they must NOT report a perfect match. Returning 1.0 here paired
+        // unrelated single-line functions as renames/moves at similarity 1.0.
+        assert_eq!(compute_similarity("", ""), 0.0);
+        assert_eq!(compute_similarity("x", ""), 0.0);
+        assert_eq!(compute_similarity("", "y"), 0.0);
         assert!(compute_similarity("a\nb\nc", "a\nb\nd") >= 0.5); // Jaccard: 2/4 = 0.5
     }
 
@@ -4499,7 +4565,7 @@ function topLevel() { return 0; }
     fn test_normalize_body() {
         // Test that normalize_body skips the signature line and strips comments
         let body = "def foo():\n    # pure comment line\n    return 1  # inline comment";
-        let normalized = normalize_body(body);
+        let normalized = normalize_body(body, "foo");
         // Should skip "def foo():" (first line), filter "# pure comment line" (comment-only)
         // and strip "# inline comment" from the return line
         assert!(!normalized.contains('#'), "Comments should be removed");
@@ -4508,6 +4574,174 @@ function topLevel() { return 0; }
             "Signature should be skipped"
         );
         assert!(normalized.contains("return 1"), "Body should remain");
+    }
+
+    #[test]
+    fn test_normalize_body_single_line_preserves_body() {
+        // fix-PW5-bug12: a single-line OCaml function body must NOT collapse to
+        // "" — otherwise every single-line function compares equal to every
+        // other one (the source of the false 1.0 rename pairings).
+        let parse_name =
+            "let parse_name name = Action_runner_name.parse_string_exn (Loc.none, name)";
+        let build_memo = "let build_memo f = Build_system.run f";
+
+        let np = normalize_body(parse_name, "parse_name");
+        let nb = normalize_body(build_memo, "build_memo");
+        assert!(
+            !np.is_empty() && !nb.is_empty(),
+            "single-line bodies must not normalize to empty: {np:?} / {nb:?}"
+        );
+        assert!(
+            np.contains("parse_string_exn"),
+            "real body content must survive normalization: {np:?}"
+        );
+        // The function's own name is erased so renames align...
+        assert!(
+            !np.contains("parse_name"),
+            "function name should be stripped from single-line body: {np:?}"
+        );
+        // ...but unrelated single-line bodies stay distinct.
+        assert_ne!(
+            np, nb,
+            "unrelated single-line bodies must differ after normalization"
+        );
+    }
+
+    #[test]
+    fn test_normalize_body_single_line_rename_aligns() {
+        // A pure rename (only the identifier changes) must normalize to the
+        // SAME text so the rename is still detectable.
+        let a = "let calculate_total items = List.fold_left ( + ) 0 items";
+        let b = "let compute_total items = List.fold_left ( + ) 0 items";
+        assert_eq!(
+            normalize_body(a, "calculate_total"),
+            normalize_body(b, "compute_total"),
+            "pure rename of a single-line function must normalize identically"
+        );
+    }
+
+    /// fix-PW5-bug12 (lang-agnostic): single-line functions whose bodies are
+    /// entirely different must never pair as a rename/move at similarity 1.0.
+    /// Pre-fix `normalize_body` dropped the only line -> "" for every
+    /// single-line function and `compute_similarity("","") == 1.0` paired
+    /// unrelated leftovers. Covers the symptom class across languages.
+    #[test]
+    fn diff_unrelated_single_line_functions_not_paired_at_one() {
+        struct Case {
+            lang: Language,
+            a: &'static str,
+            b: &'static str,
+        }
+        let cases = [
+            Case {
+                lang: Language::Ocaml,
+                a: "let parse_name name = Action_runner_name.parse_string_exn (Loc.none, name)\n",
+                b: "let build_memo f = Build_system.run f\n",
+            },
+            Case {
+                lang: Language::Rust,
+                a: "fn parse_name(name: &str) -> Name { Name::parse_string_exn(name) }\n",
+                b: "fn build_memo(f: F) -> Memo { build_system_run(f) }\n",
+            },
+            Case {
+                lang: Language::JavaScript,
+                a: "function parseName(name) { return parseStringExn(name); }\n",
+                b: "function buildMemo(f) { return buildSystemRun(f); }\n",
+            },
+        ];
+        let pool = ParserPool::new();
+        for c in cases {
+            let ta = pool.parse(c.a, c.lang).unwrap();
+            let tb = pool.parse(c.b, c.lang).unwrap();
+            let na = extract_nodes(ta.root_node(), c.a.as_bytes(), c.lang);
+            let nb = extract_nodes(tb.root_node(), c.b.as_bytes(), c.lang);
+            assert!(
+                !na.is_empty() && !nb.is_empty(),
+                "{:?}: extraction must find the single-line function (a={}, b={})",
+                c.lang,
+                na.len(),
+                nb.len()
+            );
+            let changes = detect_changes(
+                &na,
+                &nb,
+                &PathBuf::from("a"),
+                &PathBuf::from("b"),
+                false,
+            );
+            let bogus: Vec<_> = changes
+                .iter()
+                .filter(|ch| {
+                    matches!(ch.change_type, ChangeType::Rename | ChangeType::Move)
+                })
+                .filter(|ch| ch.similarity.map(|s| s >= 0.99).unwrap_or(false))
+                .map(|ch| (ch.change_type, ch.name.clone(), ch.similarity))
+                .collect();
+            assert!(
+                bogus.is_empty(),
+                "{:?}: unrelated single-line functions must not pair at >=0.99: {bogus:?}",
+                c.lang
+            );
+        }
+    }
+
+    /// fix-PW5-bug12: same-named single-line functions with DIFFERENT bodies
+    /// across files must report an Update (real similarity), not a false Move
+    /// at similarity 1.0.
+    #[test]
+    fn diff_same_name_single_line_diff_body_is_update_not_move() {
+        let a = "let info e = Cmdliner.Cmd.Exit.info (code e) ~doc:(doc e)\n";
+        let b = "let info e = Other_module.totally_different e\n";
+        let pool = ParserPool::new();
+        let ta = pool.parse(a, Language::Ocaml).unwrap();
+        let tb = pool.parse(b, Language::Ocaml).unwrap();
+        let na = extract_nodes(ta.root_node(), a.as_bytes(), Language::Ocaml);
+        let nb = extract_nodes(tb.root_node(), b.as_bytes(), Language::Ocaml);
+        let changes = detect_changes(&na, &nb, &PathBuf::from("a"), &PathBuf::from("b"), false);
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.change_type == ChangeType::Update && c.name.as_deref() == Some("info")),
+            "same-name single-line body change must be an Update: {:?}",
+            changes
+                .iter()
+                .map(|c| (c.change_type, c.name.clone(), c.similarity))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| c.change_type == ChangeType::Move),
+            "must not be reported as a Move at similarity 1.0"
+        );
+    }
+
+    /// fix-PW5-bug12: a genuine single-line rename (same body, only the name
+    /// changed) must STILL be detected as a Rename.
+    #[test]
+    fn diff_genuine_single_line_rename_still_pairs() {
+        let a = "let calculate_total items = List.fold_left ( + ) 0 items\n";
+        let b = "let compute_total items = List.fold_left ( + ) 0 items\n";
+        let pool = ParserPool::new();
+        let ta = pool.parse(a, Language::Ocaml).unwrap();
+        let tb = pool.parse(b, Language::Ocaml).unwrap();
+        let na = extract_nodes(ta.root_node(), a.as_bytes(), Language::Ocaml);
+        let nb = extract_nodes(tb.root_node(), b.as_bytes(), Language::Ocaml);
+        let changes = detect_changes(&na, &nb, &PathBuf::from("a"), &PathBuf::from("b"), false);
+        let renames: Vec<_> = changes
+            .iter()
+            .filter(|c| c.change_type == ChangeType::Rename)
+            .collect();
+        assert!(
+            renames
+                .iter()
+                .any(|c| c.similarity.map(|s| s >= 0.99).unwrap_or(false)),
+            "genuine single-line rename must pair as a Rename at ~1.0: {:?}",
+            changes
+                .iter()
+                .map(|c| (c.change_type, c.name.clone(), c.similarity))
+                .collect::<Vec<_>>()
+        );
     }
 
     // =========================================================================
