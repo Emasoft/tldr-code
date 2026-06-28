@@ -147,7 +147,25 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Php => &["class_declaration", "interface_declaration"],
         Language::Lua | Language::Luau => &[], // Lua doesn't have class syntax
         Language::Elixir => &["call"],         // defmodule is a call in elixir tree-sitter
-        Language::Ocaml => &["module_definition", "type_definition"],
+        // CF1-S4 (v0.5.0 RC): OCaml's class-shaped carriers are FOUR distinct
+        // node kinds, not two. `module_definition` (kind="module") and
+        // `type_definition` (kind="type") were already collected, but the two
+        // genuine OOP-class forms were missing entirely, so `interface` listed
+        // dozens of modules + type aliases and ZERO real classes. Add the real
+        // class carriers so they surface (relabeled by kind, see
+        // `ts_js_entry_kind`): `class_definition` (`class c = object … end`,
+        // kind="class") and `class_type_definition` (`class type ct = object …
+        // end`, the OCaml class *signature* / interface analogue,
+        // kind="interface"). The module/type entries keep their own kinds and
+        // are therefore no longer miscounted as classes. Node shapes verified
+        // against tree-sitter-ocaml 0.24.2 node-types.json (mirrors
+        // `crates/tldr-core/src/inheritance/ocaml.rs`).
+        Language::Ocaml => &[
+            "module_definition",
+            "type_definition",
+            "class_definition",
+            "class_type_definition",
+        ],
         // real-repo-fixes-v1 (P9.BUG-R6): kotlin classes/objects/interfaces.
         // Kotlin's tree-sitter grammar emits `class_declaration` for
         // `class`, `interface`, `enum class`, `data class`, etc., and
@@ -212,7 +230,21 @@ fn method_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Scala => &["function_definition", "function_declaration", "def_definition"],
         Language::Php => &["method_declaration"],
         Language::Elixir => &["call"],
-        Language::Ocaml => &["let_binding", "value_definition"],
+        // CF1-S4 (v0.5.0 RC): OCaml module bodies hold members as
+        // `value_definition` / `let_binding`, but an OCaml CLASS body
+        // (`object … end` = `object_expression`) holds them as
+        // `method_definition`, and a CLASS TYPE body (`class_body_type`) holds
+        // method contracts as `method_specification` / `method_type`. Add those
+        // three so a real OCaml class/class-type surfaces its methods instead of
+        // an empty `methods: []`. Additive — module bodies never contain these
+        // kinds, so module method collection is unaffected.
+        Language::Ocaml => &[
+            "let_binding",
+            "value_definition",
+            "method_definition",
+            "method_specification",
+            "method_type",
+        ],
         // interface-per-lang-v1 (v0.4.2 M-022): Kotlin/Swift class
         // bodies hold methods as `function_declaration` nodes. Without
         // this entry, every Kotlin class and every Swift class /
@@ -608,15 +640,23 @@ fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option
         Language::Rust => {
             // Rust impl_item doesn't always have a "name" field
             if node.kind() == "impl_item" {
-                // Look for the type being implemented
+                // CF1-S4 (v0.5.0 RC): normalize the impl'd type to its BASE
+                // name. The `type` field of an `impl<…> Foo<T, U> { … }` block is
+                // a `generic_type` whose verbatim text carries the type
+                // arguments (`Foo<'a, M, W>`), so the impl surfaced under a
+                // DIFFERENT name than its `struct Foo` declaration
+                // (`Foo` vs `Foo<'a, M, W>`) — an inconsistent class entry that
+                // `merge_rust_impl_entries` could not always coalesce. Peel the
+                // `generic_type` to its `type` field (AST-structural, NOT a
+                // substring scan) so every Rust entry renders the bare base name.
                 if let Some(type_node) = node.child_by_field_name("type") {
-                    return Some(node_text(type_node, source).to_string());
+                    return Some(rust_type_base_name(type_node, source));
                 }
                 // Fallback: find type_identifier child
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
                         if child.kind() == "type_identifier" || child.kind() == "generic_type" {
-                            return Some(node_text(child, source).to_string());
+                            return Some(rust_type_base_name(child, source));
                         }
                     }
                 }
@@ -726,6 +766,54 @@ fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option
                     }
                 }
             }
+            // CF1-S4 (v0.5.0 RC): a real OCaml class. `class_definition` wraps
+            // one or more `class_binding` children; the name lives on the
+            // binding's `class_name` child (there is no `name` field). Mirrors
+            // `extract_class_binding` in `inheritance/ocaml.rs`.
+            if node.kind() == "class_definition" {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "class_binding" {
+                        let mut bind_cursor = child.walk();
+                        for bind_child in child.children(&mut bind_cursor) {
+                            if bind_child.kind() == "class_name" {
+                                return Some(node_text(bind_child, source).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // CF1-S4: `class type ct = object … end` — the OCaml class signature.
+            // `class_type_definition` wraps `class_type_binding`, whose name is
+            // the `class_type_name` child.
+            if node.kind() == "class_type_definition" {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "class_type_binding" {
+                        let mut bind_cursor = child.walk();
+                        for bind_child in child.children(&mut bind_cursor) {
+                            if bind_child.kind() == "class_type_name" {
+                                return Some(node_text(bind_child, source).to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            // CF1-S4: class members. `method_definition` (in `object_expression`)
+            // and `method_specification` / `method_type` (in `class_body_type`)
+            // all carry the member name as a `method_name` child, not a `name`
+            // field, so the common lookup above misses it.
+            if matches!(
+                node.kind(),
+                "method_definition" | "method_specification" | "method_type"
+            ) {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "method_name" {
+                        return Some(node_text(child, source).to_string());
+                    }
+                }
+            }
             // `type t = { ... }` and similar — the type name is the
             // first `type_constructor` (or fallback identifier) child.
             if node.kind() == "type_definition" {
@@ -772,6 +860,22 @@ fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option
     }
 
     None
+}
+
+/// CF1-S4 (v0.5.0 RC): return the BASE name of a Rust type node, peeling any
+/// generic-argument layer structurally. A `generic_type` (`Foo<T, U>`) exposes
+/// its base as the `type` field child (a `type_identifier` or
+/// `scoped_type_identifier`), so we descend that field instead of slicing the
+/// node text on `<` — this stays AST-driven and is recursion-safe for nested
+/// generics. Any other type node (bare `type_identifier`, `scoped_type_identifier`)
+/// is already its own base and is returned verbatim.
+fn rust_type_base_name(type_node: Node, source: &[u8]) -> String {
+    if type_node.kind() == "generic_type" {
+        if let Some(base) = type_node.child_by_field_name("type") {
+            return rust_type_base_name(base, source);
+        }
+    }
+    node_text(type_node, source).to_string()
 }
 
 /// cpp-interface-macro-filter-v1 (v0.4.2 bug-B3 / VAL-CPP-IFACE):
@@ -1058,8 +1162,98 @@ pub fn extract_function_signature(func_node: Node, source: &[u8], lang: Language
         Language::Ocaml => extract_ocaml_signature(func_node, source),
         Language::Elixir => extract_elixir_signature(func_node, source),
         Language::Swift => extract_swift_signature(func_node, source),
+        // CF1-S4 (v0.5.0 RC): Kotlin & Solidity had no signature arm, so every
+        // function/method rendered `signature: ""` (the generic fallback's
+        // `child_by_field_name("parameters")` finds nothing — neither grammar
+        // exposes a `parameters` field). Both reconstruct the signature span
+        // AST-driven, mirroring the Swift extractor.
+        Language::Kotlin => extract_kotlin_signature(func_node, source),
+        Language::Solidity => extract_solidity_signature(func_node, source),
         _ => extract_generic_signature(func_node, source),
     }
+}
+
+/// Kotlin signature: the `(parameters)` clause plus any `: ReturnType` (and
+/// `where` constraints), excluding the body.
+///
+/// CF1-S4 (v0.5.0 RC): tree-sitter-kotlin-ng models a `function_declaration`
+/// with the parameter list as a `function_value_parameters` child and the
+/// return type as a sibling `type` node BETWEEN the parameters and the
+/// `function_body` — there is no `parameters` field, so the generic extractor
+/// returned an empty string for every Kotlin function (#CF1). Slice the source
+/// from the parameter clause up to (but excluding) the body, capturing
+/// `(x: Int): String` verbatim. For abstract / interface members with no body
+/// the span runs to the node end (`(): Int`).
+fn extract_kotlin_signature(func_node: Node, source: &[u8]) -> String {
+    let mut params: Option<Node> = None;
+    let mut body: Option<Node> = None;
+    let mut cursor = func_node.walk();
+    for child in func_node.children(&mut cursor) {
+        match child.kind() {
+            "function_value_parameters" if params.is_none() => params = Some(child),
+            "function_body" => body = Some(child),
+            _ => {}
+        }
+    }
+
+    let Some(p) = params else {
+        return extract_generic_signature(func_node, source);
+    };
+    let start = p.start_byte();
+    let end = match body {
+        Some(b) => b.start_byte(),
+        None => func_node.end_byte(),
+    };
+    if start >= end || end > source.len() {
+        return extract_generic_signature(func_node, source);
+    }
+    std::str::from_utf8(&source[start..end])
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Solidity signature: the `(parameters)` clause plus the visibility /
+/// mutability / modifier keywords and the `returns (...)` clause, excluding the
+/// body.
+///
+/// CF1-S4 (v0.5.0 RC): tree-sitter-solidity models a `function_definition`'s
+/// parameters as LOOSE `parameter` children (no `parameter_list` wrapper and no
+/// `parameters` field), with the `return_type`, `visibility` and
+/// `state_mutability` as sibling nodes after the closing `)`. The generic
+/// extractor therefore returned an empty string for every Solidity
+/// function/method/modifier/constructor (#CF1). Slice from the opening `(` of
+/// the parameter clause up to the body (or node end for a bodyless interface
+/// requirement), yielding e.g. `(address to, uint256 amount) external returns
+/// (bool)`.
+fn extract_solidity_signature(func_node: Node, source: &[u8]) -> String {
+    let mut open_paren: Option<Node> = None;
+    let mut body: Option<Node> = None;
+    let mut cursor = func_node.walk();
+    for child in func_node.children(&mut cursor) {
+        if child.kind() == "(" && open_paren.is_none() {
+            open_paren = Some(child);
+        }
+        if child.kind() == "function_body" {
+            body = Some(child);
+        }
+    }
+
+    let Some(open) = open_paren else {
+        return extract_generic_signature(func_node, source);
+    };
+    let start = open.start_byte();
+    let end = match body {
+        Some(b) => b.start_byte(),
+        None => func_node.end_byte(),
+    };
+    if start >= end || end > source.len() {
+        return extract_generic_signature(func_node, source);
+    }
+    std::str::from_utf8(&source[start..end])
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// Swift signature: the parameter clause plus any `async`/`throws` effects and
@@ -1976,8 +2170,22 @@ fn ts_js_entry_kind(node_kind: &str, lang: Language) -> Option<String> {
         // ... end` and `kind:"type"` for a `type t = ...` alias, instead of an
         // undifferentiated `kind: None`. Additive — agrees with the
         // `EntityKind::Module` / `EntityKind::TypeAlias` that structure emits.
-        Language::Ocaml => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
-            .map(|k| k.as_str().to_string()),
+        //
+        // CF1-S4 (v0.5.0 RC): the canonical `classify_node_kind` has no OCaml
+        // arm for the two real class carriers (`class_definition` /
+        // `class_type_definition`), so relabel them HERE (AST node-kind keyed,
+        // no source scan): a `class … = object … end` is `kind="class"` and a
+        // `class type … = object … end` is `kind="interface"` (the OCaml class
+        // *signature* analogue, matching the `interface = Some(true)` tag the
+        // `inheritance` walker assigns). Modules/types keep their own
+        // `classify_node_kind` answer ("module"/"type"), so they are no longer
+        // miscounted as classes.
+        Language::Ocaml => match node_kind {
+            "class_definition" => Some("class".to_string()),
+            "class_type_definition" => Some("interface".to_string()),
+            _ => tldr_core::ast::entity::classify_node_kind(node_kind, lang)
+                .map(|k| k.as_str().to_string()),
+        },
         // RC2-META Stage 3 (rust): populate the `interface` `ClassInfo.kind`
         // from the canonical, string-keyed `classify_node_kind` discriminator
         // (single source of truth — same answer `extract`/`structure` use). The
@@ -2165,6 +2373,26 @@ fn find_body_node<'a>(class_node: Node<'a>, lang: Language) -> Option<Node<'a>> 
                         }
                     }
                 }
+                // CF1-S4 (v0.5.0 RC): a real OCaml class. `class_definition >
+                // class_binding`, whose `body` field is the `object_expression`
+                // (`object … end`) holding the `method_definition` members.
+                if child.kind() == "class_binding" {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        if body.kind() == "object_expression" {
+                            return Some(body);
+                        }
+                    }
+                }
+                // CF1-S4: a class signature. `class_type_definition >
+                // class_type_binding`, whose `body` field is the
+                // `class_body_type` holding `method_specification` contracts.
+                if child.kind() == "class_type_binding" {
+                    if let Some(body) = child.child_by_field_name("body") {
+                        if body.kind() == "class_body_type" {
+                            return Some(body);
+                        }
+                    }
+                }
             }
             None
         }
@@ -2242,6 +2470,24 @@ fn is_cpp_member_function_declaration(node: Node) -> bool {
     false
 }
 
+/// CF1-S4 (v0.5.0 RC): classify a Ruby class-body statement as a bareword
+/// visibility-section directive. Returns `Some(true)` for a bare `private` /
+/// `protected` (subsequent instance methods become private), `Some(false)` for
+/// a bare `public` (reset to public), and `None` for anything else — including
+/// the TARGETED `private :sym` / `private def …` forms, which carry an argument
+/// and therefore parse as a `call`/`method_call` rather than a bare
+/// `identifier`. AST node-kind keyed, no source-line scan.
+fn ruby_visibility_section(node: Node, source: &[u8]) -> Option<bool> {
+    if node.kind() != "identifier" {
+        return None;
+    }
+    match node_text(node, source).trim() {
+        "private" | "protected" => Some(true),
+        "public" => Some(false),
+        _ => None,
+    }
+}
+
 /// Collect methods from a class body node.
 fn collect_methods_from_body(
     body: Node,
@@ -2254,8 +2500,26 @@ fn collect_methods_from_body(
     let mut cursor = body.walk();
     let decorator_kinds = decorator_node_kinds(lang);
 
+    // CF1-S4 (v0.5.0 RC): Ruby visibility-section state. A bareword `private`
+    // (or `protected`) statement with no arguments flips every subsequent
+    // instance-method definition in the same body to private until a `public`
+    // line resets it. tree-sitter-ruby parses such a bare directive as an
+    // `identifier` sibling of the `method` nodes (the `private :sym` /
+    // `private def …` TARGETED forms parse as `call`/`method_call` WITH an
+    // argument and are intentionally NOT treated as a section toggle). Without
+    // this, every method after a bare `private` leaked into the public surface
+    // and `private_method_count` stayed 0.
+    let mut ruby_section_private = false;
+
     for child in body.children(&mut cursor) {
         let kind = child.kind();
+
+        if lang == Language::Ruby {
+            if let Some(is_private_section) = ruby_visibility_section(child, source) {
+                ruby_section_private = is_private_section;
+                continue;
+            }
+        }
 
         // cpp-interface-macro-filter-v1 (v0.4.2 bug-B3): in a macro-misparsed
         // class body (`compound_statement`), tree-sitter-cpp nests
@@ -2336,7 +2600,13 @@ fn collect_methods_from_body(
             if method_name.is_empty() {
                 continue;
             }
-            if is_method_public(&method_name, child, source, lang) {
+            // CF1-S4 (v0.5.0 RC): a Ruby `def` (kind == "method", an instance
+            // method) under an active `private`/`protected` section is private
+            // regardless of its name. `def self.x` (`singleton_method`) is
+            // unaffected by the section directive, matching Ruby semantics.
+            let in_private_section =
+                lang == Language::Ruby && ruby_section_private && kind == "method";
+            if !in_private_section && is_method_public(&method_name, child, source, lang) {
                 methods.push(extract_method_info(child, source, lang));
             } else {
                 *private_count += 1;
@@ -5391,6 +5661,19 @@ mod tests {
                 if k == "call" {
                     continue;
                 }
+                // CF1-S4 (v0.5.0 RC): OCaml class-member kinds are resolved
+                // node-aware by `interface` (`get_node_name` reads the
+                // `method_name` child) — the shared STRING classifier
+                // `classify_node_kind` has no OCaml class/method arm, exactly the
+                // node-aware-only situation the Elixir `call` exception above
+                // covers. (Extending entity.rs's OCaml arm is a separate
+                // tldr-core follow-up; the local table is the source of truth
+                // for these member kinds.)
+                if lang == Language::Ocaml
+                    && matches!(k, "method_definition" | "method_specification" | "method_type")
+                {
+                    continue;
+                }
                 let ek = classify_node_kind(k, lang);
                 assert!(
                     ek.map(EntityKind::is_function_axis) == Some(true),
@@ -5400,6 +5683,16 @@ mod tests {
             for &k in class_node_kinds(lang) {
                 if k == "call" {
                     continue; // Elixir defmodule — node-aware only.
+                }
+                // CF1-S4 (v0.5.0 RC): OCaml's two real class carriers are labeled
+                // node-aware by `interface` (`ts_js_entry_kind`:
+                // class_definition -> "class", class_type_definition ->
+                // "interface"); the shared string classifier has no OCaml class
+                // arm yet, mirroring the `call` node-aware exception.
+                if lang == Language::Ocaml
+                    && matches!(k, "class_definition" | "class_type_definition")
+                {
+                    continue;
                 }
                 let ek = classify_node_kind(k, lang);
                 assert!(
@@ -7323,5 +7616,349 @@ return Lib
                 "[{label}] non-member local `privateHelper` must not be exported"
             );
         }
+    }
+}
+
+// =============================================================================
+// CF1-S4 (v0.5.0 RC): `tldr interface` signature + classification — the
+// generalization gate. ONE test asserting correctness across the full symptom
+// class: kotlin, solidity, ocaml, rust, ruby. Faithful inline fixtures (no
+// corpus dependency). Each sub-assertion FAILS on the pre-fix source and PASSES
+// after the fix, so the anti-treadmill property holds for every listed language.
+// =============================================================================
+#[cfg(test)]
+mod cf1_s4_interface_v1 {
+    use super::{extract_function_signature, extract_interface_with_lang};
+    use std::path::Path;
+    use tldr_core::ast::ParserPool;
+    use tldr_core::types::Language;
+
+    fn iface(name: &str, src: &str, lang: Language) -> super::InterfaceInfo {
+        extract_interface_with_lang(Path::new(name), src, lang)
+            .unwrap_or_else(|e| panic!("[{name}] extract failed: {e}"))
+    }
+
+    // --- KOTLIN ---------------------------------------------------------------
+    // Bug: every Kotlin function/method rendered `signature: ""`.
+    #[test]
+    fn kotlin_function_signatures_are_non_empty() {
+        let src = "\
+fun add(a: Int, b: Int): Int { return a + b }
+
+class Calc {
+    fun mul(x: Int, y: Int): Int { return x * y }
+}
+";
+        let info = iface("calc.kt", src, Language::Kotlin);
+        let add = info
+            .functions
+            .iter()
+            .find(|f| f.name == "add")
+            .expect("kotlin: `add` must surface");
+        assert!(
+            add.signature.contains("a: Int") && add.signature.contains("Int"),
+            "kotlin: `add` signature must carry params + return, got {:?}",
+            add.signature
+        );
+        let calc = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Calc")
+            .expect("kotlin: class `Calc` must surface");
+        let mul = calc
+            .methods
+            .iter()
+            .find(|m| m.name == "mul")
+            .expect("kotlin: method `mul` must surface");
+        assert!(
+            mul.signature.contains("x: Int"),
+            "kotlin: method `mul` signature must be non-empty, got {:?}",
+            mul.signature
+        );
+    }
+
+    // --- SOLIDITY -------------------------------------------------------------
+    // Bug: every Solidity function/method rendered `signature: ""`.
+    #[test]
+    fn solidity_function_signatures_are_non_empty() {
+        let src = "\
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface IThing {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
+contract Thing {
+    function doIt(uint256 x) public returns (uint256) { return x; }
+}
+";
+        let info = iface("thing.sol", src, Language::Solidity);
+        let ithing = info
+            .classes
+            .iter()
+            .find(|c| c.name == "IThing")
+            .expect("solidity: interface `IThing` must surface");
+        let transfer = ithing
+            .methods
+            .iter()
+            .find(|m| m.name == "transfer")
+            .expect("solidity: method `transfer` must surface");
+        assert!(
+            transfer.signature.contains("address to")
+                && transfer.signature.contains("returns (bool)"),
+            "solidity: `transfer` signature must carry params + returns, got {:?}",
+            transfer.signature
+        );
+        let thing = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Thing")
+            .expect("solidity: contract `Thing` must surface");
+        let do_it = thing
+            .methods
+            .iter()
+            .find(|m| m.name == "doIt")
+            .expect("solidity: method `doIt` must surface");
+        assert!(
+            do_it.signature.contains("uint256 x"),
+            "solidity: `doIt` signature must be non-empty, got {:?}",
+            do_it.signature
+        );
+    }
+
+    // --- OCAML ----------------------------------------------------------------
+    // Bug: `classes` listed only modules + type aliases, ZERO real classes.
+    #[test]
+    fn ocaml_real_classes_surface_and_modules_types_keep_their_kind() {
+        let src = "\
+module M = struct
+  let f x = x + 1
+end
+
+type t = { a : int }
+
+class counter = object
+  val mutable n = 0
+  method incr = n <- n + 1
+  method get = n
+end
+
+class type observer = object
+  method notify : int -> unit
+end
+";
+        let info = iface("thing.ml", src, Language::Ocaml);
+        let kind_of = |name: &str| -> Option<String> {
+            info.classes
+                .iter()
+                .find(|c| c.name == name)
+                .and_then(|c| c.kind.clone())
+        };
+
+        // A real `class … = object … end` now surfaces, labeled "class".
+        assert_eq!(
+            kind_of("counter").as_deref(),
+            Some("class"),
+            "ocaml: `class counter` must surface with kind=class; classes={:?}",
+            info.classes
+                .iter()
+                .map(|c| (c.name.clone(), c.kind.clone()))
+                .collect::<Vec<_>>()
+        );
+        // A `class type … = object … end` surfaces as the interface analogue.
+        assert_eq!(
+            kind_of("observer").as_deref(),
+            Some("interface"),
+            "ocaml: `class type observer` must surface with kind=interface"
+        );
+        // Modules and types keep their own kind — NOT miscounted as classes.
+        assert_eq!(
+            kind_of("M").as_deref(),
+            Some("module"),
+            "ocaml: module `M` must keep kind=module"
+        );
+        assert_eq!(
+            kind_of("t").as_deref(),
+            Some("type"),
+            "ocaml: type `t` must keep kind=type"
+        );
+        // The real class exposes its methods (find_body_node + method kinds).
+        let counter = info.classes.iter().find(|c| c.name == "counter").unwrap();
+        assert!(
+            counter.methods.iter().any(|m| m.name == "incr")
+                && counter.methods.iter().any(|m| m.name == "get"),
+            "ocaml: class `counter` must surface its methods, got {:?}",
+            counter.methods.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
+    }
+
+    // --- RUST -----------------------------------------------------------------
+    // Bug: impl blocks rendered the impl'd type WITH generic args
+    // (`StandardImpl<'a, M, W>`), inconsistent with the bare `struct` name.
+    #[test]
+    fn rust_class_names_are_normalized_without_generics() {
+        let src = "\
+pub struct Standard<W> { inner: W }
+
+impl<W: Clone> Standard<W> {
+    pub fn run(&self) {}
+}
+
+// Standalone impl whose base type has no struct decl in this file: it survives
+// as its own entry, so its name exercises the generic-normalization directly.
+impl<'a, M, W> StandardImpl<'a, M, W> {
+    pub fn go(&self) {}
+}
+";
+        let info = iface("standard.rs", src, Language::Rust);
+        // No class entry may carry generic-argument syntax in its name.
+        assert!(
+            info.classes.iter().all(|c| !c.name.contains('<')),
+            "rust: class names must be normalized (no `<…>`), got {:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        // Both the merged struct and the standalone impl render their base name.
+        assert!(
+            info.classes.iter().any(|c| c.name == "Standard"),
+            "rust: `Standard` must surface (bare)"
+        );
+        assert!(
+            info.classes.iter().any(|c| c.name == "StandardImpl"),
+            "rust: standalone impl must render as bare `StandardImpl`, got {:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    // --- RUBY -----------------------------------------------------------------
+    // Bug: a bareword `private` section was ignored; `private_method_count`
+    // stayed 0 and private methods leaked into the public method list.
+    #[test]
+    fn ruby_bare_private_section_marks_following_methods_private() {
+        let src = "\
+class Account
+  def deposit(x)
+  end
+
+  def balance
+  end
+
+  private
+
+  def secret
+  end
+
+  def hidden
+  end
+end
+";
+        let info = iface("account.rb", src, Language::Ruby);
+        let account = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Account")
+            .expect("ruby: class `Account` must surface");
+        // Public methods before `private` stay public.
+        assert!(
+            account.methods.iter().any(|m| m.name == "deposit")
+                && account.methods.iter().any(|m| m.name == "balance"),
+            "ruby: public methods must stay public, got {:?}",
+            account.methods.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
+        // Methods after a bare `private` are NOT in the public method list.
+        assert!(
+            !account.methods.iter().any(|m| m.name == "secret")
+                && !account.methods.iter().any(|m| m.name == "hidden"),
+            "ruby: methods after bare `private` must not be public, got {:?}",
+            account.methods.iter().map(|m| &m.name).collect::<Vec<_>>()
+        );
+        // …and they are counted as private.
+        assert!(
+            account.private_method_count >= 2,
+            "ruby: private_method_count must be >= 2 after a bare `private`, got {}",
+            account.private_method_count
+        );
+    }
+
+    // --- AST-shape sanity (guards the structural assumptions above) -----------
+    // A bare Ruby `private` parses as a bare `identifier`, and the OCaml class
+    // carriers parse as the node kinds the fix keys on. This pins the grammar
+    // contract so a tree-sitter bump that changes it fails loudly here.
+    #[test]
+    fn ast_shape_assumptions_hold() {
+        let pool = ParserPool::new();
+
+        // Ruby: the bare `private` directive is an `identifier`.
+        let rb = "class C\n  private\n  def x\n  end\nend\n";
+        let tree = pool.parse(rb, Language::Ruby).unwrap();
+        let mut found_private_identifier = false;
+        walk(&tree.root_node(), &mut |n| {
+            if n.kind() == "identifier"
+                && &rb.as_bytes()[n.start_byte()..n.end_byte()] == b"private"
+            {
+                found_private_identifier = true;
+            }
+        });
+        assert!(
+            found_private_identifier,
+            "ruby: bare `private` is expected to parse as an `identifier` node"
+        );
+
+        // OCaml: class / class-type carriers and the method member node.
+        let ml = "class c = object method m = 1 end\nclass type ct = object method n : int end\n";
+        let tree = pool.parse(ml, Language::Ocaml).unwrap();
+        let (mut has_class, mut has_class_type, mut has_method_def) = (false, false, false);
+        walk(&tree.root_node(), &mut |n| match n.kind() {
+            "class_definition" => has_class = true,
+            "class_type_definition" => has_class_type = true,
+            "method_definition" => has_method_def = true,
+            _ => {}
+        });
+        assert!(
+            has_class && has_class_type && has_method_def,
+            "ocaml: expected class_definition / class_type_definition / method_definition nodes"
+        );
+    }
+
+    fn walk(node: &tree_sitter::Node, f: &mut impl FnMut(&tree_sitter::Node)) {
+        f(node);
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(&child, f);
+        }
+    }
+
+    // --- direct signature-extractor probe (kotlin + solidity) -----------------
+    // Pins the extractor functions directly so a regression in either arm is
+    // attributable without the full interface pipeline.
+    #[test]
+    fn extract_function_signature_kotlin_solidity_direct() {
+        let pool = ParserPool::new();
+
+        let kt = "fun f(a: Int): String { return \"\" }\n";
+        let tree = pool.parse(kt, Language::Kotlin).unwrap();
+        let mut sig = String::new();
+        walk(&tree.root_node(), &mut |n| {
+            if n.kind() == "function_declaration" {
+                sig = extract_function_signature(*n, kt.as_bytes(), Language::Kotlin);
+            }
+        });
+        assert!(
+            sig.contains("a: Int") && sig.contains("String"),
+            "kotlin direct: signature must carry params+return, got {sig:?}"
+        );
+
+        let sol = "contract C { function g(uint256 n) public pure returns (uint256) { return n; } }\n";
+        let tree = pool.parse(sol, Language::Solidity).unwrap();
+        let mut sig = String::new();
+        walk(&tree.root_node(), &mut |n| {
+            if n.kind() == "function_definition" {
+                sig = extract_function_signature(*n, sol.as_bytes(), Language::Solidity);
+            }
+        });
+        assert!(
+            sig.contains("uint256 n") && sig.contains("returns (uint256)"),
+            "solidity direct: signature must carry params+returns, got {sig:?}"
+        );
     }
 }
