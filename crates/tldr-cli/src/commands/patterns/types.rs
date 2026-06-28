@@ -236,8 +236,12 @@ pub struct CohesionSummary {
     pub cohesive: u32,
     /// Number of split candidates
     pub split_candidates: u32,
-    /// Average LCOM4 value
-    pub avg_lcom4: f64,
+    /// Average LCOM4 value across applicable classes. `None` when no class is
+    /// applicable (e.g. all `NotApplicable`, as for fieldless Lua/Go module
+    /// tables), so the field is absent from JSON rather than reporting the `0.0`
+    /// sentinel. Mirrors the core `quality::cohesion::CohesionSummary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_lcom4: Option<f64>,
 }
 
 impl Default for CohesionSummary {
@@ -246,7 +250,7 @@ impl Default for CohesionSummary {
             total_classes: 0,
             cohesive: 0,
             split_candidates: 0,
-            avg_lcom4: 0.0,
+            avg_lcom4: None,
         }
     }
 }

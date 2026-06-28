@@ -443,17 +443,21 @@ fn compute_summary(classes: &[ClassCohesion]) -> CohesionSummary {
         .filter(|c| c.verdict != CohesionVerdict::NotApplicable)
         .map(|c| c.lcom4 as f64)
         .collect();
+    // No applicable class (e.g. all `NotApplicable`, as for a fieldless Lua/Go
+    // module table) yields `None` so the average is absent from JSON rather than
+    // the misleading `0.0` sentinel. Mirrors core `quality::cohesion`.
     let avg_lcom4 = if applicable.is_empty() {
-        0.0
+        None
     } else {
-        applicable.iter().sum::<f64>() / applicable.len() as f64
+        let avg = applicable.iter().sum::<f64>() / applicable.len() as f64;
+        Some((avg * 100.0).round() / 100.0) // Round to 2 decimal places
     };
 
     CohesionSummary {
         total_classes: total,
         cohesive,
         split_candidates,
-        avg_lcom4: (avg_lcom4 * 100.0).round() / 100.0, // Round to 2 decimal places
+        avg_lcom4,
     }
 }
 
@@ -612,9 +616,13 @@ fn format_cohesion_summary(s: &CohesionSummary) -> String {
     } else {
         0.0
     };
+    let avg = match s.avg_lcom4 {
+        Some(v) => format!("{:.2}", v),
+        None => "n/a".to_string(),
+    };
     format!(
-        "Summary: {} classes, {} split candidates ({:.1}%), avg LCOM4: {:.2}\n",
-        s.total_classes, s.split_candidates, pct, s.avg_lcom4
+        "Summary: {} classes, {} split candidates ({:.1}%), avg LCOM4: {}\n",
+        s.total_classes, s.split_candidates, pct, avg
     )
 }
 
@@ -684,7 +692,8 @@ mod tests {
         assert_eq!(summary.total_classes, 2);
         assert_eq!(summary.cohesive, 1);
         assert_eq!(summary.split_candidates, 1);
-        assert!((summary.avg_lcom4 - 1.5).abs() < 0.01);
+        let avg = summary.avg_lcom4.expect("avg present with applicable classes");
+        assert!((avg - 1.5).abs() < 0.01);
     }
 
     // =========================================================================
@@ -727,7 +736,7 @@ mod tests {
                 total_classes: 3,
                 cohesive: 0,
                 split_candidates: 3,
-                avg_lcom4: 3.33,
+                avg_lcom4: Some(3.33),
             },
             ..Default::default()
         };
@@ -757,7 +766,7 @@ mod tests {
                 total_classes: 2,
                 cohesive: 1,
                 split_candidates: 1,
-                avg_lcom4: 2.0,
+                avg_lcom4: Some(2.0),
             },
             ..Default::default()
         };
@@ -796,7 +805,7 @@ mod tests {
                 total_classes: 35,
                 cohesive: 0,
                 split_candidates: 35,
-                avg_lcom4: 2.0,
+                avg_lcom4: Some(2.0),
             },
             ..Default::default()
         };
@@ -818,7 +827,7 @@ mod tests {
                 total_classes: 2,
                 cohesive: 0,
                 split_candidates: 2,
-                avg_lcom4: 2.5,
+                avg_lcom4: Some(2.5),
             },
             ..Default::default()
         };
@@ -847,7 +856,7 @@ mod tests {
                 total_classes: 1,
                 cohesive: 0,
                 split_candidates: 1,
-                avg_lcom4: 2.0,
+                avg_lcom4: Some(2.0),
             },
             ..Default::default()
         };
@@ -874,7 +883,7 @@ mod tests {
                 total_classes: 47,
                 cohesive: 35,
                 split_candidates: 12,
-                avg_lcom4: 1.82,
+                avg_lcom4: Some(1.82),
             },
             ..Default::default()
         };
@@ -916,7 +925,7 @@ mod tests {
                 total_classes: 1,
                 cohesive: 0,
                 split_candidates: 1,
-                avg_lcom4: 2.0,
+                avg_lcom4: Some(2.0),
             },
             ..Default::default()
         };
@@ -951,7 +960,7 @@ mod tests {
                 total_classes: 0,
                 cohesive: 0,
                 split_candidates: 0,
-                avg_lcom4: 0.0,
+                avg_lcom4: None,
             },
             ..Default::default()
         };
@@ -973,7 +982,7 @@ mod tests {
                 total_classes: 2,
                 cohesive: 2,
                 split_candidates: 0,
-                avg_lcom4: 1.0,
+                avg_lcom4: Some(1.0),
             },
             ..Default::default()
         };
@@ -1367,5 +1376,115 @@ class Sample:
                 .unwrap_or_else(|| panic!("canonical missing rust type {}", cls.class_name));
             assert_eq!(cls.lcom4, cc.lcom4 as u32, "rust LCOM4 changed for {}", cls.class_name);
         }
+    }
+
+    /// Build a `NotApplicable` class (fieldless type / module table) with the
+    /// given `lcom4` sentinel, used to verify it is excluded from the average.
+    fn not_applicable_class(name: &str, lcom4: u32) -> ClassCohesion {
+        ClassCohesion {
+            class_name: name.to_string(),
+            file_path: "fixture".to_string(),
+            line: 1,
+            lcom4,
+            method_count: lcom4, // sentinel lcom4 == method_count for fieldless types
+            field_count: 0,
+            verdict: CohesionVerdict::NotApplicable,
+            split_suggestion: None,
+            components: vec![],
+        }
+    }
+
+    /// fix-CF2-S8: the CLI `summary.avg_lcom4` is `Option<f64>` and must be
+    /// `None` (absent from JSON) when NO class is applicable — never the `0.0`
+    /// sentinel — while a report with >=1 applicable class still reports the real
+    /// numeric average. This is the language-agnostic contract; it is asserted
+    /// directly on `compute_summary` (any language) AND end-to-end on a real Lua
+    /// module table (the lua-lsp `log.lua` regression: sole class lcom4=8,
+    /// verdict not_applicable, was reporting avg_lcom4: 0.0). Mirrors the core
+    /// `quality::cohesion` `Option<f64>` contract.
+    #[test]
+    fn test_avg_lcom4_absent_for_all_not_applicable_lua_and_agnostic() {
+        // --- (1) Language-agnostic: ALL classes NotApplicable => None / absent.
+        let all_na = vec![
+            not_applicable_class("Marker", 8),
+            not_applicable_class("Namespace", 3),
+        ];
+        let summary = compute_summary(&all_na);
+        assert_eq!(
+            summary.avg_lcom4, None,
+            "all-NotApplicable summary must yield None, not the 0.0 sentinel (got {:?})",
+            summary.avg_lcom4
+        );
+        let json = serde_json::to_value(&summary).expect("serialize summary");
+        assert!(
+            json.get("avg_lcom4").is_none(),
+            "avg_lcom4 key must be absent from JSON when no class is applicable, got: {json}"
+        );
+
+        // --- (2) >=1 applicable class => the real numeric average is preserved.
+        let mut mixed = all_na.clone();
+        mixed.push(ClassCohesion {
+            class_name: "Real".to_string(),
+            file_path: "fixture".to_string(),
+            line: 1,
+            lcom4: 4,
+            method_count: 6,
+            field_count: 4,
+            verdict: CohesionVerdict::SplitCandidate,
+            split_suggestion: None,
+            components: vec![],
+        });
+        let mixed_summary = compute_summary(&mixed);
+        assert_eq!(
+            mixed_summary.avg_lcom4,
+            Some(4.0),
+            "average over the single applicable class (lcom4=4) must be Some(4.0), \
+             excluding NotApplicable sentinels"
+        );
+        let mixed_json = serde_json::to_value(&mixed_summary).expect("serialize mixed");
+        assert!(
+            mixed_json.get("avg_lcom4").is_some(),
+            "avg_lcom4 key must be present when at least one class is applicable"
+        );
+
+        // --- (3) Lua end-to-end: a fieldless module table (mirrors lua-lsp
+        // log.lua) — every function is its own component, no shared field, so the
+        // sole class is NotApplicable. The summary average must be absent.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("log.lua");
+        std::fs::write(
+            &path,
+            "local log = {}\n\
+             function log.fmt(msg) return tostring(msg) end\n\
+             function log.info(msg) print(msg) end\n\
+             function log.warn(msg) print(msg) end\n\
+             function log.error(msg) print(msg) end\n\
+             return log\n",
+        )
+        .expect("write lua fixture");
+
+        let report = analyze_single_file(&path, &gen_args(&path)).expect("lua cohesion");
+        assert!(
+            !report.classes.is_empty(),
+            "lua module table must yield at least one class (else the test is vacuous)"
+        );
+        assert!(
+            report
+                .classes
+                .iter()
+                .all(|c| c.verdict == CohesionVerdict::NotApplicable),
+            "every lua module-table class must be NotApplicable (fieldless), got: {:?}",
+            report.classes.iter().map(|c| &c.verdict).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            report.summary.avg_lcom4, None,
+            "lua all-NotApplicable report must omit avg_lcom4 (got {:?})",
+            report.summary.avg_lcom4
+        );
+        let lua_json = serde_json::to_value(&report.summary).expect("serialize lua summary");
+        assert!(
+            lua_json.get("avg_lcom4").is_none(),
+            "lua summary JSON must not contain avg_lcom4 key, got: {lua_json}"
+        );
     }
 }
