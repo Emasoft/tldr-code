@@ -560,6 +560,19 @@ pub fn impact_analysis_with_ast_fallback(
 ///      caller.
 ///   3. Replace the "Entry point — no callers found" note when callers
 ///      are added.
+/// fix-PW1-B7a-elixir-refcount: returns true if `name` is a synthetic
+/// `<Module.Name>` elixir module-atom pseudo-caller — an angle-bracket
+/// synthetic-scope sentinel whose inner content is an Elixir module ALIAS
+/// (first inner char uppercase, e.g. `<Phoenix.Controller>`, `<Plug.Conn>`).
+/// The literal lowercase `<module>` top-level scope is NOT a module atom and is
+/// deliberately excluded — it carries genuine module-level call sites.
+fn is_elixir_synthetic_module_atom_caller(name: &str) -> bool {
+    name.strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .and_then(|inner| inner.chars().next())
+        .is_some_and(|c| c.is_uppercase())
+}
+
 pub fn enrich_impact_with_references(
     report: &mut ImpactReport,
     project_root: &Path,
@@ -698,6 +711,27 @@ pub fn enrich_impact_with_references(
             continue;
         }
         additions.push((enclosing, caller_file, r.line as u32, receiver));
+    }
+
+    // fix-PW1-B7a-elixir-refcount (v0.5.0 BACKLOG): suppress synthetic
+    // `<Module.Name>` module-atom pseudo-callers (e.g. `<Phoenix.Controller>`,
+    // `<Plug.Conn>`) that the elixir call graph mints for module-level /
+    // typespec-carrier scopes. A module is not a caller — these are
+    // self-referential DSL artifacts, not real call sites. The `<...>` marker
+    // is the call graph's internal synthetic-scope sentinel; an UPPERCASE inner
+    // name is an Elixir module ALIAS (module atom), which distinguishes it from
+    // the legitimate lowercase `<module>` top-level scope that carries genuine
+    // module-level call sites. Runs unconditionally (even with no reference
+    // additions) so callgraph-resolved pseudo-callers are dropped too.
+    if matches!(language, Language::Elixir) {
+        for tree in report.targets.values_mut() {
+            let before = tree.callers.len();
+            tree.callers
+                .retain(|c| !is_elixir_synthetic_module_atom_caller(&c.function));
+            if tree.callers.len() != before {
+                tree.caller_count = tree.callers.len();
+            }
+        }
     }
 
     if additions.is_empty() {
@@ -2759,5 +2793,133 @@ mod tests {
             CallReceiver::Bare,
             "a call textually before its same-named local is not shadowed"
         );
+    }
+
+    // =========================================================================
+    // fix-PW1-B7a-elixir-refcount (v0.5.0 BACKLOG): impact/explain over-counted
+    // elixir callers by crediting (a) `@spec`/`@type`/`@callback` typespec
+    // identifier occurrences as if they were calls, and (b) synthetic
+    // `<Module.Name>` module-atom pseudo-callers minted by the elixir call
+    // graph for module-level / typespec-carrier scopes.
+    //
+    // This generalization test drives the REAL caller-resolution path used by
+    // `impact` and `explain` — build_project_call_graph + impact_analysis +
+    // enrich_impact_with_references + find_references — and asserts the resolved
+    // elixir caller set EXCLUDES BOTH symptom variants while RETAINING the
+    // genuine named caller.
+    // =========================================================================
+    #[test]
+    fn b7a_elixir_typespec_and_module_atom_excluded_from_callers() {
+        use crate::analysis::references::{find_references, ReferenceKind, ReferencesOptions};
+        use crate::callgraph::builder::build_project_call_graph;
+        use crate::Language;
+
+        let root = std::env::temp_dir().join("tldr_b7a_elixir_refcount");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+
+        // server.ex: `handle/1` carries a `@spec handle(...)` typespec on the
+        // line above its `def`. The def-name occurrence inside the typespec is
+        // a TYPE annotation, NOT a call. The module-level @spec also causes the
+        // call graph to mint a `<MyApp.Server>` module-atom self-edge.
+        let server = "defmodule MyApp.Server do\n  \
+            @spec handle(integer) :: integer\n  \
+            def handle(x) do\n    \
+            x + 1\n  \
+            end\nend\n";
+        std::fs::write(root.join("lib/server.ex"), server).unwrap();
+
+        // client.ex: a GENUINE caller — `run/1` calls `handle(x)`.
+        let client = "defmodule MyApp.Client do\n  \
+            def run(x) do\n    \
+            handle(x)\n  \
+            end\nend\n";
+        std::fs::write(root.join("lib/client.ex"), client).unwrap();
+
+        // ---- Variant 1 (typespec): find_references must NOT classify the
+        // `handle` identifier inside `@spec handle(...)` as a Call. ----
+        let mut opts = ReferencesOptions::new();
+        opts.kinds = Some(vec![ReferenceKind::Call]);
+        opts.language = Some("elixir".to_string());
+        let refs = find_references("handle", &root, &opts).unwrap();
+        let server_path_tail = std::path::Path::new("lib/server.ex");
+        let spec_ref = refs
+            .references
+            .iter()
+            .find(|r| r.file.ends_with(server_path_tail) && r.line == 2);
+        assert!(
+            spec_ref.is_none(),
+            "@spec typespec line (server.ex:2) must NOT be a Call reference; got: {:?}",
+            refs.references
+        );
+        // The genuine call in client.ex (line 3) must still be a Call ref.
+        assert!(
+            refs.references
+                .iter()
+                .any(|r| r.file.ends_with(std::path::Path::new("lib/client.ex"))),
+            "genuine call in client.ex must remain a Call reference; got: {:?}",
+            refs.references
+        );
+
+        // ---- Drive the full impact caller-resolution path. ----
+        let graph =
+            build_project_call_graph(&root, Language::Elixir, None, true).unwrap();
+        let mut report = impact_analysis_with_ast_fallback(
+            &graph,
+            "handle",
+            3,
+            None,
+            &root,
+            Language::Elixir,
+        )
+        .expect("impact analysis should succeed");
+        enrich_impact_with_references(&mut report, &root, "handle", Language::Elixir);
+
+        // Flatten the resolved caller list across all targets.
+        let callers: Vec<(String, String)> = report
+            .targets
+            .values()
+            .flat_map(|t| {
+                t.callers
+                    .iter()
+                    .map(|c| (c.function.clone(), c.file.display().to_string()))
+            })
+            .collect();
+
+        // Variant 2 (module-atom): NO `<Module.Name>` synthetic pseudo-caller.
+        let module_atom = callers.iter().find(|(name, _)| {
+            name.strip_prefix('<')
+                .and_then(|s| s.strip_suffix('>'))
+                .and_then(|inner| inner.chars().next())
+                .is_some_and(|c| c.is_uppercase())
+        });
+        assert!(
+            module_atom.is_none(),
+            "no synthetic <Module.Name> module-atom pseudo-caller may appear; got callers: {:?}",
+            callers
+        );
+
+        // Variant 1 (typespec): NO caller attributed to the @spec line in
+        // server.ex (the def file). `handle`'s only non-def occurrence there is
+        // the typespec, so any server.ex caller is the bogus typespec credit.
+        let typespec_caller = callers
+            .iter()
+            .find(|(_, file)| std::path::Path::new(file).ends_with(server_path_tail));
+        assert!(
+            typespec_caller.is_none(),
+            "the @spec typespec occurrence must NOT be credited as a caller; got callers: {:?}",
+            callers
+        );
+
+        // Retention: the genuine `run` caller survives.
+        assert!(
+            callers
+                .iter()
+                .any(|(name, _)| name == "run" || name.ends_with(".run")),
+            "genuine named caller `run` must be retained; got callers: {:?}",
+            callers
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

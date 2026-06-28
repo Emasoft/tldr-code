@@ -703,6 +703,38 @@ impl ElixirHandler {
         }
     }
 
+    /// fix-PW1-B7a-elixir-refcount: returns true if `unary_node` is a typespec
+    /// module-attribute — `@spec` / `@type` / `@typep` / `@opaque` /
+    /// `@callback` / `@macrocallback`. Such an attribute parses as
+    /// `unary_operator(operator: @, operand: call(target: <attr>, ...))`. The
+    /// function-name occurrences inside the signature are TYPE annotations, not
+    /// calls, so the call graph must not extract them (which would otherwise
+    /// mint a synthetic `<Module.Name>` caller).
+    fn elixir_unary_is_typespec(unary_node: &Node, source: &[u8]) -> bool {
+        if unary_node.kind() != "unary_operator" {
+            return false;
+        }
+        let has_at = unary_node
+            .child_by_field_name("operator")
+            .map(|op| op.kind() == "@")
+            .unwrap_or(false);
+        if !has_at {
+            return false;
+        }
+        let operand = match unary_node.child_by_field_name("operand") {
+            Some(o) if o.kind() == "call" => o,
+            _ => return false,
+        };
+        let target = match operand.child_by_field_name("target") {
+            Some(t) if t.kind() == "identifier" => t,
+            _ => return false,
+        };
+        matches!(
+            get_node_text(&target, source),
+            "spec" | "type" | "typep" | "opaque" | "callback" | "macrocallback"
+        )
+    }
+
     fn recurse_extract_calls_node(
         &self,
         node: Node,
@@ -736,6 +768,16 @@ impl ElixirHandler {
         current_module: &mut Option<String>,
     ) {
         if node.kind() == "unary_operator" {
+            // fix-PW1-B7a-elixir-refcount (v0.5.0 BACKLOG): a typespec
+            // module-attribute (`@spec`/`@type`/`@typep`/`@opaque`/`@callback`/
+            // `@macrocallback`) carries the def-name inside its signature as a
+            // TYPE annotation, not a call. Extracting calls from it mints a
+            // bogus `<Module.Name>` self-edge (e.g. `<Phoenix.Controller> ->
+            // json` from `@spec json(...)`), over-counting callers in
+            // impact/explain. Skip the whole subtree for typespec attributes.
+            if Self::elixir_unary_is_typespec(&node, source) {
+                return;
+            }
             let caller = Self::module_caller_name(current_module);
             let calls = self.extract_calls_from_node(
                 &node,

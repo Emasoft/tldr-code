@@ -2600,6 +2600,18 @@ fn classify_lua_family_reference(node: &Node, parent: &Node) -> ReferenceKind {
 /// node (not inside the def-pattern above). Dotted calls (`Mod.func`) have
 /// parent `dot`.
 fn classify_elixir_reference(node: &Node, parent: &Node, source: &[u8]) -> ReferenceKind {
+    // fix-PW1-B7a-elixir-refcount (v0.5.0 BACKLOG): a def-name occurrence
+    // inside a `@spec`/`@type`/`@typep`/`@opaque`/`@callback`/`@macrocallback`
+    // typespec is a TYPE annotation, not a function call. `@spec handle(...)`
+    // parses as `unary_operator(@) -> call(spec) -> arguments -> ... -> call(handle)`,
+    // so the inner `handle` identifier would otherwise classify as a `Call` and
+    // be wrongly credited as a caller by impact/explain. Demote any occurrence
+    // living under a typespec attribute to a `Read` (a genuine textual usage,
+    // but never a call). AST/structural — no source-text heuristic.
+    if elixir_occurrence_in_typespec(node, source) {
+        return ReferenceKind::Read;
+    }
+
     let parent_kind = parent.kind();
 
     match parent_kind {
@@ -2679,6 +2691,57 @@ fn classify_elixir_reference(node: &Node, parent: &Node, source: &[u8]) -> Refer
 
         _ => ReferenceKind::Read,
     }
+}
+
+/// fix-PW1-B7a-elixir-refcount: returns true if `node` lives anywhere inside a
+/// typespec module-attribute subtree — `@spec` / `@type` / `@typep` /
+/// `@opaque` / `@callback` / `@macrocallback`. Such an attribute parses as a
+/// `unary_operator` whose `operator` is `@` and whose `operand` is a `call`
+/// with one of those typespec target identifiers. The function-name occurrences
+/// inside the signature (e.g. `handle` in `@spec handle(...) :: ...`) are TYPE
+/// annotations, not calls, and must not be counted as references-as-calls.
+///
+/// Walks the ancestor chain (bounded — a real call inside a function body never
+/// has a typespec `unary_operator` ancestor, since module attributes are
+/// siblings of `def`, not enclosing nodes).
+fn elixir_occurrence_in_typespec(node: &Node, source: &[u8]) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "unary_operator" && elixir_unary_is_typespec(&ancestor, source) {
+            return true;
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
+/// Returns true if `unary_node` is a typespec module-attribute (`@spec`,
+/// `@type`, `@typep`, `@opaque`, `@callback`, `@macrocallback`).
+fn elixir_unary_is_typespec(unary_node: &Node, source: &[u8]) -> bool {
+    if unary_node.kind() != "unary_operator" {
+        return false;
+    }
+    // operator must be `@`.
+    let has_at = unary_node
+        .child_by_field_name("operator")
+        .map(|op| op.kind() == "@")
+        .unwrap_or(false);
+    if !has_at {
+        return false;
+    }
+    // operand is the attribute call; its target identifier names the attribute.
+    let operand = match unary_node.child_by_field_name("operand") {
+        Some(o) if o.kind() == "call" => o,
+        _ => return false,
+    };
+    let target = match operand.child_by_field_name("target") {
+        Some(t) if t.kind() == "identifier" => t,
+        _ => return false,
+    };
+    matches!(
+        target.utf8_text(source).unwrap_or(""),
+        "spec" | "type" | "typep" | "opaque" | "callback" | "macrocallback"
+    )
 }
 
 /// Returns true if `call_node` is the inner `call` inside
