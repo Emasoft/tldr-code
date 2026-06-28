@@ -4572,7 +4572,65 @@ fn find_function_node_multilang<'a>(
 ) -> Option<Node<'a>> {
     let root = tree.root_node();
     let patterns = get_resource_patterns(lang);
-    find_function_recursive(root, function_name, source, &patterns)
+    // Exact-name pass (covers bare names and qualified names whose stored
+    // declarator already matches verbatim, e.g. C++ out-of-class defs).
+    if let Some(node) = find_function_recursive(root, function_name, source, &patterns) {
+        return Some(node);
+    }
+    // fix-PW3-F1-resources-cpp (v0.5.0 BACKLOG): bare/last-segment fallback.
+    //
+    // C++ out-of-class definitions (`bool Document::Parse(...) {...}`) store
+    // the declarator as the qualified `Document::Parse`, so an exact match on
+    // a bare `Parse` query fails. The 6+ sibling commands (contracts, etc.)
+    // resolve the bare name by matching the rightmost `::`/`.`-separated
+    // segment of the stored declarator. Mirror that here: when the query is
+    // itself bare (no separator), fall back to matching the last segment of
+    // each qualified declarator. The query-is-qualified direction
+    // (`Document::Parse` → inline `Parse`) is handled at the call site via
+    // `qualified_name_fallback_bare`.
+    if !function_name.contains("::") && !function_name.contains('.') {
+        return find_function_recursive_last_segment(root, function_name, source, &patterns);
+    }
+    None
+}
+
+/// Return the rightmost `::`- then `.`-separated segment of a (possibly
+/// qualified) declarator name. `Document::Parse` → `Parse`, `Foo.bar` →
+/// `bar`, plain `size` → `size`.
+fn last_name_segment(name: &str) -> &str {
+    let after_colon = name.rsplit("::").next().unwrap_or(name);
+    after_colon.rsplit('.').next().unwrap_or(after_colon)
+}
+
+/// Fallback resolver for [`find_function_node_multilang`]: match a bare
+/// `function_name` against the last `::`/`.`-separated segment of each
+/// qualified declarator in the AST. Mirrors the bare-name fallback in
+/// `contracts.rs` so the `resources` command reaches parity with the sibling
+/// commands on C++ out-of-class method definitions.
+fn find_function_recursive_last_segment<'a>(
+    node: Node<'a>,
+    function_name: &str,
+    source: &[u8],
+    patterns: &LangResourcePatterns,
+) -> Option<Node<'a>> {
+    if patterns.function_kinds.contains(&node.kind()) {
+        if let Some(name) = get_function_name_from_node(node, source, patterns) {
+            // Only a qualified declarator can differ from its last segment;
+            // an unqualified `name` was already covered by the exact pass.
+            if name != function_name && last_name_segment(&name) == function_name {
+                return Some(node);
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) =
+            find_function_recursive_last_segment(child, function_name, source, patterns)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn find_function_recursive<'a>(
@@ -5448,6 +5506,75 @@ function regularFunc(x: number): number {
         assert!(
             arrow.is_some(),
             "Should find TS arrow function 'getDuration'"
+        );
+    }
+
+    #[test]
+    fn test_find_cpp_bare_and_qualified_method_resources() {
+        // fix-PW3-F1-resources-cpp (v0.5.0 BACKLOG): the `resources`
+        // resolver must accept a bare C++ method name AND the fully
+        // qualified `Class::method` form — matching the 6+ sibling
+        // commands (contracts, etc.). C++ out-of-class definitions
+        // (`bool Document::Parse(...)`) store the declarator as the
+        // qualified `Document::Parse`, so a bare `Parse` query needs a
+        // last-segment fallback.
+        let cpp_source = r#"
+class Document {
+public:
+    bool Parse(const char* xml);
+    int Capacity() const;
+};
+
+bool Document::Parse(const char* xml) {
+    FILE* f = fopen(xml, "r");
+    return f != nullptr;
+}
+
+class Buffer {
+public:
+    int Size() const { return len_; }
+private:
+    int len_;
+};
+"#;
+        let tree = tldr_core::ast::parser::parse(cpp_source, Language::Cpp).unwrap();
+        let source_bytes = cpp_source.as_bytes();
+
+        // Out-of-class definition resolved by BARE method name.
+        let bare = find_function_node_multilang(&tree, "Parse", source_bytes, Language::Cpp);
+        assert!(
+            bare.is_some(),
+            "Should resolve bare C++ method name 'Parse' (out-of-class def)"
+        );
+
+        // Same definition resolved by the QUALIFIED form.
+        let qualified =
+            find_function_node_multilang(&tree, "Document::Parse", source_bytes, Language::Cpp);
+        assert!(
+            qualified.is_some(),
+            "Should resolve qualified C++ method name 'Document::Parse'"
+        );
+
+        // Both forms must resolve to the SAME node.
+        assert_eq!(
+            bare.unwrap().id(),
+            qualified.unwrap().id(),
+            "Bare and qualified forms must resolve to the same definition"
+        );
+
+        // Inline class method still resolves by its bare name (no regression).
+        let inline = find_function_node_multilang(&tree, "Size", source_bytes, Language::Cpp);
+        assert!(
+            inline.is_some(),
+            "Should still resolve inline C++ method 'Size' by bare name"
+        );
+
+        // A non-existent name must still return None (no over-matching).
+        let missing =
+            find_function_node_multilang(&tree, "DoesNotExist", source_bytes, Language::Cpp);
+        assert!(
+            missing.is_none(),
+            "Unknown method name must not resolve to any node"
         );
     }
 
