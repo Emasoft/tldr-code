@@ -554,6 +554,13 @@ pub fn get_file_churn(
             &format!("--since={}", since_arg),
             &format!("--pretty=format:{}", format_arg),
             "--name-only",
+            // Scope the log to the requested directory. `path` is also the
+            // cwd, so the `.` pathspec restricts results to that subtree
+            // instead of the whole repository (H-churn-pathspec). At the
+            // repo root, `.` matches everything, so whole-repo behaviour is
+            // unchanged.
+            "--",
+            ".",
         ],
         path,
     ) {
@@ -662,6 +669,10 @@ pub fn get_file_churn(
             &format!("--since={}", since_arg),
             "--numstat",
             "--format=",
+            // Scope to the requested directory (cwd == path). See
+            // H-churn-pathspec note on Command 1 above.
+            "--",
+            ".",
         ],
         path,
     )?;
@@ -806,6 +817,12 @@ pub(crate) fn get_file_churn_detailed(
         .arg("--numstat")
         .arg("--no-renames") // RISK-C1: prevent phantom entries
         .arg("--no-merges") // RISK-C2: prevent bad numstat
+        // Scope the log to the requested directory (cwd == canonical_path).
+        // The `.` pathspec restricts results to that subtree instead of the
+        // whole repository (H-churn-pathspec); at the repo root it matches
+        // everything, leaving whole-repo behaviour unchanged.
+        .arg("--")
+        .arg(".")
         .current_dir(&canonical_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

@@ -614,6 +614,123 @@ mod integration_tests {
         assert_eq!(lib_churn.commit_count, 1);
     }
 
+    /// Regression (H-churn-pathspec, WAVE 5): `churn <subdir>` must scope git
+    /// log to that subdir via a `-- .` pathspec instead of running over the
+    /// whole repository. Before the fix, `total_files`/the file list for a
+    /// subdir was identical to the whole repo (the PATH arg was ignored).
+    ///
+    /// The symptom class is language-agnostic (a git pathspec issue), so this
+    /// exercises BOTH a C subdir and a Luau subdir, and BOTH the default
+    /// (`get_file_churn`) and detailed (`get_file_churn_detailed`) code paths,
+    /// mirroring the c-redis / luau corpus repros.
+    #[test]
+    #[ignore = "Requires git setup - run with --ignored"]
+    fn test_churn_scopes_to_subdir_pathspec() {
+        let repo = TestRepo::new().expect("Failed to create test repo");
+
+        // C subdir (mirrors c-redis/src)
+        repo.add_file("c_src/server.c", "int main(void){return 0;}\n")
+            .unwrap();
+        repo.commit("add server.c").unwrap();
+        repo.add_file("c_src/dict.c", "void d(void){}\n").unwrap();
+        repo.commit("add dict.c").unwrap();
+
+        // Luau subdir (mirrors luau/VM)
+        repo.add_file("luau_src/VM.luau", "local x = 1\n").unwrap();
+        repo.commit("add VM.luau").unwrap();
+        repo.add_file("luau_src/Compiler.luau", "local y = 2\n").unwrap();
+        repo.commit("add Compiler.luau").unwrap();
+
+        // File outside both subdirs (must NOT appear in scoped results)
+        repo.add_file("README.md", "# repo\n").unwrap();
+        repo.commit("add readme").unwrap();
+
+        // --- get_file_churn (default path, feeds summary.total_files) ---
+        let whole = get_file_churn(repo.path(), 365, &[]).expect("whole-repo churn");
+        assert_eq!(
+            whole.len(),
+            5,
+            "whole-repo should see all 5 files: {:?}",
+            whole.keys().collect::<Vec<_>>()
+        );
+
+        let c_scoped =
+            get_file_churn(&repo.path().join("c_src"), 365, &[]).expect("c subdir churn");
+        assert_eq!(
+            c_scoped.len(),
+            2,
+            "c_src should scope to 2 files: {:?}",
+            c_scoped.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            c_scoped.keys().all(|k| k.starts_with("c_src/")),
+            "c keys must all be under c_src/: {:?}",
+            c_scoped.keys().collect::<Vec<_>>()
+        );
+        assert_ne!(
+            c_scoped.len(),
+            whole.len(),
+            "scoped subdir count must differ from whole-repo count"
+        );
+
+        let luau_scoped =
+            get_file_churn(&repo.path().join("luau_src"), 365, &[]).expect("luau subdir churn");
+        assert_eq!(
+            luau_scoped.len(),
+            2,
+            "luau_src should scope to 2 files: {:?}",
+            luau_scoped.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            luau_scoped.keys().all(|k| k.starts_with("luau_src/")),
+            "luau keys must all be under luau_src/: {:?}",
+            luau_scoped.keys().collect::<Vec<_>>()
+        );
+
+        // --- get_file_churn_detailed (hotspot path) ---
+        let (whole_d, _) =
+            get_file_churn_detailed(repo.path(), 365, &[], true).expect("whole-repo detailed");
+        assert_eq!(
+            whole_d.len(),
+            5,
+            "detailed whole-repo should see all 5 files: {:?}",
+            whole_d.keys().collect::<Vec<_>>()
+        );
+
+        let (c_scoped_d, _) =
+            get_file_churn_detailed(&repo.path().join("c_src"), 365, &[], true)
+                .expect("c detailed");
+        assert_eq!(
+            c_scoped_d.len(),
+            2,
+            "detailed c_src should scope to 2 files: {:?}",
+            c_scoped_d.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            c_scoped_d.keys().all(|k| k.starts_with("c_src/")),
+            "detailed c keys must all be under c_src/: {:?}",
+            c_scoped_d.keys().collect::<Vec<_>>()
+        );
+
+        let (luau_scoped_d, _) =
+            get_file_churn_detailed(&repo.path().join("luau_src"), 365, &[], true)
+                .expect("luau detailed");
+        assert_eq!(
+            luau_scoped_d.len(),
+            2,
+            "detailed luau_src should scope to 2 files: {:?}",
+            luau_scoped_d.keys().collect::<Vec<_>>()
+        );
+
+        // --- whole-repo target unchanged after scoped calls ---
+        let whole_again = get_file_churn(repo.path(), 365, &[]).expect("whole-repo churn again");
+        assert_eq!(
+            whole_again.len(),
+            5,
+            "whole-repo must remain unchanged at 5 files"
+        );
+    }
+
     /// Test 13: Numstat parsing - lines added/deleted
     #[test]
     #[ignore = "Requires git setup - run with --ignored"]
