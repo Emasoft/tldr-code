@@ -3540,7 +3540,36 @@ impl<'a> DfgBuilder<'a> {
         let def_start = self.refs.len();
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
-                self.add_ref_from_node(left, RefType::Definition);
+                // C4a-js-closure-liveness (v0.5.0 BACKLOG): a JS bare-identifier
+                // assignment whose target is a captured UPVALUE — a variable
+                // bound in an ENCLOSING function scope, written from inside a
+                // nested closure (not a local of the write's own function, not a
+                // true global) — is shared by reference with sibling/nested
+                // closures through the closure cell. The intraprocedural flat
+                // DFG carries no cross-closure def-use edge, so the write looks
+                // dead even though a sibling closure reads the shared cell
+                // (js-lodash `debounce`: `timerId`/`lastCallTime` written in
+                // `leadingEdge`/`timerExpired`/`cancel`, read in
+                // `debounced`/`flush`/`shouldInvoke`). Tag it `ClosureCapture`
+                // so `find_dead_stores_dfg` treats it as conservatively LIVE —
+                // the canonical soundness floor for captured/escaping variables
+                // (mirrors the Lua/Luau rc6 path via `is_lua_upvalue_write`).
+                // True locals of the write's own function and true globals are
+                // emitted with `context: None`, so genuine dead stores (incl.
+                // the GEN-test's never-read local) still surface.
+                let nm = left.utf8_text(self.source.as_bytes()).unwrap_or("");
+                if matches!(self.language, Language::JavaScript)
+                    && !nm.is_empty()
+                    && self.is_js_ts_upvalue_write(left, nm)
+                {
+                    self.add_ref_with_context(
+                        left,
+                        RefType::Definition,
+                        VarRefContext::ClosureCapture,
+                    );
+                } else {
+                    self.add_ref_from_node(left, RefType::Definition);
+                }
             } else {
                 // Could be member expression, subscript, etc.
                 self.extract_assignment_targets(left)?;
@@ -4896,6 +4925,55 @@ impl<'a> DfgBuilder<'a> {
                     if enc_names.contains(name) {
                         return true; // bound outside G → captured upvalue
                     }
+                }
+            }
+            node = n.parent();
+        }
+        false // no enclosing binder anywhere → true global → keep flaggable
+    }
+
+    /// C4a-js-closure-liveness (v0.5.0 BACKLOG): classify a JS write to the bare
+    /// `identifier` `name` at `write_node` by LEXICAL SCOPE — the JS/TS analog of
+    /// [`Self::is_lua_upvalue_write`]. A plain `identifier = …`
+    /// (`assignment_expression`) is syntactically identical whether it targets a
+    /// local, a captured upvalue, or a global, so the only sound classifier is a
+    /// lexical binder-resolution walk over the write's PHYSICAL ancestor chain:
+    ///
+    /// * the FIRST enclosing function scope `G` is the write's OWN scope. If
+    ///   `name` is bound directly in `G` (a parameter, a `var`/`let`/`const`
+    ///   declarator, a hoisted nested `function_declaration` name, a `catch`
+    ///   binder, or a `for (const x of …)` binder), the write is a LOCAL write →
+    ///   `false` (eligible for normal dead-store detection).
+    /// * otherwise, if `name` is bound in any scope ENCLOSING `G` (an outer
+    ///   function, or the `program` root), the write targets a captured UPVALUE →
+    ///   `true`. An intraprocedural dead-store analysis must treat such a write
+    ///   as conservatively LIVE: the shared closure cell may be read by a
+    ///   sibling/nested closure the intraprocedural flat DFG never sees
+    ///   (js-lodash `debounce`: `timerId`/`lastCallTime` written in
+    ///   `leadingEdge`/`cancel`, read in `debounced`/`flush`/`shouldInvoke`).
+    /// * if no enclosing scope binds `name`, it is a true GLOBAL write → `false`
+    ///   (a genuine dead global write stays flaggable).
+    ///
+    /// Keying on the PHYSICAL AST location (not on which function is being
+    /// analyzed) is what makes a write inside a NESTED closure of the analyzed
+    /// function correctly classified as an upvalue write even though `name` is a
+    /// local of that outer function — the cross-sibling read the flat-DFG model
+    /// cannot bridge with a def-use edge.
+    fn is_js_ts_upvalue_write(&self, write_node: Node, name: &str) -> bool {
+        let mut innermost_scope_seen = false;
+        let mut node = write_node.parent();
+        while let Some(n) = node {
+            if js_ts_is_function_scope(n.kind()) || n.kind() == "program" {
+                let mut names = HashSet::new();
+                collect_js_ts_scope_bindings(n, self.source, &mut names);
+                if !innermost_scope_seen {
+                    // `G`: the write's own innermost function (or program) scope.
+                    if names.contains(name) {
+                        return false; // local of the write's own scope
+                    }
+                    innermost_scope_seen = true;
+                } else if names.contains(name) {
+                    return true; // bound in an enclosing scope → captured upvalue
                 }
             }
             node = n.parent();
@@ -7093,6 +7171,103 @@ fn collect_ts_js_variable_names(
                 // child of the pattern subtree.
                 collect_ts_js_param_names(name, source, out);
             }
+        }
+    }
+}
+
+/// C4a-js-closure-liveness (v0.5.0 BACKLOG): true iff `kind` is a JS/TS node
+/// that introduces a new function (lexical) scope. Mirrors the JS/TS arm of
+/// `get_function_node_kinds`; `program` (the module root) is handled separately
+/// by the caller as the outermost scope.
+fn js_ts_is_function_scope(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration"
+            | "function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "generator_function"
+            | "generator_function_declaration"
+    )
+}
+
+/// C4a-js-closure-liveness (v0.5.0 BACKLOG): collect the identifier names bound
+/// DIRECTLY in one JS/TS lexical scope `scope_node` — a function node (any of
+/// the kinds `js_ts_is_function_scope` accepts) or the file `program` root.
+/// Records the scope's `parameters`, every `var`/`let`/`const` declarator name
+/// (descending through blocks/statements — `var` is function-scoped, so a `var`
+/// inside a nested block belongs to this scope; treating `let`/`const` the same
+/// way only ever OVER-approximates a scope's own locals, which is safe for the
+/// upvalue test), every hoisted nested `function_declaration` NAME (which binds
+/// in the enclosing scope), `catch` binders, and `for (const x of …)` binders.
+///
+/// Recursion STOPS at nested function boundaries: an inner helper's own locals
+/// (and a named `function_expression`'s own name) belong to the inner scope and
+/// are never mis-attributed to `scope_node`. The JS/TS analog of
+/// `collect_lua_scope_bindings`.
+fn collect_js_ts_scope_bindings(
+    scope_node: Node,
+    source: &str,
+    out: &mut std::collections::HashSet<String>,
+) {
+    // A function scope binds its parameters (the program root has none).
+    if let Some(params) = scope_node.child_by_field_name("parameters") {
+        collect_ts_js_param_names(params, source, out);
+    }
+    let mut stack: Vec<Node> = Vec::new();
+    let mut cursor = scope_node.walk();
+    for child in scope_node.children(&mut cursor) {
+        stack.push(child);
+    }
+    while let Some(n) = stack.pop() {
+        let kind = n.kind();
+        if js_ts_is_function_scope(kind) {
+            // Nested function: a hoisted `function_declaration` /
+            // `generator_function_declaration` binds its NAME in THIS scope
+            // (record it). NEVER descend into any nested function body.
+            if matches!(kind, "function_declaration" | "generator_function_declaration") {
+                if let Some(name) = n.child_by_field_name("name") {
+                    if name.kind() == "identifier" {
+                        if let Ok(t) = name.utf8_text(source.as_bytes()) {
+                            let t = t.trim();
+                            if !t.is_empty() {
+                                out.insert(t.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        match kind {
+            // `var`/`let`/`const x = …`: collect LHS binder names only; the
+            // initializer may hold function literals with their OWN scopes, so
+            // `collect_ts_js_variable_names` reads only each declarator `name`.
+            "lexical_declaration" | "variable_declaration" => {
+                collect_ts_js_variable_names(n, source, out);
+                continue;
+            }
+            // `catch (e) { … }` binder is scoped to the handler/function.
+            "catch_clause" => {
+                if let Some(param) = n.child_by_field_name("parameter") {
+                    collect_ts_js_param_names(param, source, out);
+                }
+            }
+            // `for (const/let/var x of … | in …)` binds `x` when a declarator
+            // `kind` token is present. A kind-less `for (x of …)` re-assigns an
+            // existing binding and is NOT a new binder, so it is left untouched.
+            "for_in_statement" => {
+                if n.child_by_field_name("kind").is_some() {
+                    if let Some(left) = n.child_by_field_name("left") {
+                        collect_ts_js_param_names(left, source, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut inner = n.walk();
+        for child in n.children(&mut inner) {
+            stack.push(child);
         }
     }
 }
@@ -10800,6 +10975,181 @@ bool test(int seed) {
         assert!(
             cpp_uses.contains(&"seed".to_string()),
             "C++ object-creation arg `seed` (new Foo(seed)) dropped; uses={cpp_uses:?}"
+        );
+    }
+
+    // =========================================================================
+    // C4a-js-closure-liveness (v0.5.0 BACKLOG): a JS variable WRITTEN in one
+    // closure and READ in a SIBLING closure must NOT be a dead store. The DFG
+    // tags such a captured-upvalue write `ClosureCapture` so `find_dead_stores_
+    // dfg` treats it as conservatively live (js-lodash `debounce`); a genuinely
+    // never-read LOCAL of the writing function stays untagged (still flaggable).
+    // The unit tests assert that root-cause signal (robust to CFG block shape).
+    // =========================================================================
+
+    /// True iff some Definition of `name` carries the `ClosureCapture` tag.
+    fn has_capture_def(dfg: &DfgInfo, name: &str) -> bool {
+        dfg.refs.iter().any(|r| {
+            r.name == name
+                && r.ref_type == RefType::Definition
+                && r.context == Some(VarRefContext::ClosureCapture)
+        })
+    }
+
+    /// True iff EVERY Definition of `name` is untagged (`context: None`).
+    fn all_defs_plain(dfg: &DfgInfo, name: &str) -> bool {
+        let defs: Vec<_> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == name && r.ref_type == RefType::Definition)
+            .collect();
+        !defs.is_empty() && defs.iter().all(|r| r.context.is_none())
+    }
+
+    #[test]
+    fn test_js_closure_upvalue_var_function_declaration_siblings() {
+        // debounce-shape: `timerId`/`lastCallTime` are `var`s of `debounceLike`,
+        // WRITTEN in sibling `start()` and READ in sibling `tick()`. The writes
+        // are captured-upvalue writes and must be tagged ClosureCapture. The
+        // `deadLocal` writes are genuine locals of `start` (never read) and must
+        // stay untagged so a real dead store still surfaces.
+        let source = r#"
+function debounceLike(wait) {
+  var timerId, lastCallTime;
+  function start() {
+    timerId = setTimeout(tick, wait);
+    lastCallTime = now();
+    var deadLocal = 1;
+    deadLocal = 2;
+  }
+  function tick() { return timerId + lastCallTime; }
+  return { start: start, tick: tick };
+}
+"#;
+        let dfg = get_dfg_context(source, "debounceLike", Language::JavaScript).unwrap();
+
+        assert!(
+            has_capture_def(&dfg, "timerId"),
+            "upvalue write `timerId = …` in sibling closure must be tagged ClosureCapture; refs={:?}",
+            dfg.refs
+                .iter()
+                .filter(|r| r.name == "timerId")
+                .map(|r| (r.ref_type, r.line, r.context.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            has_capture_def(&dfg, "lastCallTime"),
+            "upvalue write `lastCallTime = …` must be tagged ClosureCapture"
+        );
+        // A genuine never-read local of `start` is NOT an upvalue → stays plain
+        // (a real dead store the analysis must still be able to report).
+        assert!(
+            all_defs_plain(&dfg, "deadLocal"),
+            "genuine local `deadLocal` must NOT be tagged ClosureCapture; refs={:?}",
+            dfg.refs
+                .iter()
+                .filter(|r| r.name == "deadLocal")
+                .map(|r| (r.ref_type, r.line, r.context.clone()))
+                .collect::<Vec<_>>()
+        );
+        // Sanity: the cross-sibling READ of `timerId` is recorded (it is the
+        // read the flat per-function DFG carries but the per-block kill misses).
+        assert!(
+            dfg.refs
+                .iter()
+                .any(|r| r.name == "timerId" && r.ref_type == RefType::Use),
+            "expected a recorded Use of `timerId` (read in sibling `tick`)"
+        );
+    }
+
+    #[test]
+    fn test_js_closure_upvalue_classification_independent_of_analysis_root() {
+        // Same source, but analyze the INNER function `start` directly (the
+        // Lua rc6 `fire` shape). The physical-ancestor walk must still classify
+        // `timerId`/`lastCallTime` as captured upvalues even though they are
+        // locals of the *outer* function, never bound in `start`.
+        let source = r#"
+function debounceLike(wait) {
+  var timerId, lastCallTime;
+  function start() {
+    timerId = setTimeout(tick, wait);
+    lastCallTime = now();
+    var deadLocal = 1;
+    deadLocal = 2;
+  }
+  function tick() { return timerId + lastCallTime; }
+  return { start: start, tick: tick };
+}
+"#;
+        let dfg = get_dfg_context(source, "start", Language::JavaScript).unwrap();
+        assert!(
+            has_capture_def(&dfg, "timerId") && has_capture_def(&dfg, "lastCallTime"),
+            "captured-upvalue writes must be tagged regardless of which function is analyzed"
+        );
+        assert!(
+            all_defs_plain(&dfg, "deadLocal"),
+            "`deadLocal` is a local of the analyzed function `start` → stays plain"
+        );
+    }
+
+    #[test]
+    fn test_js_closure_upvalue_let_arrow_siblings_and_true_global() {
+        // Variant: `let` capture + ARROW-function siblings, plus a TRUE GLOBAL
+        // write inside a closure (bound nowhere) which must NOT be suppressed.
+        let source = r#"
+function makeTimer() {
+  let handle = null;
+  const begin = () => { handle = setInterval(poll, 5); };
+  const stop = () => { clearInterval(handle); handle = null; };
+  function poll() { ghostGlobal = read(handle); }
+  return { begin: begin, stop: stop };
+}
+"#;
+        let dfg = get_dfg_context(source, "makeTimer", Language::JavaScript).unwrap();
+
+        assert!(
+            has_capture_def(&dfg, "handle"),
+            "`let handle` written in arrow siblings must be tagged ClosureCapture; refs={:?}",
+            dfg.refs
+                .iter()
+                .filter(|r| r.name == "handle")
+                .map(|r| (r.ref_type, r.line, r.context.clone()))
+                .collect::<Vec<_>>()
+        );
+        // `ghostGlobal` is bound in NO enclosing scope → a true global write,
+        // which stays flaggable (NOT a captured upvalue).
+        assert!(
+            all_defs_plain(&dfg, "ghostGlobal"),
+            "true-global write `ghostGlobal = …` must NOT be tagged ClosureCapture; refs={:?}",
+            dfg.refs
+                .iter()
+                .filter(|r| r.name == "ghostGlobal")
+                .map(|r| (r.ref_type, r.line, r.context.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_js_local_reassignment_not_tagged_when_bound_in_own_scope() {
+        // A bare `identifier = …` that re-assigns a variable bound in the
+        // write's OWN function scope is a LOCAL write, never an upvalue: it must
+        // stay untagged so genuine intra-function dead stores still surface.
+        let source = r#"
+function f(a) {
+  let x = a;
+  x = a + 1;
+  return x;
+}
+"#;
+        let dfg = get_dfg_context(source, "f", Language::JavaScript).unwrap();
+        assert!(
+            all_defs_plain(&dfg, "x"),
+            "local re-assignment of own-scope `x` must NOT be tagged ClosureCapture; refs={:?}",
+            dfg.refs
+                .iter()
+                .filter(|r| r.name == "x")
+                .map(|r| (r.ref_type, r.line, r.context.clone()))
+                .collect::<Vec<_>>()
         );
     }
 }
