@@ -587,6 +587,103 @@ fn is_elixir_synthetic_module_atom_caller(name: &str) -> bool {
         .is_some_and(|c| c.is_uppercase())
 }
 
+/// fix-CF1-S16: AST-driven innermost *named* enclosing function for a call
+/// site at 1-indexed `(line, column)` in `file`.
+///
+/// The references-enrichment path resolves a call site's enclosing function by
+/// scanning [`crate::extract_file`]'s `module.functions` list, which for most
+/// grammars only carries TOP-LEVEL function declarations (e.g. the Lua
+/// extractor pushes `function_declaration` nodes but does not descend into
+/// their bodies, so a `local function inner` nested inside a `local function
+/// outer` is invisible). The project call graph, by contrast, attributes a
+/// nested call to the innermost named local function it actually sits in.
+/// That asymmetry makes the references fallback mint a COARSER outer-scope
+/// caller (`outer` / `gen_scopes`) for a call site the call graph already
+/// resolved to the inner function (`inner` / `visit_expression`) — a phantom
+/// duplicate of the same edge.
+///
+/// This helper walks the AST upward from the call leaf and returns the name of
+/// the innermost function-like node that actually carries a name. Anonymous
+/// closures (`arrow_function`, Rust `closure_expression`, an unnamed Lua
+/// `function_definition` / JS `function_expression`) have no `name` child, so
+/// the walk skips them and continues outward to the nearest NAMED enclosing
+/// function — matching the call graph's caller attribution. Returns `None` on
+/// parse failure, a position miss, or when no named function encloses the site
+/// (a genuine module-level call).
+pub fn innermost_named_enclosing_function(
+    file: &Path,
+    line: usize,
+    column: usize,
+    language: Language,
+) -> Option<String> {
+    use tree_sitter::Point;
+
+    let (tree, source, _lang) = parse_file(file).ok()?;
+    let src = source.as_bytes();
+
+    let row = line.saturating_sub(1);
+    let col = column.saturating_sub(1);
+    let point = Point::new(row, col);
+
+    let root = tree.root_node();
+    let start = root.descendant_for_point_range(point, point)?;
+
+    let mut cur = Some(start);
+    while let Some(n) = cur {
+        if let Some(name) = function_node_name(&n, src, language) {
+            return Some(name);
+        }
+        cur = n.parent();
+    }
+    None
+}
+
+/// fix-CF1-S16: if `node` is a *named* function-like definition, return its
+/// declared name (last `.`/`:`-separated segment for table-/member-qualified
+/// Lua `function T.m` and JS `obj.method` forms). Returns `None` for nodes
+/// that are not function definitions and for anonymous closures (no `name`
+/// field), so [`innermost_named_enclosing_function`]'s scope walk continues
+/// outward. AST-only — node-kind + the grammar `name` field, never source
+/// text heuristics.
+fn function_node_name(node: &tree_sitter::Node, src: &[u8], _language: Language) -> Option<String> {
+    let func_like = matches!(
+        node.kind(),
+        // rust
+        "function_item"
+            // lua / luau / ts / js / go / swift / kotlin
+            | "function_declaration"
+            // ts / js named function expressions + generators
+            | "function_expression"
+            | "generator_function"
+            | "generator_function_declaration"
+            | "method_definition"
+            // java / kotlin / c# / go receivers
+            | "method_declaration"
+            | "constructor_declaration"
+            // python / c / cpp / php named definitions (a Lua anonymous
+            // closure is ALSO `function_definition` but carries no `name`
+            // child, so it correctly yields `None` below)
+            | "function_definition"
+    );
+    if !func_like {
+        return None;
+    }
+    let name_node = node.child_by_field_name("name")?;
+    let text = name_node.utf8_text(src).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // Last segment for `T.m` / `T:m` (Lua) and member-qualified JS names so the
+    // result matches the bare caller name the call graph emits.
+    let seg = text
+        .rsplit(|c| c == '.' || c == ':')
+        .next()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(text);
+    Some(seg.to_string())
+}
+
 pub fn enrich_impact_with_references(
     report: &mut ImpactReport,
     project_root: &Path,
@@ -631,8 +728,13 @@ pub fn enrich_impact_with_references(
     // project-local `rpc.decode`, or `Codec::decode` vs `Parser::decode`).
     let bare_target = target_func.rsplit(['.', ':']).next().unwrap_or(target_func);
 
-    // (enclosing_caller, caller_file, line, call_site_receiver)
-    let mut additions: Vec<(String, PathBuf, u32, CallReceiver)> = Vec::new();
+    // (enclosing_caller, caller_file, line, call_site_receiver, ast_inner)
+    // fix-CF1-S16: `ast_inner` is the AST-resolved innermost NAMED enclosing
+    // function for this call site (see `innermost_named_enclosing_function`).
+    // It is used purely for dedup: when it matches an already-resolved caller,
+    // the coarse `enclosing` (derived from the top-level-only `extract_file`
+    // function list) is a phantom duplicate of the same nested edge.
+    let mut additions: Vec<(String, PathBuf, u32, CallReceiver, Option<String>)> = Vec::new();
     // cross-cutting-and-clear-fix-bugs-v1 (P18.X3): collect references from
     // both the primary lookup and (for Lua/Luau qualified names like
     // `m.open`) a secondary bare-name lookup with a context filter — same
@@ -705,10 +807,19 @@ pub fn enrich_impact_with_references(
             .map(|(name, _, _)| name.clone())
             .unwrap_or_else(|| "<module>".to_string());
 
+        // fix-CF1-S16: AST innermost named enclosing function for this exact
+        // call site. Differs from `enclosing` only when the call is nested
+        // inside a function the coarse `extract_file` list cannot see.
+        let ast_inner =
+            innermost_named_enclosing_function(&caller_file, r.line, r.column, language);
+
         let is_self = report.targets.values().any(|tree| {
             paths_equivalent_root(&tree.file, project_root, &caller_file)
                 && (enclosing == target_func
-                    || last_segment_eq_pub(&enclosing, target_func))
+                    || last_segment_eq_pub(&enclosing, target_func)
+                    || ast_inner.as_deref().is_some_and(|inner| {
+                        inner == target_func || last_segment_eq_pub(inner, target_func)
+                    }))
         });
         if is_self {
             continue;
@@ -732,11 +843,11 @@ pub fn enrich_impact_with_references(
         let key_pair = (enclosing.clone(), caller_file.clone());
         if additions
             .iter()
-            .any(|(n, f, _, _)| n == &key_pair.0 && f == &key_pair.1)
+            .any(|(n, f, _, _, _)| n == &key_pair.0 && f == &key_pair.1)
         {
             continue;
         }
-        additions.push((enclosing, caller_file, r.line as u32, receiver));
+        additions.push((enclosing, caller_file, r.line as u32, receiver, ast_inner));
     }
 
     // fix-PW2-B5-impact-alias: some grammars (notably Swift) classify a member
@@ -799,10 +910,17 @@ pub fn enrich_impact_with_references(
                     .map(|(name, _, _)| name.clone())
                     .unwrap_or_else(|| "<module>".to_string());
 
+                // fix-CF1-S16: AST innermost named enclosing (see Call path).
+                let ast_inner =
+                    innermost_named_enclosing_function(&caller_file, r.line, r.column, language);
+
                 let is_self = report.targets.values().any(|tree| {
                     paths_equivalent_root(&tree.file, project_root, &caller_file)
                         && (enclosing == target_func
-                            || last_segment_eq_pub(&enclosing, target_func))
+                            || last_segment_eq_pub(&enclosing, target_func)
+                            || ast_inner.as_deref().is_some_and(|inner| {
+                                inner == target_func || last_segment_eq_pub(inner, target_func)
+                            }))
                 });
                 if is_self {
                     continue;
@@ -811,11 +929,11 @@ pub fn enrich_impact_with_references(
                 let key_pair = (enclosing.clone(), caller_file.clone());
                 if additions
                     .iter()
-                    .any(|(n, f, _, _)| n == &key_pair.0 && f == &key_pair.1)
+                    .any(|(n, f, _, _, _)| n == &key_pair.0 && f == &key_pair.1)
                 {
                     continue;
                 }
-                additions.push((enclosing, caller_file, r.line as u32, receiver));
+                additions.push((enclosing, caller_file, r.line as u32, receiver, ast_inner));
             }
         }
     }
@@ -853,7 +971,7 @@ pub fn enrich_impact_with_references(
         // `Parser::decode` -> `Parser`); a bare free function yields `None`.
         let target_qualifier = qualifier_of(&tree.function);
 
-        for (name, file, line, receiver) in &additions {
+        for (name, file, line, receiver, ast_inner) in &additions {
             // CL-2: receiver-type discrimination. Only mint this caller if
             // the call site's receiver is compatible with the target's
             // defined qualifier. This drops `json.decode(...)` from the
@@ -882,11 +1000,28 @@ pub fn enrich_impact_with_references(
             // P14.AGG14-1: last-segment-aware dedup so call-graph
             // qualified-name (`Class.method`) and references bare-name
             // (`method`) collapse to the same caller.
+            //
+            // fix-CF1-S16: ALSO dedup against the AST innermost named
+            // enclosing (`ast_inner`). When this references call site is
+            // nested inside a function the call graph already resolved as a
+            // caller (`inner` / `visit_expression`), but the coarse
+            // `extract_file`-derived `enclosing` is its outer ancestor
+            // (`outer` / `gen_scopes`), the outer entry is a phantom
+            // duplicate of the same edge — suppress it. The dedup only fires
+            // when `ast_inner` matches an ALREADY-PRESENT caller, so a call
+            // site the graph attributed to the OUTER scope (a named-callback
+            // function expression) is never wrongly collapsed.
             let already_present = tree.callers.iter().any(|c| {
                 let names_match = &c.function == name
                     || last_segment_eq_pub(&c.function, name)
                     || last_segment_eq_pub(name, &c.function);
-                names_match && paths_equivalent_root(&c.file, project_root, file)
+                let inner_match = ast_inner.as_deref().is_some_and(|inner| {
+                    &c.function == inner
+                        || last_segment_eq_pub(&c.function, inner)
+                        || last_segment_eq_pub(inner, &c.function)
+                });
+                (names_match || inner_match)
+                    && paths_equivalent_root(&c.file, project_root, file)
             });
             if already_present {
                 continue;
@@ -3413,5 +3548,126 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // =====================================================================
+    // fix-CF1-S16 (v0.5.0 RC CF-wave): the references-enrichment fallback
+    // resolved a nested call site's enclosing function from `extract_file`'s
+    // TOP-LEVEL-only function list. For a call nested inside a `local
+    // function inner` (Lua/Luau) / `function inner` (TS) that itself lives
+    // inside a `local function outer`, the only containing function the
+    // coarse list could see was the OUTER one — so `impact` minted a phantom
+    // `outer` caller for an edge the call graph had ALREADY resolved to
+    // `inner`, double-counting it (3 callers reported where 2 are real).
+    //
+    // The fix dedups each references caller against the AST innermost NAMED
+    // enclosing function of the exact call site
+    // (`innermost_named_enclosing_function`): when that inner name matches an
+    // already-resolved caller, the coarse outer entry is suppressed. This
+    // generalization test drives the REAL resolution path
+    // (build_project_call_graph + impact_analysis_with_ast_fallback +
+    // enrich_impact_with_references) across Lua, Luau and TypeScript — every
+    // language in this slice's `impact`-dedup symptom class.
+    // =====================================================================
+    #[test]
+    fn cf1_s16_impact_dedups_nested_closure_phantom_caller() {
+        // `helper` is called ONCE inside a nested named local function
+        // `inner` (which lives inside `outer`) and ONCE directly in the
+        // sibling `other`. The truth is exactly two callers — {inner, other};
+        // `outer` never calls `helper` itself.
+        fn check(label: &str, root: &Path, language: crate::Language) {
+            let targets = b5_resolve(root, "helper", language);
+            let callers: Vec<String> = targets
+                .iter()
+                .flat_map(|(_, _, cs)| cs.iter())
+                .map(|c| {
+                    c.rsplit(['.', ':'])
+                        .next()
+                        .unwrap_or(c.as_str())
+                        .to_string()
+                })
+                .collect();
+            // The inner local function is the TRUE caller and must survive.
+            assert!(
+                callers.iter().any(|c| c == "inner"),
+                "[{label}] inner local-function caller missing: {targets:?}"
+            );
+            // The sibling direct caller must survive.
+            assert!(
+                callers.iter().any(|c| c == "other"),
+                "[{label}] sibling caller `other` missing: {targets:?}"
+            );
+            // The coarse OUTER-scope phantom must NOT appear: the nested call
+            // belongs to `inner`, and the call graph already resolved it.
+            assert!(
+                !callers.iter().any(|c| c == "outer"),
+                "[{label}] phantom OUTER-scope caller `outer` present \
+                 (nested-closure double-count not deduped): {targets:?}"
+            );
+            // Exactly two callers total across all targets.
+            let total: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+            assert_eq!(
+                total, 2,
+                "[{label}] expected exactly 2 callers (inner, other), got {total}: {targets:?}"
+            );
+        }
+
+        // ---- Lua ----
+        let lua_root = std::env::temp_dir().join("tldr_cf1_s16_lua");
+        let _ = std::fs::remove_dir_all(&lua_root);
+        std::fs::create_dir_all(&lua_root).unwrap();
+        std::fs::write(
+            lua_root.join("mod.lua"),
+            "local function helper(x)\n  return x + 1\nend\n\n\
+             local function outer(items)\n  \
+             local function inner(it)\n    return helper(it)\n  end\n  \
+             local total = 0\n  for _, v in ipairs(items) do\n    \
+             total = total + inner(v)\n  end\n  return total\nend\n\n\
+             local function other()\n  return helper(5)\nend\n\n\
+             return { outer = outer, other = other }\n",
+        )
+        .unwrap();
+        check("lua", &lua_root, crate::Language::Lua);
+        let _ = std::fs::remove_dir_all(&lua_root);
+
+        // ---- Luau (typed) ----
+        let luau_root = std::env::temp_dir().join("tldr_cf1_s16_luau");
+        let _ = std::fs::remove_dir_all(&luau_root);
+        std::fs::create_dir_all(&luau_root).unwrap();
+        std::fs::write(
+            luau_root.join("mod.luau"),
+            "local function helper(x: number): number\n  return x + 1\nend\n\n\
+             local function outer(items)\n  \
+             local function inner(it)\n    return helper(it)\n  end\n  \
+             local total = 0\n  for _, v in items do\n    \
+             total = total + inner(v)\n  end\n  return total\nend\n\n\
+             local function other()\n  return helper(5)\nend\n\n\
+             return { outer = outer, other = other }\n",
+        )
+        .unwrap();
+        check("luau", &luau_root, crate::Language::Luau);
+        let _ = std::fs::remove_dir_all(&luau_root);
+
+        // ---- TypeScript ----
+        let ts_root = std::env::temp_dir().join("tldr_cf1_s16_ts");
+        let _ = std::fs::remove_dir_all(&ts_root);
+        std::fs::create_dir_all(&ts_root).unwrap();
+        std::fs::write(
+            ts_root.join("helper.ts"),
+            "export function helper(x: number): number {\n  return x + 1;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ts_root.join("use.ts"),
+            "import { helper } from './helper';\n\n\
+             export function outer(items: number[]): number {\n  \
+             function inner(it: number): number {\n    return helper(it);\n  }\n  \
+             let total = 0;\n  for (const v of items) {\n    total += inner(v);\n  }\n  \
+             return total;\n}\n\n\
+             export function other(): number {\n  return helper(5);\n}\n",
+        )
+        .unwrap();
+        check("ts", &ts_root, crate::Language::TypeScript);
+        let _ = std::fs::remove_dir_all(&ts_root);
     }
 }

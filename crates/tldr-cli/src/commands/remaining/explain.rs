@@ -32,9 +32,10 @@ use super::types::{CallInfo, ComplexityInfo, ExplainReport, ParamInfo, PurityInf
 use crate::output::{OutputFormat, OutputWriter};
 use tldr_core::ast::extract::decl_keyword_line_from_node;
 use tldr_core::types::Language;
+use tldr_core::analysis::impact::innermost_named_enclosing_function;
 use tldr_core::{
-    build_project_call_graph, find_references, impact_analysis_with_ast_fallback, names_match,
-    ReferenceKind, ReferencesOptions,
+    build_project_call_graph, enrich_impact_with_references, find_references,
+    impact_analysis_with_ast_fallback, names_match, ReferenceKind, ReferencesOptions,
 };
 
 // =============================================================================
@@ -2435,7 +2436,7 @@ fn enrich_with_project_graph(
     let mut subject_callers: Vec<CallInfo> = Vec::new();
     let mut definition_count: usize = 0;
     // Callers: use the same path `tldr impact` uses so the results agree.
-    if let Ok(impact) = impact_analysis_with_ast_fallback(
+    if let Ok(mut impact) = impact_analysis_with_ast_fallback(
         &graph,
         function,
         1, // direct callers only (consistent with the per-file walker)
@@ -2443,6 +2444,15 @@ fn enrich_with_project_graph(
         &project_root,
         language,
     ) {
+        // fix-CF1-S16: route through the SAME references enrichment the
+        // standalone `tldr impact` command applies. Without this the
+        // call-graph-only report misses same-file / cross-file callers that
+        // `find_references` recovers — so for AMBIGUOUS names (where
+        // `subject_callers` below becomes authoritative) `explain` and
+        // `whatbreaks` under-reported callers relative to `impact`. The
+        // helper's own innermost-named dedup also keeps the nested-closure
+        // phantom out of the enriched report.
+        enrich_impact_with_references(&mut impact, &project_root, function, language);
         // Distinct definition files = the ambiguity signal. `impact.targets`
         // is keyed PER-DEFINITION (`file:Type.method`), so more than one
         // distinct definition file means `function` is an overload / homonym
@@ -2744,7 +2754,7 @@ fn enrich_with_references(
     let mut file_funcs_cache: HashMap<std::path::PathBuf, Vec<(String, u32, u32)>> = HashMap::new();
 
     for r in &report_refs.references {
-        push_caller_from_reference(report, file, function, r, &mut file_funcs_cache);
+        push_caller_from_reference(report, file, function, r, &mut file_funcs_cache, language);
     }
 
     // critical-regressions-v1 (P13.AGG13-12): Lua's cross-module-alias call
@@ -2779,6 +2789,7 @@ fn enrich_with_references(
                             function,
                             r,
                             &mut file_funcs_cache,
+                            language,
                         );
                     }
                 }
@@ -2796,6 +2807,7 @@ fn push_caller_from_reference(
     function: &str,
     r: &tldr_core::analysis::references::Reference,
     file_funcs_cache: &mut std::collections::HashMap<std::path::PathBuf, Vec<(String, u32, u32)>>,
+    language: Language,
 ) {
     let ref_path = &r.file;
     let funcs = file_funcs_cache
@@ -2820,6 +2832,24 @@ fn push_caller_from_reference(
     }
     if caller_already_present(&report.callers, &caller_name, &caller_file) {
         return;
+    }
+    // fix-CF1-S16: `collect_functions_with_bounds` only carries TOP-LEVEL
+    // functions, so a call nested inside a `local function inner` (Lua) /
+    // `function inner` (TS) resolves its enclosing to the OUTER ancestor —
+    // a phantom duplicate of the edge the project call graph already
+    // attributed to `inner`. When the AST innermost NAMED enclosing of THIS
+    // call site already exists as a caller (added upstream by the call-graph
+    // enrichment), suppress the coarse outer entry so `explain` matches
+    // `impact`. Skips when the inner name resolves to the target itself
+    // (recursion handled by the self check above).
+    if let Some(inner) =
+        innermost_named_enclosing_function(ref_path, r.line as usize, r.column as usize, language)
+    {
+        if !explain_names_match(&inner, function)
+            && caller_already_present(&report.callers, &inner, &caller_file)
+        {
+            return;
+        }
     }
     report
         .callers
@@ -3996,5 +4026,207 @@ def add(a, b):
              Expected 'unknown' since no calls were analyzed.",
             purity.classification, purity.confidence
         );
+    }
+
+    // =====================================================================
+    // fix-CF1-S16 (v0.5.0 RC CF-wave): `explain` / `whatbreaks` must agree
+    // with the standalone `impact` command on a function's caller set.
+    //
+    // Two coupled defects produced disagreement on a call nested inside a
+    // named local function `inner` (itself inside `outer`):
+    //   * `impact` (and `whatbreaks`, which shares the core resolution path)
+    //     minted a phantom OUTER-scope caller from the references fallback,
+    //     because the coarse `extract_file` function list cannot see the
+    //     nested `inner` the call graph resolved. (Rust under-recurses on the
+    //     CORE side: `impact` reported {inner, other, outer} while `explain`
+    //     already reported {inner, other} — a direct DISAGREEMENT.)
+    //   * For Lua / Luau the extractor never descends into function bodies,
+    //     so BOTH `impact` and `explain` reported the phantom `outer`.
+    //
+    // After the fix all three commands resolve the same {inner, other}. This
+    // generalization test drives the REAL caller-resolution pipelines for
+    // Rust, Lua and Luau and asserts cross-command parity + correctness.
+    // =====================================================================
+
+    /// Replicate `ExplainArgs::run`'s caller-resolution sequence (per-file
+    /// walker seed -> project-graph enrichment -> ambiguous-name branch ->
+    /// references enrichment) and return the de-duplicated last-segment
+    /// caller names.
+    fn explain_caller_names(
+        file: &std::path::Path,
+        function: &str,
+        language: Language,
+    ) -> Vec<String> {
+        let source = std::fs::read_to_string(file).unwrap();
+        let func_kinds = get_function_node_kinds(language);
+        let mut parser = get_parser(language).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let root = tree.root_node();
+        let file_path = file.to_string_lossy().to_string();
+
+        let mut report = ExplainReport::new(function, &file_path, 0, 0, "x");
+        report.callers = find_callers(root, source.as_bytes(), function, &file_path, func_kinds);
+        let caller_resolution = enrich_with_project_graph(&mut report, file, function, language);
+        if caller_resolution.graph_built && caller_resolution.definition_count > 1 {
+            report.callers = caller_resolution.subject_callers;
+        } else {
+            enrich_with_references(&mut report, file, function, language);
+        }
+        last_segments(report.callers.iter().map(|c| c.name.clone()))
+    }
+
+    /// `impact`'s caller set: the exact core path the standalone command uses.
+    fn impact_caller_names(
+        root: &std::path::Path,
+        function: &str,
+        language: Language,
+    ) -> Vec<String> {
+        let graph = build_project_call_graph(root, language, None, true).unwrap();
+        let mut report =
+            impact_analysis_with_ast_fallback(&graph, function, 3, None, root, language).unwrap();
+        enrich_impact_with_references(&mut report, root, function, language);
+        last_segments(
+            report
+                .targets
+                .values()
+                .flat_map(|t| t.callers.iter())
+                .map(|c| c.function.clone()),
+        )
+    }
+
+    /// `whatbreaks`'s direct caller count for a Function target.
+    fn whatbreaks_direct_count(
+        root: &std::path::Path,
+        function: &str,
+        language: Language,
+    ) -> usize {
+        use tldr_core::analysis::{whatbreaks_analysis, TargetType, WhatbreaksOptions};
+        let mut opts = WhatbreaksOptions::default();
+        opts.language = Some(language);
+        opts.force_type = Some(TargetType::Function);
+        let report = whatbreaks_analysis(function, root, &opts).unwrap();
+        report.summary.direct_caller_count
+    }
+
+    fn last_segments<I: IntoIterator<Item = String>>(names: I) -> Vec<String> {
+        let mut out: Vec<String> = names
+            .into_iter()
+            .map(|n| {
+                n.rsplit(['.', ':'])
+                    .next()
+                    .unwrap_or(n.as_str())
+                    .to_string()
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    #[test]
+    fn cf1_s16_explain_whatbreaks_impact_caller_parity_nested_closure() {
+        // (label, dir, source filename, file contents, language). `helper` is
+        // called ONCE inside the nested named function `inner` and ONCE in the
+        // sibling `other`; `outer` itself never calls `helper`. Truth across
+        // every command: exactly {inner, other}.
+        struct Case {
+            label: &'static str,
+            dir: std::path::PathBuf,
+            file: &'static str,
+            src: &'static str,
+            language: Language,
+        }
+
+        let cases = vec![
+            Case {
+                label: "rust",
+                dir: std::env::temp_dir().join("tldr_cf1_s16_cli_rust"),
+                file: "lib.rs",
+                src: "pub fn helper(x: i32) -> i32 {\n    x + 1\n}\n\n\
+                      pub fn outer(items: &[i32]) -> i32 {\n    \
+                      fn inner(it: i32) -> i32 {\n        helper(it)\n    }\n    \
+                      let mut total = 0;\n    for v in items {\n        total += inner(*v);\n    }\n    \
+                      total\n}\n\n\
+                      pub fn other() -> i32 {\n    helper(5)\n}\n",
+                language: Language::Rust,
+            },
+            Case {
+                label: "lua",
+                dir: std::env::temp_dir().join("tldr_cf1_s16_cli_lua"),
+                file: "mod.lua",
+                src: "local function helper(x)\n  return x + 1\nend\n\n\
+                      local function outer(items)\n  \
+                      local function inner(it)\n    return helper(it)\n  end\n  \
+                      local total = 0\n  for _, v in ipairs(items) do\n    \
+                      total = total + inner(v)\n  end\n  return total\nend\n\n\
+                      local function other()\n  return helper(5)\nend\n\n\
+                      return { outer = outer, other = other }\n",
+                language: Language::Lua,
+            },
+            Case {
+                label: "luau",
+                dir: std::env::temp_dir().join("tldr_cf1_s16_cli_luau"),
+                file: "mod.luau",
+                src: "local function helper(x: number): number\n  return x + 1\nend\n\n\
+                      local function outer(items)\n  \
+                      local function inner(it)\n    return helper(it)\n  end\n  \
+                      local total = 0\n  for _, v in items do\n    \
+                      total = total + inner(v)\n  end\n  return total\nend\n\n\
+                      local function other()\n  return helper(5)\nend\n\n\
+                      return { outer = outer, other = other }\n",
+                language: Language::Luau,
+            },
+        ];
+
+        let expected = vec!["inner".to_string(), "other".to_string()];
+
+        for case in &cases {
+            let _ = std::fs::remove_dir_all(&case.dir);
+            std::fs::create_dir_all(&case.dir).unwrap();
+            let file = case.dir.join(case.file);
+            std::fs::write(&file, case.src).unwrap();
+
+            let impact = impact_caller_names(&case.dir, "helper", case.language);
+            let explain = explain_caller_names(&file, "helper", case.language);
+            let wb_direct = whatbreaks_direct_count(&case.dir, "helper", case.language);
+
+            // No phantom OUTER-scope caller in any command.
+            assert!(
+                !impact.contains(&"outer".to_string()),
+                "[{}] impact still reports phantom `outer`: {:?}",
+                case.label,
+                impact
+            );
+            assert!(
+                !explain.contains(&"outer".to_string()),
+                "[{}] explain still reports phantom `outer`: {:?}",
+                case.label,
+                explain
+            );
+            // Correct caller set.
+            assert_eq!(
+                impact, expected,
+                "[{}] impact caller set wrong: {:?}",
+                case.label, impact
+            );
+            assert_eq!(
+                explain, expected,
+                "[{}] explain caller set wrong: {:?}",
+                case.label, explain
+            );
+            // Cross-command parity (the core anti-treadmill assertion).
+            assert_eq!(
+                explain, impact,
+                "[{}] explain/impact caller sets diverge: explain={:?} impact={:?}",
+                case.label, explain, impact
+            );
+            assert_eq!(
+                wb_direct, 2,
+                "[{}] whatbreaks direct_caller_count != 2 (impact={:?}): {}",
+                case.label, impact, wb_direct
+            );
+
+            let _ = std::fs::remove_dir_all(&case.dir);
+        }
     }
 }
