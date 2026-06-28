@@ -927,6 +927,13 @@ fn find_complexity_issues_inner(
     // Find all functions and collect their info
     let function_infos = extract_function_infos_for_debt(root, source, language);
 
+    // H-debt-perf-cpp: resolve each function's AST node (needed for the
+    // per-function Halstead pass below) via a SINGLE pre-order walk that
+    // maps start_line -> node, instead of calling `find_function_node_by_line`
+    // — a full-tree walk — once per function. The latter is `O(functions ×
+    // tree)` and was a primary super-linear hotspot on large C/C++ headers.
+    let func_nodes_by_line = collect_function_nodes_by_line(root, language);
+
     // Batch calculate complexity using the already-parsed tree (zero extra
     // parses).
     //
@@ -1111,7 +1118,7 @@ fn find_complexity_issues_inner(
         // primary metric (volume) fires the higher cost bucket; we
         // intentionally don't double-count by also raising difficulty
         // when both trip, since they're highly correlated.
-        if let Some(func_node) = find_function_node_by_line(&root, func_info.start_line, language) {
+        if let Some(func_node) = func_nodes_by_line.get(&func_info.start_line).copied() {
             let (h_metrics, _ops, _opnds) =
                 crate::metrics::halstead::calculate_function_halstead(func_node, source, language);
             // Skip degenerate cases (empty bodies / single-statement
@@ -2027,9 +2034,23 @@ fn find_deep_nesting_inner(
     // Extract all functions with their info
     let function_infos = extract_function_infos_for_debt(root, source, language);
 
+    // H-debt-perf-cpp: build the start_line -> node map ONCE (single
+    // pre-order walk) and reuse the already-parsed `tree`. The previous
+    // `calculate_function_nesting_depth` RE-PARSED the whole source AND
+    // walked the whole tree for EVERY function — `O(functions × (parse +
+    // tree))` — which made deep-nesting the worst super-linear hotspot on
+    // large C/C++ files.
+    let func_nodes_by_line = collect_function_nodes_by_line(root, language);
+    let nesting_kinds = get_nesting_node_kinds(language);
+
     for func_info in function_infos {
-        // Get the function node to calculate nesting depth
-        let max_depth = calculate_function_nesting_depth(source, &func_info, language);
+        // Get the function node to calculate nesting depth, reusing the
+        // shared tree (no re-parse, no per-function full-tree search).
+        let max_depth = func_nodes_by_line
+            .get(&func_info.start_line)
+            .and_then(|func_node| get_function_body(func_node, language))
+            .map(|body| walk_nesting_depth(&body, &nesting_kinds, 0))
+            .unwrap_or(0);
 
         // Threshold: > 4 levels = 15 minutes debt
         if max_depth > 4 {
@@ -2046,34 +2067,6 @@ fn find_deep_nesting_inner(
     }
 
     issues
-}
-
-/// Calculate the maximum nesting depth within a function
-fn calculate_function_nesting_depth(
-    source: &str,
-    func_info: &FunctionInfoForDebt,
-    language: Language,
-) -> usize {
-    // Re-parse to get the tree for walking
-    let tree = match parse(source, language) {
-        Ok(t) => t,
-        Err(_) => return 0,
-    };
-
-    let root = tree.root_node();
-
-    // Find the function node by line number
-    if let Some(func_node) = find_function_node_by_line(&root, func_info.start_line, language) {
-        // Get nesting node kinds for this language
-        let nesting_kinds = get_nesting_node_kinds(language);
-
-        // Calculate max depth within the function body
-        if let Some(body) = get_function_body(&func_node, language) {
-            return walk_nesting_depth(&body, &nesting_kinds, 0);
-        }
-    }
-
-    0
 }
 
 /// Get node kinds that count as nesting levels for a language
@@ -2244,27 +2237,59 @@ fn get_nesting_node_kinds(language: Language) -> Vec<&'static str> {
 }
 
 /// Find a function node by its start line
-fn find_function_node_by_line<'a>(
-    node: &Node<'a>,
-    target_line: u32,
+/// Collect every function-kind node in the tree keyed by its 1-indexed
+/// start line, in a single pre-order traversal.
+///
+/// H-debt-perf-cpp (v0.5.0 BACKLOG): the complexity and deep-nesting
+/// detectors previously located each function's AST node with a
+/// per-function `find_function_node_by_line` call — a full pre-order walk
+/// of the *whole tree once for every function* — and deep-nesting
+/// additionally RE-PARSED the entire source per function. On large trees
+/// (e.g. fmt's 12k-line `gtest.h`) that is `O(functions × tree)`, which
+/// made `tldr debt` super-linear: a single 474KB header took ~58s and the
+/// whole-repo run blew the 90s budget with zero output. Building this
+/// `start_line -> Node` map once and reusing it across all functions makes
+/// per-file analysis linear in tree size. `entry().or_insert` preserves
+/// the previous "first match in pre-order wins" semantics, so the lookups
+/// it replaces are behaviour-identical. Driven entirely by
+/// `get_function_node_kinds(language)`, so the speedup is language-agnostic
+/// (every grammar with many functions in a big file, not just C/C++).
+/// Recursion bounded by `DEBT_MAX_AST_DEPTH` to match the module's other
+/// walkers.
+fn collect_function_nodes_by_line<'a>(
+    root: Node<'a>,
     language: Language,
-) -> Option<Node<'a>> {
+) -> std::collections::HashMap<u32, Node<'a>> {
     let func_kinds = get_function_node_kinds(language);
-    let node_line = node.start_position().row as u32 + 1;
+    let mut map: std::collections::HashMap<u32, Node<'a>> = std::collections::HashMap::new();
+    collect_function_nodes_by_line_inner(root, &func_kinds, &mut map, 0);
+    map
+}
 
-    if func_kinds.contains(&node.kind()) && node_line == target_line {
-        return Some(*node);
+/// Recursive helper for [`collect_function_nodes_by_line`], bounded by
+/// `DEBT_MAX_AST_DEPTH`. Visits nodes in pre-order; `entry().or_insert`
+/// keeps the first (outermost / earliest) function node seen at each start
+/// line, exactly mirroring the prior `find_function_node_by_line`
+/// pre-order first-match.
+fn collect_function_nodes_by_line_inner<'a>(
+    node: Node<'a>,
+    func_kinds: &[&'static str],
+    map: &mut std::collections::HashMap<u32, Node<'a>>,
+    recursion_depth: usize,
+) {
+    if recursion_depth > DEBT_MAX_AST_DEPTH {
+        return;
     }
 
-    // Recurse into children
+    if func_kinds.contains(&node.kind()) {
+        let line = node.start_position().row as u32 + 1;
+        map.entry(line).or_insert(node);
+    }
+
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Some(found) = find_function_node_by_line(&child, target_line, language) {
-            return Some(found);
-        }
+        collect_function_nodes_by_line_inner(child, func_kinds, map, recursion_depth + 1);
     }
-
-    None
 }
 
 /// Get function node kinds for a language (delegates to shared function_finder)

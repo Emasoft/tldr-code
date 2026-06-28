@@ -3263,3 +3263,292 @@ let f x = x + 1
         );
     }
 }
+
+/// H-debt-perf-cpp (v0.5.0 BACKLOG): generalization guard for the
+/// super-linear-per-file `tldr debt` blowup.
+///
+/// Root cause: the complexity and deep-nesting detectors resolved each
+/// function's AST node with a per-function full-tree walk
+/// (`find_function_node_by_line`), and deep-nesting additionally
+/// RE-PARSED the whole source PER FUNCTION. That is `O(functions × tree)`,
+/// so a single large file (fmt's 12k-line `gtest.h`) took ~58s and the
+/// whole-repo `debt` run timed out (exit 124, zero output) past 90s while
+/// `health`/`secure`/`vuln`/`structure` all completed.
+///
+/// The fix replaces both with a single per-file pre-order pass that maps
+/// `start_line -> node` (`collect_function_nodes_by_line`), reused across
+/// all functions — linear in tree size. It is driven entirely by
+/// `get_function_node_kinds(language)`, so it is LANGUAGE-AGNOSTIC. These
+/// tests assert the property across every language in the symptom class
+/// ("any large tree"): a file with hundreds of functions is analyzed in
+/// well under a generous budget (the pre-fix code is quadratic and would
+/// blow it), and correctness is preserved (the one deeply-nested function
+/// is still flagged). Single-language coverage would not prove the fix is
+/// language-agnostic, so all of c/cpp/rust/java/go/python/typescript are
+/// exercised.
+#[cfg(test)]
+mod h_debt_perf_large_file_tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// Number of trivial functions to emit ahead of the single "hot"
+    /// function. Large enough that the pre-fix `O(functions × tree)`
+    /// behaviour is dramatically slower than the linear fix, small enough
+    /// that the linear fix runs in well under a second per language.
+    const N_TRIVIAL: usize = 400;
+
+    /// Generous per-language wall-clock ceiling for running BOTH refactored
+    /// detectors over the large file. The linear fix completes each in tens
+    /// of milliseconds (debug); the pre-fix quadratic walk/re-parse blows
+    /// past this. Kept loose so the guard is not flaky on a loaded CI while
+    /// still catching any reintroduction of the per-function tree walk.
+    const BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+
+    /// A short, valid, non-nested function `fn_{i}` in `lang`.
+    fn trivial_fn(lang: Language, i: usize) -> String {
+        match lang {
+            Language::C | Language::Cpp => format!(
+                "int fn_{i}(int a) {{\n    int x = a;\n    x = x + 1;\n    int y = x * 2;\n    int z = y - a;\n    return z;\n}}\n"
+            ),
+            Language::Java => format!(
+                "    static int fn_{i}(int a) {{\n        int x = a;\n        x = x + 1;\n        int y = x * 2;\n        int z = y - a;\n        return z;\n    }}\n"
+            ),
+            Language::Go => format!(
+                "func fn_{i}(a int) int {{\n    x := a\n    x = x + 1\n    y := x * 2\n    z := y - a\n    return z\n}}\n"
+            ),
+            Language::Rust => format!(
+                "fn fn_{i}(a: i64) -> i64 {{\n    let mut x = a;\n    x = x + 1;\n    let y = x * 2;\n    let z = y - a;\n    z\n}}\n"
+            ),
+            Language::Python => format!(
+                "def fn_{i}(a):\n    x = a\n    x = x + 1\n    y = x * 2\n    z = y - a\n    return z\n"
+            ),
+            Language::TypeScript => format!(
+                "function fn_{i}(a: number): number {{\n    let x = a;\n    x = x + 1;\n    let y = x * 2;\n    let z = y - a;\n    return z;\n}}\n"
+            ),
+            other => panic!("unsupported language in test generator: {:?}", other),
+        }
+    }
+
+    /// A single `hot_function` with 6 levels of nested `if` (deep nesting
+    /// >4) and many sequential branches (raises cyclomatic/cognitive).
+    fn hot_fn(lang: Language) -> String {
+        // Six-deep nested if (curly-brace languages).
+        let braces_nest = "\
+    if (a > 0) {
+        if (a > 1) {
+            if (a > 2) {
+                if (a > 3) {
+                    if (a > 4) {
+                        if (a > 5) {
+                            r = a;
+                        }
+                    }
+                }
+            }
+        }
+    }
+";
+        let braces_branches = (1..=12)
+            .map(|k| format!("    if (a == {k}) {{ r = r + {k}; }}\n"))
+            .collect::<String>();
+
+        match lang {
+            Language::C | Language::Cpp => format!(
+                "int hot_function(int a) {{\n    int r = 0;\n{braces_nest}{braces_branches}    return r;\n}}\n"
+            ),
+            Language::TypeScript => format!(
+                "function hot_function(a: number): number {{\n    let r = 0;\n{braces_nest}{braces_branches}    return r;\n}}\n"
+            ),
+            Language::Java => format!(
+                "    static int hot_function(int a) {{\n        int r = 0;\n{braces_nest}{braces_branches}        return r;\n    }}\n"
+            ),
+            Language::Go => {
+                let nest = "\
+    if a > 0 {
+        if a > 1 {
+            if a > 2 {
+                if a > 3 {
+                    if a > 4 {
+                        if a > 5 {
+                            r = a
+                        }
+                    }
+                }
+            }
+        }
+    }
+";
+                let branches = (1..=12)
+                    .map(|k| format!("    if a == {k} {{ r = r + {k} }}\n"))
+                    .collect::<String>();
+                format!("func hot_function(a int) int {{\n    r := 0\n{nest}{branches}    return r\n}}\n")
+            }
+            Language::Rust => {
+                let nest = "\
+    if a > 0 {
+        if a > 1 {
+            if a > 2 {
+                if a > 3 {
+                    if a > 4 {
+                        if a > 5 {
+                            r = a;
+                        }
+                    }
+                }
+            }
+        }
+    }
+";
+                let branches = (1..=12)
+                    .map(|k| format!("    if a == {k} {{ r = r + {k}; }}\n"))
+                    .collect::<String>();
+                format!("fn hot_function(a: i64) -> i64 {{\n    let mut r = 0;\n{nest}{branches}    r\n}}\n")
+            }
+            Language::Python => {
+                // Build 6 indentation-correct nested ifs programmatically.
+                // (A `"\`-continued string literal strips the first line's
+                // leading whitespace, which would detach the block from the
+                // function — Python is indentation-sensitive.)
+                let mut nest = String::new();
+                for d in 0..6u32 {
+                    let indent = " ".repeat(4 + (d as usize) * 4);
+                    nest.push_str(&format!("{indent}if a > {d}:\n"));
+                }
+                let inner_indent = " ".repeat(4 + 6 * 4);
+                nest.push_str(&format!("{inner_indent}r = a\n"));
+                let branches = (1..=12)
+                    .map(|k| format!("    if a == {k}:\n        r = r + {k}\n"))
+                    .collect::<String>();
+                format!("def hot_function(a):\n    r = 0\n{nest}{branches}    return r\n")
+            }
+            other => panic!("unsupported language in test generator: {:?}", other),
+        }
+    }
+
+    /// Assemble a large source file: `N_TRIVIAL` trivial functions plus one
+    /// deeply-nested hot function, wrapped as the grammar requires.
+    fn large_source(lang: Language) -> String {
+        let mut body = String::new();
+        for i in 0..N_TRIVIAL {
+            body.push_str(&trivial_fn(lang, i));
+        }
+        body.push_str(&hot_fn(lang));
+
+        match lang {
+            Language::Java => format!("public class Big {{\n{body}}}\n"),
+            Language::Go => format!("package main\n\n{body}"),
+            _ => body,
+        }
+    }
+
+    fn dummy_path(lang: Language) -> PathBuf {
+        let ext = match lang {
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Java => "java",
+            Language::Go => "go",
+            Language::Rust => "rs",
+            Language::Python => "py",
+            Language::TypeScript => "ts",
+            _ => "txt",
+        };
+        PathBuf::from(format!("big.{ext}"))
+    }
+
+    /// Every language in the symptom class: a many-function large file is
+    /// analyzed by BOTH refactored detectors well within budget (no
+    /// super-linear blowup) AND the deeply-nested function is still flagged
+    /// (correctness preserved).
+    #[test]
+    fn test_large_file_debt_is_linear_and_correct_all_languages() {
+        let languages = [
+            Language::Cpp,
+            Language::C,
+            Language::Rust,
+            Language::Java,
+            Language::Go,
+            Language::Python,
+            Language::TypeScript,
+        ];
+
+        for lang in languages {
+            let source = large_source(lang);
+            let path = dummy_path(lang);
+
+            let start = Instant::now();
+            let nesting = find_deep_nesting(&source, &path, lang);
+            let complexity = find_complexity_issues(&source, &path, lang);
+            let elapsed = start.elapsed();
+
+            // PERFORMANCE / GENERALIZATION: linear in tree size for every
+            // language. The pre-fix per-function re-parse + full-tree walk
+            // is quadratic and would exceed this generous budget.
+            assert!(
+                elapsed < BUDGET,
+                "{:?}: debt detectors took {:?} on a {}-function file — \
+                 expected well under {:?}. A regression here means the \
+                 per-function tree walk / re-parse was reintroduced.",
+                lang,
+                elapsed,
+                N_TRIVIAL + 1,
+                BUDGET,
+            );
+
+            // CORRECTNESS: the one deeply-nested function is still detected
+            // (the refactor reuses the shared tree instead of re-parsing).
+            let deep: Vec<_> = nesting
+                .iter()
+                .filter(|i| i.rule == "deep_nesting")
+                .collect();
+            assert!(
+                !deep.is_empty(),
+                "{:?}: expected the 6-level hot_function to be flagged as \
+                 deep_nesting after the refactor, got none. nesting issues: \
+                 {:#?}",
+                lang,
+                nesting,
+            );
+
+            // Sanity: the complexity detector ran and produced findings for
+            // the branch-heavy hot function on the wired languages.
+            assert!(
+                complexity.iter().any(|i| {
+                    i.rule.starts_with("complexity") || i.rule.starts_with("cognitive")
+                }),
+                "{:?}: expected a complexity/cognitive finding on the \
+                 branch-heavy hot_function: {:#?}",
+                lang,
+                complexity,
+            );
+        }
+    }
+
+    /// Small-repo invariance: the single-pass node map must not change
+    /// output on ordinary small inputs. A trivial 3-level function carries
+    /// no deep-nesting finding (the threshold is >4), exactly as before the
+    /// refactor — guarding against any off-by-one or first-match-ordering
+    /// drift introduced by the `start_line -> node` map.
+    #[test]
+    fn test_small_input_output_unchanged_by_node_map() {
+        let src = "\
+int small(int a) {
+    if (a > 0) {
+        if (a > 1) {
+            if (a > 2) {
+                return a;
+            }
+        }
+    }
+    return 0;
+}
+";
+        let issues = find_deep_nesting(src, Path::new("small.cpp"), Language::Cpp);
+        let deep: Vec<_> = issues.iter().filter(|i| i.rule == "deep_nesting").collect();
+        assert!(
+            deep.is_empty(),
+            "3-level function must NOT be flagged deep_nesting (threshold >4); \
+             the node-map refactor must not change small-input output: {:#?}",
+            issues
+        );
+    }
+}
