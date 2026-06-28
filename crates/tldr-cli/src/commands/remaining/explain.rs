@@ -2218,6 +2218,7 @@ fn locate_call_in_caller_file(
         .next()
         .unwrap_or(target_function);
 
+    #[allow(clippy::too_many_arguments)]
     fn descend<'a>(
         node: tree_sitter::Node<'a>,
         source: &[u8],
@@ -2227,6 +2228,7 @@ fn locate_call_in_caller_file(
         caller_tail: &str,
         target_tail: &str,
         in_target_func: bool,
+        module_mode: bool,
     ) -> Option<u32> {
         // When we enter a function node whose name matches caller_tail,
         // turn on `in_target_func` for the descent.
@@ -2234,24 +2236,35 @@ fn locate_call_in_caller_file(
         let is_func_decl = func_kinds.contains(&kind);
         let mut now_in = in_target_func;
         if is_func_decl {
-            // fix-cl-1-v1 (v0.5.0 CL-1): use the canonical AST-driven,
-            // language-aware name extractor. The previous inline fallback
-            // (`name` field, else first direct `identifier` child) failed for
-            // C/C++ where the function name lives inside the
-            // `function_declarator` declarator chain — not a direct child —
-            // so the caller scope was never entered and the call-site line
-            // dropped to 0 (gaps IT3-c-01/04, IT3-ruby-02/04, IT3-swift-04).
-            let name = if let Ok(source_str) = std::str::from_utf8(source) {
-                tldr_core::ast::function_finder::get_function_name(node, language, source_str)
+            if module_mode {
+                // fix-PW1 B2 (luau cross-source): the caller is the module /
+                // top-level source scope (`<module>`) — a call site living
+                // directly in the file body, not inside any named function.
+                // `in_target_func` starts `true` in this mode; entering ANY
+                // named function leaves that top-level scope, so suppress
+                // matching within it. Without this the `<module>` caller's
+                // call-site line dropped to 0.
+                now_in = false;
             } else {
-                None
-            };
-            if let Some(n) = name.as_deref() {
-                // Names may be qualified (e.g. C++ `Foo::bar`, Lua
-                // `Mod.fn`); compare on the trailing segment.
-                let n_tail = n.rsplit(['.', ':']).next().unwrap_or(n);
-                if explain_names_match(n_tail, caller_tail) || n_tail == caller_tail {
-                    now_in = true;
+                // fix-cl-1-v1 (v0.5.0 CL-1): use the canonical AST-driven,
+                // language-aware name extractor. The previous inline fallback
+                // (`name` field, else first direct `identifier` child) failed
+                // for C/C++ where the function name lives inside the
+                // `function_declarator` declarator chain — not a direct child —
+                // so the caller scope was never entered and the call-site line
+                // dropped to 0 (gaps IT3-c-01/04, IT3-ruby-02/04, IT3-swift-04).
+                let name = if let Ok(source_str) = std::str::from_utf8(source) {
+                    tldr_core::ast::function_finder::get_function_name(node, language, source_str)
+                } else {
+                    None
+                };
+                if let Some(n) = name.as_deref() {
+                    // Names may be qualified (e.g. C++ `Foo::bar`, Lua
+                    // `Mod.fn`); compare on the trailing segment.
+                    let n_tail = n.rsplit(['.', ':']).next().unwrap_or(n);
+                    if explain_names_match(n_tail, caller_tail) || n_tail == caller_tail {
+                        now_in = true;
+                    }
                 }
             }
         }
@@ -2272,10 +2285,37 @@ fn locate_call_in_caller_file(
                     | "function_call_expression"
                     | "scoped_call_expression"
                     | "nullsafe_member_call_expression"
+                    // fix-PW1 B2 (csharp ctor): a constructor call `new X(..)`
+                    // is an `object_creation_expression` (C#/Java), not one of
+                    // the `call_*` kinds above. Without it the callee line for
+                    // `new AsyncBinaryWriter(stream)` dropped to 0.
+                    | "object_creation_expression"
             );
             if is_call {
                 if let Some(callee) = extract_call_name(node, source) {
                     let tail = callee.rsplit('.').next().unwrap_or(&callee);
+                    if tail == target_tail {
+                        return Some(node.start_position().row as u32 + 1);
+                    }
+                }
+            }
+            // fix-PW1 B2 (ruby implicit-self): a receiverless implicit-`self`
+            // method call with no parentheses (e.g. `reload_config`) parses as
+            // a bare `identifier`, NOT a `call` node, so the branch above never
+            // sees it and the caller call-site line dropped to 0. Treat a bare
+            // identifier whose tail matches the target as the call site. Skip
+            // the `def NAME` declarator and identifiers that are a sub-part of
+            // an explicit `call` (its receiver / parenthesised method name),
+            // which the call branch above already handles.
+            if language == Language::Ruby && kind == "identifier" {
+                let parent_kind = node.parent().map(|p| p.kind());
+                let skip = matches!(
+                    parent_kind,
+                    Some("method") | Some("singleton_method") | Some("call")
+                );
+                if !skip {
+                    let txt = node_text(node, source);
+                    let tail = txt.rsplit('.').next().unwrap_or(txt);
                     if tail == target_tail {
                         return Some(node.start_position().row as u32 + 1);
                     }
@@ -2302,12 +2342,19 @@ fn locate_call_in_caller_file(
                 caller_tail,
                 target_tail,
                 now_in,
+                module_mode,
             ) {
                 return Some(line);
             }
         }
         None
     }
+
+    // fix-PW1 B2 (luau cross-source): when the call-graph attributes the
+    // caller to the synthetic top-level `<module>` scope, scan the file body
+    // for the call site directly (outside any named function) instead of
+    // looking for a function declaration that can never match.
+    let module_mode = caller_function == "<module>" || caller_tail == "<module>";
 
     descend(
         tree.root_node(),
@@ -2317,7 +2364,8 @@ fn locate_call_in_caller_file(
         class_kinds,
         caller_tail,
         target_tail,
-        false,
+        module_mode,
+        module_mode,
     )
 }
 
@@ -3552,6 +3600,78 @@ def complex_func(x, y):
             func_kinds,
         );
         assert!(callers.iter().any(|c| c.name == "main"));
+    }
+
+    /// fix-PW1 B2 (callsite-line0): GENERALIZATION gate.
+    ///
+    /// `locate_call_in_caller_file` previously returned `None` (→ call-site
+    /// line 0) for three distinct call shapes the descend walker could not
+    /// recognise. This asserts the fix attaches the REAL call-node start
+    /// position for EVERY language/variant in the symptom class — a
+    /// single-variant pass is not sufficient:
+    ///   - csharp: constructor `new X()` (`object_creation_expression`)
+    ///   - ruby:   receiverless implicit-`self` bareword call (bare `identifier`)
+    ///   - luau:   module/top-level (`<module>`) caller scope
+    #[test]
+    fn test_locate_callsite_line_nonzero_all_variants() {
+        use std::fs;
+        let dir = tempfile::tempdir().unwrap();
+
+        // csharp — constructor call `new AsyncBinaryWriter(stream)` at line 3.
+        let cs = dir.path().join("Writer.cs");
+        fs::write(
+            &cs,
+            "class BsonDataWriter {\n    \
+             public BsonDataWriter(Stream stream) {\n        \
+             _writer = new AsyncBinaryWriter(stream);\n    }\n}\n",
+        )
+        .unwrap();
+        let cs_line =
+            locate_call_in_caller_file(&cs, "BsonDataWriter", "AsyncBinaryWriter.AsyncBinaryWriter");
+        assert_eq!(
+            cs_line,
+            Some(3),
+            "csharp ctor `new X()` call-site line wrong, got {cs_line:?}"
+        );
+
+        // ruby — receiverless implicit-self `reload_config` bareword at line 4.
+        let rb = dir.path().join("adapter.rb");
+        fs::write(
+            &rb,
+            "class RuntimeAdapter\n  def initialize(message_queue)\n    \
+             @message_queue = message_queue\n    reload_config\n  end\n\n  \
+             def reload_config\n    @runtime = nil\n  end\nend\n",
+        )
+        .unwrap();
+        let rb_line = locate_call_in_caller_file(&rb, "RuntimeAdapter.initialize", "reload_config");
+        assert_eq!(
+            rb_line,
+            Some(4),
+            "ruby receiverless implicit-self call-site line wrong, got {rb_line:?}"
+        );
+
+        // luau — module/top-level (`<module>`) call to `expectfail` at line 5.
+        let lu = dir.path().join("classes.luau");
+        fs::write(
+            &lu,
+            "local function expectfail(s, expected, f)\n  return f\nend\n\n\
+             expectfail(\"a\", \"b\", function() end)\n",
+        )
+        .unwrap();
+        let lu_line = locate_call_in_caller_file(&lu, "<module>", "expectfail");
+        assert_eq!(
+            lu_line,
+            Some(5),
+            "luau module-level call-site line wrong, got {lu_line:?}"
+        );
+
+        // Anti-treadmill gate: EVERY variant must resolve a real (>0) line.
+        for (variant, line) in [("csharp", cs_line), ("ruby", rb_line), ("luau", lu_line)] {
+            assert!(
+                line.is_some_and(|l| l > 0),
+                "{variant} variant still drops call-site to line 0: {line:?}"
+            );
+        }
     }
 
     #[test]
