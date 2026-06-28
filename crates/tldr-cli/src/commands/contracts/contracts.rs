@@ -3363,7 +3363,11 @@ fn extract_typed_params_recursive(
 
             let type_node = param
                 .child_by_field_name("type")
-                .or_else(|| param.child_by_field_name("type_annotation"));
+                .or_else(|| param.child_by_field_name("type_annotation"))
+                // fix-PW1-F3c-contracts-doublecolon: strip the TS/JS
+                // `type_annotation` wrapper so the rendered type carries no
+                // leading colon (avoids `x: : number`).
+                .map(unwrap_type_annotation);
 
             if let (Some(name_node), Some(type_node)) = (name_node, type_node) {
                 let name = get_node_text(name_node, source);
@@ -3402,6 +3406,28 @@ fn extract_typed_params_recursive(
             extract_typed_params_recursive(param, source, conditions, config, line);
         }
     }
+}
+
+/// fix-PW1-F3c-contracts-doublecolon: unwrap a tree-sitter-typescript
+/// `type_annotation` node down to the actual type node it wraps.
+///
+/// In tree-sitter-typescript both the parameter `type` field and the
+/// function `return_type` field resolve to a `type_annotation` node whose
+/// source text INCLUDES the leading `:` (e.g. `: number`). Rendering that
+/// text through `format!("{}: {}", name, ty)` produced a doubled colon
+/// (`x: : number`, `return: : number`). The `type_annotation` grammar is
+/// `seq(':', <type>)`, so the `:` is an anonymous token and the sole named
+/// child is the real type. Descending to that child (AST-driven, not a
+/// string strip) yields the bare type with no leading colon. For every
+/// other language the `type` / `return_type` field is already the bare type
+/// node (kind != `type_annotation`), so this is a no-op there.
+fn unwrap_type_annotation(node: Node) -> Node {
+    if node.kind() == "type_annotation" {
+        if let Some(inner) = node.named_child(0) {
+            return inner;
+        }
+    }
+    node
 }
 
 /// contracts-type-printer-v1 (CLUSTER-M-046): walk a C/C++
@@ -3706,6 +3732,11 @@ fn extract_return_type_postconditions(
         Some(rt) => rt,
         None => return Ok(()),
     };
+    // fix-PW1-F3c-contracts-doublecolon: in TS/JS the `return_type` field is a
+    // `type_annotation` whose text includes the leading colon (`: number`).
+    // Unwrap it so `return: number` renders with a single colon (and so the
+    // void/None/unit skip-list below sees the bare type).
+    let return_type = unwrap_type_annotation(return_type);
 
     // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line.
     let line = config.func_decl_line(func);
@@ -5380,6 +5411,69 @@ function processData(x: number, data: number[]): number {
             "TypeScript: Should detect type annotation preconditions, got: {:?}",
             report.preconditions
         );
+    }
+
+    // fix-PW1-F3c-contracts-doublecolon: TS/JS typed params and return types
+    // must render a SINGLE colon. tree-sitter-typescript resolves the `type` /
+    // `return_type` field to a `type_annotation` node whose text already
+    // carries the leading `:`, so `format!("{}: {}", name, ty)` previously
+    // produced a doubled `": :"`. This generalization test asserts the fix
+    // holds for EVERY language in the symptom class (TypeScript AND
+    // JavaScript), since `.js` is parsed with the TypeScript grammar.
+    const DOUBLECOLON_TYPED_FN: &str = r#"
+function processData(x: number, data: number[]): number {
+    return data.reduce((a, b) => a + b, 0) + x;
+}
+"#;
+
+    fn assert_typed_params_single_colon(language: Language, ext: &str) {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join(format!("typed.{}", ext));
+        fs::write(&file_path, DOUBLECOLON_TYPED_FN).unwrap();
+
+        let report = run_contracts(&file_path, "processData", language, 100).unwrap();
+
+        // No condition (pre OR post) may contain a doubled colon.
+        for cond in report.preconditions.iter().chain(report.postconditions.iter()) {
+            assert!(
+                !cond.constraint.contains(": :"),
+                "{:?}: doubled colon in constraint {:?}",
+                language,
+                cond.constraint
+            );
+        }
+
+        // The `x: number` precondition must render with exactly one colon.
+        let has_param = report
+            .preconditions
+            .iter()
+            .any(|p| p.constraint == "x: number");
+        assert!(
+            has_param,
+            "{:?}: expected param precondition 'x: number', got: {:?}",
+            language, report.preconditions
+        );
+
+        // The return type postcondition must render with exactly one colon.
+        let has_return = report
+            .postconditions
+            .iter()
+            .any(|p| p.constraint == "return: number");
+        assert!(
+            has_return,
+            "{:?}: expected postcondition 'return: number', got: {:?}",
+            language, report.postconditions
+        );
+    }
+
+    #[test]
+    fn test_ts_typed_params_single_colon() {
+        assert_typed_params_single_colon(Language::TypeScript, "ts");
+    }
+
+    #[test]
+    fn test_js_typed_params_single_colon() {
+        assert_typed_params_single_colon(Language::JavaScript, "js");
     }
 
     const CPP_GUARD_CLAUSES: &str = r#"
