@@ -531,6 +531,28 @@ impl SwiftHandler {
                     }
                 }
             }
+            "subscript_declaration" => {
+                // CF1-S18 (v0.5.0 RC): a subscript's computed accessors
+                // (`get` / `set` / `_modify`, plus the implicit single-
+                // expression getter) are callable scopes. tree-sitter-swift
+                // shape:
+                //   subscript_declaration > computed_property
+                //     > computed_getter | computed_setter | computed_modify
+                //       > { statements ... }
+                //   (implicit getter: computed_property > statements directly)
+                // Without modelling these, calls inside an accessor (e.g.
+                // `_finalizeKeyingModify(...)` in OrderedDictionary's subscript
+                // `_modify`) produced NO call-graph edge, so `impact` fell back
+                // to a references-enrichment edge attributed to `<module>`.
+                // Attribute them to the enclosing accessor scope instead.
+                self.extract_subscript_accessor_calls(
+                    node,
+                    source,
+                    defined_funcs,
+                    current_type,
+                    calls_by_func,
+                );
+            }
             _ => {
                 // For other nodes (e.g., source_file), recurse into children
                 for i in 0..node.child_count() {
@@ -543,6 +565,59 @@ impl SwiftHandler {
                             current_type,
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// Extract calls from a subscript's computed accessors, attributing each
+    /// call to the enclosing accessor scope.
+    ///
+    /// Each `get` / `set` / `_modify` accessor (and the implicit single-
+    /// expression getter, whose `statements` sit directly under
+    /// `computed_property`) is modelled as a callable scope named
+    /// `<Type>.subscript.<accessor>` (or `subscript.<accessor>` at file scope).
+    /// This keeps calls made inside an accessor from leaking to `<module>`.
+    fn extract_subscript_accessor_calls(
+        &self,
+        subscript_node: &Node,
+        source: &[u8],
+        defined_funcs: &HashSet<String>,
+        current_type: Option<&str>,
+        calls_by_func: &mut HashMap<String, Vec<CallSite>>,
+    ) {
+        let base = match current_type {
+            Some(type_name) => format!("{}.subscript", type_name),
+            None => "subscript".to_string(),
+        };
+
+        for i in 0..subscript_node.child_count() {
+            let computed = match subscript_node.child(i) {
+                Some(c) if c.kind() == "computed_property" => c,
+                _ => continue,
+            };
+
+            for j in 0..computed.child_count() {
+                let accessor = match computed.child(j) {
+                    Some(a) => a,
+                    None => continue,
+                };
+                // Map the accessor node kind to its scope label. The implicit
+                // single-expression getter has no `computed_getter` wrapper —
+                // its `statements` sit directly under `computed_property`.
+                let label = match accessor.kind() {
+                    "computed_getter" => "get",
+                    "computed_setter" => "set",
+                    "computed_modify" => "_modify",
+                    "statements" => "get",
+                    _ => continue,
+                };
+
+                let caller = format!("{}.{}", base, label);
+                let calls =
+                    self.extract_calls_from_subtree(&accessor, source, defined_funcs, &caller);
+                if !calls.is_empty() {
+                    calls_by_func.entry(caller).or_default().extend(calls);
                 }
             }
         }
@@ -1503,6 +1578,90 @@ func main() {
             // other() is on line 3
             let other_call = main_calls.iter().find(|c| c.target == "other").unwrap();
             assert_eq!(other_call.line, Some(3));
+        }
+
+        /// CF1-S18 (v0.5.0 RC): calls inside a subscript's computed accessors
+        /// must attribute to the enclosing accessor scope
+        /// (`<Type>.subscript.<get|set|_modify>`), NOT leak to `<module>`.
+        ///
+        /// Generalization: covers the `get`, `set`, and `_modify` accessors AND
+        /// all three type kinds tree-sitter-swift folds into `class_declaration`
+        /// (struct / enum / actor). Before the fix, `walk_for_calls` had no
+        /// `subscript_declaration` arm, so these calls produced no call-graph
+        /// edge and `impact` fell back to a `<module>`-attributed references
+        /// edge (e.g. swift-collections `OrderedDictionary._finalizeKeyingModify`).
+        #[test]
+        fn test_subscript_accessor_calls_attribute_to_accessor_scope() {
+            let source = r#"
+struct Grid {
+  subscript(key: Int) -> Int {
+    get { return computeGet(key) }
+    set { applySet(newValue) }
+    _modify {
+      var value = 0
+      finalizeModify(&value)
+      yield &value
+    }
+  }
+}
+
+enum Palette {
+  subscript(i: Int) -> Int {
+    get { return paletteLookup(i) }
+  }
+}
+
+actor Counter {
+  subscript(i: Int) -> Int {
+    _modify {
+      var v = 0
+      counterFinalize(&v)
+      yield &v
+    }
+  }
+}
+"#;
+            let calls = extract_calls(source);
+
+            // Each (accessor scope caller, expected callee) pair must be a real
+            // call-graph edge — covering get/set/_modify across struct/enum/actor.
+            let expected: &[(&str, &str)] = &[
+                ("Grid.subscript.get", "computeGet"),
+                ("Grid.subscript.set", "applySet"),
+                ("Grid.subscript._modify", "finalizeModify"),
+                ("Palette.subscript.get", "paletteLookup"),
+                ("Counter.subscript._modify", "counterFinalize"),
+            ];
+
+            for (caller, callee) in expected {
+                let edges = calls.get(*caller).unwrap_or_else(|| {
+                    panic!(
+                        "expected accessor scope `{}` to be a caller; got callers {:?}",
+                        caller,
+                        calls.keys().collect::<Vec<_>>()
+                    )
+                });
+                assert!(
+                    edges.iter().any(|c| c.target == *callee),
+                    "accessor scope `{}` should call `{}`; edges = {:?}",
+                    caller,
+                    callee,
+                    edges.iter().map(|c| &c.target).collect::<Vec<_>>()
+                );
+            }
+
+            // Anti-regression: the accessor helper calls must NOT be attributed
+            // to `<module>` (the pre-fix symptom). No accessor callee may appear
+            // under a `<module>` caller.
+            if let Some(module_edges) = calls.get("<module>") {
+                for (_, callee) in expected {
+                    assert!(
+                        !module_edges.iter().any(|c| c.target == *callee),
+                        "accessor callee `{}` leaked to <module> scope",
+                        callee
+                    );
+                }
+            }
         }
     }
 
