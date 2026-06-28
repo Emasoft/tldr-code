@@ -164,7 +164,12 @@ fn extract_from_kotlin_file(
         });
 
         for method in &class.methods {
-            if !include_private && is_kotlin_hidden_at_line(&source, method.line_number as usize) {
+            // RC2-2-visibility-ts-kotlin-swift: gate class members on the
+            // AST-derived `visibility` (`modifiers > visibility_modifier`)
+            // instead of a source-line scan. The old line check only matched
+            // `private `/`internal `, so `protected` members leaked into the
+            // public surface.
+            if !include_private && kotlin_visibility_is_hidden(method.visibility.as_deref()) {
                 continue;
             }
 
@@ -238,6 +243,16 @@ fn compute_kotlin_module_path(file_path: &Path, root_dir: &Path, package_name: &
     } else {
         format!("{}.{}", package_name, parts.join("."))
     }
+}
+
+/// RC2-2-visibility-ts-kotlin-swift: a Kotlin class member is hidden from the
+/// public surface when its AST-derived visibility is `private`, `protected`, or
+/// `internal`. Kotlin's implicit default is `public`, so `None` (no modifier)
+/// and an explicit `public` both surface. Reads the `modifiers >
+/// visibility_modifier` keyword captured by the extractor instead of the
+/// brittle source-line scan that missed `protected`.
+fn kotlin_visibility_is_hidden(visibility: Option<&str>) -> bool {
+    matches!(visibility, Some("private" | "protected" | "internal"))
 }
 
 fn is_kotlin_hidden_at_line(source: &str, line_number: usize) -> bool {
@@ -438,6 +453,58 @@ class Greeter {
         assert!(!names.iter().any(|name| name.ends_with(".debug")));
         assert!(!names.iter().any(|name| name.ends_with("Greeter.secret")));
         assert!(!names.iter().any(|name| name.ends_with(".HIDDEN")));
+    }
+
+    /// RC2-2-visibility-ts-kotlin-swift: the line-based hidden check only
+    /// matched `private `/`internal `, so `protected` class methods leaked into
+    /// the public surface. Reading the AST-derived `visibility` field treats
+    /// private + protected + internal as hidden while keeping implicit-public.
+    #[test]
+    fn test_extract_kotlin_surface_excludes_protected_methods_rc2_2() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "src/main/kotlin/com/example/App.kt",
+            r#"
+open class Greeter {
+    fun hello(name: String): String = name
+    protected fun guarded(token: String): String = token
+    private fun secret(token: String): String = token
+    internal fun debug(token: String): String = token
+}
+"#,
+        );
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_kotlin_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|api| api.qualified_name.as_str())
+            .collect();
+
+        assert!(
+            names.iter().any(|name| name.ends_with("Greeter.hello")),
+            "implicit-public method must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with("Greeter.guarded")),
+            "protected method must NOT leak into surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with("Greeter.secret")),
+            "private method must NOT leak into surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with("Greeter.debug")),
+            "internal method must NOT leak into surface, got {names:?}"
+        );
     }
 
     #[test]

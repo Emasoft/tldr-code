@@ -458,6 +458,72 @@ fn is_node_public(node: Node, source: &[u8], lang: Language) -> bool {
     }
 }
 
+/// RC2-2-visibility-ts-kotlin-swift: return true when a Swift declaration is
+/// non-public for the interface member view, i.e. it carries an explicit
+/// `private` or `fileprivate` access level. tree-sitter-swift exposes the
+/// access keyword as a `visibility_modifier` (or `access_level_modifier`) that
+/// is either a direct child of the declaration or nested under a `modifiers`
+/// wrapper — mirroring `extract_swift_visibility` in `ast/extract.rs`. The
+/// Swift default is `internal`, and `internal`/`public`/`open`/`package` all
+/// stay public here, so only the two file-scoped levels are filtered.
+fn swift_member_is_non_public(node: Node, source: &[u8]) -> bool {
+    matches!(
+        swift_access_keyword(node, source).as_deref(),
+        Some("private" | "fileprivate")
+    )
+}
+
+/// AST-driven read of a Swift declaration's access keyword. Returns the bare
+/// keyword (`public`/`open`/`internal`/`fileprivate`/`private`/`package`) when
+/// an explicit access modifier is present, or `None` for the implicit default.
+/// The leading-token split tolerates the `private(set)` / `fileprivate(set)`
+/// property forms (the surfaced keyword is the access level, not `(set)`).
+fn swift_access_keyword(node: Node, source: &[u8]) -> Option<String> {
+    const KEYWORDS: &[&str] = &[
+        "public",
+        "open",
+        "internal",
+        "fileprivate",
+        "private",
+        "package",
+    ];
+    fn leading_keyword(text: &str) -> Option<String> {
+        let kw = text
+            .trim()
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()
+            .unwrap_or("");
+        if KEYWORDS.contains(&kw) {
+            Some(kw.to_string())
+        } else {
+            None
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "visibility_modifier" | "access_level_modifier" => {
+                if let Some(kw) = leading_keyword(node_text(child, source)) {
+                    return Some(kw);
+                }
+            }
+            "modifiers" => {
+                let mut mc = child.walk();
+                for m in child.children(&mut mc) {
+                    if matches!(m.kind(), "visibility_modifier" | "access_level_modifier") {
+                        if let Some(kw) = leading_keyword(node_text(m, source)) {
+                            return Some(kw);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// interface-per-lang-v1 (v0.4.2 M-022): return true when a Scala
 /// definition carries an explicit `private` or `protected` access
 /// modifier. tree-sitter-scala emits these under a `modifiers >
@@ -2306,6 +2372,24 @@ fn is_method_public(name: &str, node: Node, source: &[u8], lang: Language) -> bo
         // Previously PHP fell through to `_ => true`, so every PHP method was
         // counted public and `private_method_count` was always 0.
         Language::Java | Language::CSharp | Language::Php => has_public_modifier(node, source),
+        // RC2-2-visibility-ts-kotlin-swift: TS/JS members carry an explicit
+        // `accessibility_modifier` (`private`/`protected`/`public`); Kotlin nests
+        // its access keyword under `modifiers > visibility_modifier`, where
+        // `private`/`protected`/`internal` are non-public and `public` /
+        // the implicit default stay public. Both AST shapes are already
+        // recognised by the shared `has_public_modifier` predicate (via
+        // `explicit_access_visibility`), so route them through it instead of the
+        // `_ => true` fall-through that previously leaked every private member
+        // into the public set and pinned `private_method_count` at 0.
+        Language::TypeScript | Language::JavaScript | Language::Kotlin => {
+            has_public_modifier(node, source)
+        }
+        // Swift's DEFAULT visibility is `internal` (module-wide), so — unlike
+        // C#/Kotlin where `internal` is non-public — only the file-scoped levels
+        // `private`/`fileprivate` are non-public for the interface member view.
+        // `internal`/`public`/`open`/`package` and the implicit default all
+        // remain in the public method set.
+        Language::Swift => !swift_member_is_non_public(node, source),
         // interface-per-lang-v1 (v0.4.2 M-022): exclude scala `private`
         // / `protected` methods from the public method list.
         Language::Scala => !is_scala_non_public(node, source),
@@ -5831,6 +5915,129 @@ impl Foo {
             "rust non-pub method must stay excluded, got {names:?}"
         );
         assert_eq!(cls.private_method_count, 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // RC2-2-visibility-ts-kotlin-swift: the member-axis visibility gate must
+    // read the AST access modifier for TS (`accessibility_modifier`), Kotlin
+    // (`modifiers > visibility_modifier`), and Swift (`visibility_modifier`)
+    // instead of falling through to `_ => true`. Without this, every TS / Kotlin
+    // / Swift method counted as public, `private_method_count` was always 0, and
+    // explicit private members leaked into the public `methods` set. This gate
+    // spans ALL THREE languages plus implicit-public preservation, so a
+    // single-language fix cannot pass.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_interface_typescript_excludes_private_protected_methods_rc2_2() {
+        let source = r#"
+export class Service {
+    public connect() {}
+    ping() {}
+    private secret() {}
+    protected helper() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.ts"), source).unwrap();
+        let cls = cls_named(&info, "Service");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "connect"),
+            "explicit-public method must surface, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "ping"),
+            "implicit-public (no modifier) method must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "secret"),
+            "private method must be excluded, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "helper"),
+            "protected method must be excluded, got {names:?}"
+        );
+        assert_eq!(
+            cls.private_method_count, 2,
+            "private + protected must be tallied"
+        );
+    }
+
+    #[test]
+    fn test_interface_kotlin_excludes_private_protected_internal_methods_rc2_2() {
+        let source = r#"
+class Service {
+    fun ping() {}
+    public fun connect() {}
+    private fun secret() {}
+    protected fun helper() {}
+    internal fun debugOnly() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.kt"), source).unwrap();
+        let cls = cls_named(&info, "Service");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "ping"),
+            "implicit-public (Kotlin default) method must surface, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "connect"),
+            "explicit-public method must surface, got {names:?}"
+        );
+        for hidden in ["secret", "helper", "debugOnly"] {
+            assert!(
+                !names.iter().any(|n| *n == hidden),
+                "{hidden} (non-public) must be excluded, got {names:?}"
+            );
+        }
+        assert_eq!(
+            cls.private_method_count, 3,
+            "private + protected + internal must be tallied"
+        );
+    }
+
+    #[test]
+    fn test_interface_swift_excludes_private_fileprivate_methods_rc2_2() {
+        // Swift's DEFAULT visibility is `internal`; for the interface member
+        // view only `private`/`fileprivate` are non-public — `internal` and the
+        // implicit default stay in the public method set.
+        let source = r#"
+public class Service {
+    public func connect() {}
+    func ping() {}
+    internal func sync() {}
+    private func secret() {}
+    fileprivate func helper() {}
+}
+"#;
+        let info = extract_interface(Path::new("test.swift"), source).unwrap();
+        let cls = cls_named(&info, "Service");
+        let names: Vec<&String> = cls.methods.iter().map(|m| &m.name).collect();
+        assert!(
+            names.iter().any(|n| *n == "connect"),
+            "explicit-public method must surface, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "ping"),
+            "implicit (internal-default) method must stay public, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "sync"),
+            "explicit `internal` method must stay public in interface view, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "secret"),
+            "private method must be excluded, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| *n == "helper"),
+            "fileprivate method must be excluded, got {names:?}"
+        );
+        assert_eq!(
+            cls.private_method_count, 2,
+            "private + fileprivate must be tallied"
+        );
     }
 
     /// RC2-META Stage 3 (swift): `interface`'s ClassInfo.kind must be populated

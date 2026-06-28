@@ -206,7 +206,11 @@ fn extract_from_swift_file(
     let mut apis = Vec::new();
 
     for func in &module_info.functions {
-        if !include_private && !is_swift_public_at_line(&source, func.line_number as usize) {
+        // RC2-2-visibility-ts-kotlin-swift: gate on the AST-derived `visibility`
+        // (`visibility_modifier`) rather than a source-line scan. Only
+        // `public`/`open` belong to the package's public surface; the Swift
+        // `internal` default (and `fileprivate`/`private`) are excluded.
+        if !include_private && !swift_visibility_is_public(func.visibility.as_deref()) {
             continue;
         }
 
@@ -277,10 +281,18 @@ fn extract_from_swift_file(
             is_extension && is_swift_public_at_line(&source, class.line_number as usize);
 
         for method in &class.methods {
-            if !include_private
-                && !extension_is_public
-                && !is_swift_public_at_line(&source, method.line_number as usize)
-            {
+            // RC2-2-visibility-ts-kotlin-swift: read the AST-derived `visibility`
+            // for each member. In a regular type only `public`/`open` surface;
+            // inside a `public extension` members are public BY DEFAULT, but an
+            // explicit `private`/`fileprivate` member still stays hidden (the
+            // old blanket `extension_is_public` short-circuit leaked it).
+            let keep = include_private
+                || if extension_is_public {
+                    !swift_visibility_is_file_scoped(method.visibility.as_deref())
+                } else {
+                    swift_visibility_is_public(method.visibility.as_deref())
+                };
+            if !keep {
                 continue;
             }
 
@@ -378,6 +390,21 @@ fn normalize_swift_module_segment(segment: &str) -> String {
         .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
         .filter(|part| !part.is_empty())
         .collect::<String>()
+}
+
+/// RC2-2-visibility-ts-kotlin-swift: a Swift declaration belongs to the
+/// package's public surface only when its AST-derived visibility is `public`
+/// or `open`. Swift's implicit default is `internal` (module-internal), which
+/// is NOT public, so `None` and `internal`/`fileprivate`/`private` are all
+/// excluded.
+fn swift_visibility_is_public(visibility: Option<&str>) -> bool {
+    matches!(visibility, Some("public" | "open"))
+}
+
+/// File-scoped Swift access levels. Members of a `public extension` are public
+/// by default, but an explicit `private`/`fileprivate` member stays hidden.
+fn swift_visibility_is_file_scoped(visibility: Option<&str>) -> bool {
+    matches!(visibility, Some("private" | "fileprivate"))
 }
 
 fn is_swift_public_at_line(source: &str, line_number: usize) -> bool {
@@ -666,6 +693,66 @@ public struct Greeter {
         assert!(names.iter().any(|name| name.ends_with("Greeter.hello")));
         assert!(!names.iter().any(|name| name.ends_with(".debug")));
         assert!(!names.iter().any(|name| name.ends_with("Greeter.secret")));
+    }
+
+    /// RC2-2-visibility-ts-kotlin-swift: read the AST-derived `visibility`
+    /// field for class members (public/open only) instead of a line scan, and
+    /// stop a `public extension` from blanket-surfacing an explicitly
+    /// `private`/`fileprivate` member.
+    #[test]
+    fn test_extract_swift_surface_excludes_private_members_rc2_2() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "Sources/App.swift",
+            r#"
+public struct Greeter {
+    public func hello(name: String) -> String { name }
+    private func secret(name: String) -> String { name }
+    fileprivate func helper(name: String) -> String { name }
+}
+
+public extension Greeter {
+    func exposed(name: String) -> String { name }
+    private func hidden(name: String) -> String { name }
+}
+"#,
+        );
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_swift_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|api| api.qualified_name.as_str())
+            .collect();
+
+        assert!(
+            names.iter().any(|name| name.ends_with("Greeter.hello")),
+            "public method must surface, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.ends_with("Greeter.exposed")),
+            "implicit-public member of a public extension must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with("Greeter.secret")),
+            "private method must NOT leak into surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with("Greeter.helper")),
+            "fileprivate method must NOT leak into surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with("Greeter.hidden")),
+            "explicit-private member of a public extension must NOT leak, got {names:?}"
+        );
     }
 
     #[test]

@@ -127,6 +127,13 @@ fn extract_from_typescript_file(
     let module_path = compute_ts_module_path(file_path, root_dir, package_name);
     let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
+    // RC2-2-visibility-ts-kotlin-swift: class members are emitted below WITHOUT
+    // an `is_exported` gate (members are never `export`ed individually), so a
+    // `private`/`protected` method previously leaked into the public surface.
+    // Precompute the start-lines of members carrying a non-public AST
+    // `accessibility_modifier` so the method loop can drop them.
+    let nonpublic_member_lines = collect_ts_nonpublic_member_lines(&tree, &source);
+
     let mut apis = Vec::new();
 
     // Extract top-level functions
@@ -213,6 +220,16 @@ fn extract_from_typescript_file(
 
         // Extract methods from the class
         for method in &class.methods {
+            // RC2-2-visibility-ts-kotlin-swift: drop members whose AST
+            // `accessibility_modifier` is `private`/`protected` (unless
+            // `include_private`). Keyed by the member node's start line, which
+            // matches the `line_number` the extractor records for it.
+            if !include_private
+                && nonpublic_member_lines.contains(&(method.line_number as usize))
+            {
+                continue;
+            }
+
             let method_qualified = format!("{}.{}", qualified_name, method.name);
             let is_prop = is_readonly_property(&source, method.line_number as usize)
                 || is_getter_property(&source, method.line_number as usize);
@@ -1117,6 +1134,54 @@ fn collect_enum_entry(enum_node: &Node, source: &str) -> Option<EnumEntry> {
     Some((enum_name, enum_line, members))
 }
 
+/// RC2-2-visibility-ts-kotlin-swift: collect the 1-indexed start lines of class
+/// members whose AST `accessibility_modifier` is `private` or `protected`.
+///
+/// TypeScript class members are not individually `export`ed — their visibility
+/// lives on an `accessibility_modifier` child of the `method_definition` /
+/// signature / `public_field_definition` node. The surface extractor records a
+/// member's `line_number` as that node's start row, so keying the non-public
+/// set by `node.start_position().row + 1` lets the member loop drop privates
+/// without re-deriving names (which would mis-handle overloads).
+fn collect_ts_nonpublic_member_lines(tree: &Tree, source: &str) -> HashSet<usize> {
+    let mut lines = HashSet::new();
+    walk_ts_member_visibility(tree.root_node(), source, &mut lines);
+    lines
+}
+
+fn walk_ts_member_visibility(node: Node, source: &str, lines: &mut HashSet<usize>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "method_definition"
+                | "method_signature"
+                | "abstract_method_signature"
+                | "public_field_definition"
+        ) {
+            if let Some(keyword) = ts_member_accessibility(&child, source) {
+                if keyword == "private" || keyword == "protected" {
+                    lines.insert(child.start_position().row + 1);
+                }
+            }
+        }
+        walk_ts_member_visibility(child, source, lines);
+    }
+}
+
+/// Read the access keyword of a TS class member from its `accessibility_modifier`
+/// child (`public` / `private` / `protected`). Returns `None` for an
+/// implicit-public member that carries no access modifier.
+fn ts_member_accessibility(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "accessibility_modifier" {
+            return Some(node_text(&child, source).trim().to_string());
+        }
+    }
+    None
+}
+
 /// Get text content of a tree-sitter node.
 fn node_text(node: &Node, source: &str) -> String {
     let start = node.start_byte();
@@ -1249,6 +1314,60 @@ mod tests {
         let source = "interface Foo {\n    readonly bar: string;\n    baz: number;\n}\n";
         assert!(is_readonly_property(source, 2));
         assert!(!is_readonly_property(source, 3));
+    }
+
+    /// RC2-2-visibility-ts-kotlin-swift: the TS surface gated only the class via
+    /// `is_exported`; class members were emitted with NO visibility check, so
+    /// `private`/`protected` methods leaked into the public surface. The member
+    /// loop must read the AST `accessibility_modifier` and drop non-public
+    /// members while keeping public + implicit-public ones.
+    #[test]
+    fn test_extract_typescript_surface_excludes_private_protected_methods_rc2_2() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("index.ts");
+        std::fs::write(
+            &path,
+            r#"
+export class Service {
+    public connect(): void {}
+    ping(): void {}
+    private secret(): void {}
+    protected helper(): void {}
+}
+"#,
+        )
+        .unwrap();
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_typescript_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|api| api.qualified_name.as_str())
+            .collect();
+
+        assert!(
+            names.iter().any(|n| n.ends_with("Service.connect")),
+            "explicit-public method must surface, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with("Service.ping")),
+            "implicit-public method must surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.ends_with("Service.secret")),
+            "private method must NOT leak into surface, got {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.ends_with("Service.helper")),
+            "protected method must NOT leak into surface, got {names:?}"
+        );
     }
 
     #[test]
