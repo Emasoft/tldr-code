@@ -45,7 +45,7 @@ use crate::ast::function_finder::{
 };
 use crate::ast::parser::parse;
 use crate::metrics::complexity::calculate_all_complexities_keyed_from_tree;
-use crate::quality::cohesion::extract_self_accesses;
+use crate::quality::cohesion::analyze_cohesion;
 use crate::types::Language;
 use crate::TldrResult;
 
@@ -1930,54 +1930,51 @@ pub fn find_god_classes(source: &str, filepath: &Path, language: Language) -> Ve
 
 /// Inner implementation that accepts an optional pre-parsed tree.
 fn find_god_classes_inner(
-    source: &str,
+    _source: &str,
     filepath: &Path,
     language: Language,
-    pre_parsed: Option<&tree_sitter::Tree>,
+    _pre_parsed: Option<&tree_sitter::Tree>,
 ) -> Vec<DebtIssue> {
-    let mut issues = Vec::new();
+    // God-class detection stays Python-only — exactly the scope of the historical
+    // `extract_classes_for_lcom4`, which only handled Python. Bailing here keeps
+    // every other language's debt report byte-for-byte identical (no new findings).
+    if language != Language::Python {
+        return Vec::new();
+    }
 
-    // Use pre-parsed tree if available, otherwise parse
-    let owned_tree;
-    let tree = match pre_parsed {
-        Some(t) => t,
-        None => {
-            owned_tree = match parse(source, language) {
-                Ok(t) => t,
-                Err(_) => return issues,
-            };
-            &owned_tree
-        }
+    // fix-PW4-D-flask-lcom4-unify (v0.5.0 BACKLOG): source the LCOM4 connected-
+    // component count from the CANONICAL cohesion engine (`analyze_cohesion` ->
+    // `lcom4_from_graph`) — the same engine `cohesion`/`health`/`todo` consume —
+    // so debt's god-class metric can no longer drift from them (previously a 3rd,
+    // field-only Union-Find produced a divergent LCOM4). The 0..1 god-class value
+    // is derived from the canonical component count and (non-dunder) method count:
+    //   norm = (components - 1) / max(methods - 1, 1)   (0.0 cohesive .. 1.0 not).
+    // The cohesion `threshold` argument only tunes the engine's split verdict, not
+    // the component count we read here, so the historical >0.8 rule is preserved.
+    let report = match analyze_cohesion(filepath, Some(language), 2) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
     };
 
-    let root = tree.root_node();
+    let mut issues = Vec::new();
+    for class in &report.classes {
+        // `method_count` already excludes dunders (the canonical engine runs with
+        // `include_dunder: false`), matching the historical non-dunder count.
+        let method_count = class.method_count;
 
-    // Extract all classes with their methods
-    let classes = extract_classes_for_lcom4(root, source, language);
-
-    for class_info in classes {
-        // Count non-dunder methods
-        let non_dunder_methods: Vec<_> = class_info
-            .methods
-            .iter()
-            .filter(|m| !is_dunder_method(&m.name))
-            .collect();
-
-        let method_count = non_dunder_methods.len();
-
-        // God class threshold: >20 methods AND LCOM4 > 0.8
-        // (need >= 2 methods to meaningfully calculate LCOM4)
+        // God class threshold: >20 (non-dunder) methods AND normalized LCOM4 > 0.8.
         if method_count > 20 {
-            let lcom4 = compute_lcom4_for_class(&non_dunder_methods, source);
-
-            // Flag as God Class if LCOM4 > 0.8
-            if lcom4 > 0.8 {
+            let normalized = (class.lcom4 as f64 - 1.0) / ((method_count - 1).max(1) as f64);
+            if normalized > 0.8 {
                 issues.push(DebtIssue {
                     file: filepath.to_path_buf(),
-                    line: class_info.start_line,
-                    element: Some(class_info.name.clone()),
+                    line: class.line as u32,
+                    element: Some(class.name.clone()),
                     rule: "god_class".to_string(),
-                    message: format!("God class: {} methods, LCOM4={:.2}", method_count, lcom4),
+                    message: format!(
+                        "God class: {} methods, LCOM4={:.2}",
+                        method_count, normalized
+                    ),
                     category: "changeability".to_string(),
                     debt_minutes: 60,
                 });
@@ -2652,101 +2649,14 @@ fn has_python_docstring(body: &Node, source: &str) -> bool {
     false
 }
 
-/// Compute LCOM4 metric for a class
+/// Stable placeholder kept for the re-exported `quality::compute_lcom4` API.
 ///
-/// LCOM4 counts connected components in the method-field graph.
-/// Returns normalized value: (components - 1) / max(methods - 1, 1)
-///
-/// - 0.0 = perfectly cohesive (all methods share fields)
-/// - 1.0 = maximally incohesive (no methods share fields)
-///
-/// Note: This is the public API for testing. The actual implementation
-/// for god class detection uses compute_lcom4_for_class internally.
+/// fix-PW4-D-flask-lcom4-unify (v0.5.0 BACKLOG): god-class LCOM4 is now sourced
+/// from the canonical cohesion engine (`cohesion::analyze_cohesion` ->
+/// `lcom4_from_graph`) inside `find_god_classes`, so there is no longer a
+/// separate debt-local LCOM4 implementation to expose here.
 pub fn compute_lcom4() -> f64 {
-    // This is a placeholder for tests - actual LCOM4 calculation
-    // is done via compute_lcom4_for_class with method data
     0.0
-}
-
-// =============================================================================
-// LCOM4 Helper Types and Functions
-// =============================================================================
-
-/// Information about a class extracted for LCOM4 analysis
-#[derive(Debug)]
-struct ClassInfoForLcom4 {
-    /// Class name
-    name: String,
-    /// Start line (1-indexed)
-    start_line: u32,
-    /// Methods in this class
-    methods: Vec<MethodInfoForLcom4>,
-}
-
-/// Information about a method extracted for LCOM4 analysis
-#[derive(Debug)]
-struct MethodInfoForLcom4 {
-    /// Method name
-    name: String,
-    /// Start byte offset in source
-    start_byte: usize,
-    /// End byte offset in source
-    end_byte: usize,
-}
-
-/// Union-Find data structure for LCOM4 connected component calculation
-/// Uses iterative path compression to avoid stack overflow
-struct UnionFind {
-    parent: Vec<usize>,
-    rank: Vec<usize>,
-}
-
-impl UnionFind {
-    fn new(n: usize) -> Self {
-        Self {
-            parent: (0..n).collect(),
-            rank: vec![0; n],
-        }
-    }
-
-    /// Find root with iterative path compression
-    fn find(&mut self, x: usize) -> usize {
-        let mut root = x;
-        // Find root
-        while self.parent[root] != root {
-            root = self.parent[root];
-        }
-        // Path compression
-        let mut node = x;
-        while self.parent[node] != root {
-            let next = self.parent[node];
-            self.parent[node] = root;
-            node = next;
-        }
-        root
-    }
-
-    /// Union by rank
-    fn union(&mut self, x: usize, y: usize) {
-        let rx = self.find(x);
-        let ry = self.find(y);
-        if rx != ry {
-            if self.rank[rx] < self.rank[ry] {
-                self.parent[rx] = ry;
-            } else if self.rank[rx] > self.rank[ry] {
-                self.parent[ry] = rx;
-            } else {
-                self.parent[ry] = rx;
-                self.rank[rx] += 1;
-            }
-        }
-    }
-
-    /// Count connected components
-    fn count_components(&mut self) -> usize {
-        let n = self.parent.len();
-        (0..n).map(|i| self.find(i)).collect::<HashSet<_>>().len()
-    }
 }
 
 /// Check if a method name is a dunder method (__name__)
@@ -2754,173 +2664,6 @@ fn is_dunder_method(name: &str) -> bool {
     name.starts_with("__") && name.ends_with("__")
 }
 
-/// Compute LCOM4 for a set of methods
-///
-/// # Arguments
-/// * `methods` - Non-dunder methods to analyze
-/// * `source` - Full source code
-///
-/// # Returns
-/// LCOM4 value between 0.0 and 1.0
-fn compute_lcom4_for_class(methods: &[&MethodInfoForLcom4], source: &str) -> f64 {
-    let n = methods.len();
-
-    // With < 2 methods, LCOM4 is 0.0 by definition (perfectly cohesive)
-    if n < 2 {
-        return 0.0;
-    }
-
-    // Extract field accesses for each method
-    let method_fields: Vec<HashSet<String>> = methods
-        .iter()
-        .map(|m| {
-            let method_source = &source[m.start_byte..m.end_byte];
-            extract_self_accesses(method_source)
-        })
-        .collect();
-
-    // Check if any method accesses any fields
-    let all_fields: HashSet<String> = method_fields.iter().flatten().cloned().collect();
-    if all_fields.is_empty() {
-        // No shared state - each method is its own component
-        // LCOM4 = 1.0 (maximally incohesive)
-        return 1.0;
-    }
-
-    // Build Union-Find and connect methods that share fields
-    let mut uf = UnionFind::new(n);
-
-    for i in 0..n {
-        for j in (i + 1)..n {
-            // Check if methods i and j share any fields
-            if !method_fields[i].is_disjoint(&method_fields[j]) {
-                uf.union(i, j);
-            }
-        }
-    }
-
-    // Count connected components
-    let components = uf.count_components();
-
-    // Normalize: (components - 1) / max(methods - 1, 1)
-    let denominator = (n - 1).max(1) as f64;
-    (components as f64 - 1.0) / denominator
-}
-
-/// Extract classes with their methods for LCOM4 analysis
-fn extract_classes_for_lcom4(
-    root: Node,
-    source: &str,
-    language: Language,
-) -> Vec<ClassInfoForLcom4> {
-    let mut classes = Vec::new();
-
-    if language == Language::Python {
-        extract_python_classes_for_lcom4(root, source, &mut classes, 0);
-    }
-
-    classes
-}
-
-/// Extract Python classes for LCOM4 analysis
-///
-/// Recursion bounded by `DEBT_MAX_AST_DEPTH`.
-fn extract_python_classes_for_lcom4(
-    node: Node,
-    source: &str,
-    classes: &mut Vec<ClassInfoForLcom4>,
-    depth: usize,
-) {
-    if depth > DEBT_MAX_AST_DEPTH {
-        return;
-    }
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "class_definition" => {
-                if let Some(class_info) = extract_python_class_info_for_lcom4(&child, source) {
-                    classes.push(class_info);
-                }
-            }
-            "decorated_definition" => {
-                // Handle decorated classes
-                if let Some(def) = child.child_by_field_name("definition") {
-                    if def.kind() == "class_definition" {
-                        if let Some(class_info) = extract_python_class_info_for_lcom4(&def, source)
-                        {
-                            classes.push(class_info);
-                        }
-                    }
-                }
-            }
-            _ => {
-                // Recurse into other nodes (module level)
-                extract_python_classes_for_lcom4(child, source, classes, depth + 1);
-            }
-        }
-    }
-}
-
-/// Extract a single Python class's info for LCOM4 analysis
-fn extract_python_class_info_for_lcom4(node: &Node, source: &str) -> Option<ClassInfoForLcom4> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = get_node_text(&name_node, source);
-    let start_line = node.start_position().row as u32 + 1;
-
-    // Extract methods from class body
-    let body = node.child_by_field_name("body")?;
-    let methods = extract_python_methods_for_lcom4(&body, source);
-
-    Some(ClassInfoForLcom4 {
-        name,
-        start_line,
-        methods,
-    })
-}
-
-/// Extract Python methods from a class body for LCOM4 analysis
-fn extract_python_methods_for_lcom4(body: &Node, source: &str) -> Vec<MethodInfoForLcom4> {
-    let mut methods = Vec::new();
-    let mut cursor = body.walk();
-
-    for child in body.children(&mut cursor) {
-        match child.kind() {
-            "function_definition" => {
-                if let Some(method_info) = extract_python_method_info_for_lcom4(&child, source) {
-                    methods.push(method_info);
-                }
-            }
-            "decorated_definition" => {
-                // Handle decorated methods
-                if let Some(def) = child.child_by_field_name("definition") {
-                    if def.kind() == "function_definition" {
-                        if let Some(method_info) =
-                            extract_python_method_info_for_lcom4(&def, source)
-                        {
-                            methods.push(method_info);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    methods
-}
-
-/// Extract a single Python method's info for LCOM4 analysis
-fn extract_python_method_info_for_lcom4(node: &Node, source: &str) -> Option<MethodInfoForLcom4> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = get_node_text(&name_node, source);
-
-    Some(MethodInfoForLcom4 {
-        name,
-        start_byte: node.start_byte(),
-        end_byte: node.end_byte(),
-    })
-}
 
 /// Analyze a single file for all debt issues
 ///

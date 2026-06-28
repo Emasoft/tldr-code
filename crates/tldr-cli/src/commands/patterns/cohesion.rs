@@ -26,7 +26,6 @@
 //! tldr cohesion src/ --format text
 //! ```
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -35,8 +34,6 @@ use clap::{Args, ValueEnum};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use tldr_core::walker::walk_project;
-use tree_sitter::{Node, Parser, Tree};
-use tree_sitter_python::LANGUAGE as PYTHON_LANGUAGE;
 
 use tldr_core::quality::cohesion as core_cohesion;
 use tldr_core::types::Language;
@@ -48,16 +45,12 @@ use super::types::{
     ClassCohesion, CohesionReport, CohesionSummary, CohesionVerdict, ComponentInfo,
 };
 use super::validation::{
-    read_file_safe, validate_directory_path, validate_file_path, validate_file_path_in_project,
-    MAX_CLASSES_PER_FILE, MAX_DIRECTORY_FILES, MAX_FIELDS_PER_CLASS, MAX_METHODS_PER_CLASS,
+    validate_directory_path, validate_file_path, validate_file_path_in_project, MAX_DIRECTORY_FILES,
 };
 
 // =============================================================================
 // Constants (TIGER/ELEPHANT Mitigations)
 // =============================================================================
-
-/// Maximum union-find iterations to prevent infinite loops (E05)
-const MAX_UNION_FIND_ITERATIONS: usize = 10_000;
 
 /// Default timeout in seconds (E01)
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -200,197 +193,35 @@ impl CohesionArgs {
 }
 
 // =============================================================================
-// Union-Find with Path Compression (TIGER-06)
-// =============================================================================
-
-/// Union-Find (Disjoint Set Union) data structure with path compression and union by rank.
-///
-/// This implementation uses both optimizations to achieve near-O(1) amortized time per operation:
-/// - **Path compression**: Flatten tree during `find` operations
-/// - **Union by rank**: Attach smaller tree under root of larger tree
-///
-/// # TIGER-06 Mitigation
-///
-/// Path compression prevents worst-case O(n) find operations.
-/// Union by rank keeps trees balanced.
-#[derive(Debug, Clone)]
-pub struct UnionFind {
-    /// Parent pointers (index -> parent index)
-    parent: Vec<usize>,
-    /// Rank for union by rank optimization
-    rank: Vec<usize>,
-    /// Iteration counter to prevent infinite loops (E05)
-    iterations: usize,
-    /// Maximum allowed iterations
-    max_iterations: usize,
-}
-
-impl UnionFind {
-    /// Create a new union-find structure with n elements
-    pub fn new(n: usize) -> Self {
-        Self {
-            parent: (0..n).collect(),
-            rank: vec![0; n],
-            iterations: 0,
-            max_iterations: MAX_UNION_FIND_ITERATIONS,
-        }
-    }
-
-    /// Find the root of the set containing x, with path compression.
-    ///
-    /// Returns None if max iterations exceeded.
-    pub fn find(&mut self, x: usize) -> Option<usize> {
-        if x >= self.parent.len() {
-            return None;
-        }
-
-        // Find root
-        let mut root = x;
-        while self.parent[root] != root {
-            self.iterations += 1;
-            if self.iterations > self.max_iterations {
-                return None; // Exceeded iteration limit
-            }
-            root = self.parent[root];
-        }
-
-        // Path compression: point all nodes on path directly to root
-        let mut current = x;
-        while self.parent[current] != root {
-            self.iterations += 1;
-            if self.iterations > self.max_iterations {
-                return None;
-            }
-            let next = self.parent[current];
-            self.parent[current] = root;
-            current = next;
-        }
-
-        Some(root)
-    }
-
-    /// Union the sets containing x and y, using union by rank.
-    ///
-    /// Returns true if a union was performed, false if already in same set or error.
-    pub fn union(&mut self, x: usize, y: usize) -> bool {
-        let root_x = match self.find(x) {
-            Some(r) => r,
-            None => return false,
-        };
-        let root_y = match self.find(y) {
-            Some(r) => r,
-            None => return false,
-        };
-
-        if root_x == root_y {
-            return false; // Already in same set
-        }
-
-        // Union by rank: attach smaller tree under root of larger tree
-        match self.rank[root_x].cmp(&self.rank[root_y]) {
-            std::cmp::Ordering::Less => {
-                self.parent[root_x] = root_y;
-            }
-            std::cmp::Ordering::Greater => {
-                self.parent[root_y] = root_x;
-            }
-            std::cmp::Ordering::Equal => {
-                self.parent[root_y] = root_x;
-                self.rank[root_x] += 1;
-            }
-        }
-
-        true
-    }
-
-    /// Count the number of unique connected components.
-    ///
-    /// Only counts components for the first `method_count` elements (ignoring fields
-    /// that are only connected to a single method).
-    pub fn count_components(&mut self, method_count: usize) -> usize {
-        let mut roots = HashSet::new();
-        for i in 0..method_count.min(self.parent.len()) {
-            if let Some(root) = self.find(i) {
-                roots.insert(root);
-            }
-        }
-        roots.len()
-    }
-
-    /// Get components as groups of indices.
-    pub fn get_components(&mut self) -> HashMap<usize, Vec<usize>> {
-        let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
-        for i in 0..self.parent.len() {
-            if let Some(root) = self.find(i) {
-                components.entry(root).or_default().push(i);
-            }
-        }
-        components
-    }
-
-    /// Check if iteration limit was exceeded
-    pub fn limit_exceeded(&self) -> bool {
-        self.iterations > self.max_iterations
-    }
-}
-
-// =============================================================================
-// Method Analysis
-// =============================================================================
-
-/// Analysis result for a single method
-#[derive(Debug, Clone)]
-struct MethodAnalysis {
-    /// Method name
-    name: String,
-    /// Fields accessed by this method (self.x)
-    field_accesses: Vec<String>,
-    /// Other methods called (self.method())
-    method_calls: Vec<String>,
-}
-
-// =============================================================================
 // Core Analysis Functions
 // =============================================================================
 
 /// Analyze a single file for class cohesion.
 ///
-/// For Python files, uses the CLI's own Python-specific implementation.
-/// For all other supported languages (Java, TypeScript, Go, Rust, etc.),
-/// delegates to the core library's multi-language analyzer.
+/// fix-PW4-D-flask-lcom4-unify (v0.5.0 BACKLOG): ALL supported languages —
+/// Python included — are routed through the canonical core engine
+/// (`tldr_core::quality::cohesion`). This is the SAME engine consumed by
+/// `health` (`run_health` -> `analyze_cohesion`) and `todo`
+/// (`run_cohesion_analysis` -> `analyze_cohesion`), so the `cohesion`, `health`,
+/// and `todo` surfaces now report identical LCOM4 values for the same class.
+/// Previously the Python path ran a divergent CLI-local extraction
+/// (`analyze_class`/`compute_lcom4`) that disagreed with the canonical engine
+/// (flask `Flask`: 6 vs 16). The `include_dunder` and `min_methods` knobs are
+/// honored against the canonical extraction.
 fn analyze_single_file(path: &Path, args: &CohesionArgs) -> PatternsResult<CohesionReport> {
-    let lang = Language::from_path(path);
+    let options = core_cohesion::CohesionOptions {
+        include_dunder: args.include_dunder,
+        low_cohesion_threshold: 2,
+    };
+    let core_report =
+        core_cohesion::analyze_cohesion_with_options(path, None, options).map_err(|e| {
+            PatternsError::ParseError {
+                file: path.to_path_buf(),
+                message: format!("Core cohesion analysis failed: {}", e),
+            }
+        })?;
 
-    // For non-Python languages, delegate to the core multi-language analyzer
-    if lang != Some(Language::Python) && lang.is_some() {
-        return analyze_single_file_core(path, args);
-    }
-
-    // Python: use the CLI's existing Python-specific implementation
-    let source = read_file_safe(path)?;
-    let tree = parse_python(&source, path)?;
-    let classes = analyze_file_ast(&tree, &source, path, args)?;
-
-    let summary = compute_summary(&classes);
-
-    Ok(CohesionReport {
-        classes,
-        summary,
-        ..Default::default()
-    })
-}
-
-/// Analyze a single non-Python file using the core library.
-fn analyze_single_file_core(path: &Path, args: &CohesionArgs) -> PatternsResult<CohesionReport> {
-    let threshold = 2;
-    let core_report = core_cohesion::analyze_cohesion(path, None, threshold).map_err(|e| {
-        PatternsError::ParseError {
-            file: path.to_path_buf(),
-            message: format!("Core cohesion analysis failed: {}", e),
-        }
-    })?;
-
-    // Convert core types to CLI types
+    // Convert core types to CLI types.
     let classes: Vec<ClassCohesion> = core_report
         .classes
         .into_iter()
@@ -584,429 +415,6 @@ fn analyze_directory(
     })
 }
 
-/// Parse Python source code with tree-sitter.
-fn parse_python(source: &str, file: &Path) -> PatternsResult<Tree> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&PYTHON_LANGUAGE.into())
-        .map_err(|e| PatternsError::ParseError {
-            file: file.to_path_buf(),
-            message: format!("Failed to set Python language: {}", e),
-        })?;
-
-    parser
-        .parse(source, None)
-        .ok_or_else(|| PatternsError::ParseError {
-            file: file.to_path_buf(),
-            message: "Parsing returned None".to_string(),
-        })
-}
-
-/// Analyze all classes in a parsed Python file.
-fn analyze_file_ast(
-    tree: &Tree,
-    source: &str,
-    file: &Path,
-    args: &CohesionArgs,
-) -> PatternsResult<Vec<ClassCohesion>> {
-    let root = tree.root_node();
-    let source_bytes = source.as_bytes();
-    let mut results = Vec::new();
-    let mut class_count = 0;
-
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
-        if child.kind() == "class_definition" {
-            class_count += 1;
-            if class_count > MAX_CLASSES_PER_FILE {
-                break; // Limit exceeded
-            }
-
-            if let Some(cohesion) = analyze_class(child, source_bytes, file, args)? {
-                results.push(cohesion);
-            }
-        }
-    }
-
-    Ok(results)
-}
-
-/// Analyze a single class for LCOM4 cohesion.
-fn analyze_class(
-    class_node: Node,
-    source: &[u8],
-    file: &Path,
-    args: &CohesionArgs,
-) -> PatternsResult<Option<ClassCohesion>> {
-    // Get class name
-    let class_name = class_node
-        .child_by_field_name("name")
-        .map(|n| get_node_text(n, source))
-        .unwrap_or("<unknown>")
-        .to_string();
-
-    let line = class_node.start_position().row as u32 + 1;
-
-    // Get class body
-    let body = match class_node.child_by_field_name("body") {
-        Some(b) => b,
-        None => return Ok(None),
-    };
-
-    // Extract methods
-    let methods = extract_methods(body, source, args.include_dunder)?;
-
-    // Filter by min_methods threshold (use all methods for threshold)
-    let all_methods = extract_methods(body, source, true)?;
-    if all_methods.len() < args.min_methods as usize {
-        return Ok(None);
-    }
-
-    // Check method limit (E04)
-    if methods.len() > MAX_METHODS_PER_CLASS {
-        return Ok(Some(ClassCohesion {
-            class_name,
-            file_path: file.display().to_string(),
-            line,
-            lcom4: 0,
-            method_count: methods.len() as u32,
-            field_count: 0,
-            verdict: CohesionVerdict::Cohesive,
-            split_suggestion: Some("Class exceeds MAX_METHODS_PER_CLASS limit".to_string()),
-            components: vec![],
-        }));
-    }
-
-    // Collect all unique fields
-    let mut all_fields: HashSet<String> = HashSet::new();
-    let method_names: HashSet<&str> = methods.iter().map(|m| m.name.as_str()).collect();
-
-    for method in &methods {
-        for field in &method.field_accesses {
-            // Don't count method names as fields
-            if !method_names.contains(field.as_str()) {
-                all_fields.insert(field.clone());
-            }
-        }
-    }
-
-    // Check field limit (E04)
-    if all_fields.len() > MAX_FIELDS_PER_CLASS {
-        return Ok(Some(ClassCohesion {
-            class_name,
-            file_path: file.display().to_string(),
-            line,
-            lcom4: 0,
-            method_count: methods.len() as u32,
-            field_count: all_fields.len() as u32,
-            verdict: CohesionVerdict::Cohesive,
-            split_suggestion: Some("Class exceeds MAX_FIELDS_PER_CLASS limit".to_string()),
-            components: vec![],
-        }));
-    }
-
-    let fields: Vec<String> = all_fields.into_iter().collect();
-
-    // Compute LCOM4
-    let (lcom4, components) = compute_lcom4(&methods, &fields, &method_names);
-
-    // Determine verdict
-    let verdict = CohesionVerdict::from_lcom4(lcom4);
-
-    // Generate split suggestion if needed
-    let split_suggestion = if lcom4 > 1 {
-        Some(generate_split_suggestion(&class_name, &components))
-    } else {
-        None
-    };
-
-    Ok(Some(ClassCohesion {
-        class_name,
-        file_path: file.display().to_string(),
-        line,
-        lcom4,
-        method_count: methods.len() as u32,
-        field_count: fields.len() as u32,
-        verdict,
-        split_suggestion,
-        components,
-    }))
-}
-
-/// Extract methods from a class body.
-fn extract_methods(
-    body: Node,
-    source: &[u8],
-    include_dunder: bool,
-) -> PatternsResult<Vec<MethodAnalysis>> {
-    let mut methods = Vec::new();
-    let mut cursor = body.walk();
-
-    for child in body.children(&mut cursor) {
-        // Handle both sync and async function definitions
-        if child.kind() == "function_definition" || child.kind() == "async_function_definition" {
-            // Get method name
-            let name = child
-                .child_by_field_name("name")
-                .map(|n| get_node_text(n, source))
-                .unwrap_or("")
-                .to_string();
-
-            // Skip static methods and class methods
-            if is_static_or_classmethod(&child, source) {
-                continue;
-            }
-
-            // Filter dunder methods
-            if !include_dunder && is_dunder(&name) {
-                continue;
-            }
-
-            // Extract field accesses (self.x)
-            let field_accesses = extract_field_accesses(child, source);
-
-            // Extract method calls (self.method())
-            let method_calls = extract_method_calls(child, source);
-
-            methods.push(MethodAnalysis {
-                name,
-                field_accesses,
-                method_calls,
-            });
-        }
-    }
-
-    Ok(methods)
-}
-
-/// Check if a method is a dunder method (__xxx__)
-fn is_dunder(name: &str) -> bool {
-    name.starts_with("__") && name.ends_with("__")
-}
-
-/// Check if a method is decorated with @staticmethod or @classmethod
-fn is_static_or_classmethod(node: &Node, source: &[u8]) -> bool {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "decorator" {
-            let text = get_node_text(child, source);
-            if text.contains("staticmethod") || text.contains("classmethod") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Extract field accesses (self.x) from a method.
-fn extract_field_accesses(method: Node, source: &[u8]) -> Vec<String> {
-    let mut fields = Vec::new();
-    let self_name = get_self_param_name(method, source);
-
-    extract_field_accesses_recursive(method, source, &self_name, &mut fields);
-
-    fields.sort();
-    fields.dedup();
-    fields
-}
-
-fn extract_field_accesses_recursive(
-    node: Node,
-    source: &[u8],
-    self_name: &str,
-    fields: &mut Vec<String>,
-) {
-    // Check if this is a self.x attribute access
-    if node.kind() == "attribute" {
-        if let Some(obj) = node.child_by_field_name("object") {
-            if obj.kind() == "identifier" && get_node_text(obj, source) == self_name {
-                if let Some(attr) = node.child_by_field_name("attribute") {
-                    let attr_name = get_node_text(attr, source);
-                    fields.push(attr_name.to_string());
-                }
-            }
-        }
-    }
-
-    // Recurse into children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        extract_field_accesses_recursive(child, source, self_name, fields);
-    }
-}
-
-/// Extract method calls (self.method()) from a method.
-fn extract_method_calls(method: Node, source: &[u8]) -> Vec<String> {
-    let mut calls = Vec::new();
-    let self_name = get_self_param_name(method, source);
-
-    extract_method_calls_recursive(method, source, &self_name, &mut calls);
-
-    calls.sort();
-    calls.dedup();
-    calls
-}
-
-fn extract_method_calls_recursive(
-    node: Node,
-    source: &[u8],
-    self_name: &str,
-    calls: &mut Vec<String>,
-) {
-    // Check if this is a self.method() call
-    if node.kind() == "call" {
-        if let Some(func) = node.child_by_field_name("function") {
-            if func.kind() == "attribute" {
-                if let Some(obj) = func.child_by_field_name("object") {
-                    if obj.kind() == "identifier" && get_node_text(obj, source) == self_name {
-                        if let Some(attr) = func.child_by_field_name("attribute") {
-                            let method_name = get_node_text(attr, source);
-                            calls.push(method_name.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Recurse into children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        extract_method_calls_recursive(child, source, self_name, calls);
-    }
-}
-
-/// Get the name of the self parameter (usually "self" but could be different)
-fn get_self_param_name(method: Node, source: &[u8]) -> String {
-    if let Some(params) = method.child_by_field_name("parameters") {
-        let mut cursor = params.walk();
-        for child in params.children(&mut cursor) {
-            if child.kind() == "identifier" {
-                return get_node_text(child, source).to_string();
-            }
-        }
-    }
-    "self".to_string()
-}
-
-/// Compute LCOM4 using union-find.
-///
-/// # Returns
-/// (lcom4_value, connected_components)
-fn compute_lcom4(
-    methods: &[MethodAnalysis],
-    fields: &[String],
-    method_names: &HashSet<&str>,
-) -> (u32, Vec<ComponentInfo>) {
-    if methods.is_empty() {
-        return (0, vec![]);
-    }
-
-    // Create index mappings
-    let method_idx: HashMap<&str, usize> = methods
-        .iter()
-        .enumerate()
-        .map(|(i, m)| (m.name.as_str(), i))
-        .collect();
-
-    let field_idx: HashMap<&str, usize> = fields
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.as_str(), methods.len() + i))
-        .collect();
-
-    // Initialize union-find
-    let mut uf = UnionFind::new(methods.len() + fields.len());
-
-    // Connect methods to fields they access
-    for (i, method) in methods.iter().enumerate() {
-        for field in &method.field_accesses {
-            if let Some(&fi) = field_idx.get(field.as_str()) {
-                uf.union(i, fi);
-            }
-        }
-    }
-
-    // Connect methods that call each other
-    for (i, method) in methods.iter().enumerate() {
-        for called in &method.method_calls {
-            if method_names.contains(called.as_str()) {
-                if let Some(&ci) = method_idx.get(called.as_str()) {
-                    uf.union(i, ci);
-                }
-            }
-        }
-    }
-
-    // Check if limit was exceeded
-    if uf.limit_exceeded() {
-        return (
-            0,
-            vec![ComponentInfo {
-                methods: vec!["<analysis incomplete>".to_string()],
-                fields: vec![],
-            }],
-        );
-    }
-
-    // Build component infos
-    let raw_components = uf.get_components();
-    let mut component_infos: Vec<ComponentInfo> = Vec::new();
-
-    for (_, members) in raw_components {
-        let mut ci = ComponentInfo {
-            methods: Vec::new(),
-            fields: Vec::new(),
-        };
-
-        for member_idx in members {
-            if member_idx < methods.len() {
-                ci.methods.push(methods[member_idx].name.clone());
-            } else {
-                let field_pos = member_idx - methods.len();
-                if field_pos < fields.len() {
-                    ci.fields.push(fields[field_pos].clone());
-                }
-            }
-        }
-
-        // Only include components that have at least one method
-        if !ci.methods.is_empty() {
-            ci.methods.sort();
-            ci.fields.sort();
-            component_infos.push(ci);
-        }
-    }
-
-    // Sort components by first method name for deterministic output
-    component_infos.sort_by(|a, b| a.methods.first().cmp(&b.methods.first()));
-
-    let lcom4 = component_infos.len() as u32;
-    (lcom4.max(1), component_infos) // LCOM4 is at least 1 if there are methods
-}
-
-/// Generate a split suggestion for a class with LCOM4 > 1.
-fn generate_split_suggestion(class_name: &str, components: &[ComponentInfo]) -> String {
-    if components.is_empty() {
-        return format!("Consider splitting {} into multiple classes", class_name);
-    }
-
-    let parts: Vec<String> = components
-        .iter()
-        .map(|c| {
-            let methods_str = c.methods.join(", ");
-            format!("[{}]", methods_str)
-        })
-        .collect();
-
-    format!(
-        "Consider splitting {} into {} classes: {}",
-        class_name,
-        components.len(),
-        parts.join(" + ")
-    )
-}
-
 /// Compute summary statistics for a set of class cohesion results.
 fn compute_summary(classes: &[ClassCohesion]) -> CohesionSummary {
     let total = classes.len() as u32;
@@ -1046,17 +454,6 @@ fn compute_summary(classes: &[ClassCohesion]) -> CohesionSummary {
         cohesive,
         split_candidates,
         avg_lcom4: (avg_lcom4 * 100.0).round() / 100.0, // Round to 2 decimal places
-    }
-}
-
-/// Get text content of a node.
-fn get_node_text<'a>(node: Node<'a>, source: &'a [u8]) -> &'a str {
-    let start = node.start_byte();
-    let end = node.end_byte();
-    if end <= source.len() {
-        std::str::from_utf8(&source[start..end]).unwrap_or("")
-    } else {
-        ""
     }
 }
 
@@ -1254,70 +651,7 @@ pub fn run(args: CohesionArgs) -> Result<CohesionReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_union_find_basic() {
-        let mut uf = UnionFind::new(5);
-
-        // Initially all separate
-        assert_eq!(uf.find(0), Some(0));
-        assert_eq!(uf.find(1), Some(1));
-
-        // Union 0 and 1
-        assert!(uf.union(0, 1));
-        assert_eq!(uf.find(0), uf.find(1));
-
-        // Union 2 and 3
-        assert!(uf.union(2, 3));
-        assert_eq!(uf.find(2), uf.find(3));
-
-        // Different components
-        assert_ne!(uf.find(0), uf.find(2));
-
-        // Union the two components
-        assert!(uf.union(1, 3));
-        assert_eq!(uf.find(0), uf.find(3));
-    }
-
-    #[test]
-    fn test_union_find_path_compression() {
-        let mut uf = UnionFind::new(10);
-
-        // Create a chain: 0 -> 1 -> 2 -> 3 -> 4
-        for i in 0..4 {
-            uf.union(i, i + 1);
-        }
-
-        // After find with path compression, all should point to root
-        let root = uf.find(0).unwrap();
-        for i in 0..5 {
-            assert_eq!(uf.find(i), Some(root));
-        }
-    }
-
-    #[test]
-    fn test_union_find_count_components() {
-        let mut uf = UnionFind::new(6);
-
-        // Create two components: {0, 1, 2} and {3, 4, 5}
-        uf.union(0, 1);
-        uf.union(1, 2);
-        uf.union(3, 4);
-        uf.union(4, 5);
-
-        assert_eq!(uf.count_components(6), 2);
-    }
-
-    #[test]
-    fn test_is_dunder() {
-        assert!(is_dunder("__init__"));
-        assert!(is_dunder("__str__"));
-        assert!(is_dunder("__eq__"));
-        assert!(!is_dunder("_private"));
-        assert!(!is_dunder("__private"));
-        assert!(!is_dunder("public__"));
-        assert!(!is_dunder("normal"));
-    }
+    use std::collections::HashMap;
 
     #[test]
     fn test_compute_summary() {
@@ -1351,26 +685,6 @@ mod tests {
         assert_eq!(summary.cohesive, 1);
         assert_eq!(summary.split_candidates, 1);
         assert!((summary.avg_lcom4 - 1.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_generate_split_suggestion() {
-        let components = vec![
-            ComponentInfo {
-                methods: vec!["method_a".to_string(), "method_b".to_string()],
-                fields: vec!["field_x".to_string()],
-            },
-            ComponentInfo {
-                methods: vec!["method_c".to_string()],
-                fields: vec!["field_y".to_string()],
-            },
-        ];
-
-        let suggestion = generate_split_suggestion("MyClass", &components);
-        assert!(suggestion.contains("MyClass"));
-        assert!(suggestion.contains("2 classes"));
-        assert!(suggestion.contains("method_a"));
-        assert!(suggestion.contains("method_c"));
     }
 
     // =========================================================================
@@ -1880,5 +1194,178 @@ mod tests {
             !text.contains("partial"),
             "complete report must not claim partial results: {text}"
         );
+    }
+
+    // =========================================================================
+    // fix-PW4-D-flask-lcom4-unify (v0.5.0 BACKLOG): LCOM4 engine unification.
+    //
+    // The `cohesion` command's Python path MUST agree with the canonical
+    // `tldr_core::quality::cohesion::analyze_cohesion` engine that BOTH `health`
+    // (`run_health` -> `analyze_cohesion`) and `todo` (`run_cohesion_analysis`
+    // -> `analyze_cohesion`) already consume. Before this fix the command ran a
+    // *parallel* local LCOM4 extraction (`analyze_class`/`compute_lcom4`) that
+    // diverged from the canonical engine (flask `Flask`: cohesion=6 vs
+    // health/todo=16; minimal `Sample`: cohesion=4 vs health/todo=5).
+    //
+    // Generalization (single-variant = FAIL): agreement is asserted across
+    // several Python class shapes (the known-divergent one, a cohesive one, a
+    // two-component one, a self-call-bridged one) AND a non-Python class, which
+    // already delegated to the core engine and must stay unchanged.
+    // =========================================================================
+
+    /// The minimal known-divergent class (pre-fix cohesion=4, canonical=5),
+    /// reused below so the regression is pinned by name.
+    const DIVERGENT_PY: &str = "\
+class Sample:
+    def __init__(self):
+        self.a = 1
+        self.b = 2
+        self.c = 3
+    def m1(self):
+        return self.a
+    def m2(self):
+        return self.b
+    def m3(self):
+        self.c = self.helper()
+    def helper(self):
+        return 5
+    def m4(self, x):
+        local = x + 1
+        return local
+    def m5(self):
+        for i in range(self.a):
+            print(i)
+";
+
+    fn gen_args(path: &Path) -> CohesionArgs {
+        CohesionArgs {
+            path: path.to_path_buf(),
+            min_methods: 1,
+            include_dunder: false,
+            output_format: OutputFormat::Json,
+            timeout: 30,
+            project_root: None,
+            lang: None,
+        }
+    }
+
+    #[test]
+    fn test_cohesion_command_agrees_with_canonical_engine_python() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+
+        let fixtures: &[(&str, &str)] = &[
+            ("divergent.py", DIVERGENT_PY),
+            (
+                "cohesive.py",
+                "class Widget:\n    def __init__(self):\n        self.value = 0\n\n    def get(self):\n        return self.value\n\n    def inc(self):\n        self.value += 1\n",
+            ),
+            (
+                "two_comp.py",
+                "class Split:\n    def __init__(self):\n        self.x = 0\n        self.y = 0\n    def gx(self):\n        return self.x\n    def sx(self, v):\n        self.x = v\n    def gy(self):\n        return self.y\n    def sy(self, v):\n        self.y = v\n",
+            ),
+            (
+                "with_calls.py",
+                "class Bridge:\n    def __init__(self):\n        self.a = 1\n        self.b = 2\n    def ra(self):\n        return self.a\n    def rb(self):\n        return self.b\n    def both(self):\n        return self.ra() + self.rb()\n",
+            ),
+        ];
+
+        for (name, src) in fixtures {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, src).expect("write fixture");
+
+            let cmd = analyze_single_file(&path, &gen_args(&path)).expect("command analysis");
+            // The exact engine `health` and `todo` call.
+            let canon = core_cohesion::analyze_cohesion(&path, Some(Language::Python), 2)
+                .expect("canonical analysis");
+
+            let canon_by: HashMap<String, &core_cohesion::ClassCohesion> =
+                canon.classes.iter().map(|c| (c.name.clone(), c)).collect();
+
+            assert!(
+                !cmd.classes.is_empty(),
+                "command produced no classes for {name}"
+            );
+
+            for cls in &cmd.classes {
+                let cc = canon_by.get(&cls.class_name).unwrap_or_else(|| {
+                    panic!("canonical engine missing class {} in {name}", cls.class_name)
+                });
+                assert_eq!(
+                    cls.lcom4, cc.lcom4 as u32,
+                    "LCOM4 disagreement on {} in {name}: cohesion={} but canonical (health/todo)={}",
+                    cls.class_name, cls.lcom4, cc.lcom4
+                );
+                assert_eq!(
+                    cls.field_count, cc.field_count as u32,
+                    "field_count disagreement on {} in {name}",
+                    cls.class_name
+                );
+                assert_eq!(
+                    cls.method_count, cc.method_count as u32,
+                    "method_count disagreement on {} in {name}",
+                    cls.class_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cohesion_command_divergent_class_matches_canonical_value() {
+        // Pin the headline regression: the historically-divergent `Sample`
+        // class now reports the canonical value (== health == todo), not the
+        // old local-engine value.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("sample.py");
+        std::fs::write(&path, DIVERGENT_PY).expect("write");
+
+        let cmd = analyze_single_file(&path, &gen_args(&path)).expect("command");
+        let canon = core_cohesion::analyze_cohesion(&path, Some(Language::Python), 2)
+            .expect("canonical");
+
+        let cmd_sample = cmd
+            .classes
+            .iter()
+            .find(|c| c.class_name == "Sample")
+            .expect("command Sample");
+        let canon_sample = canon
+            .classes
+            .iter()
+            .find(|c| c.name == "Sample")
+            .expect("canonical Sample");
+
+        assert_eq!(
+            cmd_sample.lcom4, canon_sample.lcom4 as u32,
+            "Sample LCOM4 must equal the canonical engine value"
+        );
+        assert!(
+            cmd_sample.lcom4 > 1,
+            "Sample is a multi-component class; LCOM4 must exceed 1"
+        );
+    }
+
+    #[test]
+    fn test_cohesion_command_non_python_unchanged() {
+        // Non-Python already delegated to the core engine; the unification must
+        // not perturb it.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("lib.rs");
+        std::fs::write(
+            &path,
+            "struct Counter { n: i32, label: String }\nimpl Counter {\n    fn inc(&mut self) { self.n += 1; }\n    fn val(&self) -> i32 { self.n }\n    fn name(&self) -> &str { &self.label }\n}\n",
+        )
+        .expect("write rust");
+
+        let cmd = analyze_single_file(&path, &gen_args(&path)).expect("command");
+        let canon = core_cohesion::analyze_cohesion(&path, Some(Language::Rust), 2)
+            .expect("canonical");
+
+        let canon_by: HashMap<String, &core_cohesion::ClassCohesion> =
+            canon.classes.iter().map(|c| (c.name.clone(), c)).collect();
+        for cls in &cmd.classes {
+            let cc = canon_by
+                .get(&cls.class_name)
+                .unwrap_or_else(|| panic!("canonical missing rust type {}", cls.class_name));
+            assert_eq!(cls.lcom4, cc.lcom4 as u32, "rust LCOM4 changed for {}", cls.class_name);
+        }
     }
 }

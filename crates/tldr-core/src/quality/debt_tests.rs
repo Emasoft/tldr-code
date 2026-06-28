@@ -1449,15 +1449,22 @@ mod god_class_tests {
 
     use super::*;
 
+    // fix-PW4-D-flask-lcom4-unify (v0.5.0 BACKLOG): god-class LCOM4 is now sourced
+    // from the canonical, path-based cohesion engine (`analyze_cohesion`), so each
+    // fixture is written to a real file. `find_god_classes` ignores its `source`
+    // argument and reads the file at `path` through the shared engine.
+
     #[test]
     fn test_find_god_classes_small_class() {
-        let source = r#"
+        let dir = fixtures::TestDir::new().expect("tempdir");
+        let source = "\
 class SmallClass:
     def method1(self): pass
     def method2(self): pass
     def method3(self): pass
-"#;
-        let issues = find_god_classes(source, Path::new("test.py"), Language::Python);
+";
+        let path = dir.add_file("small.py", source).expect("write");
+        let issues = find_god_classes(source, &path, Language::Python);
 
         assert!(issues.is_empty(), "Small class should not be flagged");
     }
@@ -1465,8 +1472,10 @@ class SmallClass:
     #[test]
     fn test_find_god_classes_high_lcom() {
         // The god class fixture has 25 methods with low cohesion
+        let dir = fixtures::TestDir::new().expect("tempdir");
         let source = fixtures::python_god_class();
-        let issues = find_god_classes(&source, Path::new("test.py"), Language::Python);
+        let path = dir.add_file("god.py", &source).expect("write");
+        let issues = find_god_classes(&source, &path, Language::Python);
 
         // Should detect god class (>20 methods AND LCOM4 > 0.8)
         let god_issues: Vec<_> = issues.iter().filter(|i| i.rule == "god_class").collect();
@@ -1479,16 +1488,17 @@ class SmallClass:
     #[test]
     fn test_find_god_classes_excludes_dunder() {
         // Dunder methods should not count toward method count
-        let source = r#"
+        let dir = fixtures::TestDir::new().expect("tempdir");
+        let source = "\
 class WithDunders:
     def __init__(self): pass
     def __str__(self): pass
     def __repr__(self): pass
     def __eq__(self, other): pass
     def __hash__(self): pass
-    # ... more dunders
-"#;
-        let issues = find_god_classes(source, Path::new("test.py"), Language::Python);
+";
+        let path = dir.add_file("dunders.py", source).expect("write");
+        let issues = find_god_classes(source, &path, Language::Python);
 
         // Even with many dunders, should not be flagged
         assert!(issues.is_empty());
