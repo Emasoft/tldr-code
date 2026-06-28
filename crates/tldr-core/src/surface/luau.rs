@@ -320,6 +320,57 @@ fn extract_from_luau_file(
         });
     }
 
+    // AST recovery for the bare-identifier `return <localFunction>` export (a
+    // module re-exporting a single module-local function as its whole public
+    // surface). Shared resolver with the Lua frontend; the grammar is identical.
+    if let Some(export) =
+        super::lua::returned_local_function_export(tree.root_node(), &source, &local_funcs)
+    {
+        let qualified_name = format!("{}.{}", module_path, export.name);
+        if !apis.iter().any(|a| a.qualified_name == qualified_name) {
+            let params: Vec<Param> = export
+                .params
+                .iter()
+                .map(|name| Param {
+                    name: name.clone(),
+                    type_annotation: None,
+                    default: None,
+                    is_variadic: name == "...",
+                    is_keyword: false,
+                })
+                .collect();
+            apis.push(ApiEntry {
+                qualified_name,
+                kind: ApiKind::Function,
+                module: module_path.clone(),
+                signature: Some(Signature {
+                    params: params.clone(),
+                    return_type: None,
+                    is_async: false,
+                    is_generator: false,
+                }),
+                docstring: None,
+                example: Some(format!(
+                    "{}({})",
+                    export.name,
+                    params
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                triggers: extract_triggers(&export.name, None),
+                is_property: false,
+                return_type: None,
+                location: Some(Location {
+                    file: relative_path.clone(),
+                    line: export.line,
+                    column: None,
+                }),
+            });
+        }
+    }
+
     // `export type Name = ...` declarations are public type aliases.
     for export in find_exported_types(&source) {
         apis.push(ApiEntry {
@@ -837,5 +888,38 @@ return M
             .map(|p| p.name.as_str())
             .collect();
         assert_eq!(pnames, vec!["a", "b"], "typed param names must be recovered");
+    }
+
+    /// CF2-S5: a Luau module that re-exports a single typed module-local
+    /// function as its whole public surface (`local function run(x: number):
+    /// number … end; return run`). Shared bare-function resolver with the Lua
+    /// frontend. Before the fix the bare `return run` surfaced nothing.
+    #[test]
+    fn test_extract_luau_surface_bare_return_local_function() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "run.luau",
+            "local function run(x: number): number\n  return x * 2\nend\nreturn run\n",
+        );
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_luau_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|api| api.qualified_name.as_str())
+            .collect();
+        assert_eq!(surface.total, 1, "exactly one exported function; got {names:?}");
+        assert!(
+            names.iter().any(|n| n.ends_with(".run")),
+            "bare `return run` must export `run`; got {names:?}"
+        );
     }
 }

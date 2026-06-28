@@ -260,6 +260,57 @@ fn extract_from_lua_file(
         });
     }
 
+    // AST recovery for the bare-identifier `return <localFunction>` export — a
+    // module that re-exports a single module-local function as its whole public
+    // surface (lua-lsp `loop.lua`). The line-based heuristics above never match
+    // it (the def line `local function main(...)` carries no `M.` qualifier),
+    // so it would otherwise be dropped as a private local.
+    if let Some(export) = returned_local_function_export(tree.root_node(), &source, &local_funcs) {
+        let qualified_name = format!("{}.{}", module_path, export.name);
+        if !apis.iter().any(|a| a.qualified_name == qualified_name) {
+            let params: Vec<Param> = export
+                .params
+                .iter()
+                .map(|name| Param {
+                    name: name.clone(),
+                    type_annotation: None,
+                    default: None,
+                    is_variadic: name == "...",
+                    is_keyword: false,
+                })
+                .collect();
+            apis.push(ApiEntry {
+                qualified_name,
+                kind: ApiKind::Function,
+                module: module_path.clone(),
+                signature: Some(Signature {
+                    params: params.clone(),
+                    return_type: None,
+                    is_async: false,
+                    is_generator: false,
+                }),
+                docstring: None,
+                example: Some(format!(
+                    "{}({})",
+                    export.name,
+                    params
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                triggers: extract_triggers(&export.name, None),
+                is_property: false,
+                return_type: None,
+                location: Some(Location {
+                    file: relative_path.clone(),
+                    line: export.line,
+                    column: None,
+                }),
+            });
+        }
+    }
+
     Ok(Some(apis))
 }
 
@@ -424,10 +475,11 @@ pub(super) fn returned_table_function_exports(
     out
 }
 
-/// Resolve the `table_constructor` a module ultimately returns: either the
-/// inline `return { … }` literal, the `local M = { … }` that a `return M`
-/// names, or the table wrapped by `return setmetatable(M, mt)`.
-fn returned_module_literal<'a>(root: tree_sitter::Node<'a>, source: &str) -> Option<tree_sitter::Node<'a>> {
+/// Locate the terminal expression a Lua/Luau chunk `return`s: the last named
+/// child of the last top-level `return_statement`'s `expression_list`
+/// (`return a, M` → `M`). Shared by the returned-table and bare-function
+/// resolvers.
+fn module_return_tail<'a>(root: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
     let mut ret = None;
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
@@ -441,17 +493,54 @@ fn returned_module_literal<'a>(root: tree_sitter::Node<'a>, source: &str) -> Opt
         let found = ret.children(&mut c).find(|n| n.kind() == "expression_list");
         found
     }?;
-    let tail = {
-        let mut last = None;
-        let mut c = expr_list.walk();
-        for n in expr_list.children(&mut c) {
-            if n.is_named() {
-                last = Some(n);
-            }
+    let mut last = None;
+    let mut c = expr_list.walk();
+    for n in expr_list.children(&mut c) {
+        if n.is_named() {
+            last = Some(n);
         }
-        last
-    }?;
+    }
+    last
+}
+
+/// Resolve the `table_constructor` a module ultimately returns: either the
+/// inline `return { … }` literal, the `local M = { … }` that a `return M`
+/// names, or the table wrapped by `return setmetatable(M, mt)`.
+fn returned_module_literal<'a>(root: tree_sitter::Node<'a>, source: &str) -> Option<tree_sitter::Node<'a>> {
+    let tail = module_return_tail(root)?;
     resolve_returned_table(tail, root, source)
+}
+
+/// AST-resolve a bare-identifier `return <localFunction>` module export — the
+/// single function a module re-exports as its whole public surface
+/// (`local function main(…) … end; return main`, lua-lsp `loop.lua`; luvit
+/// `require.lua`). Returns `None` unless the return tail is a bare identifier
+/// that names a module-local FUNCTION and is NOT a table accumulator (a
+/// `local M = { … }; return M` is handled by [`returned_table_function_exports`]
+/// instead). Shared by the Lua and Luau frontends (identical grammar).
+pub(super) fn returned_local_function_export(
+    root: tree_sitter::Node,
+    source: &str,
+    local_funcs: &HashMap<String, (Vec<String>, usize)>,
+) -> Option<LiteralExport> {
+    let tail = module_return_tail(root)?;
+    match tail.kind() {
+        "identifier" | "variable" => {
+            // A returned identifier that resolves to a table literal is an
+            // accumulator — not our case.
+            if resolve_returned_table(tail, root, source).is_some() {
+                return None;
+            }
+            let name = source[tail.byte_range()].trim().to_string();
+            let (params, line) = local_funcs.get(&name)?;
+            Some(LiteralExport {
+                name,
+                params: params.clone(),
+                line: *line,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn resolve_returned_table<'a>(
@@ -703,6 +792,39 @@ return sha
             names.iter().filter(|n| n.ends_with(".sha256")).count(),
             1,
             "sha256 must not be double-counted"
+        );
+    }
+
+    /// CF2-S5: a module that re-exports a single module-local function as its
+    /// whole public surface (`local function main() … end; return main`) — the
+    /// lua-lsp `loop.lua` idiom. Before the fix the bare `return main` matched
+    /// no `M.` qualifier and the function was dropped (surface total 0).
+    #[test]
+    fn test_extract_lua_surface_bare_return_local_function() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "lua/loop.lua",
+            "local function main(arg)\n  return arg\nend\nreturn main\n",
+        );
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_lua_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|api| api.qualified_name.as_str())
+            .collect();
+        assert_eq!(surface.total, 1, "exactly one exported function; got {names:?}");
+        assert!(
+            names.iter().any(|n| n.ends_with(".main")),
+            "bare `return main` must export `main`; got {names:?}"
         );
     }
 }

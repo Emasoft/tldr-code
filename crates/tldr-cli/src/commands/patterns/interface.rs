@@ -3274,6 +3274,23 @@ fn resolve_lua_export_tail(
             // empty/derived set rather than the union (the contract is "M's
             // fields", even if zero) — but only when M is a known local table.
             let m = lua_base_identifier(tail, source)?;
+            // SHAPE 2b — bare function export: `local function main(…) … end;
+            // return main`. The module's public surface is that single function,
+            // NOT an accumulator table (it has no `main.x = …` fields). Resolved
+            // via the symbol table so an accumulator `local M = {}` (classified
+            // as a non-function value) still falls through to the field walk.
+            // lua-lsp `loop.lua` / luvit `require.lua` use this idiom.
+            if let Some(def) = symbols.get(m.as_str()) {
+                if def.is_function {
+                    return Some(vec![LuaExport {
+                        name: m.clone(),
+                        lineno: def.lineno,
+                        is_function: true,
+                        signature: def.signature.clone(),
+                        value_kind: None,
+                    }]);
+                }
+            }
             Some(collect_lua_accumulator_exports(root, source, lang, &m, symbols, name))
         }
         // SHAPE 4 — `return setmetatable(M, mt)`: unwrap to first argument.
@@ -4261,16 +4278,26 @@ fn collect_js_declared_exports(
                     if assign.kind() != "assignment_expression" {
                         continue;
                     }
-                    if let (Some(lhs), Some(rhs)) = (
-                        assign.child_by_field_name("left"),
-                        assign.child_by_field_name("right"),
-                    ) {
-                        // Only the whole-object form (`module.exports = …`),
-                        // NOT member assignments (`module.exports.x = …`), which
-                        // `collect_js_member_exports` already resolves.
-                        if js_value_is_module_exports_chain(lhs, source) {
-                            add_js_default_export(rhs, source, root, functions, classes, values);
-                        }
+                    // Unchain `exports = module.exports = <value>` so the terminal
+                    // RHS (the actual default export) resolves through a
+                    // multi-target assignment chain — Express `lib/express.js`
+                    // binds its `createApplication` factory this way. A single
+                    // `module.exports = <value>` unchains to `([module.exports],
+                    // <value>)`, so the simple form is unaffected.
+                    let (lhs_nodes, final_rhs) = js_unchain_assignment(assign);
+                    let final_rhs = match final_rhs {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    // Only the whole-object form (any LHS is `module.exports` /
+                    // `exports`), NOT member assignments (`module.exports.x = …`,
+                    // whose LHS is a member_expression), which
+                    // `collect_js_member_exports` already resolves.
+                    if lhs_nodes
+                        .iter()
+                        .any(|l| js_value_is_module_exports_chain(*l, source))
+                    {
+                        add_js_default_export(final_rhs, source, root, functions, classes, values);
                     }
                 }
             }
@@ -4345,6 +4372,38 @@ fn add_js_default_export(
                         );
                     }
                 }
+            } else if let Some(def) = resolve_js_local_definition(root, source, &name) {
+                // The default export names a hoisted top-level `function` /
+                // `class` DECLARATION (not a `const/let/var` binding). Express
+                // `lib/express.js` exports its factory this way:
+                // `exports = module.exports = createApplication; function
+                // createApplication() { … }`. Surface the declaration itself.
+                let lineno = def.start_position().row as u32 + 1;
+                match def.kind() {
+                    "function_declaration" | "generator_function_declaration" => {
+                        push_js_function(
+                            functions,
+                            values,
+                            name,
+                            extract_js_member_signature(def, source),
+                            lineno,
+                            is_js_function_async(def, source),
+                        );
+                    }
+                    "class_declaration" => {
+                        if !js_name_taken(functions, classes, values, &name) {
+                            classes.push(ClassInfo {
+                                name,
+                                kind: Some("class".to_string()),
+                                lineno,
+                                bases: Vec::new(),
+                                methods: Vec::new(),
+                                private_method_count: 0,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         _ => {}
@@ -4371,6 +4430,31 @@ fn resolve_js_local_decl_value<'a>(
             if let Some(n) = d.child_by_field_name("name") {
                 if n.kind() == "identifier" && node_text(n, source) == name {
                     return d.child_by_field_name("value");
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find a top-level hoisted `function <name>(…) { … }` /
+/// `class <name> { … }` DECLARATION node (as opposed to a `const/let/var`
+/// binding, which [`resolve_js_local_decl_value`] handles). This lets a bare
+/// default export `module.exports = <name>` / `export default <name>` resolve
+/// to a function/class declaration that appears anywhere at module scope
+/// (declarations hoist, so the def may follow the export). Express
+/// `lib/express.js` (`exports = module.exports = createApplication; function
+/// createApplication() { … }`).
+fn resolve_js_local_definition<'a>(root: Node<'a>, source: &[u8], name: &str) -> Option<Node<'a>> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "function_declaration" | "generator_function_declaration" | "class_declaration"
+        ) {
+            if let Some(n) = child.child_by_field_name("name") {
+                if n.kind() == "identifier" && node_text(n, source) == name {
+                    return Some(child);
                 }
             }
         }
@@ -6301,6 +6385,77 @@ export default delta;
                 "default-exported arrow local must resolve as a function"
             );
         }
+    }
+
+    /// CF2-S5 (v0.5.0 RC) GENERALIZATION GATE — the export-idiom engine must
+    /// resolve the idiomatic module export across EVERY language in the
+    /// `interface`/`surface` export-extraction symptom class: js, ts, lua, luau.
+    ///
+    /// Each fixture uses an idiom whose export was DROPPED before this fix:
+    ///   * js/ts — CommonJS reverse-binding to a hoisted FUNCTION DECLARATION
+    ///     (`exports = module.exports = createApplication; function
+    ///     createApplication(){}`), the Express `lib/express.js` shape.
+    ///   * lua/luau — bare-identifier `return <localFunction>` module export
+    ///     (`local function main() … end; return main`), the lua-lsp `loop.lua`
+    ///     / luvit shape.
+    #[test]
+    fn test_cf2_s5_export_idiom_engine_generalizes_js_ts_lua_luau() {
+        // --- js + ts: reverse-binding to a hoisted function declaration ---
+        let js_ts = r#"
+exports = module.exports = createApplication;
+exports.json = function json() { return 1; };
+exports.Router = Router;
+function createApplication() { return function () {}; }
+"#;
+        for path in ["express.js", "express.ts"] {
+            let info = extract_interface(Path::new(path), js_ts).unwrap();
+            assert_exports(&info, &["createApplication", "json"]);
+            assert!(
+                info.functions.iter().any(|f| f.name == "createApplication"),
+                "[{path}] the reverse-bound factory must resolve as a function, got {:?}",
+                info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            );
+        }
+
+        // --- js + ts: the un-chained `module.exports = <funcDecl>` form ---
+        let single = r#"
+module.exports = build;
+function build(a, b) { return a + b; }
+"#;
+        for path in ["single.js", "single.ts"] {
+            let info = extract_interface(Path::new(path), single).unwrap();
+            assert_exports(&info, &["build"]);
+        }
+
+        // --- lua: bare-identifier return of a local function ---
+        let lua = "local function main(arg)\n  return arg\nend\nreturn main\n";
+        let info = extract_interface(Path::new("loop.lua"), lua).unwrap();
+        assert_eq!(
+            info.all_exports,
+            vec!["main".to_string()],
+            "lua bare `return <localFunction>` must export exactly that function, got {:?}",
+            info.all_exports
+        );
+        assert!(
+            info.functions.iter().any(|f| f.name == "main"),
+            "lua exported function `main` must surface in functions[], got {:?}",
+            info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+
+        // --- luau: same idiom with typed params (superset grammar) ---
+        let luau = "local function run(x: number): number\n  return x\nend\nreturn run\n";
+        let info = extract_interface(Path::new("mod.luau"), luau).unwrap();
+        assert_eq!(
+            info.all_exports,
+            vec!["run".to_string()],
+            "luau bare `return <localFunction>` must export exactly that function, got {:?}",
+            info.all_exports
+        );
+        assert!(
+            info.functions.iter().any(|f| f.name == "run"),
+            "luau exported function `run` must surface in functions[], got {:?}",
+            info.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
     }
 
     /// Regression guard: a private (non-exported) local must NOT leak into the

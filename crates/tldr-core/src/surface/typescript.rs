@@ -403,6 +403,19 @@ fn extract_from_typescript_file(
         }
     }
 
+    // ESM default-export surface (CF2-S5): object-literal members
+    // (`export default { a() {}, b }`) and the decorated-instance idiom
+    // (`export default inst; inst.x = …`). Shared AST resolver with the
+    // JavaScript frontend — the grammar is identical for these idioms.
+    super::javascript::append_js_default_export_apis(
+        tree.root_node(),
+        &source,
+        &module_info,
+        &mut apis,
+        &module_path,
+        &relative_path,
+    );
+
     Ok(apis)
 }
 
@@ -1544,6 +1557,69 @@ export class Service {
         assert!(surface.is_ok());
         let s = surface.unwrap();
         assert!(s.apis.len() <= 2, "Limit should cap at 2 APIs");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// CF2-S5: ESM `export default` surface idioms in TypeScript — decorated
+    /// instance (`export default inst; inst.x = …`) and object literal
+    /// (`export default { … }`). Shared AST resolver with the JS frontend.
+    #[test]
+    fn test_extract_typescript_surface_esm_default_export_members() {
+        let tmp = std::env::temp_dir().join("tldr_test_ts_surface_esm_default");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        std::fs::write(
+            tmp.join("index.ts"),
+            r#"const client = createInstance();
+client.get = function get(url: string): string { return url; };
+client.post = (url: string): string => url;
+export default client;
+"#,
+        )
+        .unwrap();
+
+        let resolved = ResolvedPackage {
+            root_dir: tmp.clone(),
+            package_name: "tspkg".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let surface = extract_typescript_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|a| a.qualified_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"tspkg.get") && names.contains(&"tspkg.post"),
+            "TS decorated-instance members must surface; got {names:?}"
+        );
+
+        std::fs::write(
+            tmp.join("index.ts"),
+            r#"function helper(a: number): number { return a; }
+export default {
+  helper,
+  build: function build(x: number): number { return x; },
+  run: (): number => 2,
+};
+"#,
+        )
+        .unwrap();
+        let surface = extract_typescript_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|a| a.qualified_name.as_str())
+            .collect();
+        for want in ["tspkg.helper", "tspkg.build", "tspkg.run"] {
+            assert!(
+                names.contains(&want),
+                "TS object-default member `{want}` must surface; got {names:?}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

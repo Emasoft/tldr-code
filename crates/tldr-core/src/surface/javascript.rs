@@ -273,7 +273,335 @@ fn extract_from_javascript_file(
 
     synthesize_commonjs_exports(&source, &mut apis, &module_path, &relative_path);
 
+    // ESM default-export surface (CF2-S5): object-literal members
+    // (`export default { a() {}, b }`, axios `lib/utils.js`) and the
+    // decorated-instance idiom (`export default axios; axios.get = …`, axios
+    // `lib/axios.js`). Both attach the module's whole public API to the default
+    // export — invisible to the CommonJS/`export`-keyword scans above, so
+    // `surface` reported zero APIs for these ESM modules.
+    append_js_default_export_apis(
+        tree.root_node(),
+        &source,
+        &module_info,
+        &mut apis,
+        &module_path,
+        &relative_path,
+    );
+
     Ok(apis)
+}
+
+/// A member resolved from a module's `export default` (CF2-S5). `is_function`
+/// is `true` only for directly function-valued members (method / arrow / fn
+/// expression); identifier/shorthand members are upgraded to functions by the
+/// caller when they name a known top-level function.
+struct JsDefaultMember {
+    name: String,
+    params: Vec<String>,
+    line: usize,
+    is_function: bool,
+}
+
+/// Append the `export default` surface members to `apis`, deduped by qualified
+/// name. Function-valued members (and identifier members that resolve to a
+/// top-level function) become [`ApiKind::Function`]; everything else is a
+/// [`ApiKind::Constant`] property of the default export. Shared with the
+/// TypeScript frontend (`surface/typescript.rs`) — JS and TS use the same
+/// tree-sitter grammar for `export default` object/instance idioms.
+pub(super) fn append_js_default_export_apis(
+    root: tree_sitter::Node,
+    source: &str,
+    module_info: &crate::types::ModuleInfo,
+    apis: &mut Vec<ApiEntry>,
+    module_path: &str,
+    relative_path: &Path,
+) {
+    let members = collect_js_default_export_members(root, source);
+    if members.is_empty() {
+        return;
+    }
+    let fn_names: HashSet<&str> = module_info
+        .functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    let mut seen: HashSet<String> = apis.iter().map(|a| a.qualified_name.clone()).collect();
+
+    for member in members {
+        let qualified_name = format!("{}.{}", module_path, member.name);
+        if !seen.insert(qualified_name.clone()) {
+            continue;
+        }
+        let is_fn = member.is_function || fn_names.contains(member.name.as_str());
+        let location = Some(Location {
+            file: relative_path.to_path_buf(),
+            line: member.line,
+            column: None,
+        });
+        if is_fn {
+            let params: Vec<Param> = member
+                .params
+                .iter()
+                .map(|name| Param {
+                    name: name.clone(),
+                    type_annotation: None,
+                    default: None,
+                    is_variadic: name == "...",
+                    is_keyword: false,
+                })
+                .collect();
+            let example = generate_js_function_example(module_path, &member.name, &params, None);
+            apis.push(ApiEntry {
+                qualified_name,
+                kind: ApiKind::Function,
+                module: module_path.to_string(),
+                signature: Some(Signature {
+                    params,
+                    return_type: None,
+                    is_async: false,
+                    is_generator: false,
+                }),
+                docstring: None,
+                example,
+                triggers: extract_triggers(&member.name, None),
+                is_property: false,
+                return_type: None,
+                location,
+            });
+        } else {
+            apis.push(ApiEntry {
+                qualified_name,
+                kind: ApiKind::Constant,
+                module: module_path.to_string(),
+                signature: None,
+                docstring: None,
+                example: Some(format!("{}.{}", module_path, member.name)),
+                triggers: extract_triggers(&member.name, None),
+                is_property: true,
+                return_type: None,
+                location,
+            });
+        }
+    }
+}
+
+/// AST-resolve the members an ES module exposes through its `export default`.
+/// Two idioms are recognized (both leave `apis` empty otherwise):
+///   * object literal — `export default { a() {}, b: () => …, c }`
+///   * decorated instance — `export default inst; inst.x = …; inst.y = …`
+fn collect_js_default_export_members(root: tree_sitter::Node, source: &str) -> Vec<JsDefaultMember> {
+    let mut default_value: Option<tree_sitter::Node> = None;
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "export_statement" && js_export_statement_is_default(child) {
+            if let Some(v) = child.child_by_field_name("value") {
+                default_value = Some(v);
+            }
+        }
+    }
+    let value = match default_value {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    match value.kind() {
+        "object" => collect_js_object_literal_members(value, source, &mut out, &mut seen),
+        "identifier" => {
+            let inst = source[value.byte_range()].trim().to_string();
+            collect_js_instance_member_assignments(root, source, &inst, &mut out, &mut seen);
+        }
+        _ => {}
+    }
+    out
+}
+
+/// True when an `export_statement` is `export default …` (carries a `default`
+/// token child).
+fn js_export_statement_is_default(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.walk();
+    let is_default = node.children(&mut cursor).any(|c| c.kind() == "default");
+    is_default
+}
+
+/// Expand an `export default { … }` object literal: `method_definition` and
+/// function-valued `pair`s become functions; other `pair`s and
+/// `shorthand_property_identifier`s become (potential) properties.
+fn collect_js_object_literal_members(
+    object: tree_sitter::Node,
+    source: &str,
+    out: &mut Vec<JsDefaultMember>,
+    seen: &mut HashSet<String>,
+) {
+    let mut cursor = object.walk();
+    for member in object.children(&mut cursor) {
+        match member.kind() {
+            "method_definition" => {
+                let Some(name_node) = member.child_by_field_name("name") else {
+                    continue;
+                };
+                let name = source[name_node.byte_range()].trim().to_string();
+                if name.is_empty() || !seen.insert(name.clone()) {
+                    continue;
+                }
+                out.push(JsDefaultMember {
+                    name,
+                    params: js_default_param_names(member, source),
+                    line: member.start_position().row + 1,
+                    is_function: true,
+                });
+            }
+            "pair" => {
+                let Some(key) = member.child_by_field_name("key") else {
+                    continue;
+                };
+                let name = match key.kind() {
+                    "property_identifier" => source[key.byte_range()].trim().to_string(),
+                    "string" => source[key.byte_range()]
+                        .trim_matches(|c| c == '"' || c == '\'')
+                        .to_string(),
+                    _ => continue,
+                };
+                if name.is_empty() || !seen.insert(name.clone()) {
+                    continue;
+                }
+                let value = member.child_by_field_name("value");
+                let is_function = value.map(js_is_function_value).unwrap_or(false);
+                let params = value
+                    .filter(|_| is_function)
+                    .map(|v| js_default_param_names(v, source))
+                    .unwrap_or_default();
+                out.push(JsDefaultMember {
+                    name,
+                    params,
+                    line: member.start_position().row + 1,
+                    is_function,
+                });
+            }
+            "shorthand_property_identifier" => {
+                let name = source[member.byte_range()].trim().to_string();
+                if name.is_empty() || !seen.insert(name.clone()) {
+                    continue;
+                }
+                out.push(JsDefaultMember {
+                    name,
+                    params: Vec::new(),
+                    line: member.start_position().row + 1,
+                    is_function: false,
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect top-level `inst.member = <value>` assignments that decorate a
+/// default-exported instance (`export default axios; axios.get = …`).
+fn collect_js_instance_member_assignments(
+    root: tree_sitter::Node,
+    source: &str,
+    inst: &str,
+    out: &mut Vec<JsDefaultMember>,
+    seen: &mut HashSet<String>,
+) {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "expression_statement" {
+            continue;
+        }
+        let Some(assign) = child.child(0) else {
+            continue;
+        };
+        if assign.kind() != "assignment_expression" {
+            continue;
+        }
+        let (Some(lhs), Some(rhs)) = (
+            assign.child_by_field_name("left"),
+            assign.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        if lhs.kind() != "member_expression" {
+            continue;
+        }
+        let (Some(obj), Some(prop)) = (
+            lhs.child_by_field_name("object"),
+            lhs.child_by_field_name("property"),
+        ) else {
+            continue;
+        };
+        // Only `inst.member` (a plain instance property), not nested member
+        // chains like `inst.proto.x` or `Other.member`.
+        if obj.kind() != "identifier" || source[obj.byte_range()].trim() != inst {
+            continue;
+        }
+        if prop.kind() != "property_identifier" {
+            continue;
+        }
+        let name = source[prop.byte_range()].trim().to_string();
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        let is_function = js_is_function_value(rhs);
+        out.push(JsDefaultMember {
+            name,
+            params: if is_function {
+                js_default_param_names(rhs, source)
+            } else {
+                Vec::new()
+            },
+            line: assign.start_position().row + 1,
+            is_function,
+        });
+    }
+}
+
+/// True when a node is a JS/TS function value (function expression, arrow, or
+/// generator).
+fn js_is_function_value(node: tree_sitter::Node) -> bool {
+    matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function" | "generator_function"
+    )
+}
+
+/// Collect parameter binding names from a function/arrow node — the
+/// parenthesized `parameters` list or the parenthesis-free single arrow
+/// `parameter` (`x => …`).
+fn js_default_param_names(fn_node: tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(params) = fn_node.child_by_field_name("parameters") {
+        let mut c = params.walk();
+        for child in params.children(&mut c) {
+            if child.is_named() {
+                if let Some(name) = js_pattern_identifier(child, source) {
+                    names.push(name);
+                }
+            }
+        }
+    } else if let Some(p) = fn_node.child_by_field_name("parameter") {
+        if let Some(name) = js_pattern_identifier(p, source) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Leftmost binding identifier of a parameter pattern node (handles destructured
+/// `{ a }` / `[ b ]` / defaulted `c = 1` patterns by descending to the first
+/// `identifier`).
+fn js_pattern_identifier(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() == "identifier" {
+        return Some(source[node.byte_range()].trim().to_string());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = js_pattern_identifier(child, source) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn javascript_parse_language(file_path: &Path) -> Language {
@@ -1918,6 +2246,90 @@ mod tests {
         assert!(surface.is_ok());
         let s = surface.unwrap();
         assert!(s.apis.len() <= 2, "Limit should cap at 2 APIs");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// CF2-S5: ESM `export default` surface idioms — the decorated-instance form
+    /// (`export default axios; axios.get = …`, axios `lib/axios.js`) and the
+    /// object-literal form (`export default { … }`, axios `lib/utils.js`). Both
+    /// attached the module's whole public API to the default export and were
+    /// invisible to the CommonJS/`export`-keyword scans (surface total 0).
+    #[test]
+    fn test_extract_javascript_surface_esm_default_export_members() {
+        let tmp = std::env::temp_dir().join("tldr_test_js_surface_esm_default");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Decorated-instance idiom.
+        std::fs::write(
+            tmp.join("index.js"),
+            r#"const client = createInstance();
+client.get = function get(url) { return url; };
+client.post = (url) => url;
+client.VERSION = "1.0";
+export default client;
+"#,
+        )
+        .unwrap();
+
+        let resolved = ResolvedPackage {
+            root_dir: tmp.clone(),
+            package_name: "mypkg".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let surface = extract_javascript_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|a| a.qualified_name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"mypkg.get") && names.contains(&"mypkg.post"),
+            "decorated-instance function members must surface; got {names:?}"
+        );
+        assert!(
+            surface
+                .apis
+                .iter()
+                .any(|a| a.qualified_name == "mypkg.get" && a.kind == ApiKind::Function),
+            "`get` must be a Function; got {:?}",
+            surface.apis
+        );
+
+        // Object-literal idiom (shorthand reference upgraded to a function).
+        std::fs::write(
+            tmp.join("index.js"),
+            r#"function helper(a) { return a; }
+export default {
+  helper,
+  build: function build(x) { return x; },
+  run: () => 2,
+  version: 42,
+};
+"#,
+        )
+        .unwrap();
+        let surface = extract_javascript_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|a| a.qualified_name.as_str())
+            .collect();
+        for want in ["mypkg.helper", "mypkg.build", "mypkg.run", "mypkg.version"] {
+            assert!(
+                names.contains(&want),
+                "object-default member `{want}` must surface; got {names:?}"
+            );
+        }
+        assert!(
+            surface
+                .apis
+                .iter()
+                .any(|a| a.qualified_name == "mypkg.helper" && a.kind == ApiKind::Function),
+            "shorthand member `helper` naming a top-level function must be a Function"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
