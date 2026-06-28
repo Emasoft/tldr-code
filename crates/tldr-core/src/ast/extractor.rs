@@ -2835,16 +2835,34 @@ fn collect_definitions(
             } else {
                 node.start_position().row as u32 + 1 // 1-indexed
             };
-            let line_end = node.end_position().row as u32 + 1;
+            // CF1-S1 (v0.5.0 RC): the bare `node.end_position()` over-extends a
+            // Scala declaration whose `end_position` absorbed a TRAILING comment
+            // that tree-sitter folded into the body block — tree-sitter-scala
+            // attaches the `/** ScalaDoc */` documenting the NEXT `def` to the
+            // PREVIOUS `def`'s body, inflating its `line_end` (and corrupting the
+            // span-keyed `complexity`/`explain`/`reaching-defs`). `def_line_end`
+            // trims the trailing absorbed comment. Gated to Scala because that
+            // cross-sibling absorption is a tree-sitter-scala grammar quirk; the
+            // other grammars keep a trailing in-body comment as part of the span.
+            let line_end = if matches!(language, Language::Scala) {
+                def_line_end(node)
+            } else {
+                node.end_position().row as u32 + 1
+            };
 
-            // Extract signature. RC2-META Stage 1: function-axis declarations
-            // (methods/functions/constructors) render from the HEADER span via
-            // the shared resolver so an inline body block no longer leaks into
-            // the signature (`m(): void {} }` -> `m(): void`). Class-axis
-            // declarations keep the legacy first-line slice (their body brace
-            // `class Foo {` is intentionally retained — no churn).
+            // Extract signature. CF1-S1: both resolvers anchor on
+            // `decl_header_start_byte`, which skips a leading
+            // annotation/attribute/modifier-annotation prefix (descending into a
+            // Java/Kotlin/Swift `modifiers` wrapper) so a `@ModelAttribute` /
+            // `@available` / `@Controller` line no longer becomes the signature.
+            // Function-axis declarations (methods/functions/constructors) render
+            // the FULL multi-line header via `extract_func_signature` (so a
+            // wrapped param list / return type is not truncated to `def run(`)
+            // and exclude an inline body block (`m(): void {} }` -> `m(): void`).
+            // Class-axis declarations keep the legacy first-line slice (their
+            // body brace `class Foo {` is intentionally retained — no churn).
             let signature = if is_func && !is_class {
-                crate::ast::entity::signature_from_header(node, source)
+                extract_func_signature(node, source)
             } else {
                 extract_def_signature(node, source)
             };
@@ -4282,39 +4300,156 @@ fn is_inside_class_or_impl(node: &Node, language: Language) -> bool {
     false
 }
 
-/// Extract the actual definition signature from a tree-sitter node,
-/// skipping doc comments, attributes, and decorators.
-/// Mirrors `search/enriched.rs::extract_definition_signature`.
-fn extract_def_signature(node: Node, source: &str) -> String {
-    // Strategy: find the first child node that isn't a comment or attribute,
-    // then use its start position as the beginning of the actual definition.
+/// True for tree-sitter node kinds that are a LEADING annotation / attribute /
+/// decorator / doc-comment prefix on a declaration — i.e. nodes that precede the
+/// real declaration keyword and must NOT anchor the signature span. Used by
+/// [`decl_header_start_byte`] both at the top level of a declaration node and
+/// when descending into a Java/Kotlin/Swift `modifiers` wrapper (which mixes
+/// annotation children with keyword modifiers like `public`/`static`/`inline`).
+///
+/// AST-driven (node-kind only): no per-name or substring matching.
+fn is_leading_annotation_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "line_comment"
+            | "block_comment"
+            | "comment"
+            // Java / Kotlin annotation node kinds
+            | "annotation"
+            | "marker_annotation"
+            | "single_member_annotation"
+            | "normal_annotation"
+            // Swift `@attr` / Rust `#[...]`
+            | "attribute"
+            | "attribute_item"
+            // Python `@decorator` (when emitted as a direct child)
+            | "decorator"
+            | "decorator_list"
+    )
+}
+
+/// True for comment node kinds that tree-sitter may absorb as a TRAILING child
+/// of a declaration node. Some grammars (notably tree-sitter-scala) attach a
+/// `/** ScalaDoc */` block comment that documents the *next* sibling as a
+/// trailing child of the *previous* declaration, which over-extends that
+/// declaration's `end_position`. [`def_line_end`] strips such trailing comments.
+fn is_comment_node_kind(kind: &str) -> bool {
+    matches!(kind, "comment" | "line_comment" | "block_comment")
+}
+
+/// Byte offset where the real declaration HEADER begins.
+///
+/// Skips leading doc-comment / decorator / attribute children, and—when the
+/// first meaningful child is a Java/Kotlin/Swift `modifiers` wrapper—descends
+/// into it to skip the leading annotation/attribute children so the header
+/// anchors on the first keyword modifier (`public`/`static`/`inline`/…) or the
+/// declarator, NEVER on a leading `@Annotation` line. If a `modifiers` wrapper
+/// holds only annotations, the scan falls through to the next sibling (the decl
+/// keyword / return type).
+fn decl_header_start_byte(node: Node) -> usize {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let ckind = child.kind();
-        // Skip doc comments and attributes/decorators
-        if ckind == "line_comment"
-            || ckind == "block_comment"
-            || ckind == "comment"
-            || ckind == "attribute_item"    // Rust #[...]
-            || ckind == "attribute"         // Rust #[...]
-            || ckind == "decorator"         // Python @decorator
-            || ckind == "decorator_list"
-        // Python
-        {
+        if is_leading_annotation_kind(ckind) {
             continue;
         }
-        // Found the first non-comment child -- extract its line as signature
-        let start_byte = child.start_byte();
-        let line_from_start = &source[start_byte..];
-        let sig = line_from_start
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if !sig.is_empty() {
-            return sig;
+        if ckind == "modifiers" {
+            // Java/Kotlin/Swift wrapper mixing annotation children with keyword
+            // modifiers. Descend to the first non-annotation token.
+            let mut mc = child.walk();
+            for m in child.children(&mut mc) {
+                if !is_leading_annotation_kind(m.kind()) {
+                    return m.start_byte();
+                }
+            }
+            // `modifiers` contained only annotations -> fall through to the next
+            // sibling (the decl keyword / return type).
+            continue;
         }
+        return child.start_byte();
+    }
+    node.start_byte()
+}
+
+/// Byte offset where a function/method declaration's BODY block begins, if any.
+///
+/// Used to bound the header span so an inline body (`{ ... }` on the signature
+/// line, e.g. `m(): void {}`) is excluded. AST-driven: prefers the grammar's
+/// explicit `body` field, then falls back to well-known block node kinds.
+fn func_body_start_byte(node: Node) -> Option<usize> {
+    if let Some(b) = node.child_by_field_name("body") {
+        return Some(b.start_byte());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "statement_block" // TS/JS
+            | "block"              // Rust / Python / Lua / Kotlin / Scala
+            | "function_body"      // Swift
+            | "compound_statement" // C / C++
+            | "do_block"           // Elixir
+            | "field_declaration_list" => {
+                return Some(child.start_byte());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The 0-indexed end row of `node`, EXCLUDING any trailing comment that
+/// tree-sitter absorbed into the node's span.
+///
+/// tree-sitter-scala folds a `/** ScalaDoc */` block comment that documents the
+/// NEXT `def` into the PREVIOUS `def`'s body block as its trailing child,
+/// over-extending the `def`'s `end_position` into the following doc block. The
+/// absorption can be NESTED (the comment lands inside the body `indented_block`,
+/// not as a direct child of the `function_definition`), so this walks DOWN the
+/// last-non-comment-child spine: at each level it takes the last child that is
+/// not a comment and recurses into it, returning that leaf's true end row.
+///
+/// No-op for the common case (the last child is a `}` / closing token /
+/// expression, never a stray trailing comment).
+fn meaningful_end_row(node: Node) -> usize {
+    let mut cursor = node.walk();
+    let mut last_noncomment: Option<Node> = None;
+    for child in node.children(&mut cursor) {
+        if !is_comment_node_kind(child.kind()) {
+            last_noncomment = Some(child);
+        }
+    }
+    match last_noncomment {
+        // Descend into the last non-comment child: after its OWN trailing
+        // comments are trimmed, its end row is the meaningful end.
+        Some(child) => meaningful_end_row(child),
+        // Leaf token, or a node whose only children are comments.
+        None => node.end_position().row,
+    }
+}
+
+/// 1-indexed end line of a declaration, with trailing absorbed comments trimmed
+/// (see [`meaningful_end_row`]).
+fn def_line_end(node: Node) -> u32 {
+    meaningful_end_row(node) as u32 + 1
+}
+
+/// Render a single-line signature for a CLASS-axis declaration (class / struct /
+/// enum / trait / object / type / contract / …).
+///
+/// Anchors on [`decl_header_start_byte`] so a leading `@Annotation` / attribute
+/// line (e.g. Java `@Controller`, Swift `@objc`) no longer leaks into the
+/// signature, then keeps the legacy first-source-line slice (the body-opening
+/// `{` is intentionally retained for class-axis kinds — no churn).
+fn extract_def_signature(node: Node, source: &str) -> String {
+    let start_byte = decl_header_start_byte(node);
+    let sig = source
+        .get(start_byte..)
+        .and_then(|s| s.lines().next())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !sig.is_empty() {
+        return sig;
     }
 
     // Fallback: find the first non-comment line in the node's text
@@ -4339,6 +4474,40 @@ fn extract_def_signature(node: Node, source: &str) -> String {
     source[node.start_byte()..]
         .lines()
         .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Render a FUNCTION-axis signature (function / method / constructor) for
+/// `structure`'s `definitions[]`.
+///
+/// Three corrections over the legacy first-source-line slice:
+///   1. Anchors on [`decl_header_start_byte`], so a leading `@Annotation` /
+///      attribute line (Java `@ModelAttribute`, Swift `@available`) no longer
+///      becomes the signature.
+///   2. Spans the FULL (possibly multi-line) header so a parameter list / return
+///      type wrapped across several lines is not truncated to `def run(`.
+///   3. Excludes an inline body block (`m(): void {}` -> `m(): void`) via
+///      [`func_body_start_byte`].
+///
+/// The span is pinned by tree-sitter node fields/children; only inter-token
+/// whitespace is normalised (newlines + runs collapse to one space) — this is
+/// pure formatting of an AST-derived span, not a source-text parsing heuristic.
+fn extract_func_signature(node: Node, source: &str) -> String {
+    let start = decl_header_start_byte(node);
+    let end = func_body_start_byte(node)
+        .filter(|&b| b > start)
+        .unwrap_or_else(|| node.end_byte());
+    let raw = source.get(start..end).unwrap_or("");
+    let sig = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !sig.is_empty() {
+        return sig;
+    }
+    // Fallback: first line of the whole node.
+    source
+        .get(node.start_byte()..)
+        .and_then(|s| s.lines().next())
         .unwrap_or("")
         .trim()
         .to_string()
@@ -5374,6 +5543,136 @@ fn top_level() {}
         assert_eq!(consts[1].line_start, 3);
         assert_eq!(consts[1].line_end, 6);
         assert_eq!(consts[1].signature, "EXTERNAL_FUNCTIONS = {");
+    }
+
+    // ── CF1-S1: structure signature / span (annotation skip, full multi-line
+    //    header, scala trailing-comment line_end trim) ──────────────────────
+
+    /// Look up the first `definitions[]` entry with the given name.
+    fn find_def(source: &str, language: Language, name: &str) -> DefinitionInfo {
+        let tree = parse(source, language).unwrap();
+        let defs = extract_definitions(&tree, source, language);
+        defs.into_iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("definition {name:?} not found for {language:?}"))
+    }
+
+    /// java: the method signature must come from the method DECLARATION, never
+    /// from a leading `@ModelAttribute` / `@RequestMapping` annotation line.
+    #[test]
+    fn cf1_s1_java_signature_skips_leading_annotation() {
+        let source = "\
+@RestController
+class OwnerController {
+\t@ModelAttribute(\"owner\")
+\tpublic Owner findOwner(@PathVariable(\"ownerId\") int ownerId) {
+\t\treturn repo.find(ownerId);
+\t}
+}
+";
+        let d = find_def(source, Language::Java, "findOwner");
+        assert!(
+            !d.signature.starts_with('@'),
+            "java signature must not start with an annotation; got {:?}",
+            d.signature
+        );
+        assert!(
+            !d.signature.contains("@ModelAttribute"),
+            "java signature must not embed the @ModelAttribute line; got {:?}",
+            d.signature
+        );
+        assert!(
+            d.signature.starts_with("public Owner findOwner("),
+            "java signature must be the method declaration; got {:?}",
+            d.signature
+        );
+    }
+
+    /// swift: the func signature must come from the `func` DECLARATION, never
+    /// from a leading `@available` / `@inlinable` attribute line.
+    #[test]
+    fn cf1_s1_swift_signature_skips_leading_attribute() {
+        let source = "\
+@available(macOS 10.15, *)
+public func makeBox<T>(
+  _ value: T
+) -> Box<T> {
+  return Box(value)
+}
+";
+        let d = find_def(source, Language::Swift, "makeBox");
+        assert!(
+            !d.signature.starts_with('@'),
+            "swift signature must not start with an attribute; got {:?}",
+            d.signature
+        );
+        assert!(
+            !d.signature.contains("@available"),
+            "swift signature must not embed the @available line; got {:?}",
+            d.signature
+        );
+        assert!(
+            d.signature.contains("func makeBox"),
+            "swift signature must be the func declaration; got {:?}",
+            d.signature
+        );
+    }
+
+    /// python: a `def` whose parameter list / return type spans multiple
+    /// physical lines must NOT be truncated to the first physical line
+    /// (`def run(`) — the full header (params + return) must be captured.
+    #[test]
+    fn cf1_s1_python_multiline_def_signature_is_complete() {
+        let source = "\
+def run(
+    self,
+    config: Config,
+) -> Result:
+    return Result()
+";
+        let d = find_def(source, Language::Python, "run");
+        assert_ne!(
+            d.signature, "def run(",
+            "python multi-line def must not be truncated to the first line"
+        );
+        assert!(
+            d.signature.contains("config: Config"),
+            "python signature must retain the wrapped parameters; got {:?}",
+            d.signature
+        );
+        assert!(
+            d.signature.contains("-> Result"),
+            "python signature must retain the return type; got {:?}",
+            d.signature
+        );
+    }
+
+    /// scala: a `def` immediately followed (after a blank line) by the next
+    /// `def`'s `/** ScalaDoc */` must NOT absorb that doc comment into its span.
+    /// tree-sitter-scala attaches the trailing comment as a child of the
+    /// PREVIOUS def, over-extending its `line_end`.
+    #[test]
+    fn cf1_s1_scala_line_end_excludes_trailing_scaladoc() {
+        let source = "\
+trait Thing {
+  def provideSome[R0] =
+    new Applied[R0](self)
+
+  /**
+   * Doc for the NEXT def, not provideSome.
+   */
+  def provide[E1] =
+    impl()
+}
+";
+        let d = find_def(source, Language::Scala, "provideSome");
+        assert_eq!(d.line_start, 2, "scala line_start (sanity)");
+        assert_eq!(
+            d.line_end, 3,
+            "scala def line_end must stop at its body (line 3), not extend into \
+             the next def's ScalaDoc; got {}",
+            d.line_end
+        );
     }
 
     #[test]
