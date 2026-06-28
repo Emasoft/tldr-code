@@ -1630,6 +1630,34 @@ fn is_solidity_reserved_word(s: &str) -> bool {
     )
 }
 
+/// bug14-taint-rust-mut (v0.5.0 BACKLOG): Rust-ONLY strict keywords that must
+/// never be reported as a tainted variable name.
+///
+/// These are kept SEPARATE from the cross-language [`is_taint_var_keyword`]
+/// stoplist (and gated behind `language == Language::Rust` at the source
+/// emission site) because they ARE legal identifiers in other supported
+/// languages — `mut`, `ref`, `move`, `self`, `super` can all bind as a plain
+/// variable name in Python / JavaScript / Go, so banning them globally would
+/// suppress a real source var. In Rust they are STRICT keywords (you cannot
+/// name a variable `mut`/`self`), so rejecting them Rust-specifically is sound
+/// and never suppresses a real Rust variable. Mirrors [`is_solidity_reserved_word`].
+///
+/// The driving FP: on a `&mut self` method signature whose body contains a
+/// taint source (`clap_builder/src/builder/command.rs:866`,
+/// `let mut raw_args = clap_lex::RawArgs::new(itr)`), the over-broad
+/// member-pattern match fires on the enclosing `function_item`, and the
+/// textual var-extraction fallback (`extract_source_var_from_statement`) grabs
+/// the `mut` modifier out of `&mut self` via its `&var` reference handler —
+/// emitting `mut` as a UserInput source. After `mut` is rejected the same
+/// fallback would next grab the `self` receiver, so the whole Rust strict-keyword
+/// modifier/receiver set is rejected here to close the symptom class in one place.
+fn is_rust_reserved_word(s: &str) -> bool {
+    matches!(
+        s,
+        "mut" | "ref" | "move" | "self" | "Self" | "super" | "crate" | "dyn"
+    )
+}
+
 /// Python-keyword predicate used by the W4-taint-core keyword-FP char test.
 /// Delegates to the cross-language reserved-word set [`is_taint_var_keyword`],
 /// which is a superset of the Python keywords that can leak through the textual
@@ -6196,6 +6224,7 @@ pub fn detect_sources_ast(
                     // preserved.
                     if !is_taint_var_keyword(&var)
                         && !(language == Language::Solidity && is_solidity_reserved_word(&var))
+                        && !(language == Language::Rust && is_rust_reserved_word(&var))
                     {
                         // R7 security-fp2 RC3 (v0.5.0 CLOSEOUT): capture the full
                         // logical statement (symmetric with the sink path) so a
@@ -10180,6 +10209,119 @@ fn run(input: &str) {
             "real assignment `cmd = os.getenv(...)` must yield source var `cmd`; got: {:?}",
             sources
         );
+    }
+
+    // ---- bug14-taint-rust-mut: Rust `mut`/`self` modifier-keyword FP ----
+
+    /// FP (reproduced on rust-clap `command.rs:866`,
+    /// `let mut raw_args = clap_lex::RawArgs::new(itr)` in a `&mut self`
+    /// method): the Rust `mut` modifier from `&mut self` must NOT be reported
+    /// as a tainted source variable, and neither must the `self` receiver that
+    /// the same textual fallback would grab next. The real binding `raw_args`
+    /// MUST still be detected.
+    #[test]
+    fn test_rust_mut_modifier_not_reported_as_source_var() {
+        use crate::ast::ParserPool;
+        let code = r#"struct S;
+impl S {
+    pub fn parse_mut<I, T>(&mut self, itr: I) -> Result<(), ()>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<String> + Clone,
+    {
+        let mut raw_args = std::env::args();
+        let _ = raw_args;
+        Ok(())
+    }
+}
+"#;
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Rust).unwrap();
+        let root = tree.root_node();
+        let sources = detect_sources_ast(&root, code.as_bytes(), Language::Rust, None);
+        // No Rust strict keyword may ever be emitted as a source var.
+        assert!(
+            !sources.iter().any(|s| is_rust_reserved_word(&s.var)),
+            "no Rust strict keyword (mut/self/ref/...) may be a source var; got: {:?}",
+            sources
+        );
+        assert!(
+            !sources.iter().any(|s| s.var == "mut"),
+            "`mut` modifier must NOT be a source var; got: {:?}",
+            sources
+        );
+        // The genuine `let mut raw_args = std::env::args()` binding must survive.
+        assert!(
+            sources.iter().any(|s| s.var == "raw_args"),
+            "real `let mut raw_args = ...` binding must yield source var `raw_args`; got: {:?}",
+            sources
+        );
+    }
+
+    /// Generalization across the symptom class: a simple `let mut x = source()`
+    /// taints `x` (not `mut`); a non-mut binding `let y = source()` is
+    /// unaffected; and an identifier that merely CONTAINS the substring `mut`
+    /// (e.g. `mutex`) is NOT suppressed (exact-keyword match, not substring).
+    #[test]
+    fn test_rust_let_mut_taints_binding_not_modifier() {
+        use crate::ast::ParserPool;
+        let code = r#"fn handler() {
+    let mut x = std::env::args();
+    let y = std::env::var("X");
+    let mutex = std::env::var("Y");
+    let _ = (x, y, mutex);
+}
+"#;
+        let pool = ParserPool::new();
+        let tree = pool.parse(code, Language::Rust).unwrap();
+        let root = tree.root_node();
+        let sources = detect_sources_ast(&root, code.as_bytes(), Language::Rust, None);
+
+        assert!(
+            !sources.iter().any(|s| is_rust_reserved_word(&s.var)),
+            "no Rust strict keyword may be a source var; got: {:?}",
+            sources
+        );
+        // `let mut x = ...` -> x
+        assert!(
+            sources.iter().any(|s| s.var == "x"),
+            "`let mut x = ...` must yield `x`; got: {:?}",
+            sources
+        );
+        // non-mut binding unaffected
+        assert!(
+            sources.iter().any(|s| s.var == "y"),
+            "non-mut binding `let y = ...` must yield `y`; got: {:?}",
+            sources
+        );
+        // substring-of-keyword must NOT be suppressed (exact match only)
+        assert!(
+            sources.iter().any(|s| s.var == "mutex"),
+            "identifier `mutex` (contains `mut`) must NOT be suppressed; got: {:?}",
+            sources
+        );
+    }
+
+    /// `is_rust_reserved_word` is Rust-gated: the same tokens remain VALID
+    /// source-var names in other languages (e.g. a Python variable named `mut`
+    /// or `self` must still be reportable), so the predicate must only be
+    /// consulted when `language == Language::Rust`. Guards against a
+    /// cross-language regression from over-broadening the global stoplist.
+    #[test]
+    fn test_rust_reserved_word_is_rust_gated() {
+        // The predicate itself recognises the Rust strict keywords ...
+        assert!(is_rust_reserved_word("mut"));
+        assert!(is_rust_reserved_word("self"));
+        assert!(is_rust_reserved_word("ref"));
+        // ... but they are NOT in the cross-language global stoplist, so other
+        // languages keep treating them as ordinary identifiers.
+        assert!(!is_taint_var_keyword("mut"));
+        assert!(!is_taint_var_keyword("self"));
+        assert!(!is_taint_var_keyword("ref"));
+        // A real identifier that merely contains the keyword is not matched.
+        assert!(!is_rust_reserved_word("mutex"));
+        assert!(!is_rust_reserved_word("reference"));
+        assert!(!is_rust_reserved_word("selfie"));
     }
 
     // ========================================================================
