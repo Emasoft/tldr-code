@@ -112,6 +112,14 @@ pub struct CognitiveSummary {
     pub severe_violations_count: usize,
     /// Compliance rate (percentage of functions under threshold)
     pub compliance_rate: f64,
+    /// G-cognitive (v0.5.0 BACKLOG): set to `true` when the displayed
+    /// `functions` list was truncated by `--top N`. Every statistic in this
+    /// summary is ALWAYS aggregated over the full set of analyzed functions
+    /// (not just the displayed top-N subset), so the numbers are invariant
+    /// under `--top`; this flag merely signals that the per-function list is
+    /// a prefix of the full ranking.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// Threshold status for a function
@@ -264,13 +272,38 @@ pub fn analyze_cognitive(path: &Path, options: &CognitiveOptions) -> TldrResult<
     // Sort by cognitive complexity descending
     functions.sort_by(|a, b| b.cognitive.cmp(&a.cognitive));
 
-    // Apply top limit
-    if options.top > 0 && functions.len() > options.top {
+    // G-cognitive (v0.5.0 BACKLOG): `--top N` is a DISPLAY limit only. Build
+    // the violations list and the summary over ALL functions BEFORE
+    // truncating the displayed list, so total_functions / avg_cognitive /
+    // compliance_rate (and the rest of the summary) stay invariant under
+    // `--top`. Truncating first made every aggregate reflect only the
+    // top-N subset.
+    let violations = build_violation_entries(&functions);
+    let mut summary = calculate_summary(&functions, options.threshold, options.high_threshold);
+
+    // Apply the top limit to the displayed function list only.
+    let truncated = options.top > 0 && functions.len() > options.top;
+    if truncated {
         functions.truncate(options.top);
     }
+    summary.truncated = truncated;
 
-    // Build violations list
-    let violations: Vec<ViolationEntry> = functions
+    Ok(CognitiveReport {
+        functions,
+        violations,
+        summary,
+        warnings: Vec::new(),
+    })
+}
+
+/// Build the `ViolationEntry` list for a set of analyzed functions.
+///
+/// G-cognitive (v0.5.0 BACKLOG): factored out of the three report builders
+/// (`analyze_cognitive`, `analyze_cognitive_source`, `merge_cognitive_reports`)
+/// so all of them aggregate violations over the FULL function set before any
+/// `--top N` display truncation is applied.
+fn build_violation_entries(functions: &[FunctionCognitive]) -> Vec<ViolationEntry> {
+    functions
         .iter()
         .filter(|f| {
             f.threshold_status == ThresholdStatus::Violation
@@ -287,17 +320,7 @@ pub fn analyze_cognitive(path: &Path, options: &CognitiveOptions) -> TldrResult<
                 _ => "warning".to_string(),
             },
         })
-        .collect();
-
-    // Calculate summary
-    let summary = calculate_summary(&functions, options.threshold, options.high_threshold);
-
-    Ok(CognitiveReport {
-        functions,
-        violations,
-        summary,
-        warnings: Vec::new(),
-    })
+        .collect()
 }
 
 /// Analyze cognitive complexity from source code string
@@ -320,33 +343,18 @@ pub fn analyze_cognitive_source(
     // Sort by cognitive complexity descending
     functions.sort_by(|a, b| b.cognitive.cmp(&a.cognitive));
 
-    // Apply top limit
-    if options.top > 0 && functions.len() > options.top {
+    // G-cognitive (v0.5.0 BACKLOG): aggregate violations + summary over ALL
+    // functions BEFORE applying the `--top N` display limit (see
+    // `analyze_cognitive` for the rationale).
+    let violations = build_violation_entries(&functions);
+    let mut summary = calculate_summary(&functions, options.threshold, options.high_threshold);
+
+    // Apply the top limit to the displayed function list only.
+    let truncated = options.top > 0 && functions.len() > options.top;
+    if truncated {
         functions.truncate(options.top);
     }
-
-    // Build violations list
-    let violations: Vec<ViolationEntry> = functions
-        .iter()
-        .filter(|f| {
-            f.threshold_status == ThresholdStatus::Violation
-                || f.threshold_status == ThresholdStatus::Severe
-        })
-        .map(|f| ViolationEntry {
-            name: f.name.clone(),
-            file: f.file.clone(),
-            line: f.line,
-            cognitive: f.cognitive,
-            severity: match f.threshold_status {
-                ThresholdStatus::Severe => "severe".to_string(),
-                ThresholdStatus::Violation => "violation".to_string(),
-                _ => "warning".to_string(),
-            },
-        })
-        .collect();
-
-    // Calculate summary
-    let summary = calculate_summary(&functions, options.threshold, options.high_threshold);
+    summary.truncated = truncated;
 
     Ok(CognitiveReport {
         functions,
@@ -623,6 +631,9 @@ fn calculate_summary(
         violations_count,
         severe_violations_count,
         compliance_rate,
+        // Aggregated over ALL functions; callers set `truncated` after they
+        // apply the `--top N` display limit (G-cognitive).
+        truncated: false,
     }
 }
 
@@ -1694,33 +1705,19 @@ pub fn merge_cognitive_reports(
     // 3. Sort by cognitive score descending
     functions.sort_by(|a, b| b.cognitive.cmp(&a.cognitive));
 
-    // 4. Apply top-N limit
-    if options.top > 0 && functions.len() > options.top {
+    // 4. G-cognitive (v0.5.0 BACKLOG): rebuild violations and recalculate the
+    //    summary over ALL merged functions BEFORE the `--top N` display
+    //    truncation, so the directory-level aggregates are invariant under
+    //    `--top` (they previously reflected only the top-N subset).
+    let violations = build_violation_entries(&functions);
+    let mut summary = calculate_summary(&functions, options.threshold, options.high_threshold);
+
+    // 5. Apply the top-N limit to the displayed function list only.
+    let truncated = options.top > 0 && functions.len() > options.top;
+    if truncated {
         functions.truncate(options.top);
     }
-
-    // 5. Rebuild violations from the (potentially truncated) function list
-    let violations: Vec<ViolationEntry> = functions
-        .iter()
-        .filter(|f| {
-            f.threshold_status == ThresholdStatus::Violation
-                || f.threshold_status == ThresholdStatus::Severe
-        })
-        .map(|f| ViolationEntry {
-            name: f.name.clone(),
-            file: f.file.clone(),
-            line: f.line,
-            cognitive: f.cognitive,
-            severity: match f.threshold_status {
-                ThresholdStatus::Severe => "severe".to_string(),
-                ThresholdStatus::Violation => "violation".to_string(),
-                _ => "warning".to_string(),
-            },
-        })
-        .collect();
-
-    // 6. Recalculate summary
-    let summary = calculate_summary(&functions, options.threshold, options.high_threshold);
+    summary.truncated = truncated;
 
     CognitiveReport {
         functions,
@@ -2501,6 +2498,298 @@ function plain(z) {
                 "duplicate (name,line) in cognitive report: {} @ {}",
                 f.name,
                 f.line
+            );
+        }
+    }
+
+    // =====================================================================
+    // G-cognitive (v0.5.0 BACKLOG): `--top N` is a DISPLAY limit only.
+    //
+    // The whole summary (total_functions / total_cognitive / avg_cognitive /
+    // max_cognitive / violations_count / severe_violations_count /
+    // compliance_rate) plus the violations list MUST be invariant under
+    // `--top`. The pre-fix code truncated the function vector BEFORE
+    // aggregating, so every statistic reflected only the top-N subset
+    // (witness: kotlin-coroutines reported total_functions=50/avg=26.46 at
+    // --top 50 vs total_functions=7260/avg=0.86 at --top 0).
+    //
+    // Symptom class = ALL languages: this is a language-agnostic
+    // post-processing bug, so the anti-treadmill gate asserts invariance
+    // across a broad cross-language matrix — a single-language test is a FAIL.
+    // =====================================================================
+
+    /// Emit one trivial (`cognitive == 0`) or one deeply-nested
+    /// (`cognitive == 6`) function for `lang`. Three-deep nested `if`s exceed
+    /// the test thresholds (violation @ 2, severe @ 5) in every grammar.
+    fn g_cognitive_make_fn(lang: Language, name: &str, complex: bool) -> String {
+        match lang {
+            Language::Python => {
+                if complex {
+                    format!("def {name}(a):\n    if a:\n        if a:\n            if a:\n                return 1\n    return 0\n\n")
+                } else {
+                    format!("def {name}(a):\n    return a\n\n")
+                }
+            }
+            Language::Ruby => {
+                if complex {
+                    format!("def {name}(a)\n  if a\n    if a\n      if a\n        return 1\n      end\n    end\n  end\n  0\nend\n\n")
+                } else {
+                    format!("def {name}(a)\n  a\nend\n\n")
+                }
+            }
+            Language::Rust => {
+                if complex {
+                    format!("fn {name}(a: bool) -> i32 {{\n    if a {{\n        if a {{\n            if a {{\n                return 1;\n            }}\n        }}\n    }}\n    0\n}}\n\n")
+                } else {
+                    format!("fn {name}(a: i32) -> i32 {{\n    a\n}}\n\n")
+                }
+            }
+            Language::Kotlin => {
+                if complex {
+                    format!("fun {name}(a: Boolean): Int {{\n    if (a) {{\n        if (a) {{\n            if (a) {{\n                return 1\n            }}\n        }}\n    }}\n    return 0\n}}\n\n")
+                } else {
+                    format!("fun {name}(a: Int): Int {{\n    return a\n}}\n\n")
+                }
+            }
+            Language::Go => {
+                if complex {
+                    format!("func {name}(a bool) int {{\n\tif a {{\n\t\tif a {{\n\t\t\tif a {{\n\t\t\t\treturn 1\n\t\t\t}}\n\t\t}}\n\t}}\n\treturn 0\n}}\n\n")
+                } else {
+                    format!("func {name}(a int) int {{\n\treturn a\n}}\n\n")
+                }
+            }
+            Language::Java => {
+                // Emitted inside `class C { ... }` (see g_cognitive_wrap).
+                if complex {
+                    format!("  int {name}(boolean a) {{\n    if (a) {{\n      if (a) {{\n        if (a) {{\n          return 1;\n        }}\n      }}\n    }}\n    return 0;\n  }}\n")
+                } else {
+                    format!("  int {name}(int a) {{\n    return a;\n  }}\n")
+                }
+            }
+            Language::CSharp => {
+                // Emitted inside `class C { ... }` (see g_cognitive_wrap).
+                if complex {
+                    format!("  int {name}(bool a) {{\n    if (a) {{\n      if (a) {{\n        if (a) {{\n          return 1;\n        }}\n      }}\n    }}\n    return 0;\n  }}\n")
+                } else {
+                    format!("  int {name}(int a) {{\n    return a;\n  }}\n")
+                }
+            }
+            Language::Swift => {
+                if complex {
+                    format!("func {name}(a: Bool) -> Int {{\n    if a {{\n        if a {{\n            if a {{\n                return 1\n            }}\n        }}\n    }}\n    return 0\n}}\n\n")
+                } else {
+                    format!("func {name}(a: Int) -> Int {{\n    return a\n}}\n\n")
+                }
+            }
+            Language::Scala => {
+                // Emitted inside `object O { ... }` (see g_cognitive_wrap).
+                if complex {
+                    format!("  def {name}(a: Boolean): Int = {{\n    if (a) {{\n      if (a) {{\n        if (a) {{\n          return 1\n        }}\n      }}\n    }}\n    0\n  }}\n")
+                } else {
+                    format!("  def {name}(a: Int): Int = {{\n    a\n  }}\n")
+                }
+            }
+            Language::Lua | Language::Luau => {
+                if complex {
+                    format!("function {name}(a)\n    if a then\n        if a then\n            if a then\n                return 1\n            end\n        end\n    end\n    return 0\nend\n\n")
+                } else {
+                    format!("function {name}(a)\n    return a\nend\n\n")
+                }
+            }
+            Language::Elixir => {
+                // Emitted inside `defmodule M do ... end` (see g_cognitive_wrap).
+                // NB: this grammar's `if` does not raise cognitive; the
+                // invariance still holds via total_functions (see test body).
+                if complex {
+                    format!("  def {name}(a) do\n    if a do\n      if a do\n        if a do\n          1\n        end\n      end\n    end\n  end\n\n")
+                } else {
+                    format!("  def {name}(a) do\n    a\n  end\n\n")
+                }
+            }
+            Language::Ocaml => {
+                if complex {
+                    format!("let {name} a =\n  if a then\n    if a then\n      if a then 1 else 0\n    else 0\n  else 0\n\n")
+                } else {
+                    format!("let {name} a = a\n\n")
+                }
+            }
+            Language::Solidity => {
+                // Emitted inside `contract C {{ ... }}` (see g_cognitive_wrap).
+                if complex {
+                    format!("  function {name}(bool a) public pure returns (uint) {{\n    if (a) {{\n      if (a) {{\n        if (a) {{\n          return 1;\n        }}\n      }}\n    }}\n    return 0;\n  }}\n")
+                } else {
+                    format!("  function {name}(uint a) public pure returns (uint) {{\n    return a;\n  }}\n")
+                }
+            }
+            // Brace-and-semicolon C-family: JavaScript, TypeScript, C, C++, PHP.
+            _ => {
+                let sig = match lang {
+                    Language::JavaScript | Language::TypeScript => {
+                        format!("function {name}(a)")
+                    }
+                    Language::Php => format!("function {name}($a)"),
+                    _ => format!("int {name}(int a)"), // C / C++
+                };
+                if complex {
+                    format!("{sig} {{\n    if (a) {{\n        if (a) {{\n            if (a) {{\n                return 1;\n            }}\n        }}\n    }}\n    return 0;\n}}\n\n")
+                } else {
+                    format!("{sig} {{\n    return a;\n}}\n\n")
+                }
+            }
+        }
+    }
+
+    /// Wrap a concatenation of function definitions in the per-language
+    /// compilation-unit shell required for the grammar to parse them.
+    fn g_cognitive_wrap(lang: Language, body: &str) -> String {
+        match lang {
+            Language::Go => format!("package main\n\n{body}"),
+            Language::Php => format!("<?php\n{body}"),
+            Language::Java | Language::CSharp => format!("class C {{\n{body}}}\n"),
+            Language::Scala => format!("object O {{\n{body}}}\n"),
+            Language::Elixir => format!("defmodule M do\n{body}end\n"),
+            Language::Solidity => format!("contract C {{\n{body}}}\n"),
+            _ => body.to_string(),
+        }
+    }
+
+    #[test]
+    fn g_cognitive_top_n_does_not_affect_summary_stats_all_languages() {
+        // Every language in the symptom class ("all"). The truncate/aggregate
+        // path under test has ZERO language branching, so this matrix exercises
+        // the full Language enum to prove the fix is genuinely language-agnostic.
+        let langs = [
+            Language::Python,
+            Language::JavaScript,
+            Language::TypeScript,
+            Language::Rust,
+            Language::Go,
+            Language::Java,
+            Language::Kotlin,
+            Language::C,
+            Language::Cpp,
+            Language::Ruby,
+            Language::Php,
+            Language::Swift,
+            Language::CSharp,
+            Language::Scala,
+            Language::Lua,
+            Language::Luau,
+            Language::Elixir,
+            Language::Ocaml,
+            Language::Solidity,
+        ];
+
+        for lang in langs {
+            // 3 trivial (cognitive 0) + 2 nested (cognitive 6) functions.
+            let mut body = String::new();
+            for n in ["s0", "s1", "s2"] {
+                body.push_str(&g_cognitive_make_fn(lang, n, false));
+            }
+            for n in ["c0", "c1"] {
+                body.push_str(&g_cognitive_make_fn(lang, n, true));
+            }
+            let source = g_cognitive_wrap(lang, &body);
+
+            // Thresholds chosen so the trivial functions are OK and the nested
+            // pair are both Severe violations.
+            let full_opts = CognitiveOptions::new()
+                .with_threshold(2)
+                .with_high_threshold(5)
+                .with_top(0);
+            let top_opts = CognitiveOptions::new()
+                .with_threshold(2)
+                .with_high_threshold(5)
+                .with_top(2);
+
+            let full = analyze_cognitive_source(&source, lang, "g_cognitive.in", &full_opts)
+                .unwrap_or_else(|e| panic!("{lang:?}: analyze (full) failed: {e}"));
+            let topn = analyze_cognitive_source(&source, lang, "g_cognitive.in", &top_opts)
+                .unwrap_or_else(|e| panic!("{lang:?}: analyze (top) failed: {e}"));
+
+            // Template-breakage guard: all five functions must parse.
+            assert!(
+                full.summary.total_functions >= 5,
+                "{lang:?}: expected >=5 functions parsed, got {}\n--- source ---\n{source}",
+                full.summary.total_functions
+            );
+
+            // Non-vacuous: truncation must actually drop functions, otherwise
+            // the invariance assertions below would pass even with the bug.
+            assert!(
+                topn.functions.len() < full.functions.len(),
+                "{lang:?}: --top 2 did not truncate (full listed {}, top listed {})",
+                full.functions.len(),
+                topn.functions.len(),
+            );
+            assert!(
+                topn.summary.truncated,
+                "{lang:?}: summary.truncated must be true under --top 2",
+            );
+            assert!(
+                !full.summary.truncated,
+                "{lang:?}: summary.truncated must be false under --top 0",
+            );
+
+            // Non-vacuousness is UNIVERSAL via `total_functions`: under the
+            // pre-fix code the truncated path reported total_functions == 2
+            // while the full path reported >= 5, so the equality check below
+            // fails on the bug for EVERY language regardless of scoring.
+            //
+            // Where the grammar actually raises cognitive (every language here
+            // except Elixir's `if`-do macro), the full set additionally mixes
+            // compliant + violating functions, so avg_cognitive /
+            // compliance_rate / violations_count would ALSO diverge under the
+            // bug — a strictly stronger witness.
+            if full.summary.max_cognitive > 0 {
+                assert!(
+                    full.summary.violations_count >= 1
+                        && full.summary.violations_count < full.summary.total_functions,
+                    "{lang:?}: expected a mix of compliant + violating functions (violations={}, total={})",
+                    full.summary.violations_count,
+                    full.summary.total_functions,
+                );
+            }
+
+            // CORE INVARIANT: every summary statistic is identical with and
+            // without --top N. The pre-fix code failed total_functions /
+            // avg_cognitive / compliance_rate here.
+            let f = &full.summary;
+            let t = &topn.summary;
+            assert_eq!(
+                t.total_functions, f.total_functions,
+                "{lang:?}: total_functions changed under --top",
+            );
+            assert_eq!(
+                t.total_cognitive, f.total_cognitive,
+                "{lang:?}: total_cognitive changed under --top",
+            );
+            assert_eq!(
+                t.avg_cognitive, f.avg_cognitive,
+                "{lang:?}: avg_cognitive changed under --top",
+            );
+            assert_eq!(
+                t.max_cognitive, f.max_cognitive,
+                "{lang:?}: max_cognitive changed under --top",
+            );
+            assert_eq!(
+                t.violations_count, f.violations_count,
+                "{lang:?}: violations_count changed under --top",
+            );
+            assert_eq!(
+                t.severe_violations_count, f.severe_violations_count,
+                "{lang:?}: severe_violations_count changed under --top",
+            );
+            assert_eq!(
+                t.compliance_rate, f.compliance_rate,
+                "{lang:?}: compliance_rate changed under --top",
+            );
+
+            // The violations list is also aggregated over the full set.
+            assert_eq!(
+                topn.violations.len(),
+                full.violations.len(),
+                "{lang:?}: violations list length changed under --top",
             );
         }
     }
