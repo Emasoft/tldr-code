@@ -297,6 +297,71 @@ def create_user():
     assert!(pattern.confidence > 0.0);
 }
 
+/// fix-PW4-bug1-patterns-py-fastapi: Flask 2.0+ exposes @app.get/@app.post/...
+/// route shortcuts that are byte-identical to FastAPI's. Framework detection
+/// must gate the FastAPI verdict on an actual `fastapi` import; a repo that
+/// imports `flask` and uses @app.get must be reported as Flask, not FastAPI.
+#[test]
+fn test_flask_route_shortcuts_not_misdetected_as_fastapi() {
+    let dir = create_test_dir();
+    let content = r#"
+import flask
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    return "hi"
+
+@app.get("/users")
+def get_users():
+    return []
+
+@app.post("/users")
+def create_user():
+    return {}
+"#;
+    write_file(&dir, "app.py", content);
+
+    let report = detect_patterns(dir.path(), Some(Language::Python)).unwrap();
+    let pattern = report
+        .api_conventions
+        .expect("api conventions should be detected");
+    assert_eq!(
+        pattern.framework,
+        Some("flask".to_string()),
+        "Flask repo using @app.get/@app.post shortcuts must be detected as flask, not fastapi"
+    );
+}
+
+/// Counterpart: a genuine FastAPI repo (imports fastapi, uses @app.get) must
+/// still be detected as FastAPI — the import gate must not over-correct.
+#[test]
+fn test_fastapi_route_shortcuts_still_detected_as_fastapi() {
+    let dir = create_test_dir();
+    let content = r#"
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/users")
+def get_users():
+    return []
+
+@app.post("/users")
+def create_user():
+    return {}
+"#;
+    write_file(&dir, "api.py", content);
+
+    let report = detect_patterns(dir.path(), Some(Language::Python)).unwrap();
+    let pattern = report
+        .api_conventions
+        .expect("api conventions should be detected");
+    assert_eq!(pattern.framework, Some("fastapi".to_string()));
+}
+
 /// R7 cluster[9] #25/#235: `error_handling` is language-specific and must
 /// be derived from the PRIMARY language's signals, not the cross-language
 /// aggregate. A C++-majority repo with a stray vendored `.py` must NOT
