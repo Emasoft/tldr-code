@@ -1356,10 +1356,8 @@ def moderately_complex(a, b, c, d, e):
         }
 
         let issues = find_complexity_issues(&src, Path::new("inclusive.py"), Language::Python);
-        let long_method_issues: Vec<_> = issues
-            .iter()
-            .filter(|i| i.rule == "long_method")
-            .collect();
+        let long_method_issues: Vec<_> =
+            issues.iter().filter(|i| i.rule == "long_method").collect();
 
         assert!(
             !long_method_issues.is_empty(),
@@ -2780,7 +2778,9 @@ mod java_debt_stackoverflow_v1_tests {
         // The Python TODO must NOT appear (its file was filtered out).
         let messages: Vec<_> = report.issues.iter().map(|i| i.message.as_str()).collect();
         assert!(
-            !messages.iter().any(|m| m.contains("python should be excluded")),
+            !messages
+                .iter()
+                .any(|m| m.contains("python should be excluded")),
             "Python file must be excluded under --lang java; got issues: {:?}",
             messages
         );
@@ -2980,10 +2980,7 @@ let () =
         //     A name-only dedup would wrongly collapse both "()" bindings
         //     into a single whole-file aggregate — assert they stay
         //     separate (the (name, start_line) key requirement).
-        let nesting: Vec<_> = issues
-            .iter()
-            .filter(|i| i.rule == "deep_nesting")
-            .collect();
+        let nesting: Vec<_> = issues.iter().filter(|i| i.rule == "deep_nesting").collect();
         assert_eq!(
             nesting.len(),
             2,
@@ -3029,10 +3026,8 @@ and g a b c d e f_ = a + b + c + d + e + f_
             .iter()
             .filter(|i| i.rule == "long_param_list")
             .collect();
-        let elements: std::collections::HashSet<String> = lpl
-            .iter()
-            .filter_map(|i| i.element.clone())
-            .collect();
+        let elements: std::collections::HashSet<String> =
+            lpl.iter().filter_map(|i| i.element.clone()).collect();
         assert_eq!(
             lpl.len(),
             2,
@@ -3070,6 +3065,200 @@ and g a b c d e f_ = a + b + c + d + e + f_
             1,
             "single Kotlin 8-param function must yield exactly one \
              long_param_list (universal dedup must not over-collapse): {:#?}",
+            issues
+        );
+    }
+
+    /// G-debt-anon (v0.5.0 BACKLOG): each anonymous `let () = ..` OCaml
+    /// binding must be credited its OWN cyclomatic/cognitive complexity, not
+    /// the metrics of whichever `()` binding survived a bare-name map
+    /// collision. Pre-fix, `find_complexity_issues` keyed the batch metrics
+    /// by bare name, so every `let () = ..` collapsed onto a single entry
+    /// (the largest-line one) and a trivial side-effect binding inherited a
+    /// complex sibling's CC, emitting a phantom `complexity.*` finding (live
+    /// on ocaml-dune: sexp_tests.ml line 3 reported cc=13 borrowed from the
+    /// loop at line 8). The (name, start_line) key gives each binding its own
+    /// metrics. The symptom class named in the slice is OCaml; this exercises
+    /// the anonymous-binding variant (trivial vs complex) plus a same-name
+    /// shadowed redefinition, and asserts named functions are unchanged.
+    #[test]
+    fn test_ocaml_anon_bindings_each_get_own_complexity() {
+        // A named complex function (must stay flagged), then a TRIVIAL
+        // anonymous `let () = ..` side effect (cc=1), then a COMPLEX
+        // anonymous `let () = ..` (cc>10). The complex anon sits BELOW the
+        // trivial one (larger start line), so the pre-fix "largest line wins"
+        // bare-name fold made the trivial binding inherit the complex
+        // binding's CC -> a phantom complexity finding on the trivial line.
+        let src = r#"
+let named_complex x =
+  if x = 1 then 1
+  else if x = 2 then 2
+  else if x = 3 then 3
+  else if x = 4 then 4
+  else if x = 5 then 5
+  else if x = 6 then 6
+  else if x = 7 then 7
+  else if x = 8 then 8
+  else if x = 9 then 9
+  else if x = 10 then 10
+  else if x = 11 then 11
+  else 0
+
+let () = print_string "trivial side effect"
+
+let () =
+  if c1 then 1
+  else if c2 then 2
+  else if c3 then 3
+  else if c4 then 4
+  else if c5 then 5
+  else if c6 then 6
+  else if c7 then 7
+  else if c8 then 8
+  else if c9 then 9
+  else if c10 then 10
+  else if c11 then 11
+  else 0
+"#;
+        let issues = find_complexity_issues(src, Path::new("anon.ml"), Language::Ocaml);
+
+        // 1-indexed line of the trivial `let () = print_string ..` binding.
+        let trivial_line = src
+            .lines()
+            .position(|l| l.contains("print_string \"trivial"))
+            .map(|i| i as u32 + 1)
+            .expect("trivial binding present");
+        // 1-indexed line of the LAST `let () =` (the complex anonymous one).
+        let complex_anon_line = src
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start().starts_with("let () ="))
+            .map(|(i, _)| i as u32 + 1)
+            .last()
+            .expect("complex anon binding present");
+        assert_ne!(
+            trivial_line, complex_anon_line,
+            "fixture must have two distinct anonymous bindings"
+        );
+
+        let complexity_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| i.rule.starts_with("complexity") || i.rule.starts_with("cognitive"))
+            .collect();
+
+        // (1) The trivial anonymous binding must carry NO complexity/cognitive
+        //     finding — pre-fix it inherited the complex sibling's CC and
+        //     emitted a phantom finding at this line.
+        let on_trivial: Vec<_> = complexity_issues
+            .iter()
+            .filter(|i| i.line == trivial_line)
+            .collect();
+        assert!(
+            on_trivial.is_empty(),
+            "trivial `let () = print_string ..` (cc=1) must not inherit a \
+             sibling `let () = ..`'s complexity (each anon binding reads its \
+             OWN metrics, not a shared/whole-file aggregate): {:#?}\nall: {:#?}",
+            on_trivial,
+            issues
+        );
+
+        // (2) The complex anonymous binding must still be flagged, at ITS line.
+        let on_complex_anon: Vec<_> = complexity_issues
+            .iter()
+            .filter(|i| i.line == complex_anon_line && i.rule.starts_with("complexity"))
+            .collect();
+        assert!(
+            !on_complex_anon.is_empty(),
+            "complex `let () = ..` (cc>10) must keep its own complexity \
+             finding at line {}: {:#?}",
+            complex_anon_line,
+            issues
+        );
+
+        // (3) Named functions are unchanged: `named_complex` (cc>10) is still
+        //     flagged with its own complexity finding.
+        let on_named: Vec<_> = issues
+            .iter()
+            .filter(|i| {
+                i.element.as_deref() == Some("named_complex") && i.rule.starts_with("complexity")
+            })
+            .collect();
+        assert!(
+            !on_named.is_empty(),
+            "named function complexity must be unchanged by the fix: {:#?}",
+            issues
+        );
+    }
+
+    /// G-debt-anon generalization: the `()` unit pattern is only ONE instance
+    /// of the same-name collision class. A shadowed redefinition — a COMPLEX
+    /// `let f x = ..` followed by a TRIVIAL `let f x = ..` (both extract the
+    /// bare name `f`) — must each be credited their OWN complexity. Pre-fix
+    /// the bare-name fold kept only the largest-line entry (the trivial
+    /// redefinition), so the COMPLEX original silently lost its finding (a
+    /// false NEGATIVE, the mirror image of the anonymous false-positive). The
+    /// (name, start_line) key fixes both directions.
+    #[test]
+    fn test_ocaml_debt_shadowed_same_name_each_get_own_complexity() {
+        let src = r#"
+let f x =
+  if x = 1 then 1
+  else if x = 2 then 2
+  else if x = 3 then 3
+  else if x = 4 then 4
+  else if x = 5 then 5
+  else if x = 6 then 6
+  else if x = 7 then 7
+  else if x = 8 then 8
+  else if x = 9 then 9
+  else if x = 10 then 10
+  else if x = 11 then 11
+  else 0
+
+let f x = x + 1
+"#;
+        let issues = find_complexity_issues(src, Path::new("shadow.ml"), Language::Ocaml);
+
+        let complex_f_line = src
+            .lines()
+            .position(|l| l.trim_start().starts_with("let f x =") && !l.contains("x + 1"))
+            .map(|i| i as u32 + 1)
+            .expect("complex `f` present");
+        let trivial_f_line = src
+            .lines()
+            .position(|l| l.contains("let f x = x + 1"))
+            .map(|i| i as u32 + 1)
+            .expect("trivial `f` present");
+        assert_ne!(complex_f_line, trivial_f_line);
+
+        // The COMPLEX `f` (cc>10) must keep its OWN complexity finding —
+        // pre-fix it inherited the trivial redefinition's cc=1 and emitted
+        // nothing.
+        let on_complex_f: Vec<_> = issues
+            .iter()
+            .filter(|i| i.line == complex_f_line && i.rule.starts_with("complexity"))
+            .collect();
+        assert!(
+            !on_complex_f.is_empty(),
+            "complex `let f x = ..` (cc>10) must keep its own complexity \
+             finding at line {} even when shadowed by a later same-name \
+             redefinition: {:#?}",
+            complex_f_line,
+            issues
+        );
+
+        // The TRIVIAL redefinition (cc=1) must carry NO complexity finding.
+        let on_trivial_f: Vec<_> = issues
+            .iter()
+            .filter(|i| {
+                i.line == trivial_f_line
+                    && (i.rule.starts_with("complexity") || i.rule.starts_with("cognitive"))
+            })
+            .collect();
+        assert!(
+            on_trivial_f.is_empty(),
+            "trivial `let f x = x + 1` (cc=1) must not be credited the \
+             shadowed complex definition's complexity: {:#?}",
             issues
         );
     }

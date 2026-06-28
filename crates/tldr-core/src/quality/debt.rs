@@ -44,7 +44,7 @@ use crate::ast::function_finder::{
     get_function_body as shared_get_function_body, get_function_node_kinds_vec,
 };
 use crate::ast::parser::parse;
-use crate::metrics::calculate_all_complexities_from_tree;
+use crate::metrics::complexity::calculate_all_complexities_keyed_from_tree;
 use crate::quality::cohesion::extract_self_accesses;
 use crate::types::Language;
 use crate::TldrResult;
@@ -927,16 +927,63 @@ fn find_complexity_issues_inner(
     // Find all functions and collect their info
     let function_infos = extract_function_infos_for_debt(root, source, language);
 
-    // Batch calculate complexity using the already-parsed tree (zero extra parses)
-    let complexity_map =
-        calculate_all_complexities_from_tree(root, source, language).unwrap_or_default();
+    // Batch calculate complexity using the already-parsed tree (zero extra
+    // parses).
+    //
+    // fix-PW1-G-debt-anon: key the per-function metrics by (name, start_line)
+    // instead of by bare name. `calculate_all_complexities_from_tree` folds
+    // same-name functions down to a single bare-name entry ("largest line
+    // wins"), so OCaml's repeated anonymous `let () = ..` side-effect bindings
+    // — which ALL extract the unit-pattern name `()` — every read whichever
+    // `()` binding survived the fold rather than their own complexity. (Live
+    // on ocaml-dune: sexp_tests.ml's trivial `let () = Printexc.record_backtrace
+    // true` at line 3 inherited the 13-branch loop binding at line 8;
+    // common.ml lines 150 & 1264 reported byte-identical cc=22 / cog=60.)
+    // Keying by (name, start_line) gives each physical binding its own entry —
+    // distinct source functions never share BOTH name and start line, so the
+    // whole same-name-collision symptom class is closed (anonymous `let () =`,
+    // shadowed redefinitions, and any other grammar that yields repeated
+    // same-name function nodes through the universal walker).
+    let keyed_complexity =
+        calculate_all_complexities_keyed_from_tree(root, source, language).unwrap_or_default();
+    // Bare-name fallback. A few extractors set `FunctionInfoForDebt::start_line`
+    // to the raw `node.start_position()` row, which can sit ABOVE the keyed
+    // map's decl-keyword line when a decl carries leading annotations/modifiers
+    // on their own lines (java/kotlin/scala/swift/csharp `@Attr` / visibility
+    // modifiers). For those the exact (name, start_line) lookup misses, so we
+    // fall back to a bare-name view of the SAME keyed data — largest line wins,
+    // exactly reproducing the historical `calculate_all_complexities_from_tree`
+    // fold — preserving today's behaviour there with zero extra AST walks. The
+    // collision-prone OCaml `()` bindings align on both line conventions, so
+    // they always hit the exact key and never reach this fallback.
+    let mut bare_complexity: std::collections::HashMap<
+        &str,
+        (u32, &crate::types::ComplexityMetrics),
+    > = std::collections::HashMap::new();
+    for ((name, line), metrics) in &keyed_complexity {
+        match bare_complexity.get(name.as_str()) {
+            Some((existing_line, _)) if *existing_line >= *line => {}
+            _ => {
+                bare_complexity.insert(name.as_str(), (*line, metrics));
+            }
+        }
+    }
 
     for func_info in function_infos {
         let file = filepath.to_path_buf();
 
         // Cyclomatic complexity - only report HIGHEST threshold (PM-3)
-        // Use pre-computed batch metrics instead of per-function parse
-        if let Some(metrics) = complexity_map.get(&func_info.name) {
+        // Use pre-computed batch metrics instead of per-function parse.
+        // Exact (name, start_line) first (per-binding correctness); bare-name
+        // fallback only for the annotation-line-divergent extractors above.
+        if let Some(metrics) = keyed_complexity
+            .get(&(func_info.name.clone(), func_info.start_line))
+            .or_else(|| {
+                bare_complexity
+                    .get(func_info.name.as_str())
+                    .map(|(_, m)| *m)
+            })
+        {
             let cc = metrics.cyclomatic;
 
             // Only report the highest applicable threshold
@@ -1233,8 +1280,7 @@ fn extract_universal_functions_for_debt(
     // through this walker so the whole symptom class is closed (it is a
     // no-op for non-overlapping grammars).
     if recursion_depth == 0 {
-        let mut seen: std::collections::HashSet<(String, u32)> =
-            std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
         functions.retain(|f| seen.insert((f.name.clone(), f.start_line)));
     }
 }
