@@ -3447,13 +3447,52 @@ impl<'a> DfgBuilder<'a> {
                         self.extract_assignment_targets(name_node)?;
                     }
                 }
-                // "value" field is the initializer
-                if let Some(value) = child.child_by_field_name("value") {
+                // "value" field is the initializer (JS/TS/Solidity). C# reuses
+                // this `variable_declaration` -> `variable_declarator` shape but
+                // exposes the initializer as an UNNAMED named-child following the
+                // `=` token (there is NO `value` field), so the field lookup
+                // returns None and the ENTIRE RHS — object-creation args, calls,
+                // binary operands — was never descended. A C# local read living
+                // ONLY in such an initializer (`new ContainerContext(type)`) was
+                // therefore reported as a false dead store (fix-PW4-C4-csharp-
+                // objcreation). Fall back to the `=`-anchored initializer so the
+                // RHS is walked for uses identically to Java/C++ (which carry a
+                // `value` field and already descend `new X(arg)`).
+                if let Some(value) = child
+                    .child_by_field_name("value")
+                    .or_else(|| Self::declarator_initializer_after_eq(child))
+                {
                     self.extract_rhs_with_stmt(def_start, value, depth)?;
                 }
             }
         }
         Ok(())
+    }
+
+    /// fix-PW4-C4-csharp-objcreation (v0.5.0 BACKLOG): return the initializer
+    /// expression of a `variable_declarator` whose RHS is an UNNAMED child after
+    /// the `=` token rather than a `value` field — the C# shape
+    /// (`local_declaration_statement > variable_declaration >
+    /// variable_declarator { [name] identifier, '=', <init-expr> }`).
+    ///
+    /// Anchored on the `=` token: the first NAMED child appearing after it is
+    /// the initializer expression (object-creation, call, conditional, binary,
+    /// identifier, ...). Returns `None` for an initializer-less declarator
+    /// (`int x;`, which emits no `=`), so a bare declaration never manufactures
+    /// a spurious RHS walk.
+    fn declarator_initializer_after_eq(declarator: Node<'_>) -> Option<Node<'_>> {
+        let mut cursor = declarator.walk();
+        let mut seen_eq = false;
+        for child in declarator.children(&mut cursor) {
+            if seen_eq {
+                if child.is_named() {
+                    return Some(child);
+                }
+            } else if !child.is_named() && child.kind() == "=" {
+                seen_eq = true;
+            }
+        }
+        None
     }
 
     /// Process JS/TS for-of: for (const item of items) { ... }
@@ -10673,6 +10712,94 @@ def f(items: List[Int]): Int = {
         assert!(
             !scala_uninit.contains(&"x".to_string()),
             "Scala comprehension binder `x` wrongly flagged uninitialized; uninit={scala_uninit:?}"
+        );
+    }
+
+    // =========================================================================
+    // fix-PW4-C4-csharp-objcreation (v0.5.0 BACKLOG): a C# `variable_declarator`
+    // exposes its initializer as an UNNAMED child after the `=` token (there is
+    // NO `value` field as in JS/TS/Java). `process_js_ts_declaration` only
+    // descended `child_by_field_name("value")`, so the ENTIRE C# declaration RHS
+    // — object-creation args, calls, binary expressions — was dropped, and a
+    // local read ONLY in such a RHS (`new ContainerContext(type)`) was reported
+    // as a false dead store. The generalization assertion below pins EVERY RHS
+    // form in the symptom class (object-creation arg, call arg, binary operand),
+    // plus the SAME object-creation construct in Java and C++ (which already
+    // descend via their `value` field) to prove the fix is the C#-shape closure
+    // of an otherwise-general behavior — not a single-variant patch.
+    // =========================================================================
+    #[test]
+    fn test_csharp_variable_initializer_rhs_descended_objcreation_general() {
+        fn uses(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            dfg.refs
+                .iter()
+                .filter(|r| r.ref_type == RefType::Use)
+                .map(|r| r.name.clone())
+                .collect()
+        }
+
+        // ---- C# : the reported symptom + every RHS variant in the class ------
+        // `type` is read ONLY inside `new ContainerContext(type)` (object
+        // creation arg); `seed` only inside an initializer identifier RHS; `b`
+        // inside a call arg AND a binary operand; `c` inside a binary operand.
+        let cs = r#"
+class Reader {
+    private bool ReadNormal(BsonType seed) {
+        BsonType type = seed;
+        ContainerContext ctx = new ContainerContext(type);
+        int b = 1;
+        int c = 2;
+        int a = b + c;
+        int d = Compute(b);
+        return true;
+    }
+}
+"#;
+        let cs_uses = uses(cs, "ReadNormal", Language::CSharp);
+        assert!(
+            cs_uses.contains(&"type".to_string()),
+            "C# object-creation arg `type` (new ContainerContext(type)) dropped; uses={cs_uses:?}"
+        );
+        assert!(
+            cs_uses.contains(&"seed".to_string()),
+            "C# initializer identifier RHS `seed` (= seed) dropped; uses={cs_uses:?}"
+        );
+        assert!(
+            cs_uses.contains(&"b".to_string()),
+            "C# initializer call-arg / binary-operand `b` dropped; uses={cs_uses:?}"
+        );
+        assert!(
+            cs_uses.contains(&"c".to_string()),
+            "C# initializer binary-operand `c` dropped; uses={cs_uses:?}"
+        );
+
+        // ---- Java : the SAME `new X(arg)` construct (generality / no regress) -
+        let java = r#"
+class Reader {
+    boolean test(int seed) {
+        Foo f = new Foo(seed);
+        return true;
+    }
+}
+"#;
+        let java_uses = uses(java, "test", Language::Java);
+        assert!(
+            java_uses.contains(&"seed".to_string()),
+            "Java object-creation arg `seed` (new Foo(seed)) dropped; uses={java_uses:?}"
+        );
+
+        // ---- C++ : the SAME `new X(arg)` construct (generality / no regress) --
+        let cpp = r#"
+bool test(int seed) {
+    Foo* f = new Foo(seed);
+    return true;
+}
+"#;
+        let cpp_uses = uses(cpp, "test", Language::Cpp);
+        assert!(
+            cpp_uses.contains(&"seed".to_string()),
+            "C++ object-creation arg `seed` (new Foo(seed)) dropped; uses={cpp_uses:?}"
         );
     }
 }
