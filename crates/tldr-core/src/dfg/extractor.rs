@@ -4614,6 +4614,18 @@ impl<'a> DfgBuilder<'a> {
         match node.kind() {
             "identifier" => {
                 let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                // fix-CF2-S10 (v0.5.0 RC): the bare `_` is Elixir's anonymous
+                // wildcard — `_ = expr` evaluates `expr` for its side effect and
+                // explicitly THROWS THE VALUE AWAY. `_` binds nothing and can
+                // never be read back, so it is not a Definition; recording it as
+                // one made `dead-stores` report the deliberate discard as a dead
+                // store (elixir-plug `send_file`'s `_ = Plug.Conn.Status.code(...)`).
+                // A `_`-PREFIXED name (`_file`, `_offset`) IS a real, readable
+                // binding (just convention-marked unused), so only EXACTLY `_`
+                // is excluded here.
+                if text == "_" {
+                    return;
+                }
                 // A bound pattern variable is lower-case (or `_`-prefixed). An
                 // upper-case identifier in pattern position is an alias/module
                 // reference, never a binding.
@@ -5145,8 +5157,28 @@ impl<'a> DfgBuilder<'a> {
         // reaching-defs reported them as uninitialised.
         // stmt-edge-v1 (R3-r7-cl11): span-tag the binders + the `= <value>`.
         let def_start = self.refs.len();
+        // fix-CF2-S10 (v0.5.0 RC): a Kotlin `val/var x: T` with NO initializer
+        // and NO `by` delegate is a DEFERRED-INIT declaration — it introduces the
+        // name but stores no value. The value is supplied by a later `x = …`
+        // assignment, frequently inside a `synchronized { } / run { }` lambda
+        // (kotlinx-coroutines `finalizeFinishingState`: `val wasCancelling:
+        // Boolean` then `wasCancelling = state.isCancelling` under the lock).
+        // Emitting a Definition for the bare declaration created a phantom store
+        // that the real assignment "overwrites unused", so `dead-stores` flagged
+        // the declaration as dead. Only the forms that actually bind a value —
+        // an `= <expr>` initializer or a `property_delegate` (`by lazy { }`) —
+        // record a Definition here; the deferred-init declaration is skipped and
+        // its store is attributed to the assignment site (where a genuinely dead
+        // deferred store is still caught).
+        let has_value = node.children(&mut node.walk()).any(|c| {
+            c.kind() == "property_delegate"
+                || (!c.is_named() && c.utf8_text(self.source.as_bytes()).unwrap_or("") == "=")
+        });
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
+            if !has_value {
+                continue;
+            }
             match child.kind() {
                 "variable_declaration" => {
                     // variable_declaration has an identifier child
@@ -6015,8 +6047,21 @@ impl<'a> DfgBuilder<'a> {
                 // suppress it as a not-a-use entirely. This handles
                 // module-table receivers (`m` in `m.open`) and globals
                 // like `print` / `assert`.
+                //
+                // fix-CF2-S10 (v0.5.0 RC): but NEVER suppress a name that is a
+                // genuine local of the analyzed function (a parameter, `local`
+                // binding, or for-loop binder — collected in `lua_local_names`).
+                // A local SHADOWS any file-level/global name, so its reads are
+                // real uses. Without this exemption a function-local whose name
+                // collides with a file-level binding had every read dropped, so
+                // `dead-stores` flagged its store as dead (boatbomber-HashLib
+                // `sha256_feed_64`'s `d`). Mirrors the TS/JS `ts_js_local_names`
+                // exemption above.
                 let text = node.utf8_text(self.source.as_bytes()).unwrap_or("");
-                if !text.is_empty() && self.imported_type_names.contains(text) {
+                if !text.is_empty()
+                    && self.imported_type_names.contains(text)
+                    && !self.lua_local_names.contains(text)
+                {
                     return false;
                 }
                 // T5 (v0.5.0 AUDIT-FIX, root cause A4): a module-table
@@ -6030,12 +6075,22 @@ impl<'a> DfgBuilder<'a> {
                 // name is uppercase-initial (the LSP-server convention for
                 // shared config tables). A genuine uppercase local would carry
                 // its own Definition from its `local`/assignment site.
+                //
+                // fix-CF2-S10 (v0.5.0 RC): exempt a receiver that is a genuine
+                // local of the analyzed function. An UPPER-CASE name can still be
+                // a real `local` (boatbomber-HashLib `local W, K = …`; `K[j]` is
+                // then a genuine read of the round-constant table). Suppressing
+                // its read dropped the only use of `K`, so `dead-stores` flagged
+                // the `local … K` store as dead. A `local`-bound uppercase
+                // receiver is in `lua_local_names`; the module-table convention
+                // this rule targets (`Config`, `Globals`) is NOT.
                 if matches!(
                     pkind,
                     "dot_index_expression"
                         | "method_index_expression"
                         | "bracket_index_expression"
                 ) && text.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && !self.lua_local_names.contains(text)
                 {
                     let recv = parent
                         .child_by_field_name("table")
@@ -8532,6 +8587,136 @@ fn loop_header_descriptor(language: Language, kind: &str) -> Option<LoopHeader> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fix-CF2-S10 (v0.5.0 RC): `dead-stores` false positives across the
+    /// elixir / luau / kotlin symptom class. Each false positive is a MISSING
+    /// `Use` (or a PHANTOM `Definition`) emitted by the DFG extractor — the
+    /// shape `find_dead_stores_dfg` consumes — so the fix and this gate live at
+    /// the ref level. The same test asserts the anti-over-suppression floor:
+    /// a genuinely dead store still has no `Use`, so real dead stores are kept.
+    #[test]
+    fn cf2_s10_dead_store_false_positives_elixir_luau_kotlin() {
+        fn refs(src: &str, func: &str, lang: Language) -> Vec<VarRef> {
+            get_dfg_context(src, func, lang)
+                .unwrap_or_else(|e| panic!("dfg for {func}: {e}"))
+                .refs
+        }
+        fn n(refs: &[VarRef], name: &str, rt: RefType) -> usize {
+            refs.iter().filter(|r| r.name == name && r.ref_type == rt).count()
+        }
+
+        // ---- ELIXIR: the bare `_` discard is NOT a store ----------------------
+        // `_ = expr` evaluates `expr` for its side effect and throws the value
+        // away; `_` binds nothing and can never be read, so recording it as a
+        // Definition made `dead-stores` flag the deliberate discard (elixir-plug
+        // `send_file`'s `_ = Plug.Conn.Status.code(status)`).
+        let elixir = r#"
+defmodule M do
+  def f(conn, status) do
+    _ = log(status)
+    body = build(status)
+    %{conn | resp_body: body}
+  end
+end
+"#;
+        let r = refs(elixir, "f", Language::Elixir);
+        assert_eq!(
+            n(&r, "_", RefType::Definition),
+            0,
+            "elixir bare `_` discard must not be a Definition (no dead store)"
+        );
+        // Anti-over-suppression + map-update reads: a genuine binding `body` IS a
+        // store, and its map-update read keeps it live; the map-update base
+        // `conn` is a real read too.
+        assert!(
+            n(&r, "body", RefType::Definition) >= 1,
+            "elixir genuine binding `body` must remain a Definition"
+        );
+        assert!(
+            n(&r, "body", RefType::Use) >= 1,
+            "elixir map-update value read `body` must be a Use"
+        );
+        assert!(
+            n(&r, "conn", RefType::Use) >= 1,
+            "elixir map-update base `conn` must be a Use"
+        );
+
+        // ---- LUAU: a genuine local read survives file-level / uppercase
+        // suppression ----------------------------------------------------------
+        // The module-level `local d` seeds the file-level suppression set; the
+        // analyzed function's OWN `local d` shadows it (a real local read). The
+        // uppercase `local K`, read via `K[j]`, exercises the uppercase-receiver
+        // suppression path. Both reads were dropped (boatbomber-HashLib
+        // `sha256_feed_64`: `K`, `d` flagged dead). `dead` is the
+        // anti-over-suppression control: assigned twice, never read.
+        let luau = r#"
+local d = 0
+
+local function feed(H)
+	local W, K = H[1], H[2]
+	local a, b, c, d = H[3], H[4], H[5], H[6]
+	local dead = 1
+	dead = 2
+	for j = 1, 64 do
+		W[j] = a + b + c + d + K[j]
+		d = c
+	end
+	return W
+end
+"#;
+        let r = refs(luau, "feed", Language::Luau);
+        assert!(
+            n(&r, "K", RefType::Use) >= 1,
+            "luau subscript-base read `K[j]` of a genuine local must be a Use"
+        );
+        assert!(
+            n(&r, "d", RefType::Use) >= 1,
+            "luau read of genuine local `d` must survive file-level suppression"
+        );
+        assert_eq!(
+            n(&r, "dead", RefType::Use),
+            0,
+            "luau anti-over-suppression: genuinely dead `dead` must have no Use"
+        );
+
+        // ---- KOTLIN: a deferred-init `val x: T` is not a phantom store --------
+        // `val wasCancelling: Boolean` declares but stores no value; the single
+        // store is the assignment inside `synchronized { }`, kept live by the
+        // later read. Emitting a Definition for the bare declaration made it look
+        // overwritten-unused (kotlinx-coroutines `finalizeFinishingState`).
+        let kotlin = r#"
+fun f(state: S): Boolean {
+    val wasCancelling: Boolean
+    val out = synchronized(state) {
+        wasCancelling = state.flag
+        state.compute()
+    }
+    val deadK = compute()
+    return wasCancelling && out > 0
+}
+"#;
+        let r = refs(kotlin, "f", Language::Kotlin);
+        assert_eq!(
+            n(&r, "wasCancelling", RefType::Definition),
+            1,
+            "kotlin deferred-init decl must add no phantom Definition (only the assignment stores)"
+        );
+        assert!(
+            n(&r, "wasCancelling", RefType::Use) >= 1,
+            "kotlin outer read of lambda-assigned `wasCancelling` must be a Use"
+        );
+        // Anti-over-suppression: an INITIALIZED store that is never read is still
+        // a Definition with no Use (`has_value` gating only skips bare decls).
+        assert!(
+            n(&r, "deadK", RefType::Definition) >= 1,
+            "kotlin initialized store `deadK` must remain a Definition"
+        );
+        assert_eq!(
+            n(&r, "deadK", RefType::Use),
+            0,
+            "kotlin anti-over-suppression: unread `deadK` must have no Use"
+        );
+    }
 
     #[test]
     fn test_simple_function() {
