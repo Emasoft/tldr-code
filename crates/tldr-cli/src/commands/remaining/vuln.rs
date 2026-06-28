@@ -55,6 +55,40 @@ use crate::output::OutputFormat;
 /// repos).
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
+/// fix-PW3-H-vuln-perf (v0.5.0 BACKLOG Wave 3): per-file SIZE budget for the
+/// expensive canonical taint pipeline. Mirrors `secure`'s
+/// `SECURE_PER_FILE_TAINT_SIZE_BUDGET` (96 KB) for secure↔vuln parity.
+///
+/// `analyze_file` runs the full canonical `scan_vulnerabilities` pipeline
+/// (CFG + DFG + taint) per file SERIALLY (the `for file_path in &files` loop in
+/// `run` — there is no rayon fan-out here despite a stale comment claiming
+/// otherwise). That pipeline is SUPER-LINEAR in file size, so a handful of very
+/// large translation units dominate (and can outright exceed) the wall clock:
+/// on `c-redis` `tldr vuln src/` ran past 90 s and produced ZERO bytes of
+/// output (exit 124), because `src/module.c` (668 KB), `redis-cli.c` (425 KB),
+/// `server.c` (345 KB), `cluster_legacy.c` (270 KB) plus the 100–200 KB tier
+/// each stall the pipeline.
+///
+/// COVERAGE TRADEOFF (deliberate, documented): unlike `secure` — where this
+/// budget skips the *taint* sub-analysis ONLY and the cheap AST-walk analyses
+/// (`Resources`, `Behavioral`, …) still cover the file — in `vuln` the ENTIRE
+/// analysis IS the taint pipeline. So a budget skip here = ZERO coverage for
+/// that file. On c-redis at 96 KB this skips ~21 large translation units
+/// (`module.c`, `redis-cli.c`, `server.c`, `cluster_legacy.c`, `t_*.c`,
+/// `networking.c`, … the > 96 KB set). This is a deliberate trade: a bounded
+/// run that delivers findings for the ~100 within-budget files plus a
+/// structured `partial-analysis` warning per skipped file is strictly better
+/// than an unbounded hang that delivers ZERO output for the WHOLE repo. The
+/// skip is ALWAYS surfaced — per-file in `warnings[]` and aggregated in
+/// `files_skipped` — never silent.
+///
+/// LANGUAGE-AGNOSTIC: the predicate is a pure byte-size threshold with no
+/// language check, so every language degrades identically and only on genuinely
+/// large files. The 96 KB ceiling is ~2× the median hand-authored c-redis
+/// `src/*.c` (the vast majority are < 50 KB), so normal code across every
+/// supported language keeps full taint coverage; small trees are unchanged.
+const PER_FILE_TAINT_SIZE_BUDGET: u64 = 96 * 1024;
+
 // =============================================================================
 // CLI Arguments
 // =============================================================================
@@ -176,13 +210,37 @@ impl VulnArgs {
         };
 
         // Collect files to analyze
-        let files = collect_files(&self.path, effective_lang, self.no_default_ignore)?;
+        let collected = collect_files(&self.path, effective_lang, self.no_default_ignore)?;
+
+        // fix-PW3-H-vuln-perf (v0.5.0 BACKLOG Wave 3): split off files that
+        // exceed the per-file taint SIZE budget. The super-linear canonical
+        // taint pipeline runs only on the within-budget subset; oversized
+        // translation units (e.g. c-redis `module.c`/`server.c`) are skipped to
+        // keep the whole run bounded — pre-fix `tldr vuln src/` on c-redis hit
+        // exit 124 with ZERO output. Oversized files are surfaced via a
+        // structured `partial-analysis` warning (never silently dropped).
+        let (files, taint_oversized) =
+            partition_taint_eligible(&collected, PER_FILE_TAINT_SIZE_BUDGET);
 
         // Analyze all files
         let mut all_findings: Vec<VulnFinding> = Vec::new();
         let mut files_scanned: u32 = 0;
         let mut files_skipped: u32 = 0;
         let mut warnings: Vec<String> = Vec::new();
+
+        // Record each budget-skipped file. These get ZERO taint coverage (the
+        // entire `vuln` analysis IS the taint pipeline), so the warning makes
+        // the coverage gap explicit and actionable.
+        for f in &taint_oversized {
+            files_skipped += 1;
+            warnings.push(format!(
+                "vuln: skipped {} (exceeds {} KB per-file taint budget); \
+                 no taint findings were produced for this file. Pass a smaller \
+                 path or split the file to scan it.",
+                f.display(),
+                PER_FILE_TAINT_SIZE_BUDGET / 1024,
+            ));
+        }
 
         for file_path in &files {
             // SECURE-UTF8-TOLERANCE-V1: classify non-UTF-8 inputs (e.g.
@@ -528,6 +586,26 @@ fn collect_files(
     }
 
     Ok(files)
+}
+
+/// fix-PW3-H-vuln-perf (v0.5.0 BACKLOG Wave 3): partition `files` into the
+/// within-budget set (eligible for the expensive taint pass) and the oversized
+/// set (skipped — `vuln`'s entire analysis is the taint pipeline, so these get
+/// zero coverage). A file whose size is `<= budget` bytes is eligible; a file
+/// that cannot be stat'd is treated as eligible (the downstream tolerant read
+/// handles a vanished file). Returns `(eligible, oversized)`, both preserving
+/// the input order so the run stays deterministic.
+///
+/// Mirrors `secure::partition_taint_eligible` so the two commands bound the
+/// taint pass identically. The predicate is a pure byte-size threshold with no
+/// language check, so it is language-agnostic by construction: small files of
+/// every supported language stay eligible (full coverage) and only genuinely
+/// large translation units of any language degrade.
+fn partition_taint_eligible(files: &[PathBuf], budget: u64) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    files.iter().cloned().partition(|f| match fs::metadata(f) {
+        Ok(m) => m.len() <= budget,
+        Err(_) => true,
+    })
 }
 
 /// The languages for which the vuln command has a native, dedicated
@@ -1938,6 +2016,159 @@ mod tests {
         assert!(files.iter().any(|f| f.ends_with("a.py")));
         assert!(files.iter().any(|f| f.ends_with("b.rs")));
         assert!(!files.iter().any(|f| f.ends_with("c.txt")));
+    }
+
+    // =====================================================================
+    // fix-PW3-H-vuln-perf (v0.5.0 BACKLOG Wave 3): per-file taint SIZE budget
+    // bounds the super-linear canonical taint pipeline so `tldr vuln src/` on
+    // large C trees (c-redis) completes instead of hitting exit 124 / 0 bytes.
+    // =====================================================================
+
+    /// RED→GREEN: a file over the per-file taint budget is partitioned into the
+    /// "oversized" set (skipped — zero coverage), while a small file stays in
+    /// the eligible set. Input order is preserved.
+    #[test]
+    fn test_partition_taint_eligible_skips_oversized() {
+        let dir = TempDir::new().unwrap();
+        let small = dir.path().join("small.c");
+        std::fs::write(&small, "a".repeat(1024)).unwrap();
+        let big = dir.path().join("big.c");
+        std::fs::write(&big, "b".repeat((PER_FILE_TAINT_SIZE_BUDGET as usize) + 1)).unwrap();
+
+        let files = vec![small.clone(), big.clone()];
+        let (eligible, oversized) = partition_taint_eligible(&files, PER_FILE_TAINT_SIZE_BUDGET);
+
+        assert_eq!(eligible, vec![small], "small file must be taint-eligible");
+        assert_eq!(oversized, vec![big], "over-budget file must be skipped");
+    }
+
+    /// A file exactly AT the budget is eligible (`<=` boundary).
+    #[test]
+    fn test_partition_taint_eligible_boundary_inclusive() {
+        let dir = TempDir::new().unwrap();
+        let exact = dir.path().join("exact.c");
+        std::fs::write(&exact, "x".repeat(PER_FILE_TAINT_SIZE_BUDGET as usize)).unwrap();
+
+        let (eligible, oversized) =
+            partition_taint_eligible(&[exact.clone()], PER_FILE_TAINT_SIZE_BUDGET);
+        assert_eq!(eligible, vec![exact], "file exactly at budget must be eligible");
+        assert!(oversized.is_empty());
+    }
+
+    /// GENERALIZATION: the budget is a pure byte-size predicate with NO language
+    /// check, so it behaves identically across every supported language. A small
+    /// file of ANY language stays eligible (full coverage); a large file of ANY
+    /// language is skipped. This guards against a future regression that special-
+    /// cases the bound to C (the symptom-class repro) and silently leaves other
+    /// large-tree languages (Python/JS/Go/Java/…) unbounded.
+    #[test]
+    fn test_partition_taint_eligible_is_language_agnostic() {
+        let dir = TempDir::new().unwrap();
+        // Small files across a spread of languages — all eligible.
+        let mut smalls = Vec::new();
+        for name in ["a.py", "b.js", "c.go", "d.java", "e.rs", "f.c"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "z".repeat(2048)).unwrap();
+            smalls.push(p);
+        }
+        // One over-budget file per a couple of distinct languages — all skipped,
+        // proving the skip is not C-specific.
+        let mut bigs = Vec::new();
+        for name in ["big.py", "big.js", "big.go"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, "q".repeat((PER_FILE_TAINT_SIZE_BUDGET as usize) + 1)).unwrap();
+            bigs.push(p);
+        }
+
+        let mut all = smalls.clone();
+        all.extend(bigs.clone());
+        let (eligible, oversized) = partition_taint_eligible(&all, PER_FILE_TAINT_SIZE_BUDGET);
+
+        for s in &smalls {
+            assert!(
+                eligible.contains(s),
+                "small {:?} must stay eligible regardless of language",
+                s
+            );
+        }
+        for b in &bigs {
+            assert!(
+                oversized.contains(b),
+                "over-budget {:?} must be skipped regardless of language",
+                b
+            );
+        }
+    }
+
+    /// The budget constant must be a sane, generous value (>= 64 KB) so it only
+    /// degrades on genuinely large translation units, never on typical hand-
+    /// authored source (the median c-redis `src/*.c` is < 50 KB). Kept in
+    /// lockstep with `secure`'s 96 KB budget for secure↔vuln parity.
+    #[test]
+    fn test_vuln_taint_size_budget_is_generous() {
+        assert!(
+            PER_FILE_TAINT_SIZE_BUDGET >= 64 * 1024,
+            "taint size budget must be generous (>=64KB) to avoid dropping normal files"
+        );
+    }
+
+    /// END-TO-END RED→GREEN: a directory containing an over-budget file
+    /// completes (does NOT hang), reports the oversized file as `files_skipped`
+    /// with a structured `warnings[]` entry, and STILL scans the within-budget
+    /// file. Pre-fix this path fed the oversized file straight into the
+    /// super-linear taint pipeline (files_skipped == 0, no warning) — on c-redis
+    /// that manifested as exit 124 / 0 bytes.
+    #[test]
+    fn test_vulnargs_run_skips_oversized_file_and_warns() {
+        let temp = TempDir::new().unwrap();
+        // Within-budget C file (scanned).
+        std::fs::write(
+            temp.path().join("small.c"),
+            "int main(void) { return 0; }\n",
+        )
+        .unwrap();
+        // Over-budget C file (skipped). Valid UTF-8 filler so the size gate —
+        // not the UTF-8 gate — is what excludes it.
+        std::fs::write(
+            temp.path().join("big.c"),
+            "/* big */\n".to_string() + &"a".repeat((PER_FILE_TAINT_SIZE_BUDGET as usize) + 1),
+        )
+        .unwrap();
+        let output_path = temp.path().join("out.json");
+
+        let args = VulnArgs {
+            path: temp.path().to_path_buf(),
+            lang: Some(Language::C),
+            severity: None,
+            vuln_type: None,
+            include_informational: false,
+            include_smells: false,
+            include_tests: false,
+            output: Some(output_path.clone()),
+            no_default_ignore: false,
+        };
+        // Completing this call at all is the core bound assertion.
+        args.run(OutputFormat::Json).unwrap();
+
+        let raw = std::fs::read_to_string(&output_path).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        assert!(
+            report["files_skipped"].as_u64().unwrap() >= 1,
+            "the over-budget file must be counted as skipped; report: {report}"
+        );
+        let warnings = report["warnings"].as_array().unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str().map(|s| s.contains("big.c") && s.contains("taint budget"))
+                    .unwrap_or(false)),
+            "a structured budget warning naming the skipped file is required; warnings: {warnings:?}"
+        );
+        assert!(
+            report["files_scanned"].as_u64().unwrap() >= 1,
+            "the within-budget file must still be scanned; report: {report}"
+        );
     }
 
     #[test]
