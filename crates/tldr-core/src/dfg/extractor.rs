@@ -2164,6 +2164,19 @@ impl<'a> DfgBuilder<'a> {
                 // fallthrough, so the loop variable, the iterable read, AND the
                 // entire loop body (loop-carried reassignments) were dropped.
                 Language::Kotlin => self.process_kotlin_for_statement(node, depth)?,
+                // fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): PHP / JS / TS /
+                // Solidity all reuse the `for_statement` kind for a C-style
+                // `for (init; cond; update) body` whose clauses are named
+                // FIELDS (initialize/initializer/initial, condition,
+                // update/increment, body) — NOT the `left`/`right` the Python
+                // handler reads. The pre-fix `_ => process_for_loop` arm dropped
+                // every header use, so a variable read only in the init/cond
+                // (`for ($i = $column; $i < $column + $n; ...)`) was reported as
+                // a dead store. Route through the loop-descriptor registry.
+                Language::Php
+                | Language::JavaScript
+                | Language::TypeScript
+                | Language::Solidity => self.process_loop_header(node, depth)?,
                 _ => self.process_for_loop(node, depth)?,
             },
 
@@ -2209,10 +2222,21 @@ impl<'a> DfgBuilder<'a> {
                 self.process_python_lambda(node, depth)?;
             }
 
-            // Rust: for x in items { }
-            "for_expression" => {
-                self.process_rust_for(node, depth)?;
-            }
+            // Rust: `for x in items { }` — `[pattern]`/`[value]`/`[body]`.
+            //
+            // fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): Scala REUSES the
+            // `for_expression` kind for its for-comprehension
+            // (`for (x <- xs if g) body` / `for { ... } yield ...`), but exposes
+            // an `[enumerators]` field (binder `<-` iterable + `guard`) plus
+            // `[body]` — NONE of the `pattern`/`value` fields `process_rust_for`
+            // reads. Routing Scala through the Rust handler dropped the
+            // iterable and guard reads (a `val` used only in a guard was a false
+            // dead store) and left the binder undefined. Route Scala to the
+            // loop-descriptor registry; keep Rust on its shape-aware handler.
+            "for_expression" => match self.language {
+                Language::Scala => self.process_loop_header(node, depth)?,
+                _ => self.process_rust_for(node, depth)?,
+            },
 
             // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): Rust closure
             // `|a, &b| body`. The closure parameters are bindings local to the
@@ -2747,6 +2771,271 @@ impl<'a> DfgBuilder<'a> {
             self.extract_refs_from_node(body, depth + 1)?;
         }
 
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): generic loop-HEADER driver.
+    ///
+    /// Consumes the [`LoopHeader`] descriptor returned by
+    /// [`loop_header_descriptor`] for the current `(language, node-kind)` and
+    /// records the loop's header binders (Definitions) and use-sites
+    /// (iterable / init RHS / condition / update / guard reads, all Uses) plus
+    /// its body — every site flowing through the normal dispatch so each
+    /// construct's existing def/use classification is reused. This is the
+    /// single extension point for the loop-header-use symptom class: adding the
+    /// next language is one row in the registry, not a new bespoke method.
+    ///
+    /// Several grammars route their `for`/`foreach`/for-comprehension node to a
+    /// shape that the legacy Python-shaped `process_for_loop` cannot read (no
+    /// `left`/`right`/`body` fields), silently dropping every header use — so a
+    /// variable used ONLY in a loop header was reported as a dead store and a
+    /// binder read in the body as definite-uninitialized.
+    fn process_loop_header(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let Some(desc) = loop_header_descriptor(self.language, node.kind()) else {
+            // Defensive: an unregistered shape — recurse all named children so
+            // nothing is silently dropped.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.is_named() {
+                    self.extract_refs_from_node(child, depth + 1)?;
+                }
+            }
+            return Ok(());
+        };
+        match desc {
+            // C-style `for (init; cond; update) body`: the init is processed by
+            // `process_loop_init` (binder def + RHS uses); the update by
+            // `process_loop_update` (loop var as a read, not a fresh version);
+            // the condition and body are recursed through normal dispatch so
+            // their identifier reads become uses.
+            LoopHeader::CStyle {
+                init_field,
+                cond_field,
+                update_field,
+                body_field,
+            } => {
+                if let Some(init) = node.child_by_field_name(init_field) {
+                    self.process_loop_init(init, depth)?;
+                }
+                if let Some(cond) = node.child_by_field_name(cond_field) {
+                    self.extract_refs_from_node(cond, depth + 1)?;
+                }
+                if let Some(update) = node.child_by_field_name(update_field) {
+                    self.process_loop_update(update, depth)?;
+                }
+                if let Some(body) = node.child_by_field_name(body_field) {
+                    self.extract_refs_from_node(body, depth + 1)?;
+                }
+            }
+            // PHP `foreach (<iterable> as <binder>) body`.
+            LoopHeader::ForeachAs => {
+                self.process_foreach_as_header(node, depth)?;
+                if let Some(body) = node.child_by_field_name("body") {
+                    self.extract_refs_from_node(body, depth + 1)?;
+                }
+            }
+            // Scala `for (<enumerators>) body`. The enumerators node is located
+            // by KIND (its field name collides with the `(` `)` tokens).
+            LoopHeader::Comprehension {
+                enumerators_kind,
+                body_fields,
+            } => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == enumerators_kind {
+                        self.process_comprehension_enumerators(child, depth)?;
+                    }
+                }
+                for field in body_fields {
+                    if let Some(child) = node.child_by_field_name(field) {
+                        self.extract_refs_from_node(child, depth + 1)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader: process a C-style for-loop INITIALIZER
+    /// (`$i = $start`, `let i = n`, `uint i = n`).
+    ///
+    /// The initializer is recursed through the normal dispatch so each
+    /// language's own assignment / declaration handling records the
+    /// loop-variable binder as a Definition and the init RHS as uses. The
+    /// binder Definition(s) just recorded are then re-tagged `ComprehensionScope`
+    /// (pre-initialized) — the loop variable's value is supplied by the loop on
+    /// every iteration, and the intraprocedural CFG over-segments the single
+    /// `for (...)` header line so a plain def on that line does not reliably
+    /// reach the condition/body reads. This mirrors the mitigation already used
+    /// for C#/Java for-binders and comprehension binders, and is uniform across
+    /// every C-style grammar (no per-language binder parsing). Only Definitions
+    /// freshly added by THIS init (and not already context-tagged) are touched,
+    /// so the init RHS uses are left untouched.
+    fn process_loop_init(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let pre = self.refs.len();
+        self.extract_refs_from_node(node, depth + 1)?;
+        for r in self.refs[pre..].iter_mut() {
+            if r.ref_type == RefType::Definition && r.context.is_none() {
+                r.context = Some(VarRefContext::ComprehensionScope);
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader: process a C-style for-loop UPDATE clause
+    /// (`++$i`, `$i++`, comma-separated `$i++, $j--`).
+    ///
+    /// The loop variable is recorded as a USE (a read of the current value)
+    /// rather than an `Update` (read-then-write that mints a fresh SSA
+    /// version). Modelling the update as a new version — while the
+    /// intraprocedural CFG collapses the init, condition and update onto the
+    /// single `for (...)` header line and never splits the init into a
+    /// preheader — makes the loop's INIT assignment (`$i = $start`) look like a
+    /// dead store. C / JS / Java for-loops never exhibit this because their
+    /// `i++` falls through to the identifier-as-use arm; PHP / Solidity have a
+    /// dedicated `update_expression` arm that emits `Update`. Treating the
+    /// header update as a read restores parity and keeps the loop variable a
+    /// single live value across the header. (Standalone `$n++;` statements
+    /// outside a for-update still flow through the normal arm and remain an
+    /// Update, preserving the M-114 reaching-defs fix.)
+    fn process_loop_update(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        match node.kind() {
+            "update_expression" => {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    self.record_loop_update_operand(arg, depth)?;
+                }
+            }
+            // `$i++, $j--` — comma-separated updates.
+            "comma_expression" | "sequence_expression" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.is_named() {
+                        self.process_loop_update(child, depth)?;
+                    }
+                }
+            }
+            // Other update forms (`$i += 1`, `$i = $i + 1`) — recurse normally.
+            _ => self.extract_refs_from_node(node, depth + 1)?,
+        }
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader: record a for-loop update operand as a Use.
+    /// Handles a bare `variable_name` / `identifier` and Solidity's
+    /// `expression`-wrapped identifier; anything else (subscript / member
+    /// targets) is recursed for its nested uses.
+    fn record_loop_update_operand(&mut self, arg: Node, depth: usize) -> TldrResult<()> {
+        match arg.kind() {
+            "variable_name" | "identifier" => self.add_ref_from_node(arg, RefType::Use),
+            "expression" if matches!(self.language, Language::Solidity) => {
+                if let Some(inner) = solidity_unwrap_expression(arg) {
+                    self.record_loop_update_operand(inner, depth)?;
+                }
+            }
+            _ => self.extract_refs_from_node(arg, depth + 1)?,
+        }
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader: PHP `foreach (<iterable> as [<key> =>] <value>)`.
+    ///
+    /// The iterable is the loop's direct named child(ren) BEFORE the `as`
+    /// token — recorded as Uses through normal dispatch. The binder is the
+    /// child AFTER `as` (`variable_name`, a `pair` `$k => $v`, a `by_ref`
+    /// `&$v`, or a `list_literal` destructuring) — every leaf `variable_name`
+    /// recorded as a Definition. The `[body]` field is skipped here (the caller
+    /// processes it) so its reads are never mistaken for binders.
+    fn process_foreach_as_header(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let body_id = node.child_by_field_name("body").map(|b| b.id());
+        let mut cursor = node.walk();
+        let mut seen_as = false;
+        for child in node.children(&mut cursor) {
+            if Some(child.id()) == body_id {
+                continue; // body handled by the caller
+            }
+            if child.kind() == "as" {
+                seen_as = true;
+                continue;
+            }
+            if !child.is_named() {
+                continue; // 'foreach' '(' ')' tokens
+            }
+            if seen_as {
+                self.add_foreach_binder_defs(child);
+            } else {
+                // The iterated expression — a Use.
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader: record the binder name(s) of a PHP foreach value
+    /// position as Definitions. Handles `variable_name` (`$v`), `pair`
+    /// (`$k => $v`), `by_ref` (`&$v`), and `list_literal` destructuring. The
+    /// binder is tagged `ComprehensionScope` (its value is supplied by the
+    /// iterator each iteration) so a body / nested-loop-header read of it is not
+    /// flagged definite-uninitialized despite CFG over-segmentation.
+    fn add_foreach_binder_defs(&mut self, node: Node) {
+        match node.kind() {
+            "variable_name" => self.add_ref_with_context(
+                node,
+                RefType::Definition,
+                VarRefContext::ComprehensionScope,
+            ),
+            "pair" | "by_ref" | "list_literal" => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    self.add_foreach_binder_defs(child);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// fix-PW3-C2c-loopheader: Scala for-comprehension enumerators.
+    ///
+    /// The `[enumerators]` field holds one or more `enumerator` nodes, each
+    /// `<binder> (<- | =) <iterable> [guard...]`. Each enumerator is processed
+    /// so its pre-operator binder becomes a loop-scoped Definition and its
+    /// iterable + guard filters become Uses.
+    fn process_comprehension_enumerators(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "enumerator" {
+                self.process_scala_enumerator(child, depth)?;
+            } else if child.is_named() {
+                // Defensive: an unexpected named child — recurse as a use.
+                self.extract_refs_from_node(child, depth + 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// fix-PW3-C2c-loopheader: a single Scala `enumerator`
+    /// (`x <- xs`, `(a, b) <- pairs`, `y = f(x)`, optionally `if guard`).
+    /// Children BEFORE the first `<-`/`=` operator are the loop binder
+    /// (recorded as `ComprehensionScope`-tagged Definitions — iterator-
+    /// initialized, like Python comprehension / C#-Java for binders); children
+    /// AFTER it (the iterable plus any `guard`) are recursed as Uses.
+    fn process_scala_enumerator(&mut self, node: Node, depth: usize) -> TldrResult<()> {
+        let mut cursor = node.walk();
+        let mut past_op = false;
+        for child in node.children(&mut cursor) {
+            let kind = child.kind();
+            if !past_op && (kind == "<-" || kind == "=") {
+                past_op = true;
+                continue;
+            }
+            if !child.is_named() {
+                continue;
+            }
+            if past_op {
+                self.extract_refs_from_node(child, depth + 1)?;
+            } else {
+                self.add_comprehension_binder_defs(child);
+            }
+        }
         Ok(())
     }
 
@@ -3899,38 +4188,17 @@ impl<'a> DfgBuilder<'a> {
     // PHP processing
     // =====================================================================
 
-    /// Process PHP foreach: foreach ($arr as $key => $val) { }
+    /// Process PHP foreach: `foreach ($arr as $key => $val) { }`.
+    ///
+    /// fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): delegate to the registry-driven
+    /// [`Self::process_loop_header`] (descriptor [`LoopHeader::ForeachAs`]) so
+    /// the iterable expression BEFORE `as` (`$arr`, or `$rows[$rowKey]`) is
+    /// recorded as a Use in addition to the binder Definitions and body.
+    /// Pre-fix this scanned only for the binder after `as` and dropped the
+    /// iterable entirely, so a variable used solely as the foreach subject was
+    /// reported as a dead store, and `&$v` by-reference binders were missed.
     fn process_php_foreach(&mut self, node: Node, depth: usize) -> TldrResult<()> {
-        // Iterate children to find the loop variable(s)
-        let mut cursor = node.walk();
-        let mut found_as = false;
-        for child in node.children(&mut cursor) {
-            if child.kind() == "as" {
-                found_as = true;
-                continue;
-            }
-            if found_as && (child.kind() == "variable_name" || child.kind() == "pair") {
-                if child.kind() == "variable_name" {
-                    self.add_ref_from_node(child, RefType::Definition);
-                } else {
-                    // pair: $key => $val
-                    let mut inner = child.walk();
-                    for inner_child in child.children(&mut inner) {
-                        if inner_child.kind() == "variable_name" {
-                            self.add_ref_from_node(inner_child, RefType::Definition);
-                        }
-                    }
-                }
-                break;
-            }
-        }
-
-        // Process body
-        if let Some(body) = node.child_by_field_name("body") {
-            self.extract_refs_from_node(body, depth + 1)?;
-        }
-
-        Ok(())
+        self.process_loop_header(node, depth)
     }
 
     /// T5 (v0.5.0 AUDIT-FIX, root cause A3): process a C#
@@ -7765,6 +8033,95 @@ fn is_keyword(name: &str, language: Language) -> bool {
     }
 }
 
+/// fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): declarative descriptor of a loop
+/// construct's HEADER anatomy — the loop-descriptor "registry" value consumed
+/// by [`RefExtractor::process_loop_header`].
+///
+/// A loop header names loop-variable BINDERS (definitions) and references
+/// variables in its iterable / init / condition / update / guard USE-sites.
+/// Several grammars route their `for` / `foreach` / for-comprehension node to a
+/// shape the legacy Python-shaped `process_for_loop` could not read (it only
+/// understands the `left`/`right`/`body` fields), silently dropping every
+/// header use. The registry collapses the whole class to three structural
+/// shapes so one driver handles them all and the next language is a one-row
+/// addition (see [`loop_header_descriptor`]).
+enum LoopHeader {
+    /// C-style `for (init; cond; update) body`. The `init_field` is processed
+    /// by [`RefExtractor::process_loop_init`] (records the loop-variable binder
+    /// as a pre-initialized Definition + the init RHS as uses); the
+    /// `update_field` by [`RefExtractor::process_loop_update`] (records the
+    /// loop variable as a read, not a fresh write-version); the `cond_field`
+    /// and `body_field` are recursed through normal dispatch so their
+    /// identifier reads become uses. Grammars name the fields differently, so
+    /// the names are part of the descriptor.
+    CStyle {
+        init_field: &'static str,
+        cond_field: &'static str,
+        update_field: &'static str,
+        body_field: &'static str,
+    },
+    /// PHP `foreach (<iterable> as <binder>) body`: the iterable is the direct
+    /// named child(ren) BEFORE the `as` token (Uses); the binder is the child
+    /// AFTER `as` (`variable_name` / `pair` / `by_ref`, Definitions).
+    ForeachAs,
+    /// Scala for-comprehension `for (<enumerators>) body`: the `enumerators_kind`
+    /// child holds `enumerator` nodes (`binder <- iterable [guard]`); the
+    /// pre-`<-`/`=` identifiers are loop binders, the rest are uses. (The
+    /// `enumerators` FIELD name also labels the surrounding `(` `)` tokens, so
+    /// the node is located by KIND, not by field.)
+    Comprehension {
+        enumerators_kind: &'static str,
+        body_fields: &'static [&'static str],
+    },
+}
+
+/// fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): the loop-descriptor registry.
+///
+/// Maps `(language, AST node-kind)` to the [`LoopHeader`] shape describing how
+/// to collect that loop's header binders and use-sites. Only the constructs
+/// whose header uses were being DROPPED are registered here; the already-
+/// shape-aware Go / C / Java / C# / Kotlin / Lua handlers are left untouched
+/// (blast-radius containment). Returns `None` for any unregistered node, in
+/// which case the driver recurses all named children defensively.
+fn loop_header_descriptor(language: Language, kind: &str) -> Option<LoopHeader> {
+    match (language, kind) {
+        // PHP `for ($i = $start; $i < $n; ++$i)` — fields initialize/condition/
+        // update/body.
+        (Language::Php, "for_statement") => Some(LoopHeader::CStyle {
+            init_field: "initialize",
+            cond_field: "condition",
+            update_field: "update",
+            body_field: "body",
+        }),
+        // JS/TS `for (let i = n; i < 10; i++)` — fields initializer/condition/
+        // increment/body.
+        (Language::JavaScript | Language::TypeScript, "for_statement") => {
+            Some(LoopHeader::CStyle {
+                init_field: "initializer",
+                cond_field: "condition",
+                update_field: "increment",
+                body_field: "body",
+            })
+        }
+        // Solidity `for (uint i = n; i < 10; i++)` — fields initial/condition/
+        // update/body.
+        (Language::Solidity, "for_statement") => Some(LoopHeader::CStyle {
+            init_field: "initial",
+            cond_field: "condition",
+            update_field: "update",
+            body_field: "body",
+        }),
+        // PHP `foreach (<iter> as [<k> =>] <v>)`.
+        (Language::Php, "foreach_statement") => Some(LoopHeader::ForeachAs),
+        // Scala `for (x <- xs if g) body` / `for { ... } yield ...`.
+        (Language::Scala, "for_expression") => Some(LoopHeader::Comprehension {
+            enumerators_kind: "enumerators",
+            body_fields: &["body"],
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10108,6 +10465,214 @@ def newMutableMap(n: Int): mutable.HashMap[K, V] = {
         assert!(
             !scala_uninit.contains(&"mutable".to_string()),
             "Scala package qualifier `mutable` wrongly flagged uninitialized; uninit={scala_uninit:?}"
+        );
+    }
+
+    // fix-PW3-C2c-loopheader (v0.5.0 BACKLOG): loop-HEADER use sites were
+    // dropped for every grammar whose `for` / `foreach` / for-comprehension
+    // node does not expose the Python `left`/`right`/`body` fields the legacy
+    // `process_for_loop` reads. A variable used ONLY in a loop header
+    // (`for ($i = $column; $i < $column + $n; ...)`, `foreach ($rows[$k] as ...)`,
+    // Scala `for (x <- items if x > base)`) was therefore reported as a dead
+    // store, and the loop binder read in the body as definite-uninitialized.
+    //
+    // GENERALIZATION GATE: this single test asserts EVERY variant in the
+    // loop-header-use class — PHP C-style `for`, PHP `foreach` (key/value +
+    // by-ref), JS/TS C-style `for`, Solidity C-style `for`, and the Scala
+    // for-comprehension that proves the loop-descriptor registry generalizes
+    // beyond the primary PHP target. A single-language version is an
+    // anti-treadmill FAIL.
+    #[test]
+    fn c2c_loop_header_use_sites_collected() {
+        fn uses(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            dfg.refs
+                .iter()
+                .filter(|r| r.ref_type == RefType::Use)
+                .map(|r| r.name.clone())
+                .collect()
+        }
+        fn defs(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            dfg.refs
+                .iter()
+                .filter(|r| r.ref_type == RefType::Definition)
+                .map(|r| r.name.clone())
+                .collect()
+        }
+        fn uninit(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            let cfg = crate::cfg::get_cfg_context(source, func, lang).unwrap();
+            let report = crate::dfg::reaching::build_reaching_defs_report(
+                &cfg,
+                &dfg.refs,
+                std::path::PathBuf::from("test"),
+            );
+            report.uninitialized.iter().map(|u| u.var.clone()).collect()
+        }
+
+        // ---- PHP : C-style `for` header (init RHS + condition) ----------------
+        // `$column` is bound by the foreach and read ONLY in the inner for
+        // header; before the fix those reads were dropped -> `$column` was a
+        // false dead store. The iterable `$rows[$rowKey]` reads were also lost.
+        let php = r#"<?php
+function f($rows) {
+    foreach ($rows[$rowKey] as $column => $cell) {
+        for ($i = $column; $i < ($column + $colspan); ++$i) {
+            $x = $i;
+        }
+        echo $cell;
+    }
+}
+"#;
+        let php_uses = uses(php, "f", Language::Php);
+        let php_defs = defs(php, "f", Language::Php);
+        // foreach iterable use sites
+        assert!(
+            php_uses.contains(&"$rows".to_string()),
+            "PHP foreach iterable `$rows` use dropped; uses={php_uses:?}"
+        );
+        assert!(
+            php_uses.contains(&"$rowKey".to_string()),
+            "PHP foreach iterable index `$rowKey` use dropped; uses={php_uses:?}"
+        );
+        // foreach key/value binders
+        assert!(
+            php_defs.contains(&"$column".to_string()),
+            "PHP foreach key binder `$column` not a definition; defs={php_defs:?}"
+        );
+        assert!(
+            php_defs.contains(&"$cell".to_string()),
+            "PHP foreach value binder `$cell` not a definition; defs={php_defs:?}"
+        );
+        // for-header reads of the foreach key (the reported dead-store FP)
+        assert!(
+            php_uses.contains(&"$column".to_string()),
+            "PHP for-header use of `$column` dropped (the dead-store FP); uses={php_uses:?}"
+        );
+        assert!(
+            php_uses.contains(&"$colspan".to_string()),
+            "PHP for-condition use of `$colspan` dropped; uses={php_uses:?}"
+        );
+        // loop var binder recorded + not a false uninitialized read
+        assert!(
+            php_defs.contains(&"$i".to_string()),
+            "PHP for loop var `$i` not a definition; defs={php_defs:?}"
+        );
+        let php_uninit = uninit(php, "f", Language::Php);
+        assert!(
+            !php_uninit.contains(&"$i".to_string()),
+            "PHP for loop var `$i` wrongly flagged uninitialized; uninit={php_uninit:?}"
+        );
+        assert!(
+            !php_uninit.contains(&"$column".to_string()),
+            "PHP foreach key `$column` wrongly flagged uninitialized; uninit={php_uninit:?}"
+        );
+
+        // ---- PHP : foreach by-reference value binder `&$v` --------------------
+        let php_ref = r#"<?php
+function g($items) {
+    foreach ($items as $k => &$v) {
+        $v = $k;
+    }
+}
+"#;
+        let php_ref_uses = uses(php_ref, "g", Language::Php);
+        let php_ref_defs = defs(php_ref, "g", Language::Php);
+        assert!(
+            php_ref_uses.contains(&"$items".to_string()),
+            "PHP foreach iterable `$items` use dropped; uses={php_ref_uses:?}"
+        );
+        assert!(
+            php_ref_defs.contains(&"$v".to_string()),
+            "PHP foreach by-ref binder `$v` not a definition; defs={php_ref_defs:?}"
+        );
+        assert!(
+            php_ref_defs.contains(&"$k".to_string()),
+            "PHP foreach key binder `$k` not a definition; defs={php_ref_defs:?}"
+        );
+
+        // ---- JavaScript : C-style `for` header --------------------------------
+        let js = r#"
+function f(n) {
+    for (let i = n; i < 10; i++) {
+        g(i);
+    }
+}
+"#;
+        let js_uses = uses(js, "f", Language::JavaScript);
+        let js_defs = defs(js, "f", Language::JavaScript);
+        assert!(
+            js_uses.contains(&"n".to_string()),
+            "JS for-init use of `n` dropped; uses={js_uses:?}"
+        );
+        assert!(
+            js_defs.contains(&"i".to_string()),
+            "JS for loop var `i` not a definition; defs={js_defs:?}"
+        );
+
+        // ---- TypeScript : C-style `for` header --------------------------------
+        let ts = r#"
+function f(n: number) {
+    for (let i = n; i < 10; i++) {
+        g(i);
+    }
+}
+"#;
+        let ts_uses = uses(ts, "f", Language::TypeScript);
+        assert!(
+            ts_uses.contains(&"n".to_string()),
+            "TS for-init use of `n` dropped; uses={ts_uses:?}"
+        );
+
+        // ---- Solidity : C-style `for` header ----------------------------------
+        let sol = r#"
+contract C {
+    function f(uint n) public {
+        for (uint i = n; i < 10; i++) {
+            g(i);
+        }
+    }
+}
+"#;
+        let sol_uses = uses(sol, "f", Language::Solidity);
+        assert!(
+            sol_uses.contains(&"n".to_string()),
+            "Solidity for-init use of `n` dropped; uses={sol_uses:?}"
+        );
+
+        // ---- Scala : for-comprehension enumerators + guard --------------------
+        // proves the loop-descriptor registry generalizes beyond PHP. `items`
+        // (iterable) and `base` (guard) are read ONLY in the for header; `x` is
+        // the binder bound by `<-`.
+        let scala = r#"
+def f(items: List[Int]): Int = {
+  var total = 0
+  val base = 10
+  for (x <- items if x > base) {
+    total = total + x
+  }
+  total
+}
+"#;
+        let scala_uses = uses(scala, "f", Language::Scala);
+        let scala_defs = defs(scala, "f", Language::Scala);
+        assert!(
+            scala_uses.contains(&"items".to_string()),
+            "Scala for-comprehension iterable `items` use dropped; uses={scala_uses:?}"
+        );
+        assert!(
+            scala_uses.contains(&"base".to_string()),
+            "Scala for-comprehension guard use of `base` dropped; uses={scala_uses:?}"
+        );
+        assert!(
+            scala_defs.contains(&"x".to_string()),
+            "Scala for-comprehension binder `x` not a definition; defs={scala_defs:?}"
+        );
+        let scala_uninit = uninit(scala, "f", Language::Scala);
+        assert!(
+            !scala_uninit.contains(&"x".to_string()),
+            "Scala comprehension binder `x` wrongly flagged uninitialized; uninit={scala_uninit:?}"
         );
     }
 }
