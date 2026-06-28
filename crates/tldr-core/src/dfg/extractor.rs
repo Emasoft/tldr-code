@@ -1526,6 +1526,22 @@ impl<'a> DfgBuilder<'a> {
         }
     }
 
+    /// C1-gen-bindings (v0.5.0 BACKLOG): peel `pointer_declarator` /
+    /// `array_declarator` (and nested combinations like `int **pp` /
+    /// `char buf[16][8]`) down to the declared `identifier` by following the
+    /// `declarator` field. Using the field — never a blind identifier search —
+    /// means an array *size* identifier (`long arr[N];`) is correctly ignored:
+    /// `N` lives in the `size` field, not `declarator`.
+    fn c_declared_identifier(node: Node<'_>) -> Option<Node<'_>> {
+        match node.kind() {
+            "identifier" => Some(node),
+            "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => node
+                .child_by_field_name("declarator")
+                .and_then(Self::c_declared_identifier),
+            _ => None,
+        }
+    }
+
     fn extract_c_cpp_param(&mut self, child: Node) {
         if child.kind() != "parameter_declaration" {
             return;
@@ -2071,6 +2087,23 @@ impl<'a> DfgBuilder<'a> {
                 self.process_ocaml_let_binding(node, depth)?;
             }
 
+            // C1-gen-bindings (v0.5.0 BACKLOG): every OCaml binding occurrence
+            // is a `value_pattern` leaf — a `fun ~dir xs -> …` parameter
+            // (including the labeled `~dir`), a `match` / `function` arm binder
+            // (`Some y -> …`), and the leaves of destructuring `let` / tuple /
+            // record patterns. Top-level `let` parameters are bound out-of-body
+            // by `extract_ocaml_parameters` (they are siblings of the traversed
+            // body, never revisited here), but a `fun`'s OWN parameters and
+            // every match-arm binder live INSIDE the body and were never added
+            // to GEN — so their reads were flagged definite-uninitialized.
+            // Registering the `value_pattern` as a strong Definition closes that
+            // without a generic identifier visitor: a plain OCaml value read is a
+            // `value_path`/`value_name`, not a `value_pattern`, so uses are
+            // untouched.
+            "value_pattern" if matches!(self.language, Language::Ocaml) => {
+                self.add_ref_from_node(node, RefType::Definition);
+            }
+
             // =================================================================
             // For loops (loop variable is a definition)
             // =================================================================
@@ -2410,7 +2443,20 @@ impl<'a> DfgBuilder<'a> {
                 self.add_ref_from_node(target, RefType::Definition);
             }
             // Python unpacking
-            "tuple" | "list" | "pattern_list" => {
+            //
+            // C1-gen-bindings (v0.5.0 BACKLOG): Ruby parallel / multiple
+            // assignment LHS — `a, _ = …`, `a, *rest = …`, `(x, y), z = …`.
+            // tree-sitter-ruby wraps the comma-separated binders in a
+            // `left_assignment_list`; a `*rest` splat is a `rest_assignment`
+            // and a nested `(x, y)` is a `destructured_left_assignment`. Recurse
+            // so each inner `identifier` registers as a Definition (the leading
+            // `_` binds harmlessly; commas / parens / `*` are non-identifier
+            // tokens that fall through). Without these arms the multiple-
+            // assignment targets never entered GEN, so every later read was
+            // flagged definite-uninitialized ("no definition of this variable
+            // exists").
+            "tuple" | "list" | "pattern_list" | "left_assignment_list"
+            | "destructured_left_assignment" | "rest_assignment" => {
                 let mut cursor = target.walk();
                 for child in target.children(&mut cursor) {
                     self.extract_assignment_targets(child)?;
@@ -3832,6 +3878,17 @@ impl<'a> DfgBuilder<'a> {
                 if !text.is_empty() && !is_keyword(text, self.language) {
                     self.add_ref_from_node(child, RefType::Definition);
                 }
+            } else if matches!(child.kind(), "pointer_declarator" | "array_declarator") {
+                // C1-gen-bindings (v0.5.0 BACKLOG): an initializer-less pointer
+                // or array declaration — `int *p;`, `char buf[16];`. The bound
+                // name is the inner `identifier`; the existing `init_declarator`
+                // arm already unwraps a `pointer_declarator` for the
+                // *initialized* case, so mirror that for the bare case. Without
+                // this the declared name never entered GEN and every later read
+                // (`compute(&p)` then `*p`) was flagged definite-uninitialized.
+                if let Some(ident) = Self::c_declared_identifier(child) {
+                    self.add_ref_from_node(ident, RefType::Definition);
+                }
             }
         }
 
@@ -4013,38 +4070,43 @@ impl<'a> DfgBuilder<'a> {
     /// Process Elixir match operator: x = ... (pattern matching)
     /// Handles both "match_operator" and "binary_operator" with "=" operator
     fn process_elixir_match(&mut self, node: Node, depth: usize) -> TldrResult<()> {
-        // Try field names first (match_operator uses "left"/"right")
-        let left = node.child_by_field_name("left");
-        let right = node.child_by_field_name("right");
+        // Resolve the LHS pattern and RHS expression. `match_operator` exposes
+        // [left]/[right] fields; the `binary_operator` `=` form does not, so
+        // fall back to the first / last *named* child.
+        let (lhs, rhs) = match (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            (Some(l), Some(r)) => (Some(l), Some(r)),
+            _ => {
+                let named: Vec<_> = node
+                    .children(&mut node.walk())
+                    .filter(|c| c.is_named())
+                    .collect();
+                if named.len() >= 2 {
+                    (named.first().copied(), named.last().copied())
+                } else {
+                    (None, None)
+                }
+            }
+        };
 
-        if let Some(l) = left {
-            if l.kind() == "identifier" {
-                self.add_ref_from_node(l, RefType::Definition);
-            }
-        } else {
-            // binary_operator: first named child is the LHS
-            let mut cursor = node.walk();
-            let named_children: Vec<_> = node
-                .children(&mut cursor)
-                .filter(|c| c.is_named())
-                .collect();
-            if named_children.len() >= 2 && named_children[0].kind() == "identifier" {
-                self.add_ref_from_node(named_children[0], RefType::Definition);
-            }
+        // C1-gen-bindings (v0.5.0 BACKLOG): the LHS is a PATTERN that may bind
+        // more than a bare identifier — `%{a: a} = conn`, `%Conn{} = conn`,
+        // `{:ok, v} = res`. The pre-fix code recorded ONLY a bare-`identifier`
+        // LHS, so every destructured binder was dropped from GEN and flagged
+        // definite-uninitialized. Route the LHS through the pin/alias/`when`-
+        // aware pattern binder, which records each bound lower-case name as a
+        // Definition while still skipping pinned `^x`, upper-case module aliases
+        // and call/dot fragments. A plain `x = expr` LHS is a lower-case
+        // `identifier`, so this binds `x` exactly as before.
+        if let Some(l) = lhs {
+            self.extract_elixir_pattern_bindings(l);
         }
 
-        if let Some(r) = right {
+        // The RHS is a use.
+        if let Some(r) = rhs {
             self.extract_refs_from_node(r, depth + 1)?;
-        } else {
-            // binary_operator: last named child is the RHS
-            let mut cursor = node.walk();
-            let named_children: Vec<_> = node
-                .children(&mut cursor)
-                .filter(|c| c.is_named())
-                .collect();
-            if named_children.len() >= 2 {
-                self.extract_refs_from_node(*named_children.last().unwrap(), depth + 1)?;
-            }
         }
 
         Ok(())
@@ -4829,22 +4891,42 @@ impl<'a> DfgBuilder<'a> {
                         "identifier" => {
                             self.add_ref_from_node(arg, RefType::Definition);
                         }
-                        // fix-R2-themeC (v0.5.0 CLOSEOUT, RC2): a parameter with a
-                        // DEFAULT value (`def allow_jsonp(conn, opts \\ [])`)
-                        // parses as a `binary_operator` whose `\\` operator joins
-                        // the param name (`[left]` identifier) to its default
-                        // (`[right]`). The pre-fix walk only matched bare
-                        // `identifier` args, so `opts` was never a Definition and
-                        // every read of it inside the body was flagged
-                        // definite-uninitialized (elixir-phoenix `allow_jsonp`).
-                        // Register the `[left]` identifier as the parameter; the
-                        // default expression is not a parameter source.
                         "binary_operator" => {
-                            if let Some(left) = arg.child_by_field_name("left") {
+                            // C1-gen-bindings (v0.5.0 BACKLOG): a `binary_operator`
+                            // param is either a `=` MATCH (`%Conn{} = conn`,
+                            // `{:ok, v} = res`) or a `\\` DEFAULT (`opts \\ []`).
+                            //
+                            // For a MATCH, BOTH sides are patterns and the bound
+                            // name can be on EITHER side (`%Conn{} = conn` binds
+                            // the right `conn` — the function's OWN parameter,
+                            // previously flagged definite-uninitialized). Route
+                            // the whole node through the pin/alias-aware pattern
+                            // binder.
+                            //
+                            // For a DEFAULT (fix-R2-themeC, RC2: elixir-phoenix
+                            // `allow_jsonp`), only the `[left]` identifier binds —
+                            // the default VALUE on the right is not a parameter
+                            // source — so keep the precise left-only handling.
+                            let is_match = arg.children(&mut arg.walk()).any(|c| {
+                                !c.is_named()
+                                    && c.utf8_text(self.source.as_bytes()).unwrap_or("") == "="
+                            });
+                            if is_match {
+                                self.extract_elixir_pattern_bindings(arg);
+                            } else if let Some(left) = arg.child_by_field_name("left") {
                                 if left.kind() == "identifier" {
                                     self.add_ref_from_node(left, RefType::Definition);
                                 }
                             }
+                        }
+                        // C1-gen-bindings (v0.5.0 BACKLOG): a direct
+                        // pattern-container parameter — `%{a: a}`, `%Conn{}`,
+                        // `{:ok, v}`, `[h | t]`, `<<n::8>>`. Each may bind
+                        // lower-case variables; route through the pattern binder
+                        // (which skips atoms, literals, upper-case aliases, pins
+                        // and call/dot fragments).
+                        "map" | "tuple" | "list" | "struct" | "binary" => {
+                            self.extract_elixir_pattern_bindings(arg);
                         }
                         _ => {}
                     }
@@ -8811,6 +8893,282 @@ let foo x =
             "OCaml let y = x + 1 should produce definitions, got defs: {:?}; all refs: {:?}",
             defs,
             dfg.refs
+        );
+    }
+
+    // ===================================================================
+    // C1-gen-bindings (v0.5.0 BACKLOG): per-language binding forms that
+    // were missing from GEN, causing false definite-uninitialized.
+    // Symptom class: elixir, ruby, ocaml, c.
+    // ===================================================================
+
+    /// Collect the names of all `Definition` refs for a function.
+    fn c1_def_names(source: &str, func: &str, lang: Language) -> Vec<String> {
+        let dfg = get_dfg_context(source, func, lang).unwrap();
+        dfg.refs
+            .iter()
+            .filter(|r| r.ref_type == RefType::Definition)
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
+    /// Collect the names flagged `definite`-severity uninitialized by the full
+    /// reaching-defs pipeline (the exact thing the symptom reports as a FP).
+    fn c1_definite_uninit(source: &str, func: &str, lang: Language) -> Vec<String> {
+        use std::path::PathBuf;
+        let cfg = crate::get_cfg_context(source, func, lang).unwrap();
+        let dfg = get_dfg_context(source, func, lang).unwrap();
+        let report = crate::dfg::build_reaching_defs_report(&cfg, &dfg.refs, PathBuf::from("t"));
+        report
+            .uninitialized
+            .iter()
+            .filter(|u| u.severity == crate::dfg::UninitSeverity::Definite)
+            .map(|u| u.var.clone())
+            .collect()
+    }
+
+    /// GENERALIZATION (MANDATORY): EVERY language/variant in the symptom class
+    /// — elixir struct/map destructure + struct-pattern param, ruby
+    /// parallel/multiple assignment, ocaml `fun ~dir xs` params + match binds,
+    /// c bare pointer/array decl — must enter GEN as a `Definition`, and none
+    /// may be flagged definite-uninitialized. A single-variant pass is a FAIL.
+    #[test]
+    fn test_c1_gen_bindings_generalization_all_langs() {
+        // --- Elixir: own-param `%Conn{} = conn` (HIGH) + map destructure ---
+        let ex = r#"
+defmodule Foo do
+  def call(%Conn{} = conn, opts) do
+    %{a: a} = conn
+    bar(a, conn, opts)
+  end
+end
+"#;
+        let defs = c1_def_names(ex, "call", Language::Elixir);
+        for name in ["conn", "a", "opts"] {
+            assert!(
+                defs.contains(&name.to_string()),
+                "elixir: `{}` should be a Definition (GEN), got {:?}",
+                name,
+                defs
+            );
+        }
+        let uninit = c1_definite_uninit(ex, "call", Language::Elixir);
+        assert!(
+            !uninit.contains(&"conn".to_string()),
+            "elixir HIGH: own param `conn` must not be definite-uninitialized, got {:?}",
+            uninit
+        );
+        assert!(
+            !uninit.contains(&"a".to_string()),
+            "elixir: map-destructure `a` must not be definite-uninitialized, got {:?}",
+            uninit
+        );
+
+        // --- Ruby: parallel `a, _ = …` and multiple `x, y, z = …` ---
+        let rb = r#"
+def foo
+  a, _ = bar()
+  baz(a)
+end
+"#;
+        let defs = c1_def_names(rb, "foo", Language::Ruby);
+        assert!(
+            defs.contains(&"a".to_string()),
+            "ruby: `a` from `a, _ = …` should be a Definition (GEN), got {:?}",
+            defs
+        );
+        assert!(
+            !c1_definite_uninit(rb, "foo", Language::Ruby).contains(&"a".to_string()),
+            "ruby: `a` must not be definite-uninitialized",
+        );
+
+        // --- OCaml: `fun ~dir xs ->` params + match-arm binder ---
+        let ml = r#"
+let f = fun ~dir xs -> g dir xs
+"#;
+        let defs = c1_def_names(ml, "f", Language::Ocaml);
+        for name in ["dir", "xs"] {
+            assert!(
+                defs.contains(&name.to_string()),
+                "ocaml: fun param `{}` should be a Definition (GEN), got {:?}",
+                name,
+                defs
+            );
+        }
+        let ml_uninit = c1_definite_uninit(ml, "f", Language::Ocaml);
+        for name in ["dir", "xs"] {
+            assert!(
+                !ml_uninit.contains(&name.to_string()),
+                "ocaml: fun param `{}` must not be definite-uninitialized, got {:?}",
+                name,
+                ml_uninit
+            );
+        }
+        // OCaml match-arm binder also enters GEN.
+        let ml2 = r#"
+let h x =
+  match x with
+  | Some y -> y + 1
+  | None -> 0
+"#;
+        assert!(
+            c1_def_names(ml2, "h", Language::Ocaml).contains(&"y".to_string()),
+            "ocaml: match binder `y` should be a Definition (GEN)",
+        );
+
+        // --- C: bare pointer `int *p;` and array `char buf[16];` decls ---
+        let c = r#"
+int foo(int n) {
+    int *p;
+    char buf[16];
+    compute(&p, buf);
+    return *p + buf[0] + n;
+}
+"#;
+        let defs = c1_def_names(c, "foo", Language::C);
+        for name in ["p", "buf"] {
+            assert!(
+                defs.contains(&name.to_string()),
+                "c: bare decl `{}` should be a Definition (GEN), got {:?}",
+                name,
+                defs
+            );
+        }
+        let c_uninit = c1_definite_uninit(c, "foo", Language::C);
+        for name in ["p", "buf"] {
+            assert!(
+                !c_uninit.contains(&name.to_string()),
+                "c: bare decl `{}` must not be definite-uninitialized, got {:?}",
+                name,
+                c_uninit
+            );
+        }
+        // An array declarator's SIZE identifier must NOT be mistaken for the
+        // bound name (`long arr[N];` binds `arr`, not `N`).
+        let c2 = r#"
+int sz(int N) {
+    long arr[N];
+    fill(arr);
+    return arr[0];
+}
+"#;
+        let defs = c1_def_names(c2, "sz", Language::C);
+        assert!(
+            defs.contains(&"arr".to_string()),
+            "c: `arr` should be the bound name of `long arr[N];`, got {:?}",
+            defs
+        );
+    }
+
+    /// PARITY: the Elixir pin/alias/`when`-guard semantics must be UNCHANGED by
+    /// routing match/param LHS through `extract_elixir_pattern_bindings`.
+    #[test]
+    fn test_c1_elixir_pattern_parity() {
+        // Pinned `^expected` is a MATCH against an existing value, never a new
+        // binding; the upper-case alias `Conn` in `%Conn{}` is a module ref,
+        // never a binding. `expected` and `conn` are the two parameters (each a
+        // single Definition); the pin must NOT add a second `expected` binding.
+        let src = r#"
+defmodule M do
+  def handle(expected, conn) do
+    %Conn{status: ^expected} = conn
+    work(conn)
+  end
+end
+"#;
+        let defs = c1_def_names(src, "handle", Language::Elixir);
+        assert_eq!(
+            defs.iter().filter(|d| *d == "expected").count(),
+            1,
+            "elixir parity: pinned `^expected` must not add a binding beyond the param, got {:?}",
+            defs
+        );
+        assert!(
+            !defs.contains(&"Conn".to_string()),
+            "elixir parity: upper-case alias `Conn` must never be a Definition, got {:?}",
+            defs
+        );
+        // `conn` is the parameter (a Definition); the match RHS reads it.
+        assert!(
+            defs.contains(&"conn".to_string()),
+            "elixir parity: param `conn` must be a Definition, got {:?}",
+            defs
+        );
+
+        // `when`-guard handling preserved: `def f(x) when is_atom(x)` binds `x`
+        // once; the guard is not a binder.
+        let guard = r#"
+defmodule G do
+  def f(x) when is_atom(x) do
+    use_it(x)
+  end
+end
+"#;
+        let defs = c1_def_names(guard, "f", Language::Elixir);
+        assert!(
+            defs.contains(&"x".to_string()),
+            "elixir parity: guarded param `x` must be a Definition, got {:?}",
+            defs
+        );
+    }
+
+    /// PARITY: `Definition` (strong kill) vs `WeakUpdate` (non-killing) must be
+    /// preserved across the touched sites — a plain bind is a strong
+    /// Definition; an element/field write is a non-killing WeakUpdate.
+    #[test]
+    fn test_c1_definition_vs_weakupdate_parity() {
+        // Ruby: `a, _ = …` binders are strong Definitions; `arr[i] = v` is a
+        // WeakUpdate of the container (must NOT be a Definition).
+        let rb = r#"
+def foo
+  a, b = pair()
+  arr[i] = a
+  baz(b)
+end
+"#;
+        let dfg = get_dfg_context(rb, "foo", Language::Ruby).unwrap();
+        let kind = |name: &str, rt: RefType| {
+            dfg.refs
+                .iter()
+                .any(|r| r.name == name && r.ref_type == rt)
+        };
+        assert!(
+            kind("a", RefType::Definition) && kind("b", RefType::Definition),
+            "ruby parity: multiple-assignment binders must be strong Definitions",
+        );
+        // The kill-preservation invariant my change must not break: an
+        // element-write container `arr[i] = …` is never a strong (killing)
+        // Definition. (Ruby `element_reference` writes are not currently wired
+        // to the WeakUpdate path at all — that is a separate pre-existing gap;
+        // the point here is only that my `left_assignment_list` arm did not turn
+        // a subscript LHS into a kill.)
+        assert!(
+            !kind("arr", RefType::Definition),
+            "ruby parity: element-write container `arr` must NOT be a strong Definition",
+        );
+
+        // C: bare `int *p;` is a strong Definition; `buf[i] = v` is a WeakUpdate.
+        let c = r#"
+int foo() {
+    int *p;
+    char buf[8];
+    buf[0] = 1;
+    return *p;
+}
+"#;
+        let dfg = get_dfg_context(c, "foo", Language::C).unwrap();
+        let ckind = |name: &str, rt: RefType| {
+            dfg.refs
+                .iter()
+                .any(|r| r.name == name && r.ref_type == rt)
+        };
+        assert!(
+            ckind("p", RefType::Definition) && ckind("buf", RefType::Definition),
+            "c parity: bare pointer/array decls must be strong Definitions",
+        );
+        assert!(
+            ckind("buf", RefType::WeakUpdate),
+            "c parity: `buf[0] = 1` must be a non-killing WeakUpdate of the container",
         );
     }
 
