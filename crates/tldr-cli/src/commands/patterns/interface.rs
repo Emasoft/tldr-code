@@ -2930,8 +2930,80 @@ fn collect_lua_accumulator_exports(
 ) -> Vec<LuaExport> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    // SHAPE 2a — literal-bound accumulator: `local M = { a = …, b = … }`.
+    // The fields `M` was CONSTRUCTED with are part of its export set exactly
+    // like later `M.x = …` member writes, but the accumulator walk below only
+    // sees post-declaration mutations. Harvest the initial table constructor
+    // first (it wins the dedup, recording each field at its literal site).
+    if let Some(literal) = lua_accumulator_literal(root, source, m) {
+        for export in collect_lua_table_exports(literal, source, lang, symbols) {
+            if seen.insert(export.name.clone()) {
+                out.push(export);
+            }
+        }
+    }
     collect_lua_accumulator_walk(root, source, lang, m, symbols, &mut out, &mut seen);
     out
+}
+
+/// Find the `table_constructor` literal that local table `m` was initially
+/// bound to (`local m = { … }`), if any, so its fields fold into the
+/// accumulator's export set. First binding wins (defensive against rebinds).
+///
+/// Shared verbatim by Lua and Luau: the `variable_declaration` →
+/// `assignment_statement` → (`variable_list`, `expression_list`) →
+/// `table_constructor` shape is byte-for-byte identical in both grammars.
+fn lua_accumulator_literal<'a>(root: Node<'a>, source: &[u8], m: &str) -> Option<Node<'a>> {
+    if root.kind() == "variable_declaration" {
+        let mut c = root.walk();
+        for child in root.children(&mut c) {
+            if child.kind() != "assignment_statement" {
+                continue;
+            }
+            if let Some((targets, values)) = lua_assignment_parts(child) {
+                for (i, target) in targets.iter().enumerate() {
+                    let names_m = matches!(target.kind(), "identifier" | "variable")
+                        && lua_base_identifier(*target, source).as_deref() == Some(m);
+                    if names_m {
+                        if let Some(value) = values.get(i) {
+                            if value.kind() == "table_constructor" {
+                                return Some(*value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if let Some(found) = lua_accumulator_literal(child, source, m) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Split a `function M.x()` name node (`dot_index_expression`) or a
+/// `function M:x()` colon-method name node (`method_index_expression`) into
+/// `(base_identifier, field_name)`. The dot form names its field via the
+/// `field` child; the colon form via `method`. Returns `None` for any other
+/// name shape (plain `identifier`, bracket-index, etc.).
+fn lua_member_decl_parts(name_node: Node, source: &[u8]) -> Option<(String, String)> {
+    match name_node.kind() {
+        "dot_index_expression" => lua_dot_parts(name_node, source),
+        "method_index_expression" => {
+            let table = name_node.child_by_field_name("table")?;
+            let method = name_node.child_by_field_name("method")?;
+            let base = lua_base_identifier(table, source)?;
+            let method_text = node_text(method, source).trim().to_string();
+            if method_text.is_empty() {
+                return None;
+            }
+            Some((base, method_text))
+        }
+        _ => None,
+    }
 }
 
 fn collect_lua_accumulator_walk(
@@ -2943,21 +3015,23 @@ fn collect_lua_accumulator_walk(
     out: &mut Vec<LuaExport>,
     seen: &mut std::collections::HashSet<String>,
 ) {
-    // `function M.foo() … end` — function_declaration whose `name` is a
-    // dot_index_expression rooted at M.
+    // `function M.foo() … end` (dot_index_expression name) and
+    // `function M:foo() … end` (method_index_expression name, the colon-method
+    // form) both bind a public field `foo` onto the accumulator `M`. The two
+    // grammars are identical except for the node that holds the field name
+    // (`field` for dots, `method` for colons); `lua_member_decl_parts`
+    // resolves both into `(base, field)`.
     if function_node_kinds(lang).contains(&node.kind()) {
         if let Some(name_node) = node.child_by_field_name("name") {
-            if name_node.kind() == "dot_index_expression" {
-                if let Some((base, field)) = lua_dot_parts(name_node, source) {
-                    if base == m && seen.insert(field.clone()) {
-                        out.push(LuaExport {
-                            name: field,
-                            lineno: node.start_position().row as u32 + 1,
-                            is_function: true,
-                            signature: lua_params_text(node, source),
-                            value_kind: None,
-                        });
-                    }
+            if let Some((base, field)) = lua_member_decl_parts(name_node, source) {
+                if base == m && seen.insert(field.clone()) {
+                    out.push(LuaExport {
+                        name: field,
+                        lineno: node.start_position().row as u32 + 1,
+                        is_function: true,
+                        signature: lua_params_text(node, source),
+                        value_kind: None,
+                    });
                 }
             }
         }
@@ -6172,5 +6246,77 @@ return require("other")
         let lua_pj = extract_interface(Path::new("pathjoin.lua"), PATHJOIN_LUA).unwrap();
         let luau_pj = extract_interface(Path::new("pathjoin.luau"), PATHJOIN_LUA).unwrap();
         assert_eq!(sorted_exports(&lua_pj), sorted_exports(&luau_pj));
+    }
+
+    /// TEST 6 (fix-PW1-A3b) — GENERALIZATION GATE. One fixture exercises BOTH
+    /// uncovered module idioms at once: (a) the literal-bound accumulator
+    /// (`local Lib = { compute = function… , PI = 3.14 }` — fields the table is
+    /// CONSTRUCTED with, which the post-declaration accumulator walk never saw)
+    /// and (b) the colon-method (`function Lib:greet()` — a
+    /// `method_index_expression` name the dot-only walk dropped). It also keeps
+    /// the already-working dot-method (`function Lib.staticHelper()`) as a
+    /// regression guard. The fixture is run through BOTH the `.lua` and `.luau`
+    /// extension paths, so all four cells of the symptom matrix
+    /// (lua×luau × accumulator-literal×colon-method) are asserted together. A
+    /// fix that closes only one idiom or only one language fails the exact
+    /// export-set equality below.
+    #[test]
+    fn test_interface_lua_luau_literal_accumulator_and_colon_methods() {
+        const SRC: &str = r#"
+local Lib = {
+  compute = function(x)
+    return x
+  end,
+  PI = 3.14,
+}
+
+function Lib:greet(name)
+  return "hi " .. name
+end
+
+function Lib.staticHelper(y)
+  return y
+end
+
+local function privateHelper()
+  return 0
+end
+
+return Lib
+"#;
+
+        for (path, label) in [("mod.lua", "lua"), ("mod.luau", "luau")] {
+            let info = extract_interface(Path::new(path), SRC).unwrap();
+
+            // (1) Export set is EXACTLY M's full field surface across both idioms.
+            assert_eq!(
+                sorted_exports(&info),
+                vec!["PI", "compute", "greet", "staticHelper"],
+                "[{label}] all_exports must union the literal-bound fields \
+                 (compute, PI), the colon-method (greet) and the dot-method \
+                 (staticHelper)"
+            );
+
+            // (2) The colon-method AND the literal-bound inline function AND the
+            //     dot-method must all land in functions[] (each `is_function`).
+            for fname in ["greet", "compute", "staticHelper"] {
+                assert!(
+                    info.functions.iter().any(|f| f.name == fname),
+                    "[{label}] function export `{fname}` must appear in functions[]"
+                );
+            }
+
+            // (3) The non-function literal field is routed to values[].
+            assert!(
+                info.values.iter().any(|v| v.name == "PI"),
+                "[{label}] number field PI must be a values[] entry, not a function"
+            );
+
+            // (4) A non-member local must never leak as an export.
+            assert!(
+                !info.all_exports.iter().any(|n| n == "privateHelper"),
+                "[{label}] non-member local `privateHelper` must not be exported"
+            );
+        }
     }
 }

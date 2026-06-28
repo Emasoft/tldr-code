@@ -174,6 +174,13 @@ fn extract_from_luau_file(
         )
         .collect();
 
+    // Map module-local function name -> (params, def_line) for the AST
+    // returned-table resolver (identifier-alias fields `add = add`).
+    let local_funcs: HashMap<String, (Vec<String>, usize)> = candidate_functions
+        .iter()
+        .map(|f| (f.name.clone(), (f.params.clone(), f.line_number as usize)))
+        .collect();
+
     for func in candidate_functions {
         let line_text = source
             .lines()
@@ -254,6 +261,60 @@ fn extract_from_luau_file(
             location: Some(Location {
                 file: relative_path.clone(),
                 line: func.line_number as usize,
+                column: None,
+            }),
+        });
+    }
+
+    // AST recovery for the literal-bound accumulator (`local M = { … } … return
+    // M`) and the multi-line `return { … }` literal — function-valued fields the
+    // line-based heuristics miss. Additive: only fields not already emitted are
+    // appended (shared resolver with the Lua frontend; grammar is identical).
+    let already: std::collections::HashSet<String> =
+        apis.iter().map(|a| a.qualified_name.clone()).collect();
+    for export in super::lua::returned_table_function_exports(tree.root_node(), &source, &local_funcs)
+    {
+        let qualified_name = format!("{}.{}", module_path, export.name);
+        if already.contains(&qualified_name) {
+            continue;
+        }
+        let params: Vec<Param> = export
+            .params
+            .iter()
+            .map(|name| Param {
+                name: name.clone(),
+                type_annotation: None,
+                default: None,
+                is_variadic: name == "...",
+                is_keyword: false,
+            })
+            .collect();
+        apis.push(ApiEntry {
+            qualified_name,
+            kind: ApiKind::Function,
+            module: module_path.clone(),
+            signature: Some(Signature {
+                params: params.clone(),
+                return_type: None,
+                is_async: false,
+                is_generator: false,
+            }),
+            docstring: None,
+            example: Some(format!(
+                "{}({})",
+                export.name,
+                params
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            triggers: extract_triggers(&export.name, None),
+            is_property: false,
+            return_type: None,
+            location: Some(Location {
+                file: relative_path.clone(),
+                line: export.line,
                 column: None,
             }),
         });
@@ -712,5 +773,69 @@ mod tests {
         assert_eq!(surface.total, 0);
         assert_eq!(surface.files_skipped, 2);
         assert_eq!(surface.warnings.len(), 2);
+    }
+
+    /// fix-PW1-A3b: the Luau path recovers function-valued fields of a
+    /// literal-bound accumulator (`local M = { … } … return M`), including
+    /// typed inline functions, mirroring the Lua frontend (shared resolver).
+    #[test]
+    fn test_extract_luau_surface_literal_bound_accumulator() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "mathx.luau",
+            r#"
+local function negate(x: number): number
+  return -x
+end
+
+local M = {
+  negate = negate,
+  add = function(a: number, b: number): number
+    return a + b
+  end,
+  PI = 3.14,
+}
+
+return M
+"#,
+        );
+
+        let resolved = ResolvedPackage {
+            root_dir: dir.path().to_path_buf(),
+            package_name: "example".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_luau_api_surface(&resolved, false, None).unwrap();
+        let names: Vec<&str> = surface
+            .apis
+            .iter()
+            .map(|api| api.qualified_name.as_str())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with(".add")),
+            "typed inline function field `add` must surface; got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with(".negate")),
+            "alias field `negate` must surface; got {names:?}"
+        );
+        // the typed inline `add` carries its parameter names
+        let add = surface
+            .apis
+            .iter()
+            .find(|a| a.qualified_name.ends_with(".add"))
+            .unwrap();
+        let pnames: Vec<&str> = add
+            .signature
+            .as_ref()
+            .unwrap()
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(pnames, vec!["a", "b"], "typed param names must be recovered");
     }
 }
