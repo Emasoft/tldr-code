@@ -299,9 +299,17 @@ pub fn impact_analysis_with_ast_fallback(
                     if known_files.contains(&normalize(func_file, project_root)) {
                         continue;
                     }
-                    let key = format!("{}:{}", func_file.display(), func_name);
+                    // fix-PW2-B5-impact-alias: carry the enclosing TYPE
+                    // qualifier on each collision-suppressed definition row
+                    // (`Type.method`) instead of a bare `method`. A bare method
+                    // name makes `enrich_impact_with_references` treat the
+                    // target as a free function and blank EVERY `recv.method()`
+                    // caller; the qualified form lets enrichment key callers
+                    // per-definition and apply receiver discrimination.
+                    let qualified = qualify_ast_method_name(func_file, func_name);
+                    let key = format!("{}:{}", func_file.display(), qualified);
                     report.targets.entry(key).or_insert_with(|| CallerTree {
-                        function: func_name.clone(),
+                        function: qualified.clone(),
                         file: func_file.clone(),
                         caller_count: 0,
                         callers: vec![],
@@ -496,7 +504,13 @@ pub fn impact_analysis_with_ast_fallback(
                     // deterministic serialized map-key order.
                     let mut targets: BTreeMap<String, CallerTree> = BTreeMap::new();
                     for (func_name, func_file) in &locations {
-                        let key = format!("{}:{}", func_file.display(), func_name);
+                        // fix-PW2-B5-impact-alias: qualify a bare method name
+                        // with its enclosing TYPE (`Type.method`) so the
+                        // reference-enrichment pass can apply per-definition
+                        // receiver discrimination instead of blanking every
+                        // `recv.method()` caller of an isolated method.
+                        let qualified = qualify_ast_method_name(func_file, func_name);
+                        let key = format!("{}:{}", func_file.display(), qualified);
                         let is_exported = function_is_exported(func_file, target_func, language);
 
                         let note = build_ast_fallback_note(
@@ -509,7 +523,7 @@ pub fn impact_analysis_with_ast_fallback(
                         targets.insert(
                             key,
                             CallerTree {
-                                function: func_name.clone(),
+                                function: qualified.clone(),
                                 file: func_file.clone(),
                                 caller_count: 0,
                                 callers: vec![],
@@ -585,6 +599,18 @@ pub fn enrich_impact_with_references(
     if report.targets.is_empty() {
         return;
     }
+
+    // fix-PW2-B5-impact-alias: snapshot whether the call graph resolved ANY
+    // caller for this symbol before enrichment mints synthetic ones. When the
+    // FuncIndex declined a genuine multi-file method-name-on-type collision,
+    // NO target carries a resolved caller (`any_resolved == false`): the
+    // symbol is genuinely unresolvable, so we must NOT blank every method
+    // caller. When the graph DID resolve something (`any_resolved == true` —
+    // e.g. the f69904c python class-collision, the rust self-call
+    // discrimination, a resolved lua module call) we keep strict receiver
+    // matching so a resolved edge is never sprayed onto sibling collision
+    // targets.
+    let any_resolved = report.targets.values().any(|t| !t.callers.is_empty());
 
     let mut options = ReferencesOptions::new();
     options.kinds = Some(vec![ReferenceKind::Call]);
@@ -713,6 +739,87 @@ pub fn enrich_impact_with_references(
         additions.push((enclosing, caller_file, r.line as u32, receiver));
     }
 
+    // fix-PW2-B5-impact-alias: some grammars (notably Swift) classify a member
+    // method invocation `recv.method(args)` as a `Read` reference, not a
+    // `Call`, so the Call-only lookup above returns NOTHING and impact would
+    // blank EVERY caller of a method-name-on-type collision. When the call
+    // graph resolved nothing (`!any_resolved`) AND the Call pass produced no
+    // caller (`additions.is_empty()`) — i.e. we are about to blank ALL callers
+    // — widen the lookup to `Read` references, accepting ONLY the sites the
+    // AST confirms are receiver-qualified call expressions (an explicit
+    // `recv.` / `self.` receiver). Genuine bare variable reads (no receiver)
+    // are excluded, so a truly isolated function is never given phantom
+    // callers. The per-target receiver discrimination + relaxation below then
+    // decides which definition each call site belongs to.
+    if !any_resolved && additions.is_empty() {
+        let mut read_opts = ReferencesOptions::new();
+        read_opts.kinds = Some(vec![ReferenceKind::Read]);
+        read_opts.language = Some(language.as_str().to_string());
+        read_opts.limit = Some(500);
+        if let Ok(read_refs) = find_references(target_func, project_root, &read_opts) {
+            for r in &read_refs.references {
+                let caller_file = r.file.clone();
+                let receiver =
+                    extract_call_receiver(&caller_file, r.line, r.column, bare_target, language);
+                // Only accept AST-confirmed receiver-qualified call sites; a
+                // bare/unknown/shadowed receiver is not a method invocation we
+                // can attribute to a typed definition.
+                if !matches!(receiver, CallReceiver::Named(_) | CallReceiver::SelfRef(_)) {
+                    continue;
+                }
+                let funcs = file_funcs_cache
+                    .entry(caller_file.clone())
+                    .or_insert_with(|| {
+                        let module = match extract_file(&caller_file, None) {
+                            Ok(m) => m,
+                            Err(_) => return Vec::new(),
+                        };
+                        let mut out: Vec<(String, u32, u32)> = Vec::new();
+                        for f in &module.functions {
+                            out.push((f.name.clone(), f.line_number, f.line_end));
+                        }
+                        for class in &module.classes {
+                            for m in &class.methods {
+                                out.push((m.name.clone(), m.line_number, m.line_end));
+                                out.push((
+                                    format!("{}.{}", class.name, m.name),
+                                    m.line_number,
+                                    m.line_end,
+                                ));
+                            }
+                        }
+                        out
+                    });
+                let enclosing = funcs
+                    .iter()
+                    .find(|(_, start, end)| {
+                        let line = r.line as u32;
+                        line >= *start && (*end == 0 || line <= *end)
+                    })
+                    .map(|(name, _, _)| name.clone())
+                    .unwrap_or_else(|| "<module>".to_string());
+
+                let is_self = report.targets.values().any(|tree| {
+                    paths_equivalent_root(&tree.file, project_root, &caller_file)
+                        && (enclosing == target_func
+                            || last_segment_eq_pub(&enclosing, target_func))
+                });
+                if is_self {
+                    continue;
+                }
+
+                let key_pair = (enclosing.clone(), caller_file.clone());
+                if additions
+                    .iter()
+                    .any(|(n, f, _, _)| n == &key_pair.0 && f == &key_pair.1)
+                {
+                    continue;
+                }
+                additions.push((enclosing, caller_file, r.line as u32, receiver));
+            }
+        }
+    }
+
     // fix-PW1-B7a-elixir-refcount (v0.5.0 BACKLOG): suppress synthetic
     // `<Module.Name>` module-atom pseudo-callers (e.g. `<Phoenix.Controller>`,
     // `<Plug.Conn>`) that the elixir call graph mints for module-level /
@@ -752,7 +859,23 @@ pub fn enrich_impact_with_references(
             // defined qualifier. This drops `json.decode(...)` from the
             // callers of `rpc.decode`, and `Codec::decode` self-calls from
             // the callers of `Parser::decode`.
-            if !receiver_compatible(receiver, target_qualifier.as_deref(), &tree.file, file) {
+            //
+            // fix-PW2-B5-impact-alias: when strict matching rejects a site,
+            // do NOT blank it if this is a genuinely-unresolvable
+            // method-name-on-type collision (`!any_resolved`) AND the site is
+            // a lowercase instance-variable receiver against a TYPE qualifier
+            // (`set.filter` vs `OrderedSet.filter`). Such a receiver cannot be
+            // proven to belong to a DIFFERENT type without full receiver-type
+            // inference (deferred THEME-D), so keep it rather than blank every
+            // caller. Module-qualified targets (lowercase qualifier like lua
+            // `rpc`) and type-named receivers (uppercase like `Mutex`) stay
+            // strict, preserving the CL-2 / f69904c discriminations.
+            let strict_ok =
+                receiver_compatible(receiver, target_qualifier.as_deref(), &tree.file, file);
+            let keep = strict_ok
+                || (!any_resolved
+                    && unresolvable_collision_keeps(receiver, target_qualifier.as_deref()));
+            if !keep {
                 continue;
             }
 
@@ -987,6 +1110,53 @@ fn receiver_compatible(
 fn names_equal_ignore_generics(a: &str, b: &str) -> bool {
     let strip = |s: &str| s.split(['<', '>']).next().unwrap_or(s).trim().to_string();
     strip(a) == strip(b)
+}
+
+/// fix-PW2-B5-impact-alias: case of a symbol name's first alphabetic char.
+/// `Some(true)` = uppercase lead (a TYPE / MODULE name like `OrderedSet`,
+/// `Mutex`), `Some(false)` = lowercase lead (an instance variable / value like
+/// `set`, `_bits`, `rpc`), `None` = no alphabetic character.
+fn first_alpha_is_uppercase(name: &str) -> Option<bool> {
+    name.chars()
+        .find(|c| c.is_alphabetic())
+        .map(|c| c.is_uppercase())
+}
+
+/// fix-PW2-B5-impact-alias: a TYPE / class / module qualifier is uppercase-led
+/// (Swift/Rust/Kotlin/Scala/Python types, OCaml modules). Used to gate the
+/// unresolvable-collision relaxation so module-qualified targets (lua `rpc`)
+/// keep strict receiver matching.
+fn qualifier_is_type_like(qualifier: &str) -> bool {
+    matches!(first_alpha_is_uppercase(qualifier), Some(true))
+}
+
+/// fix-PW2-B5-impact-alias: an instance-variable / value receiver is
+/// lowercase-led (`set`, `_bits`) — provably NOT a type or module reference.
+fn receiver_is_instance_like(receiver: &str) -> bool {
+    matches!(first_alpha_is_uppercase(receiver), Some(false))
+}
+
+/// fix-PW2-B5-impact-alias: should a reference-discovered call site be KEPT as
+/// a caller of a collision-suppressed method definition even though strict
+/// receiver matching rejected it?
+///
+/// Only `true` for a lowercase instance-variable receiver (`set.filter(...)`)
+/// against a TYPE qualifier (`OrderedSet.filter`). Without full receiver-type
+/// inference (deferred THEME-D) we cannot prove `set` is a DIFFERENT type than
+/// `OrderedSet`, so — for a genuinely-unresolvable collision (the caller gates
+/// this on `any_resolved == false`) — we must not blank EVERY caller.
+///
+/// Module-qualified targets (lowercase qualifier like lua `rpc`) and
+/// type-named receivers (uppercase like `Mutex`, `Codec`) return `false` and
+/// keep strict matching, preserving the CL-2 `json`≠`rpc` and OCaml
+/// stdlib-homonym discriminations.
+fn unresolvable_collision_keeps(receiver: &CallReceiver, target_qualifier: Option<&str>) -> bool {
+    match (receiver, target_qualifier) {
+        (CallReceiver::Named(r), Some(q)) => {
+            qualifier_is_type_like(q) && receiver_is_instance_like(r)
+        }
+        _ => false,
+    }
 }
 
 /// Extract the receiver of the call whose method/function name is
@@ -1261,7 +1431,22 @@ fn receiver_for_call_name(
         }
 
         // Java/C#/Kotlin field/member access: receiver.method.
+        //
+        // fix-PW2-B5-impact-alias: Swift `recv.method` parses as
+        // `(navigation_expression target: <recv> suffix: (navigation_suffix
+        // suffix: <method>))`, so the method leaf's parent is the
+        // `navigation_suffix` and the receiver is the GRANDPARENT
+        // `navigation_expression`'s `target` field. Without this the swift
+        // member call resolved to `Bare` and `impact` could not discriminate
+        // (or recover) method callers at all.
         "field_access" | "navigation_expression" | "navigation_suffix" => {
+            if parent.kind() == "navigation_suffix" {
+                if let Some(grand) = parent.parent() {
+                    if let Some(tgt) = grand.child_by_field_name("target") {
+                        return receiver_from_expr(&tgt, src);
+                    }
+                }
+            }
             if let Some(obj) = parent.child_by_field_name("object") {
                 return receiver_from_expr(&obj, src);
             }
@@ -1924,6 +2109,39 @@ fn file_defines_function(file: &Path, qualified: &str) -> bool {
         .iter()
         .chain(methods.iter())
         .any(|name| last_segment(name) == leaf)
+}
+
+/// fix-PW2-B5-impact-alias: recover the enclosing TYPE qualifier for an
+/// AST-discovered definition so a collision-suppressed method row is keyed
+/// `Type.method` (per-definition keying) instead of a bare `method`.
+///
+/// A bare method name makes [`enrich_impact_with_references`] treat the target
+/// as a free function and blank EVERY `recv.method(...)` caller. Re-parsing the
+/// file via [`crate::extract_file`] (the same AST source the enrichment pass
+/// already uses) lets us attach the real class/struct qualifier.
+///
+/// Already-qualified names (`Class.method`, `Type::method`) and genuine
+/// free functions (a name that is itself a top-level function in the file)
+/// are returned unchanged so module-level functions are never mis-qualified.
+fn qualify_ast_method_name(file: &Path, func_name: &str) -> String {
+    if func_name.contains('.') || func_name.contains("::") {
+        return func_name.to_string();
+    }
+    let module = match crate::extract_file(file, None) {
+        Ok(m) => m,
+        Err(_) => return func_name.to_string(),
+    };
+    // A name that is ALSO a top-level free function in this file stays bare:
+    // qualifying it would invent a spurious receiver.
+    if module.functions.iter().any(|f| f.name == func_name) {
+        return func_name.to_string();
+    }
+    for class in &module.classes {
+        if class.methods.iter().any(|m| m.name == func_name) {
+            return format!("{}.{}", class.name, func_name);
+        }
+    }
+    func_name.to_string()
 }
 
 /// Search for a function in the AST of files under `root`.
@@ -2918,6 +3136,280 @@ mod tests {
                 .any(|(name, _)| name == "run" || name.ends_with(".run")),
             "genuine named caller `run` must be retained; got callers: {:?}",
             callers
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // =====================================================================
+    // fix-PW2-B5-impact-alias (v0.5.0 BACKLOG): a method name defined on N
+    // types across N files makes the FuncIndex DECLINE cross-file resolution
+    // (genuine multi-file collision), so the call graph emits no resolved
+    // edges and the AST-fallback rows are blanked. Before the fix
+    // `impact <method>` on such a collision returned caller_count == 0 for
+    // EVERY definition even though references show real `recv.method(...)`
+    // call sites. The fix (a) keys each collision-suppressed definition row
+    // `Type.method` and (b) keeps a lowercase instance-variable receiver as a
+    // caller when the collision is genuinely unresolvable — WITHOUT spraying
+    // a resolved edge onto sibling targets (preserves the f69904c python
+    // class-collision and the CL-2 receiver discrimination).
+    //
+    // Symptom class: swift (ocaml / php inherit the same fallback + enrich
+    // path). These generalization tests drive the REAL resolution path —
+    // build_project_call_graph + impact_analysis_with_ast_fallback +
+    // enrich_impact_with_references.
+    // =====================================================================
+
+    /// Build a graph, run impact + reference enrichment, and return the
+    /// per-target `(function, caller_count, [caller_function])` triples.
+    fn b5_resolve(
+        root: &Path,
+        func: &str,
+        language: crate::Language,
+    ) -> Vec<(String, usize, Vec<String>)> {
+        use crate::callgraph::builder::build_project_call_graph;
+        let graph = build_project_call_graph(root, language, None, true).unwrap();
+        let mut report =
+            impact_analysis_with_ast_fallback(&graph, func, 3, None, root, language)
+                .expect("impact analysis should succeed");
+        enrich_impact_with_references(&mut report, root, func, language);
+        report
+            .targets
+            .values()
+            .map(|t| {
+                (
+                    t.function.clone(),
+                    t.caller_count,
+                    t.callers.iter().map(|c| c.function.clone()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn b5_swift_method_collision_ok_branch_not_all_blanked() {
+        // `filter` defined on two structs in two files; each calls a helper so
+        // it surfaces as a call-graph src (the Ok-augmentation branch, the
+        // line range the slice targets). Callers use INSTANCE variables
+        // (`ot`, `bt`) whose names do not equal the type qualifier.
+        let root = std::env::temp_dir().join("tldr_b5_swift_ok");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Sources")).unwrap();
+        std::fs::write(
+            root.join("Sources/Ordered.swift"),
+            "public struct OrderedThing {\n    var items: [Int]\n    public func filter(_ p: (Int) -> Bool) -> OrderedThing {\n        let _ = keepIt(items)\n        return self\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Bitty.swift"),
+            "public struct BitThing {\n    var bits: [Int]\n    public func filter(_ p: (Int) -> Bool) -> BitThing {\n        let _ = keepIt(bits)\n        return self\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Helper.swift"),
+            "func keepIt(_ xs: [Int]) -> [Int] { return xs }\nfunc isPositive(_ x: Int) -> Bool { return x > 0 }\n",
+        )
+        .unwrap();
+        // Paren calls (`recv.filter(pred)`) so references classifies them as
+        // `Call` (the real-corpus shape `_bits.filter(isIncluded)`).
+        std::fs::write(
+            root.join("Sources/Use.swift"),
+            "func useThem(_ ot: OrderedThing, _ bt: BitThing) {\n    let _ = ot.filter(isPositive)\n    let _ = bt.filter(isPositive)\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "filter", crate::Language::Swift);
+        let total_callers: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert!(
+            total_callers > 0,
+            "B5: swift method-name-on-type collision blanked ALL callers; targets: {:?}",
+            targets
+        );
+        // The genuine cross-file caller `useThem` must be attributed to at
+        // least one definition.
+        let has_use = targets
+            .iter()
+            .any(|(_, _, callers)| callers.iter().any(|c| c.contains("useThem")));
+        assert!(
+            has_use,
+            "B5: expected `useThem` to be surfaced as a caller; targets: {:?}",
+            targets
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn b5_swift_method_collision_err_branch_qualified_not_blanked() {
+        // `filter` defined on two structs that call nothing -> impact_analysis
+        // returns FunctionNotFound and the AST-fallback (Err) branch builds
+        // the targets. Before the fix these rows carried the BARE name
+        // `filter` (qualifier lost), so enrichment blanked every caller. The
+        // fix qualifies them `Type.filter` and keeps the instance-receiver
+        // callers.
+        let root = std::env::temp_dir().join("tldr_b5_swift_err");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Sources")).unwrap();
+        std::fs::write(
+            root.join("Sources/Ordered.swift"),
+            "public struct OrderedThing {\n    var items: [Int]\n    public func filter(_ p: (Int) -> Bool) -> OrderedThing {\n        return self\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Bitty.swift"),
+            "public struct BitThing {\n    var bits: [Int]\n    public func filter(_ p: (Int) -> Bool) -> BitThing {\n        return self\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Helper.swift"),
+            "func isPositive(_ x: Int) -> Bool { return x > 0 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Use.swift"),
+            "func useThem(_ ot: OrderedThing, _ bt: BitThing) {\n    let _ = ot.filter(isPositive)\n    let _ = bt.filter(isPositive)\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "filter", crate::Language::Swift);
+        // Per-definition keying: every fallback row carries its TYPE qualifier.
+        assert!(
+            targets
+                .iter()
+                .all(|(f, _, _)| f.contains('.') && f.ends_with(".filter")),
+            "B5: AST-fallback method rows must be keyed `Type.filter`; targets: {:?}",
+            targets
+        );
+        let total_callers: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert!(
+            total_callers > 0,
+            "B5: swift Err-branch collision blanked ALL callers; targets: {:?}",
+            targets
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn b5_python_class_collision_preserves_caller_count_one() {
+        // f69904c REGRESSION GUARD: two same-named `Service` classes in two
+        // files; `Runner.go` constructs `Service()` in a.py and calls
+        // `s.handle()`. The call graph disambiguates to a.py:Service.handle
+        // (caller_count 1). The fix must NOT spray that resolved call onto the
+        // b.py:Service.handle sibling (caller_count must stay 0).
+        let root = std::env::temp_dir().join("tldr_b5_py_classcollision");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.py"),
+            "class Service:\n    def handle(self):\n        return 1\n\n\nclass Runner:\n    def go(self):\n        s = Service()\n        return s.handle()\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.py"),
+            "class Service:\n    def handle(self):\n        return 2\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "handle", crate::Language::Python);
+        let a_target = targets
+            .iter()
+            .find(|(f, _, callers)| {
+                f.ends_with(".handle") && callers.iter().any(|c| c.contains("go"))
+            })
+            .or_else(|| targets.iter().find(|(_, cc, _)| *cc == 1));
+        assert!(
+            a_target.is_some(),
+            "B5: python class-collision must resolve the genuine caller (count 1); targets: {:?}",
+            targets
+        );
+        assert_eq!(
+            a_target.unwrap().1,
+            1,
+            "B5: genuine python class-collision target must have caller_count 1; targets: {:?}",
+            targets
+        );
+        // No target may over-count: the resolved `s.handle()` must not be
+        // sprayed onto the sibling Service.handle definition.
+        assert!(
+            targets.iter().all(|(_, cc, _)| *cc <= 1),
+            "B5: python class-collision sibling over-counted (resolved edge sprayed); targets: {:?}",
+            targets
+        );
+        let total: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert_eq!(
+            total, 1,
+            "B5: exactly one resolved caller expected across both Service.handle defs; targets: {:?}",
+            targets
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn b5_ocaml_module_value_collision_callers_retained() {
+        // OCaml inherits the same fallback/enrich path. `parse` defined in two
+        // modules; main.ml calls `A.parse` and `B.parse` (module-qualified
+        // receivers). The fix must keep these callers (module qualifier ==
+        // receiver) and must NOT regress them to blank.
+        let root = std::env::temp_dir().join("tldr_b5_ocaml_collision");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.ml"), "let parse x = x + 1\n").unwrap();
+        std::fs::write(root.join("b.ml"), "let parse x = x + 2\n").unwrap();
+        std::fs::write(
+            root.join("main.ml"),
+            "let run () =\n  let _ = A.parse 1 in\n  let _ = B.parse 2 in\n  ()\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "parse", crate::Language::Ocaml);
+        let total_callers: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert!(
+            total_callers > 0,
+            "B5: ocaml module-value collision blanked ALL callers; targets: {:?}",
+            targets
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn b5_php_method_collision_callers_retained() {
+        // PHP inherits the same path. `format` defined on three classes;
+        // app.php constructs `new Alpha()` / `new Beta()` and calls
+        // `->format()`. The fix must retain the resolved callers and must not
+        // blank them.
+        let root = std::env::temp_dir().join("tldr_b5_php_collision");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.php"),
+            "<?php\nclass Alpha {\n    public function format($x) { return $x; }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.php"),
+            "<?php\nclass Beta {\n    public function format($x) { return $x; }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("c.php"),
+            "<?php\nclass Gamma {\n    public function format($x) { return $x; }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.php"),
+            "<?php\nfunction run() {\n    $a = new Alpha();\n    $a->format(1);\n    $b = new Beta();\n    $b->format(2);\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "format", crate::Language::Php);
+        let total_callers: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert!(
+            total_callers > 0,
+            "B5: php method collision blanked ALL callers; targets: {:?}",
+            targets
         );
 
         let _ = std::fs::remove_dir_all(&root);
