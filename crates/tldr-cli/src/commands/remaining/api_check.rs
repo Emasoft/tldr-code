@@ -3544,6 +3544,18 @@ fn java_operand_is_provably_non_string(node: tree_sitter::Node, source: &[u8]) -
                 .map(|n| &source[n.byte_range()] == b"size")
                 .unwrap_or(false)
         }
+        // bug3-apicheck-java-narrow (v0.5.0 BACKLOG): a signed / negated
+        // numeric literal — `-1`, `+1`, `-1.5`, `~0xFF`, `!true` — parses as a
+        // `unary_expression` whose `[operand]` is the bare literal. The result
+        // is an int / long / float / boolean, never a `String`, so `colon ==
+        // -1` (the retrofit `RequestFactory` false positive) is not a
+        // reference-equality bug. We recurse into the operand so the existing
+        // literal arms decide; an identifier operand (`-x`, `!flag`) is NOT
+        // provably non-String and stays conservatively unproven.
+        "unary_expression" => node
+            .child_by_field_name("operand")
+            .map(|operand| java_operand_is_provably_non_string(operand, source))
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -6060,6 +6072,52 @@ mod tests {
         assert!(!ctx.string_eq_line_set.contains(&3), "primitive int cmp excluded");
         assert!(ctx.string_eq_line_set.contains(&4), "string-literal cmp included");
         assert!(ctx.string_eq_line_set.contains(&5), "two-identifier cmp included");
+    }
+
+    /// bug3-apicheck-java-narrow (v0.5.0 BACKLOG): JV001 must NOT fire when one
+    /// operand is a UNARY numeric literal (`-1`, `colon == -1`, `-1.5`). A
+    /// signed/negated number is an int / long / float, never a `String`, so a
+    /// `==` against it is not a reference-equality bug. The corpus false
+    /// positive was `colon == -1` in retrofit's `RequestFactory.java`. Pre-fix,
+    /// `java_operand_is_provably_non_string` had no `unary_expression` arm, so a
+    /// `-1` (parsed as `unary_expression` with a `decimal_integer_literal`
+    /// operand) fell through to `_ => false` and the comparison looked plausible.
+    ///
+    /// GENERALIZATION GATE (anti-treadmill): one fixture exercises every variant
+    /// in the symptom class at once — a unary literal in the LHS position
+    /// (`-1 == colon`), the RHS position (`colon == -1`), and a floating-point
+    /// literal (`colon == -1.5`) — while the genuine-detection guards stay
+    /// flagged: the string-literal comparison (`s == "x"`) AND the DEFERRED
+    /// id==id comparison (`name == otherName`, whose suppression needs
+    /// type-inference and is intentionally out of scope here). A fix that closes
+    /// only one operand position fails this test.
+    #[test]
+    fn test_jv001_unary_numeric_literal_not_flagged() {
+        let dir = TempDir::new().unwrap();
+        let src = "class C {\n  void m(int colon, String s, String name, String otherName) {\n    boolean a = -1 == colon;\n    boolean b = colon == -1;\n    boolean c = colon == -1.5;\n    boolean d = s == \"x\";\n    boolean e = name == otherName;\n  }\n}\n";
+        let path = write_tmp(&dir, "RequestFactory.java", src);
+        let rules = rules_for_language(ApiLanguage::Java);
+        let findings = analyze_file(&path, &rules, ApiLanguage::Java).unwrap();
+        assert_eq!(
+            ids_for(&findings, "JV001"),
+            vec![6, 7],
+            "JV001 must suppress unary-numeric-literal comparisons (lines 3-5) yet still flag the genuine string-literal (line 6) and the deferred id==id (line 7) cases, got {:?}",
+            ids_for(&findings, "JV001")
+        );
+    }
+
+    /// Direct unit test on the Java comparison context builder: a
+    /// `unary_expression` numeric-literal operand (`-1`, `-1.5`) is provably
+    /// non-String in BOTH operand positions, so its operator line is excluded
+    /// from `string_eq_line_set`.
+    #[test]
+    fn test_java_string_eq_context_excludes_unary_numeric_literal() {
+        let src = "class C { void m(int colon) {\n  boolean a = -1 == colon;\n  boolean b = colon == -1;\n  boolean c = colon == -1.5;\n} }\n";
+        let ctx = compute_java_api_check_context(src, ApiLanguage::Java);
+        assert!(ctx.parsed, "expected successful parse");
+        assert!(!ctx.string_eq_line_set.contains(&2), "unary `-1` in LHS position excluded");
+        assert!(!ctx.string_eq_line_set.contains(&3), "unary `-1` in RHS position excluded");
+        assert!(!ctx.string_eq_line_set.contains(&4), "unary `-1.5` float in RHS position excluded");
     }
 
     // ---- JS001/TS001: loose equality only inside real expressions -------
