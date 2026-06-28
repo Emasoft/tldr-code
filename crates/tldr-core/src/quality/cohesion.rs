@@ -852,6 +852,19 @@ fn extract_file_method_fields(
                     let bare =
                         generic_bare_field_accesses(method_source, language, declared);
                     fields.extend(bare);
+                    // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): Elixir struct
+                    // modules access fields as `var.field` (declared via
+                    // `defstruct`), which neither the `@attr` walk nor the bare
+                    // resolver sees. Credit `var.field`/map-update keys gated on
+                    // the declared `defstruct` key set. `@attr` access stays
+                    // handled by `extract_field_accesses` above, so a module that
+                    // mixes both keeps both signals; a struct-less `@attr` module
+                    // has an empty `declared` and is untouched here.
+                    if matches!(language, Language::Elixir) {
+                        let struct_fields =
+                            elixir_struct_field_accesses(method_source, declared);
+                        fields.extend(struct_fields);
+                    }
                 }
                 // fix-R3-r7-cl11 (Fix 3): canonical LCOM4 call edges. Collect
                 // this method's self/`Self`-qualified intra-class calls (AST,
@@ -2061,30 +2074,229 @@ fn extract_swift_classes_cohesion_recursive(
     classes: &mut std::collections::BTreeMap<String, ClassInfo>,
 ) {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "class_declaration" || child.kind() == "protocol_declaration" {
-            if let Some(info) = extract_swift_class_info(&child, source) {
-                let entry = classes
-                    .entry(info.name.clone())
-                    .or_insert_with(|| ClassInfo {
-                        name: info.name.clone(),
-                        line: info.line,
-                        methods: Vec::new(),
-                        is_partial: false,
-                        namespace_path: Vec::new(),
-                        // fix-FixA-bare-field-v1: Swift uses `self.`-qualified
-                        // access; no bare-member resolution needed.
-                        declared_fields: HashSet::new(),
-                    });
-                if info.line < entry.line {
-                    entry.line = info.line;
+    let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+    for (i, child) in children.iter().enumerate() {
+        match child.kind() {
+            "class_declaration" | "protocol_declaration" => {
+                if let Some(info) = extract_swift_class_info(child, source) {
+                    swift_merge_cohesion_class(classes, info);
                 }
-                entry.methods.extend(info.methods);
             }
+            // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): mirror the E3a
+            // (fix-PW2-E3a-root-swift-class) recovery. On a large body
+            // tree-sitter-swift GLR error-recovery reduces a real type header
+            // (`open class Session: @unchecked Sendable { … }`) to a
+            // `function_declaration` (stranded type keyword + ERROR child) and
+            // FLATTENS the rest of the body out as following top-level siblings.
+            // The cohesion walker previously saw only the `extension Session`
+            // blocks (which parse cleanly as `class_declaration`) and so analysed
+            // a FICTITIOUS extension-merge instead of the real class. Recover the
+            // header into a `ClassInfo` (methods from the ERROR child + the
+            // flattened trailing siblings) and merge it by name — the BTreeMap
+            // then unifies the real class body with its extensions.
+            "function_declaration" => {
+                if let Some((_keyword, name)) = swift_misparsed_type_header(child, source) {
+                    let recovered = recover_swift_cohesion_misparsed_class(
+                        child, name, &children, i, source,
+                    );
+                    swift_merge_cohesion_class(classes, recovered);
+                }
+            }
+            _ => {}
         }
         // Recurse into children — swift classes/protocols/extensions
-        // may be nested inside namespace-like contexts.
-        extract_swift_classes_cohesion_recursive(child, source, classes);
+        // may be nested inside namespace-like contexts (and inside a
+        // mis-parsed header's ERROR child).
+        extract_swift_classes_cohesion_recursive(*child, source, classes);
+    }
+}
+
+/// Merge a swift `ClassInfo` into the by-name cohesion map: union methods and
+/// declared fields, keep the smallest declaration line. This is the
+/// extended-type aggregation (`class Foo` + `extension Foo` + the recovered
+/// header all collapse into one logical `Foo`).
+fn swift_merge_cohesion_class(
+    classes: &mut std::collections::BTreeMap<String, ClassInfo>,
+    info: ClassInfo,
+) {
+    let entry = classes
+        .entry(info.name.clone())
+        .or_insert_with(|| ClassInfo {
+            name: info.name.clone(),
+            line: info.line,
+            methods: Vec::new(),
+            is_partial: false,
+            namespace_path: Vec::new(),
+            declared_fields: HashSet::new(),
+        });
+    if info.line < entry.line {
+        entry.line = info.line;
+    }
+    entry.methods.extend(info.methods);
+    entry.declared_fields.extend(info.declared_fields);
+}
+
+/// Swift type-declaration keywords that tree-sitter-swift folds into a single
+/// `class_declaration` node — and that a GLR-mis-parsed header strands as a bare
+/// keyword token. Mirrors `SWIFT_TYPE_KEYWORDS` in `ast/extract.rs`.
+const SWIFT_COHESION_TYPE_KEYWORDS: &[&str] =
+    &["class", "struct", "enum", "actor", "protocol", "extension"];
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): detect a `function_declaration`
+/// node that is actually a mis-parsed Swift TYPE header. The load-bearing
+/// discriminator (mirroring E3a) is a stranded type keyword token AND a recovery
+/// `ERROR` child: a healthy `class func` / `static func` carries the keyword but
+/// never an `ERROR`. Returns `(keyword, type_name)`; the name is the first
+/// identifier inside the `ERROR` (the token following the keyword).
+fn swift_misparsed_type_header(
+    node: &tree_sitter::Node,
+    source: &str,
+) -> Option<(&'static str, String)> {
+    if node.kind() != "function_declaration" {
+        return None;
+    }
+    let mut keyword: Option<&'static str> = None;
+    let mut error_child: Option<tree_sitter::Node> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(kw) = SWIFT_COHESION_TYPE_KEYWORDS.iter().find(|k| **k == child.kind()) {
+            keyword = Some(*kw);
+        } else if child.kind() == "ERROR" && error_child.is_none() {
+            error_child = Some(child);
+        }
+    }
+    let keyword = keyword?;
+    let error_child = error_child?;
+    let name = swift_first_any_identifier(&error_child, source).unwrap_or_default();
+    if name.is_empty() {
+        return None;
+    }
+    Some((keyword, name))
+}
+
+/// Pre-order search for the first `simple_identifier`/`type_identifier` under a
+/// node (used to pull a mis-parsed type's name out of its stranded `ERROR`).
+fn swift_first_any_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "simple_identifier" || n.kind() == "type_identifier" {
+            return node_text_of(&n, source).filter(|t| !t.is_empty());
+        }
+        let mut cursor = n.walk();
+        let kids: Vec<tree_sitter::Node> = n.children(&mut cursor).collect();
+        for k in kids.into_iter().rev() {
+            stack.push(k);
+        }
+    }
+    None
+}
+
+/// The stray `}` tree-sitter leaves as a top-level `ERROR` where the mis-parsed
+/// class body actually closes — the right boundary for re-gathering members.
+fn swift_is_stray_close_brace(node: &tree_sitter::Node, source: &str) -> bool {
+    node.kind() == "ERROR" && node_text_of(node, source).map(|t| t.trim() == "}").unwrap_or(false)
+}
+
+/// Node kinds that count as Swift methods inside a (recovered) type body.
+fn swift_is_method_decl(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration" | "init_declaration" | "deinit_declaration"
+    )
+}
+
+/// Collect method declarations nested inside a mis-parsed header's `ERROR`
+/// child, stopping at nested type boundaries so a nested enum/struct's methods
+/// are not mis-attributed to the outer class. `init`/`deinit` are skipped to
+/// match the constructor-exclusion policy of the healthy swift method walker.
+fn collect_swift_recovered_inner_methods(
+    node: &tree_sitter::Node,
+    source: &str,
+    methods: &mut Vec<MethodInfo>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if swift_is_method_decl(kind) {
+            if swift_misparsed_type_header(&child, source).is_some() {
+                continue; // a nested mis-parsed header is a type, not a method
+            }
+            if kind == "function_declaration" {
+                swift_push_recovered_method(&child, source, methods);
+            }
+        } else if matches!(
+            kind,
+            "class_declaration" | "struct_declaration" | "class_body" | "struct_body"
+        ) {
+            // Nested type — its members belong to it.
+        } else {
+            collect_swift_recovered_inner_methods(&child, source, methods);
+        }
+    }
+}
+
+/// Push a recovered swift `function_declaration` as a `MethodInfo` (real byte
+/// span so the per-method field-access scan can slice the file source).
+fn swift_push_recovered_method(
+    node: &tree_sitter::Node,
+    source: &str,
+    methods: &mut Vec<MethodInfo>,
+) {
+    let name = node
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()))
+        .or_else(|| swift_first_simple_identifier(node, source));
+    if let Some(n) = name {
+        if !n.is_empty() {
+            methods.push(MethodInfo {
+                name: n,
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+            });
+        }
+    }
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): build a `ClassInfo` for a swift
+/// type whose header tree-sitter mis-parsed as a `function_declaration`.
+/// Re-gathers methods from (1) the header's `ERROR` child and (2) the trailing
+/// members the grammar flattened out as following top-level siblings, up to the
+/// stray `}` that marks the real class close. Mirrors `recover_swift_misparsed_class`
+/// in `ast/extract.rs` but emits cohesion `MethodInfo`/`ClassInfo`.
+fn recover_swift_cohesion_misparsed_class(
+    header: &tree_sitter::Node,
+    name: String,
+    siblings: &[tree_sitter::Node],
+    header_index: usize,
+    source: &str,
+) -> ClassInfo {
+    let mut methods: Vec<MethodInfo> = Vec::new();
+    let mut declared_fields: HashSet<String> = HashSet::new();
+    collect_swift_recovered_inner_methods(header, source, &mut methods);
+    collect_swift_declared_fields(header, source, &mut declared_fields);
+
+    let mut j = header_index + 1;
+    while j < siblings.len() {
+        let sib = siblings[j];
+        if swift_is_stray_close_brace(&sib, source) {
+            break;
+        }
+        if swift_is_method_decl(sib.kind())
+            && swift_misparsed_type_header(&sib, source).is_none()
+            && sib.kind() == "function_declaration"
+        {
+            swift_push_recovered_method(&sib, source, &mut methods);
+        }
+        j += 1;
+    }
+
+    ClassInfo {
+        name,
+        line: header.start_position().row + 1,
+        methods,
+        is_partial: false,
+        namespace_path: Vec::new(),
+        declared_fields,
     }
 }
 
@@ -2104,10 +2316,16 @@ fn extract_swift_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
 
     let line = node.start_position().row + 1;
     let mut methods = Vec::new();
+    let mut declared_fields = HashSet::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "class_body" || child.kind() == "protocol_body" {
             collect_swift_methods(&child, source, &mut methods);
+            // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): harvest stored
+            // properties so a swift struct/class is never mis-verdicted
+            // `NotApplicable` (drives `is_fieldless`). Swift accesses members via
+            // `self.x`, so the set is NOT used for bare resolution.
+            collect_swift_declared_fields(&child, source, &mut declared_fields);
         }
     }
     Some(ClassInfo {
@@ -2116,9 +2334,56 @@ fn extract_swift_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cl
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
-        // fix-FixA-bare-field-v1: Swift uses `self.`-qualified access.
-        declared_fields: HashSet::new(),
+        declared_fields,
     })
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): collect Swift stored-property
+/// names from a `class_body`/`protocol_body`. Grammar (tree-sitter-swift,
+/// VERIFIED via `dump_ast_file`):
+///   `property_declaration` -> `value_binding_pattern`(var/let) + `pattern` ->
+///   `simple_identifier`. A tuple binding (`let (a, b) = …`) nests several
+///   `simple_identifier`s under the pattern; each becomes a field. Computed
+///   properties share the shape and are harmless to include (they are still
+///   `self.`-accessible members). Only the type's own body is scanned.
+fn collect_swift_declared_fields(
+    body: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "property_declaration" {
+            if let Some(pat) = child.child_by_field_name("name") {
+                swift_collect_pattern_identifiers(&pat, source, out);
+            } else if let Some(pat) = child
+                .children(&mut child.walk())
+                .find(|c| c.kind() == "pattern")
+            {
+                swift_collect_pattern_identifiers(&pat, source, out);
+            }
+        }
+    }
+}
+
+/// Collect every `simple_identifier` leaf under a Swift binding pattern.
+fn swift_collect_pattern_identifiers(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    if node.kind() == "simple_identifier" {
+        if let Some(t) = node_text_of(node, source) {
+            if !t.is_empty() {
+                out.insert(t);
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        swift_collect_pattern_identifiers(&child, source, out);
+    }
 }
 
 fn swift_first_type_identifier(node: &tree_sitter::Node, source: &str) -> Option<String> {
@@ -2242,7 +2507,6 @@ fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
     for child in node.children(&mut cursor) {
         if child.kind() == "class_body" {
             collect_kotlin_methods(&child, source, &mut methods);
-            collect_kotlin_declared_fields(&child, source, &mut declared_fields);
         }
         // fix-FixA-bare-field-v1: constructor `val`/`var` parameters are fields
         // too (`class Account(initial: Int)`); harvest them from the
@@ -2251,6 +2515,16 @@ fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
             collect_kotlin_ctor_param_fields(&child, source, &mut declared_fields);
         }
     }
+    // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): scan the WHOLE class node for
+    // declared properties rather than only the direct `class_body` children. An
+    // `abstract val name` lives in the body like any property, but an
+    // `expect class P { val x }` parses brace-less (tree-sitter-kotlin-ng nests
+    // the property under the class's `identifier`, with NO `class_body`), so the
+    // previous body-only scan dropped expect/brace-less property declarations
+    // (declared-field UNDER-count). The boundary-aware walk descends through the
+    // body / mis-nested wrappers but stops at method bodies and nested types so a
+    // method-local `val` or a nested class's property is never mis-credited.
+    collect_kotlin_declared_fields(node, source, &mut declared_fields);
     Some(ClassInfo {
         name,
         line,
@@ -2261,35 +2535,58 @@ fn extract_kotlin_class_info(node: &tree_sitter::Node, source: &str) -> Option<C
     })
 }
 
-/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX): collect Kotlin declared property
-/// names from a `class_body`. Grammar (tree-sitter-kotlin-ng):
-///   `class_body` -> `property_declaration` -> `variable_declaration` ->
-///   `identifier` (the property name). Nested classes/functions are NOT
-///   descended (their members are not this class's fields).
+/// fix-FixA-bare-field-v1 (v0.5.0 AUDIT-FIX) + fix-PW3-D-cohesion-fieldset
+/// (v0.5.0 BACKLOG): collect Kotlin declared property names from a class node.
+///
+/// Grammar (tree-sitter-kotlin-ng):
+///   `property_declaration` -> `variable_declaration` -> `identifier`.
+/// A plain class wraps these in a `class_body`; an `abstract val` is the same
+/// `property_declaration` shape (with an `abstract` modifier). An
+/// `expect class P { val x }` parses brace-less — the property nests directly
+/// under the class's `identifier` with NO `class_body` — so a body-only scan
+/// dropped it. We walk the whole class node, collecting every
+/// `property_declaration`, but STOP at method bodies (`function_declaration`,
+/// `getter`/`setter`, initializers, secondary constructors) and nested types
+/// (`class_declaration`/`object_declaration`/`companion_object`) so neither a
+/// method-local `val` nor a nested type's property is mis-credited.
 fn collect_kotlin_declared_fields(
-    body: &tree_sitter::Node,
+    node: &tree_sitter::Node,
     source: &str,
     out: &mut HashSet<String>,
 ) {
-    let mut cursor = body.walk();
-    for child in body.children(&mut cursor) {
-        if child.kind() == "property_declaration" {
-            if let Some(var_decl) = child
-                .children(&mut child.walk())
-                .find(|c| c.kind() == "variable_declaration")
-            {
-                let mut vc = var_decl.walk();
-                for vchild in var_decl.children(&mut vc) {
-                    if vchild.kind() == "identifier" {
-                        if let Some(t) = node_text_of(&vchild, source) {
-                            if !t.is_empty() {
-                                out.insert(t);
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "property_declaration" => {
+                if let Some(var_decl) = child
+                    .children(&mut child.walk())
+                    .find(|c| c.kind() == "variable_declaration")
+                {
+                    let mut vc = var_decl.walk();
+                    for vchild in var_decl.children(&mut vc) {
+                        if vchild.kind() == "identifier" {
+                            if let Some(t) = node_text_of(&vchild, source) {
+                                if !t.is_empty() {
+                                    out.insert(t);
+                                }
                             }
+                            break;
                         }
-                        break;
                     }
                 }
+                // Do not descend: an initializer lambda's locals are not fields.
             }
+            // Boundaries: method bodies and nested types own their own
+            // members — never descend into them.
+            "function_declaration"
+            | "getter"
+            | "setter"
+            | "anonymous_initializer"
+            | "secondary_constructor"
+            | "class_declaration"
+            | "object_declaration"
+            | "companion_object" => {}
+            _ => collect_kotlin_declared_fields(&child, source, out),
         }
     }
 }
@@ -2430,10 +2727,19 @@ fn extract_elixir_module_cohesion_info(
     // all clauses so a shared `@attr` connects them.
     let mut methods: Vec<MethodInfo> = Vec::new();
     let mut by_name: HashMap<String, usize> = HashMap::new();
+    // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): a `defstruct` declares the
+    // module's real fields, accessed downstream as `var.field` (NOT `@attr`).
+    // Harvest its keys as the authoritative declared-field set so a struct
+    // module is no longer mis-verdicted `NotApplicable`/0-fields. A struct-LESS
+    // module keeps an EMPTY set, preserving the deliberate `@attr`-fallback
+    // (4fd8939): its `is_fieldless` stays driven by `@attr` ACCESS, so a module
+    // whose methods read `@attr`s is still measured.
+    let mut declared_fields: HashSet<String> = HashSet::new();
     let mut bc = node.walk();
     for child in node.children(&mut bc) {
         if child.kind() == "do_block" {
             collect_elixir_methods(&child, source, &mut methods, &mut by_name);
+            collect_elixir_defstruct_fields(&child, source, &mut declared_fields);
         }
     }
 
@@ -2443,10 +2749,149 @@ fn extract_elixir_module_cohesion_info(
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
-        // fix-FixA-bare-field-v1: Elixir "fields" are `@attr` module attributes
-        // (matched by `extract_elixir_module_attribute`); no bare resolution.
-        declared_fields: HashSet::new(),
+        declared_fields,
     })
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): collect the field names declared
+/// by a `defstruct` in an Elixir module's `do_block`. Grammar (tree-sitter-elixir,
+/// VERIFIED via `dump_ast_file`): `call { identifier "defstruct", arguments }`.
+/// Three argument shapes are handled:
+///   - `defstruct balance: 0, owner: nil`  -> `keywords > pair > keyword`
+///   - `defstruct [balance: 0, owner: nil]`-> `list > keywords > pair > keyword`
+///   - `defstruct [:balance, :owner]`      -> `list > atom`
+///
+/// A `keyword` leaf carries the trailing `:` (`"balance:"`); an `atom` carries
+/// the leading `:` (`":balance"`). Both are normalised to the bare name.
+fn collect_elixir_defstruct_fields(
+    do_block: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let mut cursor = do_block.walk();
+    for child in do_block.children(&mut cursor) {
+        if child.kind() != "call" {
+            continue;
+        }
+        let is_defstruct = child
+            .child(0)
+            .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+            == Some("defstruct");
+        if !is_defstruct {
+            continue;
+        }
+        if let Some(args) = child.child(1) {
+            elixir_collect_struct_keys(&args, source, out);
+        }
+    }
+}
+
+/// Recursively collect bare field names from a `defstruct` argument subtree,
+/// normalising `keyword` (`balance:`) and `atom` (`:balance`) leaves.
+fn elixir_collect_struct_keys(
+    node: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        "keyword" => {
+            if let Some(t) = node_text_of(node, source) {
+                let name = t.trim().trim_end_matches(':').trim();
+                if elixir_is_field_name(name) {
+                    out.insert(name.to_string());
+                }
+            }
+            return;
+        }
+        "atom" => {
+            if let Some(t) = node_text_of(node, source) {
+                let name = t.trim().trim_start_matches(':').trim();
+                if elixir_is_field_name(name) {
+                    out.insert(name.to_string());
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        elixir_collect_struct_keys(&child, source, out);
+    }
+}
+
+/// True for a plain Elixir field identifier (lower/underscore start, alphanumeric
+/// tail). Guards the normalised `defstruct` key / dot-access leaf against stray
+/// punctuation tokens.
+fn elixir_is_field_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric() || c == '?' || c == '!')
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): collect Elixir struct-field
+/// accesses inside a method body, gated on the module's declared `defstruct`
+/// keys. Detects `var.field` (a `dot` node whose second child identifier is a
+/// declared key) and `%{var | field: …}` map updates (a `keyword` key that is a
+/// declared field). Gating on the declared keys IS the call-callee exclusion: an
+/// arbitrary `x.foo()` call whose name is not a struct key contributes nothing.
+fn elixir_struct_field_accesses(
+    method_source: &str,
+    declared: &HashSet<String>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if declared.is_empty() {
+        return out;
+    }
+    let tree = match parse(method_source, Language::Elixir) {
+        Ok(t) => t,
+        Err(_) => return out,
+    };
+    elixir_collect_struct_field_hits(&tree.root_node(), method_source, declared, &mut out);
+    out
+}
+
+fn elixir_collect_struct_field_hits(
+    node: &tree_sitter::Node,
+    source: &str,
+    declared: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    match node.kind() {
+        // `var.field` access: dot { <receiver>, ".", identifier "field" }.
+        // The field is the LAST identifier child (the receiver may also be an
+        // identifier, but only the accessed member is gated on the key set).
+        "dot" => {
+            let idents: Vec<tree_sitter::Node> = node
+                .children(&mut node.walk())
+                .filter(|c| c.kind() == "identifier")
+                .collect();
+            if let Some(field) = idents.last() {
+                if let Some(t) = node_text_of(field, source) {
+                    if declared.contains(&t) {
+                        out.insert(t);
+                    }
+                }
+            }
+        }
+        // `%{var | field: …}` update: the `keyword` key names a struct field.
+        "keyword" => {
+            if let Some(t) = node_text_of(node, source) {
+                let name = t.trim().trim_end_matches(':').trim();
+                if declared.contains(name) {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        elixir_collect_struct_field_hits(&child, source, declared, out);
+    }
 }
 
 fn collect_elixir_methods(
@@ -4355,6 +4800,11 @@ fn extract_java_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
 
     let body = node.child_by_field_name("body")?;
     let methods = extract_java_methods(&body, source);
+    // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): harvest declared fields so a
+    // field-bearing Java class is never mis-verdicted `NotApplicable` (drives
+    // `is_fieldless`). Java references members via `this.x`, so the set is NOT
+    // used for bare resolution (`bare_field_config(Java)` is `None`).
+    let declared_fields = collect_java_declared_fields(&body, source);
 
     Some(ClassInfo {
         name,
@@ -4362,9 +4812,35 @@ fn extract_java_class_info(node: &tree_sitter::Node, source: &str) -> Option<Cla
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
-        // fix-FixA-bare-field-v1: Java uses `this.`-qualified access.
-        declared_fields: HashSet::new(),
+        declared_fields,
     })
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): collect Java declared field
+/// names. Grammar (tree-sitter-java, VERIFIED via `dump_ast_file`):
+///   `class_body > field_declaration > variable_declarator > [name] identifier`.
+/// Multiple declarators per field (`int a, b;`) are each harvested. Only the
+/// class's OWN body is scanned (no recursion into nested types / method bodies).
+fn collect_java_declared_fields(body: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        if child.kind() == "field_declaration" {
+            let mut fc = child.walk();
+            for sub in child.children(&mut fc) {
+                if sub.kind() == "variable_declarator" {
+                    if let Some(nm) = sub.child_by_field_name("name") {
+                        if let Some(t) = node_text_of(&nm, source) {
+                            if !t.is_empty() {
+                                out.insert(t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn extract_java_methods(body: &tree_sitter::Node, source: &str) -> Vec<MethodInfo> {
@@ -4425,6 +4901,15 @@ fn collect_go_structs(
                             if type_node.kind() == "struct_type" {
                                 if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
                                     let line = type_child.start_position().row + 1;
+                                    // fix-PW3-D-cohesion-fieldset (v0.5.0
+                                    // BACKLOG): harvest the struct's declared
+                                    // fields so a field-bearing struct is never
+                                    // mis-verdicted `NotApplicable` (drives
+                                    // `is_fieldless`). Go accesses members via a
+                                    // receiver (`r.x`), so the set is NOT used
+                                    // for bare resolution.
+                                    let declared_fields =
+                                        collect_go_declared_fields(&type_node, source);
                                     structs.insert(
                                         name.to_string(),
                                         ClassInfo {
@@ -4433,9 +4918,7 @@ fn collect_go_structs(
                                             methods: Vec::new(),
                                             is_partial: false,
                                             namespace_path: Vec::new(),
-                                            // fix-FixA-bare-field-v1: Go uses
-                                            // receiver-qualified access.
-                                            declared_fields: HashSet::new(),
+                                            declared_fields,
                                         },
                                     );
                                 }
@@ -4480,6 +4963,40 @@ fn collect_go_methods(
         // Recurse
         collect_go_methods(child, source, structs);
     }
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): collect Go struct declared
+/// field names. Grammar (tree-sitter-go, VERIFIED via `dump_ast_file`):
+///   `struct_type > field_declaration_list > field_declaration > field_identifier`.
+/// A `field_declaration` may declare several names (`a, b int`) — each
+/// `field_identifier` is a name (the type is a `type_identifier`/`qualified_type`,
+/// never a `field_identifier`). Embedded/anonymous fields (`io.Reader`) carry no
+/// `field_identifier` and so contribute nothing, which is correct.
+fn collect_go_declared_fields(struct_type: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let Some(list) = struct_type
+        .children(&mut struct_type.walk())
+        .find(|c| c.kind() == "field_declaration_list")
+    else {
+        return out;
+    };
+    let mut cursor = list.walk();
+    for decl in list.children(&mut cursor) {
+        if decl.kind() != "field_declaration" {
+            continue;
+        }
+        let mut dc = decl.walk();
+        for f in decl.children(&mut dc) {
+            if f.kind() == "field_identifier" {
+                if let Some(t) = node_text_of(&f, source) {
+                    if !t.is_empty() {
+                        out.insert(t);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn extract_go_receiver_type(receiver: &tree_sitter::Node, source: &str) -> Option<String> {
@@ -5253,6 +5770,12 @@ fn extract_php_class_info(node: &tree_sitter::Node, source: &str) -> Option<Clas
 
     let body = node.child_by_field_name("body")?;
     let methods = extract_php_methods(&body, source);
+    // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): harvest the class's declared
+    // properties so a field-bearing class is never mis-verdicted `NotApplicable`
+    // (drives `is_fieldless`). PHP references members via `$this->x`, so the
+    // declared set is NOT used for bare resolution (`bare_field_config(Php)` is
+    // `None`); it is the authoritative "this class declares fields" signal.
+    let declared_fields = collect_php_declared_fields(&body, source);
 
     Some(ClassInfo {
         name,
@@ -5260,9 +5783,88 @@ fn extract_php_class_info(node: &tree_sitter::Node, source: &str) -> Option<Clas
         methods,
         is_partial: false,
         namespace_path: Vec::new(),
-        // fix-FixA-bare-field-v1: PHP uses `$this->`-qualified access.
-        declared_fields: HashSet::new(),
+        declared_fields,
     })
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): collect PHP declared property
+/// names. Grammar (tree-sitter-php, VERIFIED via `dump_ast_file`):
+///   `property_declaration > property_element > variable_name > name`.
+/// Constructor-promoted properties (`function __construct(private $x)`) are also
+/// harvested from the `__construct` parameter list — a `property_promotion_*` or
+/// a `simple_parameter` carrying a visibility modifier declares a real field.
+fn collect_php_declared_fields(body: &tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        match child.kind() {
+            "property_declaration" => {
+                let mut pc = child.walk();
+                for el in child.children(&mut pc) {
+                    if el.kind() == "property_element" {
+                        php_insert_variable_name(&el, source, &mut out);
+                    }
+                }
+            }
+            "method_declaration" => {
+                let is_ctor = child
+                    .child_by_field_name("name")
+                    .and_then(|n| node_text_of(&n, source))
+                    .map(|t| t.eq_ignore_ascii_case("__construct"))
+                    .unwrap_or(false);
+                if is_ctor {
+                    php_collect_promoted_ctor_fields(&child, source, &mut out);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Insert the bare property name out of a node containing a
+/// `variable_name > name` shape (`$balance` -> `balance`).
+fn php_insert_variable_name(node: &tree_sitter::Node, source: &str, out: &mut HashSet<String>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "variable_name" {
+            if let Some(nm) = child
+                .children(&mut child.walk())
+                .find(|c| c.kind() == "name")
+            {
+                if let Some(t) = node_text_of(&nm, source) {
+                    if !t.is_empty() {
+                        out.insert(t);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect constructor-promoted property names. A promoted property is a
+/// `__construct` parameter that carries a visibility modifier
+/// (`public`/`private`/`protected`); the grammar exposes it as a
+/// `property_promotion_parameter` (newer grammars) or a `simple_parameter`
+/// with a leading `visibility_modifier`. Either way the bound name is the
+/// `variable_name > name`.
+fn php_collect_promoted_ctor_fields(
+    method: &tree_sitter::Node,
+    source: &str,
+    out: &mut HashSet<String>,
+) {
+    let Some(params) = method.child_by_field_name("parameters") else {
+        return;
+    };
+    let mut cursor = params.walk();
+    for param in params.children(&mut cursor) {
+        let has_visibility = param
+            .children(&mut param.walk())
+            .any(|c| c.kind() == "visibility_modifier");
+        if param.kind() == "property_promotion_parameter" || has_visibility {
+            php_insert_variable_name(&param, source, out);
+        }
+    }
 }
 
 /// Extract methods from a PHP class body (declaration_list node).
@@ -5542,6 +6144,18 @@ fn extract_field_accesses(method_source: &str, file_path: &Path) -> HashSet<Stri
     let lang = Language::from_path(file_path);
 
     match lang {
+        // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): PHP method snippets carry
+        // no `<?php` open tag, so parsed in isolation tree-sitter-php collapses
+        // the whole body to a single `text` node and the AST field-access walk
+        // finds nothing — which then dropped to the regex fallback
+        // (`\$this->(\w+)`) that cannot tell a field read (`$this->balance`) from
+        // a method call (`$this->log()`), inventing a phantom field per call
+        // (method-as-field OVER-count). Re-wrap the snippet in a minimal class so
+        // the grammar parses it and the AST path runs: there `$this->log()` is a
+        // `member_call_expression` (never the `member_access_expression` the
+        // field pattern matches), so the call-callee is excluded structurally.
+        // No regex fallback for PHP — an empty AST result is the truth.
+        Some(Language::Php) => php_method_field_accesses(method_source),
         Some(language) => extract_field_accesses_ast(method_source, language, None),
         None => {
             // Unknown language: try regex fallback based on extension
@@ -5559,6 +6173,38 @@ fn extract_field_accesses(method_source: &str, file_path: &Path) -> HashSet<Stri
             }
         }
     }
+}
+
+/// fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG): AST-driven `$this->field`
+/// extraction for a PHP method snippet, with the method-call callee excluded
+/// structurally (no regex).
+///
+/// A bare method body (`public function f($x) { … }`) has no `<?php` open tag,
+/// so tree-sitter-php parses it as a single `text` node. We re-wrap it in a
+/// minimal class so the grammar parses the real structure, then reuse the shared
+/// `walk_and_extract_fields` PHP arm — which credits only
+/// `member_access_expression` nodes whose object is `$this`. A method INVOCATION
+/// `$this->log()` is a `member_call_expression` (its callee name is NOT wrapped
+/// in a `member_access_expression`), so it never matches the field pattern and
+/// the method name is excluded. Returns the empty set on parse failure (no regex
+/// fallback — an empty AST result is the truth for PHP once wrapped).
+fn php_method_field_accesses(method_source: &str) -> HashSet<String> {
+    let wrapped = format!("<?php class __TldrCohesionWrap {{ {method_source} }}");
+    let tree = match parse(&wrapped, Language::Php) {
+        Ok(t) => t,
+        Err(_) => return HashSet::new(),
+    };
+    let mut fields = HashSet::new();
+    let patterns = crate::security::ast_utils::field_access_info(Language::Php);
+    walk_and_extract_fields(
+        &tree.root_node(),
+        wrapped.as_bytes(),
+        Language::Php,
+        None,
+        patterns,
+        &mut fields,
+    );
+    fields
 }
 
 /// AST-based field access extraction for all 18 supported languages.
@@ -8121,6 +8767,227 @@ impl U {
             CohesionVerdict::NotApplicable,
             "a unit struct is genuinely fieldless -> NotApplicable, got {:?}",
             u.verdict
+        );
+    }
+
+    // =========================================================================
+    // fix-PW3-D-cohesion-fieldset (v0.5.0 BACKLOG) generalization tests.
+    //
+    // Symptom class: declared-field-set + method-as-field over/under-count
+    // across php, go, java, ts, kotlin, swift, elixir. A SINGLE language passing
+    // is a FAIL — every language/variant is asserted below.
+    // =========================================================================
+
+    /// Parse `src` and return the cohesion `ClassInfo` for class `name`.
+    fn declared_fields_of(src: &str, lang: Language, name: &str) -> HashSet<String> {
+        let tree = parse(src, lang).expect("probe parses");
+        let classes = extract_classes(tree.root_node(), src, lang);
+        classes
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("class {name} not extracted for {lang:?}"))
+            .declared_fields
+    }
+
+    /// Run the production cohesion path on a one-file probe and return the
+    /// `(field_count, all_accessed_fields, verdict)` for class `name`.
+    fn analyze_probe(
+        ext: &str,
+        lang: Language,
+        src: &str,
+        name: &str,
+    ) -> (usize, HashSet<String>, CohesionVerdict) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("probe.{ext}"));
+        std::fs::write(&path, src).unwrap();
+        let report =
+            analyze_cohesion_with_options(dir.path(), Some(lang), CohesionOptions::default())
+                .expect("analyze");
+        let class = report
+            .classes
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("class {name} not in cohesion report for {lang:?}"));
+        let mut accessed = HashSet::new();
+        for comp in &class.components {
+            for f in &comp.fields {
+                accessed.insert(f.clone());
+            }
+        }
+        (class.field_count, accessed, class.verdict)
+    }
+
+    #[test]
+    fn test_pw3_d_no_method_as_field_self_qualified_langs() {
+        // OVER-count guard: a method that calls a sibling method via the
+        // receiver ($this->m()/this.m()/recv.m()) must NOT credit the callee
+        // name as a field — for EVERY self/this/receiver-qualified language.
+        struct Case {
+            ext: &'static str,
+            lang: Language,
+            src: &'static str,
+        }
+        let cases = [
+            Case {
+                ext: "php",
+                lang: Language::Php,
+                src: "<?php class Account {\n  private $balance = 0;\n  private $owner;\n  public function deposit($amount) { $this->balance += $amount; $this->log(); }\n  public function withdraw($amount) { $this->balance -= $amount; $this->validate($amount); }\n  public function log() { echo $this->balance; }\n  public function validate($a) { return $this->owner; }\n}\n",
+            },
+            Case {
+                ext: "go",
+                lang: Language::Go,
+                src: "package main\ntype Account struct {\n  balance int\n  owner   string\n}\nfunc (a *Account) Deposit(amount int) { a.balance += amount; a.log() }\nfunc (a *Account) Withdraw(amount int) { a.balance -= amount; a.validate(amount) }\nfunc (a *Account) log() { println(a.balance) }\nfunc (a *Account) validate(x int) string { return a.owner }\n",
+            },
+            Case {
+                ext: "java",
+                lang: Language::Java,
+                src: "public class Account {\n  private int balance;\n  private String owner;\n  public void deposit(int amount) { this.balance += amount; this.log(); }\n  public void withdraw(int amount) { this.balance -= amount; this.validate(amount); }\n  public void log() { System.out.println(this.balance); }\n  public String validate(int a) { return this.owner; }\n}\n",
+            },
+            Case {
+                ext: "ts",
+                lang: Language::TypeScript,
+                src: "export class Account {\n  balance: number = 0;\n  owner: string = \"\";\n  deposit(amount: number) { this.balance += amount; this.log(); }\n  withdraw(amount: number) { this.balance -= amount; this.validate(amount); }\n  log() { console.log(this.balance); }\n  validate(a: number) { return this.owner; }\n}\n",
+            },
+        ];
+        for c in cases {
+            let declared = declared_fields_of(c.src, c.lang, "Account");
+            assert!(
+                declared.contains("balance") && declared.contains("owner"),
+                "{:?}: declared fields under-count, got {:?}",
+                c.lang,
+                declared
+            );
+            let (_fc, accessed, _v) = analyze_probe(c.ext, c.lang, c.src, "Account");
+            assert!(
+                !accessed.contains("log") && !accessed.contains("validate"),
+                "{:?}: method-as-field OVER-count — accessed={:?}",
+                c.lang,
+                accessed
+            );
+            assert!(
+                accessed.contains("balance") && accessed.contains("owner"),
+                "{:?}: real field access lost — accessed={:?}",
+                c.lang,
+                accessed
+            );
+        }
+    }
+
+    #[test]
+    fn test_pw3_d_kotlin_abstract_and_expect_val_declared() {
+        // UNDER-count guard: `abstract val` (in a class_body) AND `expect class`
+        // brace-less `val` must both reach the declared-field set.
+        let abstract_src = "abstract class Shape {\n  abstract val name: String\n  val sides: Int = 0\n  private var area: Double = 0.0\n  fun describe(): String { return name }\n  fun count(): Int { return sides + this.area.toInt() }\n}\n";
+        let declared = declared_fields_of(abstract_src, Language::Kotlin, "Shape");
+        assert!(
+            declared.contains("name") && declared.contains("sides") && declared.contains("area"),
+            "kotlin abstract val under-count: {declared:?}"
+        );
+        // describe() reads bare `name`, count() reads `sides`/`area` -> both must
+        // be credited (proves abstract val is field-resolvable, not just declared).
+        let (_fc, accessed, _v) = analyze_probe("kt", Language::Kotlin, abstract_src, "Shape");
+        assert!(
+            accessed.contains("name") && accessed.contains("sides"),
+            "kotlin abstract val field access lost: {accessed:?}"
+        );
+
+        let expect_src = "expect class Platform {\n  val osName: String\n  val arch: String\n}\n";
+        let declared = declared_fields_of(expect_src, Language::Kotlin, "Platform");
+        assert!(
+            declared.contains("osName") && declared.contains("arch"),
+            "kotlin expect val under-count: {declared:?}"
+        );
+    }
+
+    #[test]
+    fn test_pw3_d_swift_struct_and_class_fields_declared() {
+        let src = "struct Point {\n  var x: Int\n  var y: Int\n  let label: String\n  func sum() -> Int { return self.x + self.y }\n  func describe() -> String { return self.label }\n}\nclass Widget {\n  var width: Int = 0\n  private var height: Int = 0\n  func area() -> Int { return self.width * self.height }\n  func grow() { self.width += 1; self.render() }\n  func render() { print(self.width) }\n}\n";
+        let p = declared_fields_of(src, Language::Swift, "Point");
+        assert!(
+            p.contains("x") && p.contains("y") && p.contains("label"),
+            "swift struct fields under-count: {p:?}"
+        );
+        let w = declared_fields_of(src, Language::Swift, "Widget");
+        assert!(
+            w.contains("width") && w.contains("height"),
+            "swift class fields under-count: {w:?}"
+        );
+        // grow() calls self.render() — the method name must NOT be a field.
+        let (_fc, accessed, _v) = analyze_probe("swift", Language::Swift, src, "Widget");
+        assert!(
+            !accessed.contains("render"),
+            "swift method-as-field OVER-count: {accessed:?}"
+        );
+        assert!(accessed.contains("width"), "swift field lost: {accessed:?}");
+    }
+
+    #[test]
+    fn test_pw3_d_elixir_defstruct_fields_and_attr_fallback_preserved() {
+        let src = "defmodule Account do\n  defstruct balance: 0, owner: nil\n  def deposit(acc, amount) do\n    %{acc | balance: acc.balance + amount}\n  end\n  def info(acc) do\n    acc.owner\n  end\nend\n\ndefmodule Config do\n  @timeout 30\n  @retries 3\n  def t, do: @timeout\n  def r, do: @retries\nend\n";
+        // defstruct keys reach the declared-field set.
+        let declared = declared_fields_of(src, Language::Elixir, "Account");
+        assert!(
+            declared.contains("balance") && declared.contains("owner"),
+            "elixir defstruct keys under-count: {declared:?}"
+        );
+        // A struct module is no longer mis-verdicted NotApplicable / 0-fields.
+        let (fc, accessed, verdict) = analyze_probe("ex", Language::Elixir, src, "Account");
+        assert_ne!(
+            verdict,
+            CohesionVerdict::NotApplicable,
+            "elixir struct module wrongly NotApplicable"
+        );
+        assert!(
+            accessed.contains("balance") && accessed.contains("owner"),
+            "elixir defstruct var.field access lost: {accessed:?}"
+        );
+        assert!(fc >= 2, "elixir struct field_count too low: {fc}");
+        // PRESERVE the @attr fallback for struct-less modules (4fd8939): Config
+        // has no defstruct, references @timeout/@retries, and must stay measured.
+        let (cfc, caccessed, cverdict) = analyze_probe("ex", Language::Elixir, src, "Config");
+        assert_ne!(
+            cverdict,
+            CohesionVerdict::NotApplicable,
+            "elixir @attr struct-less module fallback regressed -> NotApplicable"
+        );
+        assert!(
+            caccessed.contains("timeout") && caccessed.contains("retries"),
+            "elixir @attr fallback lost: {caccessed:?}"
+        );
+        assert_eq!(cfc, 2, "elixir @attr field_count regressed: {cfc}");
+    }
+
+    #[test]
+    fn test_pw3_d_swift_session_cohesion_uses_real_class() {
+        // The real `open class Session` (Source/Core/Session.swift ~L30)
+        // mis-parses; cohesion must analyse the RECOVERED class (many methods),
+        // not the fictitious lone `extension Session` (~9 methods, ~L1334).
+        let path =
+            "/Users/cosimo/.tldr-audit/corpora/swift-alamofire/Source/Core/Session.swift";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("swift-alamofire corpus absent; skipping Session corpus assertion");
+            return;
+        }
+        let report = analyze_cohesion_with_options(
+            std::path::Path::new(path),
+            Some(Language::Swift),
+            CohesionOptions::default(),
+        )
+        .expect("analyze Session.swift");
+        let session = report
+            .classes
+            .iter()
+            .find(|c| c.name == "Session")
+            .expect("Session class present");
+        assert!(
+            session.line <= 35,
+            "Session should anchor at the real header (~L30), got L{}",
+            session.line
+        );
+        assert!(
+            session.method_count >= 20,
+            "Session should recover the real (large) method set, got {} methods",
+            session.method_count
         );
     }
 }
