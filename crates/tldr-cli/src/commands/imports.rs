@@ -10,6 +10,7 @@ use clap::Args;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
+use tldr_core::ast::imports::filter_display_imports;
 use tldr_core::types::ImportInfo;
 use tldr_core::{detect_or_parse_language, get_imports, Language};
 
@@ -57,6 +58,17 @@ impl ImportsArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
+        // bug10/RC6: the OCaml extractor harvests every implicit qualified ref
+        // (e.g. `Dune_lang.parse`) into the raw import set so `deps`/`importers`
+        // can mint edges — but the `imports` COMMAND must surface only genuine
+        // `open`/`include`/`module =` directives (else `pkg_rules.ml` reports
+        // ~1100 "imports" instead of ~17). Detect the language up-front
+        // (best-effort) so both the daemon and direct paths filter identically;
+        // a detection failure simply skips filtering. See
+        // `tldr_core::ast::imports::filter_display_imports`.
+        let display_lang =
+            detect_or_parse_language(self.lang.as_ref().map(|l| l.as_str()), &self.file).ok();
+
         // Try daemon first for cached result (use file's parent as project root)
         let project = self.file.parent().unwrap_or(&self.file);
         if let Some(result) = try_daemon_route::<Vec<ImportInfo>>(
@@ -64,6 +76,10 @@ impl ImportsArgs {
             "imports",
             params_with_file_lang(&self.file, self.lang.as_ref().map(|l| l.as_str())),
         ) {
+            let result = match display_lang {
+                Some(lang) => filter_display_imports(result, lang),
+                None => result,
+            };
             if writer.is_text() {
                 writer.write_text(&format!(
                     "{} ({} imports)\n\n{}",
@@ -109,6 +125,9 @@ impl ImportsArgs {
 
         // Get imports
         let result = get_imports(&self.file, language)?;
+        // bug10/RC6: drop OCaml implicit qualified refs at the presentation
+        // boundary (identity for every other language).
+        let result = filter_display_imports(result, language);
 
         // Output based on format
         if writer.is_text() {

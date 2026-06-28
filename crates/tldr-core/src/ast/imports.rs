@@ -71,6 +71,64 @@ pub fn extract_imports_from_tree(
     Ok(imports)
 }
 
+/// Reduce the raw import list to what the `imports` COMMAND should surface
+/// for human/JSON presentation.
+///
+/// For nearly every language this is the identity function — every entry
+/// `get_imports` harvests is a genuine `import`/`use`/`open` directive.
+///
+/// OCaml is the exception (v0.5.0 RC6 / bug10). `get_imports` deliberately
+/// *also* harvests every IMPLICIT qualified value/constructor/type/field
+/// reference (e.g. `Dune_lang.parse x` with no `open`) — see the
+/// `value_path | constructor_path | type_constructor_path | field_path` arm
+/// of [`extract_ocaml_imports_recursive`]. Those implicit refs are essential
+/// for the *dependency* consumers (`deps`/`importers`/`arch_rules`/`semantic`)
+/// to mint inbound edges (afferent coupling), so they MUST stay in the full
+/// set. But for the `imports` command they are noise: a single real file
+/// (`dune` `pkg_rules.ml`) carries ~1100 such refs versus ~17 real
+/// `open`/`include`/`module =` directives, drowning the signal.
+///
+/// This helper drops the implicit refs at the PRESENTATION boundary ONLY.
+/// It is called by the `imports` command (and nothing else); the raw
+/// [`get_imports`] / [`extract_imports_from_tree`] output is untouched for
+/// every other consumer.
+///
+/// ## Identifying an implicit qualified ref without a schema field
+///
+/// The OCaml extractor's emission contract makes the implicit refs the unique
+/// entries with `is_from == Some(false)` AND a non-empty `names` leaf:
+///
+/// | OCaml directive            | `is_from`     | `names`     |
+/// |----------------------------|---------------|-------------|
+/// | `open M` / `include M`      | `Some(true)`  | `["*"]`     |
+/// | `module A = M`              | `Some(false)` | `[]` (empty)|
+/// | implicit `M.value` ref      | `Some(false)` | `["value"]` |
+///
+/// So `is_from == Some(false) && !names.is_empty()` selects *exactly* the
+/// implicit refs and nothing else. The `imports::tests::ocaml_display_*`
+/// tests pin this invariant so a future change to the extractor's emission
+/// that breaks the discriminator is caught immediately.
+pub fn filter_display_imports(imports: Vec<ImportInfo>, language: Language) -> Vec<ImportInfo> {
+    match language {
+        Language::Ocaml => imports
+            .into_iter()
+            .filter(|import| !is_ocaml_implicit_qualified_ref(import))
+            .collect(),
+        // Every other language harvests only genuine directives — nothing to
+        // bucket out at the presentation layer.
+        _ => imports,
+    }
+}
+
+/// True iff `import` is an OCaml IMPLICIT qualified value/constructor/type/
+/// field reference (harvested for the dependency graph, noise for the
+/// `imports` command). See [`filter_display_imports`] for the emission
+/// contract that makes `is_from == Some(false) && !names.is_empty()` an exact
+/// discriminator.
+fn is_ocaml_implicit_qualified_ref(import: &ImportInfo) -> bool {
+    matches!(import.is_from, Some(false)) && !import.names.is_empty()
+}
+
 // =============================================================================
 // Python imports
 // =============================================================================
@@ -3078,6 +3136,122 @@ end"#;
         let modules: Vec<&str> = imports.iter().map(|i| i.module.as_str()).collect();
         assert!(modules.contains(&"List"), "Should find open List");
         assert!(modules.contains(&"Hashtbl"), "Should find open Hashtbl");
+    }
+
+    // =========================================================================
+    // bug10 / RC6: imports-command presentation filter (filter_display_imports)
+    //
+    // `get_imports` over-emits one entry per IMPLICIT qualified ref so the
+    // dependency graph can mint edges. The `imports` command must surface only
+    // the genuine `open`/`include`/`module =` directives. These tests pin both
+    // halves: (a) the full set still carries the implicit refs (deps relies on
+    // it) and (b) the display filter drops exactly the implicit refs.
+    // =========================================================================
+
+    /// Symptom reproduction: a file that `open`s a handful of modules but makes
+    /// MANY qualified value/constructor/type/field references (no `open`) must
+    /// be reduced from N+refs down to just the directives at the presentation
+    /// boundary — while the raw set keeps every ref for `deps`.
+    #[test]
+    fn test_ocaml_display_filter_drops_implicit_qualified_refs() {
+        // 2 opens + 1 include + 1 module-alias = 4 genuine directives.
+        // Then many implicit qualified refs across ALL four path-node
+        // variants (value / constructor / type / field) and several distinct
+        // modules — none introduced by an `open`.
+        let source = r#"open Import
+open Memo.O
+include Stdlib
+module M = Hashtbl
+
+let a = Dune_lang.parse x
+let b = Dune_lang.Blang.eval y
+let c : Path.Build.t = z
+let d = Foo.make ()
+let e = Bar.Variant
+let f = rec.Record.field
+let g = Other.one + Other.two + Other.three
+"#;
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let full = extract_imports_from_tree(&tree, source, Language::Ocaml).unwrap();
+
+        // (a) Raw set keeps the implicit refs (deps/importers/arch_rules need
+        //     them). Far more than the 4 directives.
+        let directive_count = 4;
+        assert!(
+            full.len() > directive_count,
+            "raw set should retain implicit qualified refs for deps, got {} entries: {:?}",
+            full.len(),
+            full.iter().map(|i| &i.module).collect::<Vec<_>>()
+        );
+        assert!(
+            full.iter().any(|i| i.module == "Dune_lang"),
+            "raw set must keep the implicit `Dune_lang.parse` ref for deps"
+        );
+
+        // (b) Presentation filter keeps ONLY the genuine directives.
+        let shown = filter_display_imports(full.clone(), Language::Ocaml);
+        assert_eq!(
+            shown.len(),
+            directive_count,
+            "display filter should keep only open/include/module= directives, got {:?}",
+            shown.iter().map(|i| (&i.module, &i.names, i.is_from)).collect::<Vec<_>>()
+        );
+        let shown_mods: Vec<&str> = shown.iter().map(|i| i.module.as_str()).collect();
+        assert!(shown_mods.contains(&"Import"), "kept: open Import");
+        assert!(shown_mods.contains(&"Memo.O"), "kept: open Memo.O");
+        assert!(shown_mods.contains(&"Stdlib"), "kept: include Stdlib");
+        assert!(shown_mods.contains(&"Hashtbl"), "kept: module M = Hashtbl");
+        // No implicit ref leaked through.
+        assert!(
+            !shown_mods.iter().any(|m| matches!(*m, "Dune_lang" | "Path" | "Foo" | "Bar" | "Other")),
+            "implicit qualified refs leaked into the imports command: {shown_mods:?}"
+        );
+    }
+
+    /// The module-alias directive (`module A = Path`) carries `is_from =
+    /// Some(false)` like an implicit ref but has an EMPTY `names` — it must NOT
+    /// be filtered. Pins the discriminator's lower edge.
+    #[test]
+    fn test_ocaml_display_filter_keeps_module_alias() {
+        let source = "module M = Hashtbl\nlet x = M.find t k\n";
+        let tree = parse(source, Language::Ocaml).unwrap();
+        let full = extract_imports_from_tree(&tree, source, Language::Ocaml).unwrap();
+        let shown = filter_display_imports(full, Language::Ocaml);
+        assert!(
+            shown.iter().any(|i| i.module == "Hashtbl" && i.alias.as_deref() == Some("M")),
+            "module alias must survive the display filter: {:?}",
+            shown.iter().map(|i| (&i.module, &i.alias)).collect::<Vec<_>>()
+        );
+        // `M.find` is local-alias-qualified; if harvested as an implicit ref it
+        // must be dropped, leaving only the alias directive.
+        assert!(
+            !shown.iter().any(|i| i.names.iter().any(|n| n == "find")),
+            "implicit `M.find` ref must not appear in the imports command"
+        );
+    }
+
+    /// Generalization guard: the filter is OCaml-scoped. For every OTHER
+    /// language it is the identity — a `from X import a, b` Python entry (which
+    /// also has `is_from = Some(true/false)` + non-empty `names`) must pass
+    /// through untouched, proving the fix does not over-reach.
+    #[test]
+    fn test_display_filter_is_identity_for_non_ocaml() {
+        for (src, lang) in [
+            ("from os import path, sep\nimport sys\n", Language::Python),
+            ("use std::collections::HashMap;\n", Language::Rust),
+            ("import { a, b } from 'm';\n", Language::TypeScript),
+        ] {
+            let tree = parse(src, lang).unwrap();
+            let full = extract_imports_from_tree(&tree, src, lang).unwrap();
+            let shown = filter_display_imports(full.clone(), lang);
+            assert_eq!(
+                full.len(),
+                shown.len(),
+                "display filter must be identity for {lang:?}, dropped entries: full={:?} shown={:?}",
+                full.iter().map(|i| &i.module).collect::<Vec<_>>(),
+                shown.iter().map(|i| &i.module).collect::<Vec<_>>(),
+            );
+        }
     }
 
     // =========================================================================
