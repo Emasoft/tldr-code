@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tree_sitter::{Node, Tree};
+
 use crate::ast::extract::extract_from_tree;
 use crate::ast::parser::parse;
 use crate::types::{ClassInfo, Language};
@@ -21,14 +23,24 @@ pub fn extract_kotlin_api_surface(
     limit: Option<usize>,
 ) -> TldrResult<ApiSurface> {
     let mut apis = Vec::new();
+    // Surface-level package is the AST `package_header` of the resolved
+    // source(s), NOT the resolver-derived `package_name` (which is the file
+    // stem for a single-file target, e.g. `JobSupport`). Take the first file's
+    // declared package; fall back to the resolver name only when no file
+    // declares one (default package).
+    let mut surface_package: Option<String> = None;
 
     for file_path in find_kotlin_files(&resolved.root_dir) {
-        apis.extend(extract_from_kotlin_file(
+        let (file_apis, file_package) = extract_from_kotlin_file(
             &file_path,
             &resolved.root_dir,
             &resolved.package_name,
             include_private,
-        )?);
+        )?;
+        if surface_package.is_none() {
+            surface_package = file_package;
+        }
+        apis.extend(file_apis);
     }
 
     if let Some(max) = limit {
@@ -37,7 +49,7 @@ pub fn extract_kotlin_api_surface(
 
     let total = apis.len();
     Ok(ApiSurface {
-        package: resolved.package_name.clone(),
+        package: surface_package.unwrap_or_else(|| resolved.package_name.clone()),
         language: "kotlin".to_string(),
         total,
         apis,
@@ -83,7 +95,7 @@ fn extract_from_kotlin_file(
     root_dir: &Path,
     package_name: &str,
     include_private: bool,
-) -> TldrResult<Vec<ApiEntry>> {
+) -> TldrResult<(Vec<ApiEntry>, Option<String>)> {
     let source = std::fs::read_to_string(file_path).map_err(|e| {
         crate::error::TldrError::parse_error(
             file_path.to_path_buf(),
@@ -95,7 +107,9 @@ fn extract_from_kotlin_file(
     let tree = parse(&source, Language::Kotlin)?;
     let module_info =
         extract_from_tree(&tree, &source, Language::Kotlin, file_path, Some(root_dir))?;
-    let module_path = compute_kotlin_module_path(file_path, root_dir, package_name);
+    let ast_package = extract_kotlin_package_declaration(&tree, &source);
+    let module_path =
+        compute_kotlin_module_path(ast_package.as_deref(), file_path, root_dir, package_name);
     let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
     let mut apis = Vec::new();
@@ -226,10 +240,28 @@ fn extract_from_kotlin_file(
         });
     }
 
-    Ok(apis)
+    Ok((apis, ast_package))
 }
 
-fn compute_kotlin_module_path(file_path: &Path, root_dir: &Path, package_name: &str) -> String {
+fn compute_kotlin_module_path(
+    ast_package: Option<&str>,
+    file_path: &Path,
+    root_dir: &Path,
+    package_name: &str,
+) -> String {
+    // Primary source of truth: the AST `package_header` declaration. This is
+    // the real fully-qualified package (e.g. `kotlinx.coroutines`), independent
+    // of the on-disk filename. The resolver sets `package_name` to the file stem
+    // for single-file targets, so qualifying by it embedded the filename
+    // (`JobSupport.JobSupport`); reading the declared package fixes that.
+    if let Some(pkg) = ast_package {
+        if !pkg.is_empty() {
+            return pkg.to_string();
+        }
+    }
+
+    // No declared package (default package): reconstruct from the directory
+    // layout (build-layout segments stripped), qualified by the resolver name.
     let relative = file_path.strip_prefix(root_dir).unwrap_or(file_path);
     let parent = relative.parent().unwrap_or_else(|| Path::new(""));
     let parts: Vec<String> = parent
@@ -243,6 +275,40 @@ fn compute_kotlin_module_path(file_path: &Path, root_dir: &Path, package_name: &
     } else {
         format!("{}.{}", package_name, parts.join("."))
     }
+}
+
+/// Extract the fully-qualified package name from a Kotlin parse tree.
+///
+/// AST-driven: locates the top-level `package_header` node and reads its dotted
+/// name child. tree-sitter-kotlin-ng represents the name as a
+/// `qualified_identifier` (one-or-more `identifier` segments joined by `.`);
+/// a bare `identifier` is accepted for grammar-version robustness. Returns
+/// `None` for a default-package file (no `package` declaration).
+fn extract_kotlin_package_declaration(tree: &Tree, source: &str) -> Option<String> {
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "package_header" {
+            return kotlin_package_name_text(&child, source);
+        }
+    }
+    None
+}
+
+/// Read the dotted package name from a `package_header` node.
+fn kotlin_package_name_text(header: &Node, source: &str) -> Option<String> {
+    let mut cursor = header.walk();
+    for child in header.children(&mut cursor) {
+        if matches!(child.kind(), "qualified_identifier" | "identifier") {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                let name = text.trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// RC2-2-visibility-ts-kotlin-swift: a Kotlin class member is hidden from the
@@ -534,23 +600,151 @@ internal fun debug(name: String): String = name
 
     #[test]
     fn test_compute_kotlin_module_path_strips_nested_common_main_kotlin_prefix() {
+        // Default-package fallback (ast_package == None): reconstruct from the
+        // directory layout, build-layout segments stripped.
         let root = Path::new("/repo");
         let file = Path::new("/repo/sdk/src/commonMain/kotlin/com/example/core/Client.kt");
 
         assert_eq!(
-            compute_kotlin_module_path(file, root, "example_pkg"),
+            compute_kotlin_module_path(None, file, root, "example_pkg"),
             "example_pkg.sdk.com.example.core"
         );
     }
 
     #[test]
     fn test_compute_kotlin_module_path_strips_nested_jvm_main_kotlin_prefix() {
+        // Default-package fallback (ast_package == None): reconstruct from the
+        // directory layout, build-layout segments stripped.
         let root = Path::new("/repo");
         let file = Path::new("/repo/runtime/src/jvmMain/kotlin/com/example/io/Streams.kt");
 
         assert_eq!(
-            compute_kotlin_module_path(file, root, "example_pkg"),
+            compute_kotlin_module_path(None, file, root, "example_pkg"),
             "example_pkg.runtime.com.example.io"
         );
+    }
+
+    #[test]
+    fn test_compute_kotlin_module_path_uses_ast_package_header() {
+        // When the file declares a `package`, the module path is that declared
+        // package verbatim — independent of the on-disk directory layout and of
+        // the resolver-derived `package_name` (the file stem for single-file
+        // targets). This is the CF2-S6 root-cause assertion: the package segment
+        // must equal the `package_header` value, never the filename.
+        let root = Path::new("/repo");
+        let file = Path::new("/repo/JobSupport.kt");
+
+        assert_eq!(
+            compute_kotlin_module_path(Some("kotlinx.coroutines"), file, root, "JobSupport"),
+            "kotlinx.coroutines"
+        );
+    }
+
+    /// CF2-S6: `tldr surface` on a single-file Kotlin target derived the package
+    /// from the FILENAME (resolver sets `package_name` = file stem), producing
+    /// doubled / wrong fully-qualified names like `JobSupport.JobSupport`. The
+    /// fix reads the AST `package_header` node so the package segment of every
+    /// qualified name (and the surface-level `package`) equals the declared
+    /// package (`kotlinx.coroutines`), never the filename.
+    ///
+    /// Generalization: asserts the AST-driven `package_header` extraction across
+    /// representative single-segment, multi-segment, and default-package Kotlin
+    /// inputs — the full symptom class for this slice (language: kotlin).
+    #[test]
+    fn test_extract_kotlin_surface_package_from_ast_header_not_filename() {
+        // Multi-segment package, single-file target named after the type. The
+        // resolver passes `JobSupport` (file stem) as package_name; the surface
+        // must instead expose `kotlinx.coroutines`.
+        let dir = TempDir::new().unwrap();
+        write_file(
+            &dir,
+            "JobSupport.kt",
+            r#"package kotlinx.coroutines
+
+class JobSupport {
+    fun start(): Boolean = true
+}
+"#,
+        );
+        let file = dir.path().join("JobSupport.kt");
+        let resolved = ResolvedPackage {
+            root_dir: file.clone(),
+            package_name: "JobSupport".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+
+        let surface = extract_kotlin_api_surface(&resolved, false, None).unwrap();
+        assert_eq!(
+            surface.package, "kotlinx.coroutines",
+            "surface package must be the package_header, not the filename, got {:?}",
+            surface.package
+        );
+        let class = surface
+            .apis
+            .iter()
+            .find(|api| api.qualified_name.ends_with(".JobSupport"))
+            .expect("JobSupport class must surface");
+        assert_eq!(
+            class.qualified_name, "kotlinx.coroutines.JobSupport",
+            "qualified name must be package_header-qualified, not filename-doubled"
+        );
+        assert!(
+            surface
+                .apis
+                .iter()
+                .any(|api| api.qualified_name == "kotlinx.coroutines.JobSupport.start"),
+            "method qualified name must use the package_header segment, got {:?}",
+            surface
+                .apis
+                .iter()
+                .map(|a| a.qualified_name.as_str())
+                .collect::<Vec<_>>()
+        );
+        // Hard anti-regression: the filename must never appear as a package
+        // segment of any qualified name.
+        for api in &surface.apis {
+            assert!(
+                !api.qualified_name.starts_with("JobSupport."),
+                "filename leaked into package segment: {}",
+                api.qualified_name
+            );
+        }
+
+        // Single-segment package (`package foo`) — the `qualified_identifier`
+        // wraps a lone segment; must still be read verbatim.
+        let dir2 = TempDir::new().unwrap();
+        write_file(&dir2, "Widget.kt", "package widgets\n\nclass Widget\n");
+        let file2 = dir2.path().join("Widget.kt");
+        let resolved2 = ResolvedPackage {
+            root_dir: file2.clone(),
+            package_name: "Widget".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let surface2 = extract_kotlin_api_surface(&resolved2, false, None).unwrap();
+        assert_eq!(surface2.package, "widgets");
+        assert!(surface2
+            .apis
+            .iter()
+            .any(|api| api.qualified_name == "widgets.Widget"));
+
+        // Default package (no `package` declaration): fall back to the resolver
+        // name; the AST path must not crash or invent a package.
+        let dir3 = TempDir::new().unwrap();
+        write_file(&dir3, "Loose.kt", "class Loose\n");
+        let file3 = dir3.path().join("Loose.kt");
+        let resolved3 = ResolvedPackage {
+            root_dir: file3.clone(),
+            package_name: "Loose".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let surface3 = extract_kotlin_api_surface(&resolved3, false, None).unwrap();
+        assert_eq!(surface3.package, "Loose");
+        assert!(surface3
+            .apis
+            .iter()
+            .any(|api| api.qualified_name == "Loose.Loose"));
     }
 }
