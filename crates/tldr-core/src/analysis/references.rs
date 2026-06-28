@@ -3321,6 +3321,13 @@ fn check_elixir_definition(
     let def_kind = match target_text {
         "def" | "defp" => DefinitionKind::Function,
         "defmacro" | "defmacrop" => DefinitionKind::Function,
+        // fix-PW2-B-refs-elixir-defmodule (v0.5.0 BACKLOG): `defmodule Foo do`
+        // is the same `call(target=defmodule, arguments=…)` shape, but its name
+        // argument is an `alias` node (single leaf carrying the full dotted name,
+        // e.g. `Plug.Conn` or a single-segment `NotSentError`). Without this arm
+        // module-symbol queries fell through to `_ => Ok(None)`, leaving
+        // `definitions[]` empty and `--include-definition` a no-op for modules.
+        "defmodule" => DefinitionKind::Module,
         _ => return Ok(None),
     };
 
@@ -3342,6 +3349,11 @@ fn check_elixir_definition(
             "call" => child.child_by_field_name("target"),
             // zero-arity: def get_csrf_token -> bare identifier
             "identifier" => Some(child),
+            // defmodule Plug.Conn -> the name is an `alias` leaf whose text is
+            // the full (possibly dotted) module name. Matching the full alias
+            // text mirrors the reference verifier's `node_text == symbol` exact
+            // match, so `--include-definition` and `references[]` stay consistent.
+            "alias" => Some(child),
             _ => None,
         };
         if let Some(name_node) = name_node {
@@ -5833,6 +5845,68 @@ let _ = print_string (greet "Alice")
             defs.iter().any(|d| d.line == 2),
             "with-args Elixir def must still be a definition at line 2: {:?}",
             defs.iter().map(|d| d.line).collect::<Vec<_>>()
+        );
+    }
+
+    /// fix-PW2-B-refs-elixir-defmodule (v0.5.0 BACKLOG): `check_elixir_definition`
+    /// handled `def`/`defp`/`defmacro`/`defmacrop` but had NO `defmodule` arm, so
+    /// a module-symbol query returned `definitions[]: []` and `--include-definition`
+    /// was a no-op for module names. Generalization across the elixir defmodule
+    /// symptom class: single-segment, dotted (`Foo.Bar`), and nested defmodule must
+    /// ALL surface a `Module`-kind definition; the existing `def` path must keep
+    /// working in the same file.
+    #[test]
+    fn test_elixir_defmodule_is_definition() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        // Top-level dotted module + nested single-segment module + a plain def.
+        std::fs::write(
+            lib.join("conn.ex"),
+            "defmodule Plug.Conn do\n  def assign(conn, key, value) do\n    conn\n  end\n\n  defmodule NotSentError do\n    defexception message: \"a response was neither set nor sent\"\n  end\nend\n",
+        )
+        .unwrap();
+
+        // Variant 1: dotted top-level module name.
+        let dotted = find_definitions("Plug.Conn", root, Some("elixir")).unwrap();
+        assert!(
+            dotted.iter().any(|d| d.line == 1 && d.kind == DefinitionKind::Module),
+            "dotted defmodule `Plug.Conn` must be a Module definition at line 1: {:?}",
+            dotted.iter().map(|d| (d.line, d.kind)).collect::<Vec<_>>()
+        );
+
+        // Variant 2: nested single-segment module name.
+        let nested = find_definitions("NotSentError", root, Some("elixir")).unwrap();
+        assert!(
+            nested.iter().any(|d| d.line == 6 && d.kind == DefinitionKind::Module),
+            "nested defmodule `NotSentError` must be a Module definition at line 6: {:?}",
+            nested.iter().map(|d| (d.line, d.kind)).collect::<Vec<_>>()
+        );
+
+        // Regression: the plain `def` in the same file still resolves as a def.
+        let func = find_definitions("assign", root, Some("elixir")).unwrap();
+        assert!(
+            func.iter().any(|d| d.line == 2),
+            "plain Elixir def must still resolve alongside defmodule: {:?}",
+            func.iter().map(|d| d.line).collect::<Vec<_>>()
+        );
+
+        // End-to-end: references --include-definition must populate definitions[].
+        let opts = ReferencesOptions {
+            include_definition: true,
+            language: Some("elixir".to_string()),
+            ..Default::default()
+        };
+        let report = find_references("NotSentError", root, &opts).unwrap();
+        assert!(
+            !report.definitions.is_empty(),
+            "ReferencesReport.definitions[] must be populated for a defmodule symbol"
+        );
+        assert!(
+            report.definitions.iter().any(|d| d.kind == DefinitionKind::Module),
+            "defmodule definition must carry DefinitionKind::Module: {:?}",
+            report.definitions.iter().map(|d| d.kind).collect::<Vec<_>>()
         );
     }
 
