@@ -2755,7 +2755,23 @@ fn collect_binary_exprs(
             if let Some((left, right)) = extract_operands_from_node(&node, source, lang) {
                 // Normalize the expression text
                 let normalized = normalize_expression(&left, &op, &right);
-                results.push((normalized, op, left, right, line));
+                // CF2-S15 (v0.5.0 RC CF-wave): attribute the expression to the
+                // line where its *enclosing statement* begins, read from the
+                // full statement AST span, rather than to the physical line of
+                // the operator token. A parenthesized, line-continued condition
+                //   if (
+                //       a + b > c
+                //       and b - d < a
+                //   ):
+                // places every operator node on a continuation line (4, 5) that
+                // no CFG block covers — the branch block is keyed only to the
+                // `if` keyword's line (3). Reporting the operator's own row left
+                // `find_block_for_line_strict` with no match, so the condition's
+                // sub-expressions were silently dropped and `all_exprs` came back
+                // empty. Walking up to the statement node keeps them attributable
+                // to the branch block, matching the single-physical-line case.
+                let anchor_line = statement_anchor_line(&node);
+                results.push((normalized, op, left, right, anchor_line));
             }
         }
     }
@@ -2772,6 +2788,54 @@ fn collect_binary_exprs(
         }
         cursor.goto_parent();
     }
+}
+
+/// CF2-S15: line on which the statement enclosing `node` begins.
+///
+/// The CFG attributes a statement to the row where it *starts* (e.g. the `if`
+/// keyword), but a binary-operator node inside a parenthesized, line-continued
+/// condition reports its own row on a continuation line that no CFG block
+/// covers. We walk up the AST until the parent is a statement-block container
+/// (a `block` / `suite` / `module` / function body, etc.); the node just below
+/// that container is the enclosing statement, and its start row is the line the
+/// CFG keyed the block to. This reads the full statement span structurally,
+/// never by inspecting source text or guessing line offsets.
+fn statement_anchor_line(node: &tree_sitter::Node) -> usize {
+    let mut current = *node;
+    while let Some(parent) = current.parent() {
+        if is_statement_block_container(parent.kind()) {
+            break;
+        }
+        current = parent;
+    }
+    current.start_position().row + 1
+}
+
+/// CF2-S15: whether `kind` is a tree-sitter node that *contains* statements as
+/// its direct children (function/branch bodies, modules, blocks/suites).
+///
+/// The enclosing statement of an expression is the highest ancestor that is
+/// still a direct child of one of these containers. Recognising the container
+/// by node kind keeps the anchor logic AST-driven and language-agnostic — it is
+/// the same node-kind-name style already used elsewhere in this module (e.g.
+/// `kind.ends_with("_string")`). Matches Python (`module`, `block`), C-family
+/// (`compound_statement`, `declaration_list`), JS/TS (`statement_block`),
+/// Go/Rust (`source_file`, `block`), and the various `*_body` / `*_block`
+/// containers used by the remaining grammars.
+fn is_statement_block_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        "block"
+            | "suite"
+            | "statement_block"
+            | "module"
+            | "source_file"
+            | "program"
+            | "compound_statement"
+            | "declaration_list"
+            | "field_declaration_list"
+    ) || kind.ends_with("_block")
+        || kind.ends_with("_body")
 }
 
 // =============================================================================
@@ -3608,6 +3672,104 @@ def f(value: str | None) -> str | None:
             "`str | None` annotation must not be available, got: {:?}",
             texts
         );
+    }
+
+    /// CF2-S15 (v0.5.0 RC CF-wave) GENERALIZATION TEST.
+    ///
+    /// Symptom class: `tldr available` on a Python function whose `if`
+    /// condition is parenthesized and line-continued across several physical
+    /// lines. The CFG keys the branch block to the `if` keyword's row, but the
+    /// condition's binary-operator nodes live on continuation rows that no
+    /// block covers, so before the fix every condition sub-expression was
+    /// dropped and `all_exprs` came back empty `[]`.
+    ///
+    /// The gate runs the full public pipeline (`get_cfg_context` +
+    /// `get_dfg_context` + `compute_available_exprs_with_source_and_lang`),
+    /// exactly as the CLI does, over several parenthesized multi-line shapes.
+    /// Each function's ONLY binary expressions are inside the multi-line
+    /// condition (the bodies contain none), so on the pre-fix source
+    /// `all_exprs` is empty and every assertion below fails; after the fix the
+    /// sub-expressions are attributed to the branch block's line and appear.
+    #[test]
+    fn test_available_python_parenthesized_multiline_if_condition() {
+        let lang = crate::types::Language::Python;
+
+        // Each case: (source, function, sub-expression texts that MUST appear).
+        let cases: &[(&str, &str, &[&str])] = &[
+            // Canonical parenthesized, line-continued `if`.
+            (
+                "def gate(a, b, c, d, e, f):\n\
+                 \x20   flag = 0\n\
+                 \x20   if (\n\
+                 \x20       a + b > c\n\
+                 \x20       and d - e < f\n\
+                 \x20   ):\n\
+                 \x20       flag = 1\n\
+                 \x20   return flag\n",
+                "gate",
+                &["a + b", "d - e"],
+            ),
+            // Opening paren on its own line, single multi-line comparison.
+            (
+                "def widen(lo, hi, mid):\n\
+                 \x20   ok = 0\n\
+                 \x20   if (\n\
+                 \x20       lo + mid\n\
+                 \x20       > hi\n\
+                 \x20   ):\n\
+                 \x20       ok = 1\n\
+                 \x20   return ok\n",
+                "widen",
+                &["lo + mid"],
+            ),
+            // Inline opening paren, condition continued after it.
+            (
+                "def pick(p, q, r, s):\n\
+                 \x20   v = 0\n\
+                 \x20   if (p - q == r\n\
+                 \x20           and q + s != p):\n\
+                 \x20       v = 1\n\
+                 \x20   return v\n",
+                "pick",
+                &["p - q", "q + s"],
+            ),
+        ];
+
+        for (source, func, expected) in cases {
+            let source_lines: Vec<String> = source.lines().map(|s| s.to_string()).collect();
+            let cfg = crate::get_cfg_context(source, func, lang)
+                .unwrap_or_else(|e| panic!("cfg build failed for {func}: {e:?}"));
+            let dfg = crate::get_dfg_context(source, func, lang)
+                .unwrap_or_else(|e| panic!("dfg build failed for {func}: {e:?}"));
+
+            let result =
+                compute_available_exprs_with_source_and_lang(&cfg, &dfg, &source_lines, Some(lang))
+                    .unwrap_or_else(|e| panic!("available analysis failed for {func}: {e:?}"));
+
+            let texts: Vec<&str> = result.all_exprs.iter().map(|e| e.text.as_str()).collect();
+
+            assert!(
+                !result.all_exprs.is_empty(),
+                "[{func}] parenthesized multi-line `if` condition produced empty all_exprs \
+                 (condition sub-expressions were dropped); got: {texts:?}"
+            );
+
+            for want in *expected {
+                // Compare by normalized operand membership so commutative
+                // reordering in `normalize_expression` cannot hide a match.
+                let want_ops: Vec<&str> = want
+                    .split(|c| c == '+' || c == '-')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                assert!(
+                    texts.iter().any(|t| want_ops.iter().all(|o| t.contains(o))
+                        && (t.contains('+') || t.contains('-'))),
+                    "[{func}] expected condition sub-expression `{want}` from the full \
+                     multi-line condition span, but it was missing; got: {texts:?}"
+                );
+            }
+        }
     }
 
     #[test]
