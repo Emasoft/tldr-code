@@ -443,16 +443,18 @@ impl DefinitionArgs {
                 file.display()
             ));
 
-            // Workspace cross-file resolution (definition-workspace-cross-file-v1):
-            // when no explicit --project is supplied AND --workspace is on
-            // (the default), auto-detect the project root by walking up
-            // ancestors looking for repository / package markers.
-            let auto_project: Option<PathBuf> = if self.project.is_none() && self.workspace {
-                find_workspace_root(file)
-            } else {
-                None
-            };
-            let effective_project = self.project.as_deref().or(auto_project.as_deref());
+            // Workspace cross-file resolution (definition-workspace-cross-file-v1
+            // + F4b-definition-py-import): resolve the effective cross-file
+            // root, honouring an explicit --project, --workspace=false opt-out,
+            // and the Python package-dir fallback for marker-less trees.
+            let root_lang = detect_language(file, &lang_hint).ok();
+            let effective_project_buf = resolve_definition_root(
+                self.project.as_deref(),
+                self.workspace,
+                file,
+                root_lang,
+            );
+            let effective_project = effective_project_buf.as_deref();
 
             find_definition_by_name(symbol_name, file, effective_project, &lang_hint)?
         } else {
@@ -475,14 +477,18 @@ impl DefinitionArgs {
                 column
             ));
 
-            // Workspace cross-file resolution (definition-workspace-cross-file-v1):
-            // auto-detect project root if not explicitly provided.
-            let auto_project: Option<PathBuf> = if self.project.is_none() && self.workspace {
-                find_workspace_root(file)
-            } else {
-                None
-            };
-            let effective_project = self.project.as_deref().or(auto_project.as_deref());
+            // Workspace cross-file resolution (definition-workspace-cross-file-v1
+            // + F4b-definition-py-import): resolve the effective cross-file
+            // root, honouring an explicit --project, --workspace=false opt-out,
+            // and the Python package-dir fallback for marker-less trees.
+            let root_lang = detect_language(file, &lang_hint).ok();
+            let effective_project_buf = resolve_definition_root(
+                self.project.as_deref(),
+                self.workspace,
+                file,
+                root_lang,
+            );
+            let effective_project = effective_project_buf.as_deref();
 
             // r7-cl11: normalize the declared-encoding INPUT column to the
             // 0-indexed UTF-8 byte column the resolver consumes internally.
@@ -631,6 +637,11 @@ pub fn find_definition_by_name(
     }
 
     // If not found and we have a project context, try cross-file resolution.
+    // `project` is the caller-supplied resolution root; `None` means the
+    // caller opted out of cross-file resolution (e.g. `--workspace=false`),
+    // so we stay single-file. The CLI computes this root via
+    // [`resolve_definition_root`], which supplies a Python package-dir
+    // fallback for marker-less trees (see F4b-definition-py-import).
     if let Some(project_root) = project {
         let mut detector = DefinitionCycleDetector::new();
         if let Some(result) =
@@ -4617,6 +4628,48 @@ fn resolve_cross_file_walk(
 ///
 /// Returns `None` if no marker is found before reaching the filesystem
 /// root, in which case the caller falls back to in-file resolution.
+/// Resolve the effective cross-file resolution root for the `definition`
+/// command, given the user's `--project` / `--workspace` choices.
+///
+/// Precedence:
+/// 1. An explicit `--project` always wins (returned verbatim).
+/// 2. With `--workspace=false` and no `--project`, return `None` — the user
+///    explicitly opted out of cross-file resolution, so the resolver stays
+///    single-file (and position queries fall back to the import-line
+///    `module` result). This preserves the documented legacy behaviour.
+/// 3. With workspace resolution enabled (the default), walk up for a project
+///    marker via [`find_workspace_root`].
+/// 4. F4b-definition-py-import: when no marker is found *and* the file is
+///    Python, fall back to the file's own package directory. Python
+///    *relative* from-imports (`from .mod import f`) resolve relative to the
+///    current file and need no project marker, so without this fallback a
+///    `from .mod import f; f()` query in a marker-less tree skipped
+///    cross-file resolution entirely and dead-ended at the import line as
+///    `kind=module` instead of following `f` to its real definition. The
+///    fallback is Python-only: the other languages resolve cross-file via a
+///    project-wide directory walk that genuinely needs a real root, so their
+///    behaviour is unchanged.
+fn resolve_definition_root(
+    explicit_project: Option<&Path>,
+    workspace: bool,
+    file: &Path,
+    language: Option<Language>,
+) -> Option<PathBuf> {
+    if let Some(p) = explicit_project {
+        return Some(p.to_path_buf());
+    }
+    if !workspace {
+        return None;
+    }
+    if let Some(root) = find_workspace_root(file) {
+        return Some(root);
+    }
+    if language == Some(Language::Python) {
+        return file.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
 pub(crate) fn find_workspace_root(file: &Path) -> Option<PathBuf> {
     const MARKERS: &[&str] = &[
         ".git",
@@ -5132,6 +5185,273 @@ from . import types
             def_loc.file
         );
         assert_eq!(def_loc.line, 1, "echo is defined on line 1 of utils.py");
+    }
+
+    // -------------------------------------------------------------------------
+    // F4b-definition-py-import: a Python `from .mod import f` followed by a
+    // usage `f()` must resolve to f's REAL definition (Function/Class/
+    // Variable in the imported module), NOT to `kind=module` at the import
+    // line. The regression appeared whenever no explicit `--project` /
+    // workspace root was detected: cross-file resolution was skipped and the
+    // query dead-ended at the Pass-3 import-scope fallback. The fix derives a
+    // Python fallback root (file's package dir) so relative from-imports
+    // always fall through to `resolve_cross_file`.
+    //
+    // GENERALIZATION: every variant in the symptom class is exercised below
+    // using the real CLI-derived fallback root (`resolve_definition_root`
+    // with workspace on and no `--project`, asserted via `f4b_root` to be the
+    // file's package dir) — function, class and module-level variable
+    // from-imports, a sub-package (`from .sub.deep import …`) relative
+    // import, both the name-based and position-based entry points, the
+    // root-resolution policy itself (explicit-project / workspace-off /
+    // Python-vs-non-Python / marker-present branches), AND the two regression
+    // guards that must stay green (a same-file definition still wins over the
+    // import, and a genuinely-unresolvable third-party `import json` still
+    // falls back to the import-line `module` result). A single-variant test
+    // would not have caught a partial fix.
+    // -------------------------------------------------------------------------
+
+    /// Build a marker-less package (no `.git`/`pyproject.toml`/… so
+    /// `find_workspace_root` returns None and the Python fallback root is
+    /// exercised) and return the tempdir + `app.py` path.
+    fn f4b_make_pkg() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("pkg");
+        let sub = pkg.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        fs::write(pkg.join("__init__.py"), "").unwrap();
+        fs::write(sub.join("__init__.py"), "").unwrap();
+        // mod.py: a function (line 1), a class (line 5), a module-level
+        // variable (line 9).
+        fs::write(
+            pkg.join("mod.py"),
+            "def helper():\n    return 42\n\n\nclass Widget:\n    pass\n\n\nCONST = 99\n",
+        )
+        .unwrap();
+        // sub/deep.py: a function (line 1) reached via a sub-package import.
+        fs::write(sub.join("deep.py"), "def deep_fn():\n    return 7\n").unwrap();
+        // app.py: imports each symbol and uses it. A locally-defined
+        // `local_fn` (line 8) guards same-file precedence; `import json`
+        // (line 5) guards the plain-import fallback.
+        let app = pkg.join("app.py");
+        fs::write(
+            &app,
+            "from .mod import helper\n\
+             from .mod import Widget\n\
+             from .mod import CONST\n\
+             from .sub.deep import deep_fn\n\
+             import json\n\
+             \n\
+             \n\
+             def local_fn():\n\
+            \x20   return 1\n\
+             \n\
+             \n\
+             def main():\n\
+            \x20   helper()\n\
+            \x20   Widget()\n\
+            \x20   x = CONST\n\
+            \x20   deep_fn()\n\
+            \x20   json.loads(\"{}\")\n\
+            \x20   return local_fn()\n",
+        )
+        .unwrap();
+        (dir, app)
+    }
+
+    /// The cross-file root the CLI now derives for a marker-less Python tree
+    /// (`resolve_definition_root` with workspace on, no `--project`). Asserts
+    /// the fallback is exactly the file's package directory so the tests
+    /// exercise the *real* policy the binary runs, not a hand-picked root.
+    fn f4b_root(app: &Path) -> PathBuf {
+        let root = resolve_definition_root(None, true, app, Some(Language::Python))
+            .expect("marker-less Python tree must yield a package-dir fallback root");
+        assert_eq!(
+            root,
+            app.parent().unwrap(),
+            "fallback root must be the file's own package directory"
+        );
+        root
+    }
+
+    #[test]
+    fn test_f4b_from_import_function_resolves_to_real_def_no_project() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        // Name-based: must follow the from-import to the real Function def in
+        // mod.py — NOT report kind=module at the import line.
+        let result = find_definition_by_name("helper", &app, Some(&root), "python")
+            .expect("from-import of a function must resolve cross-file");
+        assert_eq!(result.symbol.kind, SymbolKind::Function);
+        let def = result.definition.expect("definition location must be Some");
+        assert!(
+            def.file.ends_with("mod.py"),
+            "helper must resolve into mod.py, got {}",
+            def.file
+        );
+        assert_eq!(def.line, 1, "helper is defined on line 1 of mod.py");
+    }
+
+    #[test]
+    fn test_f4b_from_import_class_resolves_to_real_def_no_project() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        let result = find_definition_by_name("Widget", &app, Some(&root), "python")
+            .expect("from-import of a class must resolve cross-file");
+        assert_eq!(
+            result.symbol.kind,
+            SymbolKind::Class,
+            "imported class must be kind=class, not module"
+        );
+        let def = result.definition.unwrap();
+        assert!(def.file.ends_with("mod.py"));
+        assert_eq!(def.line, 5);
+    }
+
+    #[test]
+    fn test_f4b_from_import_variable_resolves_to_real_def_no_project() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        let result = find_definition_by_name("CONST", &app, Some(&root), "python")
+            .expect("from-import of a module-level variable must resolve cross-file");
+        assert_eq!(
+            result.symbol.kind,
+            SymbolKind::Variable,
+            "imported variable must be kind=variable, not module"
+        );
+        let def = result.definition.unwrap();
+        assert!(def.file.ends_with("mod.py"));
+        assert_eq!(def.line, 9);
+    }
+
+    #[test]
+    fn test_f4b_subpackage_from_import_resolves_no_project() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        let result = find_definition_by_name("deep_fn", &app, Some(&root), "python")
+            .expect("sub-package from-import must resolve cross-file");
+        assert_eq!(result.symbol.kind, SymbolKind::Function);
+        let def = result.definition.unwrap();
+        assert!(
+            def.file.ends_with("deep.py"),
+            "deep_fn must resolve into sub/deep.py, got {}",
+            def.file
+        );
+        assert_eq!(def.line, 1);
+    }
+
+    #[test]
+    fn test_f4b_position_based_from_import_resolves_no_project() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        // Cursor on `helper` in the `helper()` call on line 13 (col 4,
+        // 0-indexed). End-to-end position path must reach the real def.
+        let result = find_definition_by_position(&app, 13, 4, Some(&root), "python")
+            .expect("position-based from-import usage must resolve cross-file");
+        assert_eq!(result.symbol.name, "helper");
+        assert_eq!(
+            result.symbol.kind,
+            SymbolKind::Function,
+            "position-based usage of an imported function must be kind=function, not module"
+        );
+        assert_eq!(result.definition.unwrap().line, 1);
+    }
+
+    #[test]
+    fn test_f4b_same_file_definition_still_wins_over_cross_file() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        // `local_fn` is defined in app.py itself — must resolve to the local
+        // def, never wander cross-file.
+        let result = find_definition_by_name("local_fn", &app, Some(&root), "python")
+            .expect("same-file definition must still resolve");
+        assert_eq!(result.symbol.kind, SymbolKind::Function);
+        let def = result.definition.unwrap();
+        assert!(
+            def.file.ends_with("app.py"),
+            "local_fn must resolve in app.py, got {}",
+            def.file
+        );
+        assert_eq!(def.line, 8);
+    }
+
+    #[test]
+    fn test_f4b_plain_unresolvable_import_still_falls_back_to_module() {
+        let (_dir, app) = f4b_make_pkg();
+        let root = f4b_root(&app);
+        // `import json` cannot be followed to a project file (third-party):
+        // the Python package-dir fallback root must find nothing and leave the
+        // Pass-3 import-line `module` result intact. Cursor on `json` in the
+        // `json.loads(...)` call on line 17 (col 4, 0-indexed).
+        let result = find_definition_by_position(&app, 17, 4, Some(&root), "python")
+            .expect("plain-import usage must still resolve to the import line");
+        assert_eq!(result.symbol.name, "json");
+        assert_eq!(
+            result.symbol.kind,
+            SymbolKind::Module,
+            "an unresolvable third-party import must stay kind=module"
+        );
+        assert_eq!(
+            result.definition.unwrap().line,
+            5,
+            "json import is on line 5"
+        );
+    }
+
+    #[test]
+    fn test_f4b_resolve_definition_root_policy() {
+        // The root-resolution policy that decides whether (and from where)
+        // cross-file resolution runs. Covers every branch so the workspace
+        // opt-out contract and the Python fallback cannot silently drift.
+        let (_dir, app) = f4b_make_pkg();
+        let pkg_dir = app.parent().unwrap();
+        let explicit = app.parent().unwrap().parent().unwrap(); // tmp root
+
+        // 1. Explicit --project always wins (regardless of workspace flag).
+        assert_eq!(
+            resolve_definition_root(Some(explicit), false, &app, Some(Language::Python)),
+            Some(explicit.to_path_buf()),
+            "explicit --project must win even with --workspace=false"
+        );
+
+        // 2. --workspace=false, no --project -> None (legacy opt-out). This is
+        //    the contract guarded by test_definition_workspace_false_keeps_legacy_behaviour.
+        assert_eq!(
+            resolve_definition_root(None, false, &app, Some(Language::Python)),
+            None,
+            "--workspace=false must disable cross-file resolution"
+        );
+
+        // 3. Workspace on, marker-less Python tree -> file's package dir
+        //    (the F4b fix: relative from-imports resolve without a marker).
+        assert_eq!(
+            resolve_definition_root(None, true, &app, Some(Language::Python)),
+            Some(pkg_dir.to_path_buf()),
+            "marker-less Python tree must fall back to the package directory"
+        );
+
+        // 4. Workspace on, marker-less, NON-Python -> None (the package-dir
+        //    fallback is Python-only; walk-languages need a real root).
+        assert_eq!(
+            resolve_definition_root(None, true, &app, Some(Language::Rust)),
+            None,
+            "non-Python marker-less tree must not get the package-dir fallback"
+        );
+
+        // 5. Workspace on, marker PRESENT -> the detected workspace root wins
+        //    over the package-dir fallback.
+        let marked = tempfile::tempdir().unwrap();
+        let pkg = marked.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(marked.path().join("pyproject.toml"), "").unwrap();
+        let marked_app = pkg.join("app.py");
+        fs::write(&marked_app, "x = 1\n").unwrap();
+        assert_eq!(
+            resolve_definition_root(None, true, &marked_app, Some(Language::Python)),
+            Some(marked.path().to_path_buf()),
+            "a detected workspace marker must win over the package-dir fallback"
+        );
     }
 
     // -------------------------------------------------------------------------
