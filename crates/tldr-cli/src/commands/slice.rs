@@ -10,7 +10,7 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use tldr_core::ast::function_finder::find_function_bounds_from_path_or_source;
-use tldr_core::{get_slice_rich, Language, SliceDirection};
+use tldr_core::{get_slice_rich, Language, RichSlice, SliceDirection};
 
 use crate::commands::daemon_router::{params_with_file_function_line, try_daemon_route};
 use crate::commands::elixir_per_clause;
@@ -281,6 +281,31 @@ impl SliceArgs {
             self.variable.as_deref(),
             language,
         )?;
+
+        // elixir-multiclause-slice-dispatch-v1 (v0.5.0 RC, CF2-S14):
+        // the whole-file `get_slice_rich` above resolves a multi-clause
+        // Elixir `def` to its *first* body-bearing clause (the M-E1
+        // selector). When the criterion line lives inside a LATER
+        // clause, that slice comes back empty and the headline would
+        // wrongly report "line outside function" (validating against
+        // clause #1's range) even though the correct slice exists in a
+        // later clause / `per_clauses[n]`. Consult the matching clause
+        // *before* concluding the line is out of range: recompute the
+        // slice against the synthetic single-clause sub-source for
+        // whichever body-bearing clause actually contains the line.
+        let rich = if rich.nodes.is_empty() {
+            elixir_clause_slice_for_line(
+                &self.file,
+                &function,
+                self.line,
+                direction,
+                self.variable.as_deref(),
+                language,
+            )
+            .unwrap_or(rich)
+        } else {
+            rich
+        };
 
         // Build backward-compatible line list
         let lines: Vec<u32> = rich.nodes.iter().map(|n| n.line).collect();
@@ -582,6 +607,59 @@ fn slice_oor_explanation(
     }
 }
 
+/// elixir-multiclause-slice-dispatch-v1 (v0.5.0 RC, CF2-S14): recompute
+/// a backward/forward slice for an Elixir multi-clause `def` against the
+/// clause whose body actually contains `line`.
+///
+/// The whole-file slice resolves a multi-clause `def` to its first
+/// body-bearing clause (M-E1), so a criterion line inside a *later*
+/// clause yields nothing there. This helper lists the body-bearing
+/// clauses, finds the one whose `start_line..=end_line` span contains
+/// `line`, and re-runs the slice on that clause's synthetic
+/// single-clause sub-source (which preserves original line numbers, so
+/// the result needs no offset translation).
+///
+/// Returns `None` for non-Elixir sources, single-clause functions, when
+/// no clause body contains `line` (a genuine out-of-range criterion),
+/// or when the recomputed slice is still empty — leaving the caller's
+/// out-of-range diagnostic intact for those cases.
+fn elixir_clause_slice_for_line(
+    file: &std::path::Path,
+    function_name: &str,
+    line: u32,
+    direction: SliceDirection,
+    variable: Option<&str>,
+    language: Language,
+) -> Option<RichSlice> {
+    let clauses = elixir_per_clause::list_body_bearing_clauses(file, function_name, language)?;
+    if clauses.len() <= 1 {
+        return None;
+    }
+    // Locate the body-bearing clause whose span contains the criterion.
+    // Clauses are non-overlapping, so at most one matches.
+    let clause = clauses
+        .iter()
+        .find(|c| line >= c.start_line && line <= c.end_line)?;
+    let source = elixir_per_clause::read_source(file)?;
+    let (synthetic, _offset) = elixir_per_clause::build_synthetic_clause_source(&source, clause);
+    let tmp = elixir_per_clause::write_temp_clause_file(&synthetic).ok()?;
+    let rich = get_slice_rich(
+        tmp.path().to_str()?,
+        function_name,
+        line,
+        direction,
+        variable,
+        language,
+    )
+    .ok()?;
+    drop(tmp);
+    if rich.nodes.is_empty() {
+        None
+    } else {
+        Some(rich)
+    }
+}
+
 // Optional helper accessor used in tests and richtext path; matches
 // `read_file_lines` location in the file.
 /// Read file lines for source enrichment
@@ -589,4 +667,165 @@ fn read_file_lines(path: &PathBuf) -> Vec<String> {
     std::fs::read_to_string(path)
         .map(|c| c.lines().map(|l| l.to_string()).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Faithful inline Elixir fixture mirroring `Plug.Conn.send_resp`:
+    /// a bodyless head plus three body-bearing clauses, the last with a
+    /// different arity. Returns the temp file (kept alive by the caller)
+    /// and the path.
+    fn write_multiclause_fixture() -> tempfile::NamedTempFile {
+        // 1  defmodule M do
+        // 2  (blank)
+        // 3    def foo(conn)                         <- bodyless head, arity 1
+        // 4  (blank)
+        // 5    def foo(%Conn{state: :unset}) do      <- clause #1 body, arity 1
+        // 6      raise ArgumentError, "not set"
+        // 7    end
+        // 8  (blank)
+        // 9    def foo(%Conn{adapter: {a, p}} = conn) do  <- clause #2, arity 1
+        // 10     conn = run_before_send(conn, :set)
+        // 11     {:ok, body, p} = a.send_resp(p, conn.status)
+        // 12     %{conn | adapter: {a, p}, resp_body: body, state: :sent}
+        // 13   end
+        // 14 (blank)
+        // 15   def foo(%Conn{} = conn, status, body) do   <- clause #3, arity 3
+        // 16     conn |> resp(status, body) |> foo()
+        // 17   end
+        // 18 end
+        let src = "defmodule M do\n\
+\n\
+  def foo(conn)\n\
+\n\
+  def foo(%Conn{state: :unset}) do\n\
+    raise ArgumentError, \"not set\"\n\
+  end\n\
+\n\
+  def foo(%Conn{adapter: {a, p}} = conn) do\n\
+    conn = run_before_send(conn, :set)\n\
+    {:ok, body, p} = a.send_resp(p, conn.status)\n\
+    %{conn | adapter: {a, p}, resp_body: body, state: :sent}\n\
+  end\n\
+\n\
+  def foo(%Conn{} = conn, status, body) do\n\
+    conn |> resp(status, body) |> foo()\n\
+  end\n\
+end\n";
+        let tmp = tempfile::Builder::new()
+            .prefix("tldr_cf2_s14_")
+            .suffix(".ex")
+            .tempfile()
+            .expect("create temp fixture");
+        std::fs::write(tmp.path(), src).expect("write fixture");
+        tmp
+    }
+
+    /// elixir-multiclause-slice-dispatch-v1 (CF2-S14): a criterion line
+    /// inside a *non-first* clause of a multi-clause Elixir `def` must
+    /// yield a real slice instead of a false "line outside function"
+    /// diagnostic — while a genuinely out-of-range line must STILL
+    /// report outside-function. Mirrors `Plug.Conn.send_resp`, where
+    /// the first body-bearing clause is lines 5-7 but the requested line
+    /// lives in a later clause.
+    #[test]
+    fn elixir_multiclause_later_clause_line_is_sliced_not_outside_function() {
+        let tmp = write_multiclause_fixture();
+        let path = tmp.path();
+        let path_str = path.to_str().unwrap();
+
+        // --- Line 10: inside clause #2 (lines 9-13), a LATER clause. ---
+        // Precondition (the bug): the whole-file slice resolves to the
+        // first body-bearing clause (lines 5-7), so line 10 produces an
+        // empty slice there.
+        let whole_file = get_slice_rich(
+            path_str,
+            "foo",
+            10,
+            SliceDirection::Backward,
+            None,
+            Language::Elixir,
+        )
+        .unwrap();
+        assert!(
+            whole_file.nodes.is_empty(),
+            "precondition: whole-file slice resolves to clause #1 and is empty for a later-clause line"
+        );
+        // Without the fix the headline would emit this OOR diagnostic.
+        assert!(
+            slice_oor_explanation(path_str, "foo", 10, Language::Elixir).is_some(),
+            "precondition: clause-#1-only validation flags the later-clause line as out of range"
+        );
+
+        // The fix: consult the matching clause before concluding OOR.
+        let rescued = elixir_clause_slice_for_line(
+            path,
+            "foo",
+            10,
+            SliceDirection::Backward,
+            None,
+            Language::Elixir,
+        );
+        assert!(
+            rescued.is_some(),
+            "later-clause line 10 must yield a slice from its matching clause, not 'outside function'"
+        );
+        let rescued = rescued.unwrap();
+        assert!(
+            !rescued.nodes.is_empty(),
+            "rescued slice must contain at least the criterion line"
+        );
+        assert!(
+            rescued.nodes.iter().any(|n| n.line == 10),
+            "rescued slice must include the criterion line 10"
+        );
+
+        // --- Line 16: inside clause #3 (lines 15-17), a different arity. ---
+        let whole_file_3 = get_slice_rich(
+            path_str,
+            "foo",
+            16,
+            SliceDirection::Backward,
+            None,
+            Language::Elixir,
+        )
+        .unwrap();
+        assert!(
+            whole_file_3.nodes.is_empty(),
+            "precondition: whole-file slice is empty for the arity-3 clause line too"
+        );
+        let rescued_3 = elixir_clause_slice_for_line(
+            path,
+            "foo",
+            16,
+            SliceDirection::Backward,
+            None,
+            Language::Elixir,
+        );
+        assert!(
+            rescued_3.is_some_and(|r| r.nodes.iter().any(|n| n.line == 16)),
+            "arity-3 later clause line 16 must be sliced via its matching clause"
+        );
+
+        // --- Genuine out-of-range line: must STILL report outside-function. ---
+        // Line 2 is a blank line outside every clause body.
+        let oor_rescue = elixir_clause_slice_for_line(
+            path,
+            "foo",
+            2,
+            SliceDirection::Backward,
+            None,
+            Language::Elixir,
+        );
+        assert!(
+            oor_rescue.is_none(),
+            "a genuinely out-of-range line must NOT be rescued by any clause"
+        );
+        assert!(
+            slice_oor_explanation(path_str, "foo", 2, Language::Elixir).is_some(),
+            "a genuinely out-of-range line must still report outside-function"
+        );
+    }
 }
