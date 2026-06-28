@@ -2465,6 +2465,15 @@ fn precondition_from_assert_call(
     params: &HashSet<String>,
     first_assign: &HashMap<String, u32>,
 ) -> Option<Condition> {
+    // F3a-contracts-kotlin: the idiomatic Kotlin precondition forms
+    // `require(cond) { lazyMessage }` and `check(cond) { ... }` parse (in
+    // tree-sitter-kotlin-ng) as an OUTER `call_expression` whose named children
+    // are an INNER `call_expression` (holding the callee name + value_arguments)
+    // followed by an `annotated_lambda` (the lazy message). On the outer node the
+    // callee name and arguments are invisible, so the precondition was silently
+    // dropped. Unwrap to the inner call so name/argument extraction works, and
+    // keep the lambda as the (lazy) message. No-op for every other language.
+    let (call_node, trailing_lambda) = unwrap_trailing_lambda_call(call_node);
     let call_name = extract_call_name(call_node, source)?;
     if !config.is_assert_call_name(&call_name) {
         return None;
@@ -2497,13 +2506,82 @@ fn precondition_from_assert_call(
     // argument is present (Solidity `require(cond, "msg")`), splice
     // the message text into the constraint so the human-readable
     // reason is preserved on the precondition surface.
-    let message = extract_second_call_string_argument(call_node, source);
+    //
+    // F3a-contracts-kotlin: the Kotlin lazy message lives in a trailing lambda
+    // (`require(cond) { "msg" }`), not a second value argument. Splice it with
+    // the same `cond: msg` shape, but ONLY when it is a single clean string
+    // literal — interpolated (`$var`) or non-literal lambdas carry no stable
+    // human-readable text and are represented by the condition alone.
+    let message = extract_second_call_string_argument(call_node, source)
+        .or_else(|| trailing_lambda.and_then(|lambda| clean_lambda_message(lambda, source)));
     let constraint = match message {
         Some(msg) if !msg.is_empty() => format!("{}: {}", arg_text, msg),
         _ => arg_text.clone(),
     };
 
     Some(Condition::high(arg_text, constraint, line))
+}
+
+/// F3a-contracts-kotlin: detect the Kotlin trailing-lambda call shape and
+/// unwrap it. `require(cond) { lazyMessage }` / `check(cond) { ... }` parse as
+/// an OUTER `call_expression` whose named children are an inner
+/// `call_expression` (the real callee + value_arguments) followed by an
+/// `annotated_lambda`/`lambda_literal` (the lazy message). When exactly that
+/// shape is present, return `(inner_call, Some(lambda))`; otherwise return
+/// `(call_node, None)` unchanged.
+///
+/// `annotated_lambda`/`lambda_literal` are Kotlin-only node kinds, so this is a
+/// no-op for every other language even though the emitter is shared. A plain
+/// `require(cond)` (no lambda) has children `[identifier, value_arguments]` —
+/// no nested call_expression and no lambda — so it is returned untouched.
+fn unwrap_trailing_lambda_call(call_node: Node) -> (Node, Option<Node>) {
+    let mut inner_call: Option<Node> = None;
+    let mut lambda: Option<Node> = None;
+    let mut cursor = call_node.walk();
+    for child in call_node.children(&mut cursor) {
+        match child.kind() {
+            "call_expression" => inner_call = Some(child),
+            "annotated_lambda" | "lambda_literal" => lambda = Some(child),
+            _ => {}
+        }
+    }
+    match (inner_call, lambda) {
+        (Some(inner), Some(l)) => (inner, Some(l)),
+        _ => (call_node, None),
+    }
+}
+
+/// F3a-contracts-kotlin: extract a CLEAN (non-interpolated) string-literal
+/// message from a Kotlin trailing lambda (`{ "msg" }`). Returns `None` when the
+/// lambda body has no string literal or the literal uses `$` interpolation —
+/// such messages carry no stable human-readable text, so the precondition is
+/// represented by its condition alone rather than splicing a partial string.
+fn clean_lambda_message(lambda: Node, source: &[u8]) -> Option<String> {
+    let literal = first_string_literal_node(lambda)?;
+    let text = get_node_text(literal, source);
+    if text.contains('$') {
+        return None;
+    }
+    let trimmed = text.trim().trim_matches('"').trim_matches('\'');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Depth-first search for the first `string_literal` descendant (inclusive).
+fn first_string_literal_node(node: Node) -> Option<Node> {
+    if node.kind() == "string_literal" {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = first_string_literal_node(child) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// solidity-sol016-cluster-v1 M14: extract the second argument's
@@ -6332,6 +6410,163 @@ fun f(x: Int): Int {
                 .iter()
                 .any(|p| p.constraint.contains("x > 0") && p.confidence == Confidence::High),
             "facet (a) Kotlin: guarded `require(x > 0)` must be recovered as high; got {:?}",
+            report.preconditions
+        );
+    }
+
+    // ===================================================================
+    // F3a-contracts-kotlin: `require(cond){msg}` / `check(cond){msg}` idiomatic
+    // Kotlin preconditions, including in-range membership (`x in lo..hi`), were
+    // dropped -> empty contracts. Root cause: the trailing lazy-message lambda
+    // makes tree-sitter-kotlin-ng parse the call as an OUTER call_expression
+    // whose children are [inner call_expression, annotated_lambda]; the
+    // callee name + value_arguments live on the INNER call, so name/arg
+    // extraction on the outer node failed and the precondition was discarded.
+    // GENERALIZATION: every variant in the symptom class is covered below ---
+    // {require,check} x {in-range, simple-relational} x {trailing-lambda, none}
+    // plus clean-literal message splicing and the no-regression flat form.
+    // ===================================================================
+
+    /// require(in-range) + trailing lambda — the exact corpus case
+    /// (`DayOfWeek(isoDayNumber)` in kotlin-datetime). Interpolated message
+    /// is NOT spliced; the condition alone is the constraint.
+    #[test]
+    fn f3a_kotlin_require_in_range_trailing_lambda_captured() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("DayOfWeek.kt");
+        let src = r#"
+public fun DayOfWeek(isoDayNumber: Int): Int {
+    require(isoDayNumber in 1..7) { "Expected ISO day-of-week number in 1..7, got $isoDayNumber" }
+    return isoDayNumber
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "DayOfWeek", Language::Kotlin, 100).unwrap();
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.variable == "isoDayNumber in 1..7"
+                    && p.confidence == Confidence::High),
+            "require(in-range){{msg}} must be captured; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// check(in-range) + trailing lambda — `check` is the other idiomatic
+    /// precondition builtin and must behave identically to `require`.
+    #[test]
+    fn f3a_kotlin_check_in_range_trailing_lambda_captured() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("Time.kt");
+        let src = r#"
+fun validate(value: Int, lower: Int, upper: Int): Int {
+    check(value in lower..upper) { "out of range: $value" }
+    return value
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "validate", Language::Kotlin, 100).unwrap();
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.variable == "value in lower..upper"
+                    && p.confidence == Confidence::High),
+            "check(in-range){{msg}} must be captured; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// require(simple-relational) + trailing lambda — non-range condition with
+    /// a lazy message still unwraps correctly.
+    #[test]
+    fn f3a_kotlin_require_relational_trailing_lambda_captured() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("R.kt");
+        let src = r#"
+fun f(x: Int): Int {
+    require(x >= 0) { "x must be non-negative, got $x" }
+    return x
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "f", Language::Kotlin, 100).unwrap();
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.variable == "x >= 0" && p.confidence == Confidence::High),
+            "require(cond){{msg}} must be captured; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// in-range WITHOUT a trailing lambda — must also be captured (the
+    /// in_expression condition is represented verbatim).
+    #[test]
+    fn f3a_kotlin_require_in_range_no_lambda_captured() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("N.kt");
+        let src = r#"
+fun g(month: Int): Int {
+    require(month in 1..12)
+    return month
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "g", Language::Kotlin, 100).unwrap();
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.variable == "month in 1..12" && p.confidence == Confidence::High),
+            "require(in-range) without lambda must be captured; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// check(simple) WITHOUT a trailing lambda — flat form unaffected.
+    #[test]
+    fn f3a_kotlin_check_no_lambda_captured() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("C.kt");
+        let src = r#"
+fun h(n: Int): Int {
+    check(n > 0)
+    return n
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "h", Language::Kotlin, 100).unwrap();
+        assert!(
+            report
+                .preconditions
+                .iter()
+                .any(|p| p.variable == "n > 0" && p.confidence == Confidence::High),
+            "check(cond) without lambda must be captured; got {:?}",
+            report.preconditions
+        );
+    }
+
+    /// A CLEAN (non-interpolated) string-literal lazy message is spliced into
+    /// the constraint as `cond: msg` for parity with Solidity require(cond,msg).
+    #[test]
+    fn f3a_kotlin_clean_literal_message_spliced() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("M.kt");
+        let src = r#"
+fun p(x: Int): Int {
+    require(x > 0) { "must be positive" }
+    return x
+}
+"#;
+        fs::write(&file_path, src).unwrap();
+        let report = run_contracts(&file_path, "p", Language::Kotlin, 100).unwrap();
+        assert!(
+            report.preconditions.iter().any(|pc| pc.variable == "x > 0"
+                && pc.constraint.contains("must be positive")),
+            "clean literal lazy-message must be spliced into constraint; got {:?}",
             report.preconditions
         );
     }
