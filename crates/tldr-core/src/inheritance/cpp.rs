@@ -77,9 +77,24 @@ fn visit_node_with_lang(
             }
         }
         "struct_specifier" => {
-            // structs can also inherit in C++ (default access = public)
-            if let Some(class) = extract_class_specifier(node, source, file_path, lang, true) {
-                classes.push(class);
+            // A `struct_specifier` is only a *definition* when it carries a
+            // body (`field_declaration_list`). A bodyless `struct_specifier`
+            // is a type *reference* — `sizeof(struct sdshdr8)`,
+            // `struct Foo *p;`, a `struct Foo` parameter, or a forward
+            // declaration `struct Foo;` — and must not enter the inventory.
+            // Counting them doubled the inheritance inventory on real C code
+            // (PW5 bug9: redis sds.c emitted 5 phantom `sdshdrN` nodes from
+            // the `sizeof(struct sdshdrN)` switch — 10 vs 5). structs can
+            // also inherit in C++ (default access = public), and an
+            // inheriting struct always has a body, so this guard never drops
+            // a real base edge. Mirrors the VAL-001 body check in
+            // `ast/extractor.rs`.
+            if node.child_by_field_name("body").is_some() {
+                if let Some(class) =
+                    extract_class_specifier(node, source, file_path, lang, true)
+                {
+                    classes.push(class);
+                }
             }
         }
         // Tree-sitter-cpp misparses `class MACRO Name : public Base { ... };`
@@ -337,6 +352,11 @@ mod tests {
         extract_classes(source, Path::new("test.cpp"), &pool).unwrap()
     }
 
+    fn parse_and_extract_c(source: &str) -> Vec<InheritanceNode> {
+        let pool = ParserPool::new();
+        extract_classes_c(source, Path::new("test.c"), &pool).unwrap()
+    }
+
     #[test]
     fn test_simple_class() {
         let source = "class Foo { public: int x; };";
@@ -403,5 +423,132 @@ mod tests {
             nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
         );
         assert_eq!(xt.unwrap().bases, vec!["XMLNode"]);
+    }
+
+    // PW5 bug9: `sizeof(struct X)` and other bodyless `struct_specifier`
+    // type-references were being counted as struct *definitions*, doubling
+    // the inheritance inventory on real C code (redis sds.c emitted 5
+    // phantom `sdshdrN` nodes from the `sizeof(struct sdshdrN)` switch).
+    // A struct is only a definition when it carries a body
+    // (`field_declaration_list`).
+
+    #[test]
+    fn test_c_sizeof_struct_not_counted_as_definition() {
+        // Mirrors redis sds.c/sds.h: one real struct definition, plus a
+        // function that references the type via `sizeof(struct sdshdr8)`.
+        let source = "\
+struct sdshdr8 { unsigned char flags; char buf[]; };
+static int hdr_size(void) {
+    return sizeof(struct sdshdr8);
+}";
+        let nodes = parse_and_extract_c(source);
+        let count = nodes.iter().filter(|n| n.name == "sdshdr8").count();
+        assert_eq!(
+            count, 1,
+            "real `struct sdshdr8` def must be counted exactly once \
+             (sizeof type-ref must NOT add a phantom); got {:?}",
+            nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_cpp_sizeof_struct_not_counted_as_definition() {
+        // Same symptom in C++: a bodyless `struct_specifier` inside
+        // `sizeof(...)` must not register as a definition.
+        let source = "\
+struct Header { int len; };
+int header_size() {
+    return sizeof(struct Header);
+}";
+        let nodes = parse_and_extract(source);
+        let count = nodes.iter().filter(|n| n.name == "Header").count();
+        assert_eq!(
+            count, 1,
+            "real `struct Header` def must be counted exactly once; got {:?}",
+            nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_c_multiple_sizeof_refs_single_definition() {
+        // The exact shape that produced the 10-vs-5 doubling: N real defs
+        // plus N `sizeof(struct X)` references must yield exactly N nodes.
+        let source = "\
+struct sdshdr5  { unsigned char flags; char buf[]; };
+struct sdshdr8  { unsigned char flags; char buf[]; };
+struct sdshdr16 { unsigned char flags; char buf[]; };
+static int hdr_size(char type) {
+    switch (type) {
+        case 5:  return sizeof(struct sdshdr5);
+        case 8:  return sizeof(struct sdshdr8);
+        case 16: return sizeof(struct sdshdr16);
+    }
+    return 0;
+}";
+        let nodes = parse_and_extract_c(source);
+        assert_eq!(
+            nodes.len(),
+            3,
+            "expected exactly 3 struct definitions (no phantom type-refs); got {:?}",
+            nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+        for name in ["sdshdr5", "sdshdr8", "sdshdr16"] {
+            assert_eq!(
+                nodes.iter().filter(|n| n.name == name).count(),
+                1,
+                "{name} must appear exactly once",
+            );
+        }
+    }
+
+    #[test]
+    fn test_c_struct_pointer_and_var_refs_not_counted() {
+        // Other bodyless `struct_specifier` references (pointer field,
+        // local variable, function parameter) are likewise type-refs, not
+        // definitions.
+        let source = "\
+struct Node { int v; };
+struct Node *make(struct Node *parent) {
+    struct Node *n;
+    return n;
+}";
+        let nodes = parse_and_extract_c(source);
+        let count = nodes.iter().filter(|n| n.name == "Node").count();
+        assert_eq!(
+            count, 1,
+            "pointer/param/local references to `struct Node` must not add \
+             phantom definitions; got {:?}",
+            nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_c_forward_declaration_not_counted() {
+        // A bodyless forward declaration `struct Foo;` is not a definition.
+        let source = "struct Foo; struct Foo { int x; };";
+        let nodes = parse_and_extract_c(source);
+        assert_eq!(
+            nodes.iter().filter(|n| n.name == "Foo").count(),
+            1,
+            "forward decl must not double-count `Foo`; got {:?}",
+            nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_cpp_inheriting_struct_with_body_still_counted() {
+        // Guard must NOT drop real struct definitions, including inheriting
+        // structs in C++ (which always have a body).
+        let source = "struct Base {}; struct Derived : public Base {};";
+        let nodes = parse_and_extract(source);
+        let derived = nodes
+            .iter()
+            .find(|n| n.name == "Derived")
+            .expect("inheriting struct Derived must still be counted");
+        assert_eq!(derived.bases, vec!["Base"]);
+        assert!(
+            nodes.iter().any(|n| n.name == "Base"),
+            "real `struct Base` definition must still be counted",
+        );
     }
 }
