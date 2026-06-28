@@ -2733,6 +2733,20 @@ fn collect_binary_exprs(
         return;
     }
 
+    // PW5 C5 (v0.5.0 BACKLOG): never descend into Python type-annotation
+    // nodes. PEP-604 unions (`MapAdapter | None`, `str | None`) parse as a
+    // `binary_operator` wrapped in a `type` node — for parameter, return,
+    // variable, and nested-generic annotations alike, and identically under
+    // `from __future__ import annotations`. Those operators are type-level,
+    // never runtime computations, so they must not be reported as available
+    // expressions for CSE. Real runtime binops (assignment RHS, defaults)
+    // live outside `type` nodes and are unaffected. The `type` node kind is
+    // unique to annotation contexts in tree-sitter-python, so skipping the
+    // whole subtree is precise.
+    if lang == Language::Python && kind_outer == "type" {
+        return;
+    }
+
     // Check if this node is a binary expression
     let kind = node.kind();
     if node_kinds.contains(&kind) && line >= start_line && line <= end_line {
@@ -3508,6 +3522,90 @@ def example(a, b, c):
                 .iter()
                 .any(|t| t.contains("a") && t.contains("b") && t.contains("+")),
             "Should find a + b expression, got: {:?}",
+            texts
+        );
+    }
+
+    /// PW5 C5 (v0.5.0 BACKLOG) GENERALIZATION TEST.
+    ///
+    /// PEP-604 union type annotations (`X | None`) parse as `binary_operator`
+    /// nodes in tree-sitter-python and were wrongly reported as runtime
+    /// available expressions for CSE. This test exercises every variant of
+    /// the symptom class:
+    ///   - parameter annotation (`req: Request | None`)
+    ///   - nested-generic annotation (`dict[str, Resp | None]`)
+    ///   - return-type annotation (`-> Result | None`)
+    ///   - local variable annotation (`total: Cache | None`)
+    ///   - all under `from __future__ import annotations`
+    /// and verifies real runtime binops are still collected, including a real
+    /// bitwise-OR (`perm | mask`) so the fix is context-driven (type node),
+    /// not a blanket drop of the `|` operator.
+    #[test]
+    fn test_pep604_union_annotations_excluded_from_available_python() {
+        let source = r#"
+from __future__ import annotations
+
+def handler(req: Request | None, data: dict[str, Resp | None] = {}) -> Result | None:
+    total: Cache | None = None
+    out = aa + bb
+    flags = perm | mask
+    return out
+"#;
+        let lang = crate::types::Language::Python;
+        let exprs = extract_binary_exprs_from_ast(source, lang, 1, 9);
+        let texts: Vec<&str> = exprs.iter().map(|e| e.0.as_str()).collect();
+
+        // Real runtime arithmetic binop must still be collected.
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("aa") && t.contains("bb") && t.contains('+')),
+            "real runtime `aa + bb` must remain available, got: {:?}",
+            texts
+        );
+        // Real runtime bitwise-OR must still be collected: the fix excludes
+        // type-annotation context, NOT the `|` operator itself.
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("perm") && t.contains("mask") && t.contains('|')),
+            "real runtime `perm | mask` must remain available, got: {:?}",
+            texts
+        );
+        // None of the type-annotation union operands may leak through.
+        for type_token in ["Request", "Resp", "Result", "Cache", "None"] {
+            assert!(
+                !texts.iter().any(|t| t.contains(type_token)),
+                "type-annotation token `{}` leaked into available exprs: {:?}",
+                type_token,
+                texts
+            );
+        }
+    }
+
+    /// PW5 C5: the exclusion must hold identically WITHOUT
+    /// `from __future__ import annotations` (the future import only changes
+    /// runtime semantics, not the parse tree), confirming the fix is AST-driven.
+    #[test]
+    fn test_pep604_union_annotations_excluded_no_future_python() {
+        let source = r#"
+def f(value: str | None) -> str | None:
+    n = lo + hi
+    return n
+"#;
+        let lang = crate::types::Language::Python;
+        let exprs = extract_binary_exprs_from_ast(source, lang, 1, 5);
+        let texts: Vec<&str> = exprs.iter().map(|e| e.0.as_str()).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("lo") && t.contains("hi") && t.contains('+')),
+            "real runtime `lo + hi` must remain available, got: {:?}",
+            texts
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("str") || t.contains("None")),
+            "`str | None` annotation must not be available, got: {:?}",
             texts
         );
     }
