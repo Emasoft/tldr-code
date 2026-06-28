@@ -992,6 +992,22 @@ pub fn detect_uninitialized(
         }
     }
 
+    // fix-CF1-S9 (v0.5.0 RC CF-wave): PHP implicit bindings. `$this` (the current
+    // instance) and the scope-resolution keywords `self` / `static` / `parent` are
+    // bound by the PHP runtime, never by a declaration in the method body, so a
+    // read of them has no reaching definition and was flagged
+    // definite-uninitialized (~11x in php-symfony-console). They are language-level
+    // implicit bindings — the same class as the already-seeded Solidity EVM globals
+    // (`msg`/`block`/`this`) — never uninitialized locals. The sigil-`$this` token
+    // is PHP-only; `self`/`static` are reserved keywords (in Rust/Python `self` is
+    // already a parameter and thus already pre-initialized, so re-seeding it is a
+    // harmless no-op), and `parent` is the third PHP scope keyword in the same
+    // family. Seeding them cannot hide a genuine uninitialized local, which would
+    // carry its own Definition.
+    for implicit in ["$this", "self", "static", "parent"] {
+        pre_initialized.insert(implicit);
+    }
+
     // Build map of variable -> all definitions (with their DefId)
     let defs_by_var: HashMap<&str, Vec<DefId>> = {
         let mut map: HashMap<&str, Vec<DefId>> = HashMap::new();

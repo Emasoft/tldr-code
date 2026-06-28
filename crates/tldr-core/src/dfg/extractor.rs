@@ -809,7 +809,16 @@ impl<'a> DfgBuilder<'a> {
             // The scoped_identifier holds the last identifier we want.
             // C#: using_directive child layout is
             //   "using" ("static")? qualified_name ";"
-            if kind == "import_declaration" || kind == "using_directive" {
+            //
+            // fix-CF1-S9: Go ALSO spells its imports `import_declaration`, but its
+            // binding is the package name (path tail / alias) carried by each
+            // `import_spec`, not a trailing `scoped_identifier`. Exclude Go here so
+            // the walk descends into the `import_spec_list` and reaches the Go
+            // `import_spec` collector below (this arm would otherwise `continue`
+            // past the package bindings, leaving `http` flagged uninitialized).
+            if (kind == "import_declaration" && !matches!(self.language, Language::Go))
+                || kind == "using_directive"
+            {
                 if let Some(name) = last_identifier_text(node, self.source) {
                     self.imported_type_names.insert(name);
                 }
@@ -1019,6 +1028,18 @@ impl<'a> DfgBuilder<'a> {
             // wrapper, which covers both grammars.
             if kind == "field_declaration" {
                 self.collect_field_declarator_names(node);
+                // fix-CF1-S9: tree-sitter-cpp models a C/C++ class data member as
+                // `field_declaration { type, declarator: field_identifier }` (the
+                // declarator may be wrapped in pointer_/reference_/array_/init_
+                // declarators) — a layout `collect_field_declarator_names` (which
+                // expects the Java/C# `variable_declarator`) does not capture. A
+                // bare member read in a method body (`fd_`, `_size`) is therefore a
+                // value-position identifier with no in-function definition and was
+                // flagged definite-uninitialized. Collect the member name so it is
+                // classified not-a-use.
+                if matches!(self.language, Language::C | Language::Cpp) {
+                    self.collect_cpp_member_names(node);
+                }
                 continue;
             }
             // reaching-defs-imports-params-globals-v1 (v0.4.2 M-032):
@@ -1103,6 +1124,18 @@ impl<'a> DfgBuilder<'a> {
             ) {
                 continue;
             }
+            // fix-CF1-S9: a C++ constructor's member-initializer list
+            // (`Ctor() : _a(x), _b(y)`) names class fields that are frequently
+            // DECLARED CROSS-FILE in the header, so no in-file `field_declaration`
+            // exists (e.g. tinyxml2 `_errorID`). The init list is a direct child of
+            // the constructor `function_definition`, which the function-boundary
+            // skip just below passes over without inspecting. Collect the
+            // initialized field names here so a bare member read elsewhere in the
+            // translation unit is classified not-a-use rather than
+            // definite-uninitialized.
+            if matches!(self.language, Language::Cpp) && kind == "function_definition" {
+                self.collect_cpp_ctor_init_members(node);
+            }
             // fix-R7-reaching-defs-v1 (v0.5.0 CLOSEOUT, RC1): for C/C++/Go/
             // Python/Rust we only want FILE-LEVEL symbols (macros, package
             // consts, imports). These languages previously early-returned before
@@ -1170,6 +1203,36 @@ impl<'a> DfgBuilder<'a> {
                     self.insert_identifier_names(name);
                 }
             }
+            // fix-CF1-S9: Go import package bindings. `import "net/http"` binds the
+            // package name `http` (last `/` segment of the path); `import foo "x/y"`
+            // binds the alias `foo`. A bare package qualifier — the `operand` of a
+            // `selector_expression` such as `http.StatusOK` — is a compile-time
+            // package reference, never a local read, but had no in-function
+            // definition and was flagged definite-uninitialized. Collect the
+            // binding name (mirrors the Python/TS import collectors). Blank (`_`)
+            // and dot (`.`) imports introduce no usable qualifier.
+            if matches!(self.language, Language::Go) && kind == "import_spec" {
+                if let Some(name) = go_import_binding_name(node, self.source) {
+                    if name != "_" && name != "." && !name.is_empty() {
+                        self.imported_type_names.insert(name);
+                    }
+                }
+                continue;
+            }
+            // fix-CF1-S9: C/C++ file-scope global variable. `int g_count;` /
+            // `static Foo* g = ...;` parses as a file-level `declaration` whose
+            // declarator resolves to a plain `identifier` (possibly behind
+            // pointer/reference/array/init wrappers). A read of such a global inside
+            // a function body is structurally identical to a local read but has no
+            // in-function definition, so it was flagged definite-uninitialized.
+            // Collect the global name (function PROTOTYPES, whose declarator is a
+            // `function_declarator`, yield no plain-identifier leaf and are skipped).
+            if matches!(self.language, Language::C | Language::Cpp)
+                && is_file_level
+                && kind == "declaration"
+            {
+                self.collect_cpp_global_decl_names(node);
+            }
             // Python import bindings: `import os` / `import sys as system` /
             // `from a.b import c, d as e`.
             if matches!(self.language, Language::Python)
@@ -1199,6 +1262,89 @@ impl<'a> DfgBuilder<'a> {
         }
         for child in node.children(&mut node.walk()) {
             self.insert_identifier_names(child);
+        }
+    }
+
+    /// fix-CF1-S9: collect the member name(s) declared by a C/C++ class
+    /// `field_declaration`. The declarator is a `field_identifier`, optionally
+    /// wrapped in `pointer_declarator` / `reference_declarator` / `array_declarator`
+    /// / `init_declarator`. Only the declared NAME is collected (via the
+    /// `declarator` chain) — never an initializer/bitfield expression, which lives
+    /// under the `value`/size children and is not on that chain.
+    fn collect_cpp_member_names(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if matches!(
+                child.kind(),
+                "field_identifier"
+                    | "pointer_declarator"
+                    | "reference_declarator"
+                    | "array_declarator"
+                    | "init_declarator"
+            ) {
+                if let Some(name) = cpp_declarator_leaf_name(child, self.source) {
+                    self.imported_type_names.insert(name);
+                }
+            }
+        }
+    }
+
+    /// fix-CF1-S9: collect the global variable name(s) declared by a C/C++
+    /// file-scope `declaration`. Same declarator-unwrapping as
+    /// `collect_cpp_member_names`, but the leaf is a plain `identifier`. A
+    /// `function_declarator` declarator (a prototype) has no plain-identifier leaf
+    /// on its `declarator` chain and so is skipped.
+    fn collect_cpp_global_decl_names(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if matches!(
+                child.kind(),
+                "identifier"
+                    | "pointer_declarator"
+                    | "reference_declarator"
+                    | "array_declarator"
+                    | "init_declarator"
+            ) {
+                if let Some(name) = cpp_declarator_leaf_name(child, self.source) {
+                    self.imported_type_names.insert(name);
+                }
+            }
+        }
+    }
+
+    /// fix-CF1-S9: collect the field names initialized in a C++ constructor's
+    /// member-initializer list. Shape:
+    /// ```text
+    /// function_definition
+    ///   ... (field_initializer_list
+    ///          (field_initializer (field_identifier) (argument_list ...)) ...)
+    /// ```
+    /// Only each `field_initializer`'s `field_identifier` (the member name) is
+    /// collected; the `argument_list` holds constructor-parameter reads, which are
+    /// genuine locals and must not be suppressed.
+    fn collect_cpp_ctor_init_members(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() != "field_initializer_list" {
+                continue;
+            }
+            let mut c2 = child.walk();
+            for fi in child.children(&mut c2) {
+                if fi.kind() != "field_initializer" {
+                    continue;
+                }
+                let mut c3 = fi.walk();
+                for g in fi.children(&mut c3) {
+                    if g.kind() == "field_identifier" {
+                        if let Ok(t) = g.utf8_text(self.source.as_bytes()) {
+                            if !t.is_empty() {
+                                self.imported_type_names.insert(t.to_string());
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -7519,6 +7665,53 @@ fn last_identifier_text(node: Node, source: &str) -> Option<String> {
     last.filter(|s| !s.is_empty())
 }
 
+/// fix-CF1-S9: follow a C/C++ declarator's `declarator` chain down to its
+/// innermost name leaf. `pointer_declarator` / `reference_declarator` /
+/// `array_declarator` / `init_declarator` each expose the wrapped declarator on
+/// the `declarator` field; the leaf is a `field_identifier` (class member) or an
+/// `identifier` (global). A `function_declarator` declarator (a prototype) has no
+/// such leaf, so `None` is returned and the prototype is skipped.
+fn cpp_declarator_leaf_name(node: Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "field_identifier" | "identifier" => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty()),
+        "pointer_declarator"
+        | "reference_declarator"
+        | "array_declarator"
+        | "init_declarator" => {
+            let inner = node.child_by_field_name("declarator")?;
+            cpp_declarator_leaf_name(inner, source)
+        }
+        _ => None,
+    }
+}
+
+/// fix-CF1-S9: derive the local binding name introduced by a Go `import_spec`.
+/// An explicit `name` field (alias / blank `_` / dot `.`) takes precedence;
+/// otherwise the package name is the last `/`-separated segment of the import
+/// path string (`"net/http"` -> `http`), Go's default package-binding rule.
+fn go_import_binding_name(node: Node, source: &str) -> Option<String> {
+    if let Some(name) = node.child_by_field_name("name") {
+        return name
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+    }
+    let path = node.child_by_field_name("path")?;
+    let text = path.utf8_text(source.as_bytes()).ok()?;
+    let trimmed = text.trim().trim_matches('"').trim_matches('`');
+    let seg = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if seg.is_empty() {
+        None
+    } else {
+        Some(seg.to_string())
+    }
+}
+
 /// Check if a name is a language keyword
 fn is_keyword(name: &str, language: Language) -> bool {
     match language {
@@ -10679,6 +10872,126 @@ def newMutableMap(n: Int): mutable.HashMap[K, V] = {
         assert!(
             !scala_uninit.contains(&"mutable".to_string()),
             "Scala package qualifier `mutable` wrongly flagged uninitialized; uninit={scala_uninit:?}"
+        );
+    }
+
+    // =====================================================================
+    // fix-CF1-S9 (v0.5.0 RC CF-wave): false `definite uninitialized` reports
+    // =====================================================================
+    // A value-position identifier that resolves to a name bound OUTSIDE the
+    // analyzed function — a C/C++ class member or file-scope global, a Go
+    // imported-package qualifier, or a PHP implicit `$this` — has no in-function
+    // definition and was wrongly reported `definite uninitialized` by
+    // reaching-defs. The fixes are AST-keyed on tree-sitter node kinds:
+    //   * C/C++ — collect class data members (`field_declaration` field_identifier
+    //             + constructor `field_initializer_list`) and file-scope globals
+    //             (`declaration` identifier) into the not-a-use suppression set.
+    //   * Go    — collect import package bindings (`import_spec` path tail / alias)
+    //             so a `selector_expression` operand package qualifier is not a use.
+    //   * PHP   — seed the runtime-implicit `$this` / `self` / `static` bindings as
+    //             pre-initialized in reaching-defs.
+    //
+    // GENERALIZATION GATE: this single test asserts EVERY language in the symptom
+    // class (cpp, go, php); a single-language version is an anti-treadmill FAIL.
+    // Each free name must drop OUT of the uninitialized set while a genuine local
+    // read in the same function survives (no over-suppression).
+    #[test]
+    fn cf1_s9_free_names_not_definite_uninitialized() {
+        fn uninit(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            let cfg = crate::cfg::get_cfg_context(source, func, lang).unwrap();
+            let report = crate::dfg::reaching::build_reaching_defs_report(
+                &cfg,
+                &dfg.refs,
+                std::path::PathBuf::from("test"),
+            );
+            report.uninitialized.iter().map(|u| u.var.clone()).collect()
+        }
+        fn uses(source: &str, func: &str, lang: Language) -> Vec<String> {
+            let dfg = get_dfg_context(source, func, lang).unwrap();
+            dfg.refs
+                .iter()
+                .filter(|r| r.ref_type == RefType::Use)
+                .map(|r| r.name.clone())
+                .collect()
+        }
+
+        // ---- C++ : class members (field_declaration + ctor init list) +
+        //            file-scope global ------------------------------------------
+        let cpp = r#"
+int g_errno;
+
+class Doc {
+    int _errorID;
+    int fd_;
+public:
+    Doc() : _errorID(0), fd_(0) {}
+    int report() {
+        int local = 7;
+        return _errorID + fd_ + g_errno + local;
+    }
+};
+"#;
+        let cpp_uninit = uninit(cpp, "report", Language::Cpp);
+        for free in ["_errorID", "fd_", "g_errno"] {
+            assert!(
+                !cpp_uninit.contains(&free.to_string()),
+                "C++ member/global `{free}` wrongly flagged uninitialized; uninit={cpp_uninit:?}"
+            );
+        }
+        assert!(
+            uses(cpp, "report", Language::Cpp).contains(&"local".to_string()),
+            "C++ genuine local read `local` lost to over-suppression"
+        );
+
+        // ---- Go : imported-package selector qualifiers (bare + aliased) -------
+        let go = r#"
+package main
+
+import (
+	"net/http"
+	hx "x/y/special"
+)
+
+func handle(c int) int {
+	local := c + 1
+	if local > http.StatusOK {
+		return hx.Code
+	}
+	return local
+}
+"#;
+        let go_uninit = uninit(go, "handle", Language::Go);
+        for pkg in ["http", "hx"] {
+            assert!(
+                !go_uninit.contains(&pkg.to_string()),
+                "Go package qualifier `{pkg}` wrongly flagged uninitialized; uninit={go_uninit:?}"
+            );
+        }
+        assert!(
+            uses(go, "handle", Language::Go).contains(&"local".to_string()),
+            "Go genuine local read `local` lost to over-suppression"
+        );
+
+        // ---- PHP : runtime-implicit `$this` / `self` / `static` ---------------
+        let php = r#"<?php
+class C {
+    public function m(int $x): int {
+        $y = $this->base + $x;
+        return self::scale($y) + static::factor();
+    }
+}
+"#;
+        let php_uninit = uninit(php, "m", Language::Php);
+        for implicit in ["$this", "self", "static"] {
+            assert!(
+                !php_uninit.contains(&implicit.to_string()),
+                "PHP implicit binding `{implicit}` wrongly flagged uninitialized; uninit={php_uninit:?}"
+            );
+        }
+        assert!(
+            uses(php, "m", Language::Php).contains(&"$y".to_string()),
+            "PHP genuine local read `$y` lost to over-suppression"
         );
     }
 
