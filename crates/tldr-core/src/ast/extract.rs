@@ -5504,56 +5504,61 @@ fn extract_swift_visibility(node: &Node, source: &str) -> Option<String> {
     None
 }
 
+/// Extract the local (body-visible) name of a Swift `parameter` node.
+///
+/// tree-sitter-swift models a `parameter` with a `name` field (the internal
+/// name used inside the body) and an optional `external_name` field (the
+/// call-site argument label). The body-visible name is the `name` field —
+/// fall back to the first `simple_identifier`/`identifier` child only when the
+/// field is absent.
+fn swift_param_name(param: &Node, source: &str) -> Option<String> {
+    if let Some(name) = param.child_by_field_name("name") {
+        let text = get_node_text(&name, source);
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    let mut cursor = param.walk();
+    for inner in param.children(&mut cursor) {
+        if inner.kind() == "simple_identifier" || inner.kind() == "identifier" {
+            return Some(get_node_text(&inner, source));
+        }
+    }
+    None
+}
+
 fn extract_swift_params(node: &Node, source: &str) -> Vec<String> {
     let mut params = Vec::new();
 
-    // Swift parameters are inside a parameter_clause or parameters node
-    let params_node = node.child_by_field_name("parameters");
-
-    let search_node = match params_node {
-        Some(ref n) => n,
-        None => {
-            // Try to find parameter_clause child
-            let mut cursor = node.walk();
-            let mut found = None;
-            for child in node.children(&mut cursor) {
-                if child.kind() == "parameter_clause" || child.kind() == "parameter_list" {
-                    found = Some(child);
-                    break;
-                }
-            }
-            match found {
-                Some(ref _n) => {
-                    // Extract params inline from the found node
-                    let mut cursor2 = _n.walk();
-                    for child in _n.children(&mut cursor2) {
-                        if child.kind() == "parameter" {
-                            let mut inner_cursor = child.walk();
-                            for inner in child.children(&mut inner_cursor) {
-                                if inner.kind() == "simple_identifier"
-                                    || inner.kind() == "identifier"
-                                {
-                                    params.push(get_node_text(&inner, source));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    return params;
-                }
-                None => return params,
+    // tree-sitter-swift places each `parameter` as a *direct* named child of the
+    // `function_declaration`/`init_declaration` (there is NO enclosing
+    // `parameter_clause`/`parameters` node — see the grammar's
+    // `function_declaration.children`). The previous code searched for a
+    // `parameters` field / `parameter_clause` child that never exists, so every
+    // function reported `params: []`. Collect the direct `parameter` children.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            if let Some(name) = swift_param_name(&child, source) {
+                params.push(name);
             }
         }
-    };
+    }
+    if !params.is_empty() {
+        return params;
+    }
 
-    let mut cursor = search_node.walk();
-    for child in search_node.children(&mut cursor) {
-        if child.kind() == "parameter" {
-            let mut inner_cursor = child.walk();
-            for inner in child.children(&mut inner_cursor) {
-                if inner.kind() == "simple_identifier" || inner.kind() == "identifier" {
-                    params.push(get_node_text(&inner, source));
-                    break;
+    // Fallback for any grammar revision that wraps parameters in a clause/list
+    // node instead of exposing them directly.
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parameter_clause" || child.kind() == "parameter_list" {
+            let mut inner = child.walk();
+            for p in child.children(&mut inner) {
+                if p.kind() == "parameter" {
+                    if let Some(name) = swift_param_name(&p, source) {
+                        params.push(name);
+                    }
                 }
             }
         }
@@ -6815,9 +6820,19 @@ fn extract_cpp_function_info(node: &Node, source: &str, is_method: bool) -> Func
     let name = extract_c_function_name(node, source).unwrap_or_default();
 
     let params = extract_c_params(node, source);
-    let return_type = node
+    let leading_type = node
         .child_by_field_name("type")
         .map(|n| get_node_text(&n, source));
+    // C++11 trailing-return functions (`auto f() -> T`) carry the placeholder
+    // `auto` in the leading `type` field; the real return type lives in the
+    // `trailing_return_type` node hanging off the `function_declarator`. When
+    // the leading type is the bare `auto` placeholder, prefer the trailing
+    // type so we report `T`/`int`/... instead of `auto`. `decltype(auto)` and
+    // a genuinely-deduced `auto` (no trailing return) keep the placeholder.
+    let return_type = match leading_type.as_deref() {
+        Some("auto") => cpp_trailing_return_type(node, source).or(leading_type),
+        _ => leading_type,
+    };
 
     let docstring = extract_c_docstring(node, source);
     let line_number = node.start_position().row as u32 + 1;
@@ -6857,6 +6872,38 @@ fn is_inside_cpp_class(node: &Node) -> bool {
         }
     }
     false
+}
+
+/// For a C++11 trailing-return function (`auto f(...) -> T`), read the real
+/// return type out of the `trailing_return_type` node. That node is a child of
+/// the `function_declarator` (not a field on the `function_definition`), so
+/// descend the declarator chain first. The `trailing_return_type` wraps a
+/// `type_descriptor` carrying the actual type text (`T`, `int`, `char*`, ...).
+fn cpp_trailing_return_type(node: &Node, source: &str) -> Option<String> {
+    let declarator = node.child_by_field_name("declarator")?;
+    let func_decl = unwrap_c_function_declarator(&declarator)?;
+    let mut cursor = func_decl.walk();
+    for child in func_decl.children(&mut cursor) {
+        if child.kind() == "trailing_return_type" {
+            // The `type_descriptor` child holds the canonical type text.
+            let mut tc = child.walk();
+            for inner in child.children(&mut tc) {
+                if inner.kind() == "type_descriptor" {
+                    let text = get_node_text(&inner, source);
+                    if !text.trim().is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            // Fallback: strip the leading `->` from the raw node text.
+            let text = get_node_text(&child, source);
+            let text = text.trim_start_matches("->").trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// fix-PW4-E2-structure-cpp-macro (v0.5.0 BACKLOG): is this `function_definition`
@@ -7037,19 +7084,19 @@ fn extract_cpp_classes_detailed(node: &Node, source: &str, classes: &mut Vec<Cla
     for child in node.children(&mut cursor) {
         match child.kind() {
             "class_specifier" | "struct_specifier" => {
-                // m040-cpp-macro-class-cross-pipeline-v1 (v0.4.2 M-110):
-                // skip the inner `class_specifier`/`struct_specifier`
-                // forward-decl shell produced by the macro-misparse
-                // (`class TINYXML2_LIB` with no `field_declaration_list`).
-                // Those shells emit the MACRO as their `name` field; the
-                // real class is recovered at the enclosing
-                // `function_definition` arm below.
-                let is_macro_shell = child.child_by_field_name("body").is_none()
-                    && matches!(
-                        child.parent().map(|p| p.kind()),
-                        Some("function_definition") | Some("declaration")
-                    );
-                if !is_macro_shell {
+                // A C++ `class_specifier`/`struct_specifier` is a *definition*
+                // only when it carries a `field_declaration_list` body. A
+                // bodyless specifier is never a definition — it is one of:
+                //   * an elaborated-type reference used as a type
+                //     (`using Stat = struct stat;`, `friend class Bar;`) — the
+                //     `struct stat` here fabricated a phantom `stat` entry;
+                //   * a forward declaration (`struct Foo;`);
+                //   * the macro-misparse shell (`class TINYXML2_LIB`, M-110)
+                //     whose real class is recovered at the `function_definition`
+                //     arm below.
+                // Emitting any of these invents a class that the source never
+                // defines, so require a body before reporting it.
+                if child.child_by_field_name("body").is_some() {
                     let info = extract_cpp_class_info(&child, source);
                     if !info.name.is_empty() {
                         classes.push(info);
@@ -13737,6 +13784,132 @@ class C {{
             vec!["format".to_string(), "args".to_string()],
             "interface method regular+variadic params must both be reported, got {:?}",
             m.params
+        );
+    }
+
+    /// fix-CF1-S2 (v0.5.0 RC CF-wave): `extract` correctness across the C++ /
+    /// Swift symptom class. Anti-treadmill: ONE test asserting every bug in the
+    /// slice is closed for EVERY language in the class (cpp + swift), plus a
+    /// no-regression guard for genuinely-deduced C++ `auto` and an unaffected
+    /// language (C). Field VALUES are asserted, never array order.
+    #[test]
+    fn test_extract_cf1_s2_cpp_swift_param_and_return_correctness() {
+        // ---- C++: C++11 trailing-return must report the real type, not `auto`,
+        //      and a `using X = struct Y;` alias must not fabricate a phantom.
+        let mut cpp = NamedTempFile::with_suffix(".cpp").unwrap();
+        write!(
+            cpp,
+            "template <typename T> constexpr auto min_of(T a, T b) -> T {{ return a < b ? a : b; }}\n\
+             inline auto to_int(double x) -> int {{ return (int)x; }}\n\
+             auto deduced(int n) {{ return n + 1; }}\n\
+             using Stat = struct stat;\n\
+             struct Real {{ int x; }};\n"
+        )
+        .unwrap();
+        let cpp_info = extract_file(cpp.path(), None).unwrap();
+
+        let min_of = cpp_info
+            .functions
+            .iter()
+            .find(|f| f.name == "min_of")
+            .expect("min_of function");
+        assert_eq!(
+            min_of.return_type.as_deref(),
+            Some("T"),
+            "C++ trailing return `-> T` must report `T`, not `auto`; got {:?}",
+            min_of.return_type
+        );
+        let to_int = cpp_info
+            .functions
+            .iter()
+            .find(|f| f.name == "to_int")
+            .expect("to_int function");
+        assert_eq!(
+            to_int.return_type.as_deref(),
+            Some("int"),
+            "C++ trailing return `-> int` must report `int`, not `auto`; got {:?}",
+            to_int.return_type
+        );
+        // No-regression: a genuinely-deduced `auto` (no trailing return) stays `auto`.
+        let deduced = cpp_info
+            .functions
+            .iter()
+            .find(|f| f.name == "deduced")
+            .expect("deduced function");
+        assert_eq!(
+            deduced.return_type.as_deref(),
+            Some("auto"),
+            "deduced `auto` (no trailing return) must stay `auto`; got {:?}",
+            deduced.return_type
+        );
+
+        // Phantom-struct: the elaborated `struct stat` in the using-alias must
+        // not appear as a class; the real bodied `struct Real` still must.
+        let cpp_class_names: Vec<&String> = cpp_info.classes.iter().map(|c| &c.name).collect();
+        assert!(
+            !cpp_info.classes.iter().any(|c| c.name == "stat"),
+            "elaborated `struct stat` (no body) must not fabricate a phantom class; got {:?}",
+            cpp_class_names
+        );
+        assert!(
+            cpp_info.classes.iter().any(|c| c.name == "Real"),
+            "a real `struct Real {{...}}` definition must still be reported; got {:?}",
+            cpp_class_names
+        );
+
+        // ---- Swift: every function's params must be captured (was `[]` for all).
+        let mut sw = NamedTempFile::with_suffix(".swift").unwrap();
+        write!(
+            sw,
+            "func greet(name: String, count: Int) -> String {{ return name }}\n\
+             func add(_ a: Int, _ b: Int) -> Int {{ return a + b }}\n"
+        )
+        .unwrap();
+        let sw_info = extract_file(sw.path(), None).unwrap();
+
+        let greet = sw_info
+            .functions
+            .iter()
+            .find(|f| f.name == "greet")
+            .expect("greet function");
+        assert_eq!(
+            greet.params,
+            vec!["name".to_string(), "count".to_string()],
+            "Swift func params must be captured by local name; got {:?}",
+            greet.params
+        );
+        let add = sw_info
+            .functions
+            .iter()
+            .find(|f| f.name == "add")
+            .expect("add function");
+        assert_eq!(
+            add.params,
+            vec!["a".to_string(), "b".to_string()],
+            "Swift func with `_` external labels must report the local names; got {:?}",
+            add.params
+        );
+
+        // ---- No-regression for an unaffected language (C): plain types intact.
+        let mut c = NamedTempFile::with_suffix(".c").unwrap();
+        write!(c, "int csum(int a, int b) {{ return a + b; }}\n").unwrap();
+        let c_info = extract_file(c.path(), None).unwrap();
+        let csum = c_info
+            .functions
+            .iter()
+            .find(|f| f.name == "csum")
+            .expect("csum function");
+        assert_eq!(
+            csum.return_type.as_deref(),
+            Some("int"),
+            "plain C return type must be unchanged; got {:?}",
+            csum.return_type
+        );
+        assert_eq!(
+            csum.params,
+            vec!["a".to_string(), "b".to_string()],
+            "plain C params must be unchanged; got {:?}",
+            csum.params
         );
     }
 }
