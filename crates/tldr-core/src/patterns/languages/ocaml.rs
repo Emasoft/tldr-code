@@ -113,6 +113,15 @@ impl OcamlSemantics {
             }
         };
 
+        // bug5-patterns-ocaml-struct: same keyword-leak guard as
+        // `detect_module_type`. Under tree-sitter error recovery a reserved
+        // keyword token (`struct`, `sig`, `end`, …) can surface in a name
+        // field; a keyword is never a legal module identifier, so never
+        // record it as a class name / functor subject.
+        if is_ocaml_keyword(&name) {
+            return;
+        }
+
         let case = detect_naming_case(&name);
         signals.naming.class_names.push((
             name.clone(),
@@ -179,7 +188,14 @@ impl OcamlSemantics {
             Some(n) => node_text(n, source),
             None => return,
         };
-        if name.is_empty() {
+        // bug5-patterns-ocaml-struct: tree-sitter-ocaml 0.24.2 cannot fully
+        // model `module type of struct … end`; under error recovery it
+        // misparses the head as a `module_type_definition` whose
+        // `module_type_name` is the literal keyword `struct` (with an
+        // `ERROR` "of" sibling and no `signature` body). A reserved keyword
+        // is never a legal module-type identifier, so reject it rather than
+        // mint a bogus `ModuleSignature` + `struct`-named naming violation.
+        if name.is_empty() || is_ocaml_keyword(&name) {
             return;
         }
         let file = file_path.display().to_string();
@@ -233,6 +249,78 @@ impl OcamlSemantics {
             }
         }
     }
+}
+
+/// True when `name` is an OCaml reserved keyword.
+///
+/// bug5-patterns-ocaml-struct: tree-sitter-ocaml cannot fully model some
+/// constructs (notably `module type of struct … end`). Under error
+/// recovery it can splice a bare keyword token into a `module_name` /
+/// `module_type_name` field, which would otherwise be reported as a real
+/// module / module-type declaration. No OCaml module or module-type
+/// identifier may be a reserved keyword, so this lets the extractors
+/// reject such error-recovery artifacts at the source. The list is the
+/// full OCaml reserved-word set (manual §11.1) so the guard generalises
+/// to every keyword that could leak, not just `struct`.
+fn is_ocaml_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "and" | "as"
+            | "assert"
+            | "asr"
+            | "begin"
+            | "class"
+            | "constraint"
+            | "do"
+            | "done"
+            | "downto"
+            | "else"
+            | "end"
+            | "exception"
+            | "external"
+            | "false"
+            | "for"
+            | "fun"
+            | "function"
+            | "functor"
+            | "if"
+            | "in"
+            | "include"
+            | "inherit"
+            | "initializer"
+            | "land"
+            | "lazy"
+            | "let"
+            | "lor"
+            | "lsl"
+            | "lsr"
+            | "lxor"
+            | "match"
+            | "method"
+            | "mod"
+            | "module"
+            | "mutable"
+            | "new"
+            | "nonrec"
+            | "object"
+            | "of"
+            | "open"
+            | "or"
+            | "private"
+            | "rec"
+            | "sig"
+            | "struct"
+            | "then"
+            | "to"
+            | "true"
+            | "try"
+            | "type"
+            | "val"
+            | "virtual"
+            | "when"
+            | "while"
+            | "with"
+    )
 }
 
 /// First direct child of `node` whose kind equals `kind`.

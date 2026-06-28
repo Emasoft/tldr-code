@@ -947,3 +947,173 @@ fn test_detect_patterns_invalid_syntax() {
     // Should handle parse errors gracefully
     assert!(result.is_ok());
 }
+
+// ============================================================================
+// OCaml: reserved-keyword tokens must never leak as module / module-type
+// names (bug5-patterns-ocaml-struct)
+// ============================================================================
+
+/// The OCaml reserved-keyword set, mirrored from the extractor guard so the
+/// test can assert the cross-cutting invariant "no design-pattern subject or
+/// naming violation is ever anchored on a keyword".
+fn is_ocaml_kw(name: &str) -> bool {
+    matches!(
+        name,
+        "and" | "as"
+            | "assert"
+            | "asr"
+            | "begin"
+            | "class"
+            | "constraint"
+            | "do"
+            | "done"
+            | "downto"
+            | "else"
+            | "end"
+            | "exception"
+            | "external"
+            | "false"
+            | "for"
+            | "fun"
+            | "function"
+            | "functor"
+            | "if"
+            | "in"
+            | "include"
+            | "inherit"
+            | "initializer"
+            | "land"
+            | "lazy"
+            | "let"
+            | "lor"
+            | "lsl"
+            | "lsr"
+            | "lxor"
+            | "match"
+            | "method"
+            | "mod"
+            | "module"
+            | "mutable"
+            | "new"
+            | "nonrec"
+            | "object"
+            | "of"
+            | "open"
+            | "or"
+            | "private"
+            | "rec"
+            | "sig"
+            | "struct"
+            | "then"
+            | "to"
+            | "true"
+            | "try"
+            | "type"
+            | "val"
+            | "virtual"
+            | "when"
+            | "while"
+            | "with"
+    )
+}
+
+/// `module type of struct … end` is misparsed by tree-sitter-ocaml under
+/// error recovery into a `module_type_definition` whose `module_type_name`
+/// is the bare keyword `struct`. It must NOT mint a `struct`-named
+/// `ModuleSignature` nor a `struct` naming violation — while genuine module
+/// types / modules in the same file are still detected.
+#[test]
+fn test_ocaml_module_type_of_struct_not_minted_as_module() {
+    let dir = create_test_dir();
+    let content = r#"include module type of struct
+  include Stdlib.Sys
+end
+
+module type COMPARABLE = sig
+  type t
+  val compare : t -> t -> int
+end
+
+module IntPair = struct
+  type t = int * int
+end
+"#;
+    write_file(&dir, "sys.mli", content);
+
+    let report = detect_patterns(dir.path(), Some(Language::Ocaml)).unwrap();
+
+    // (1) No design pattern may be anchored on an OCaml reserved keyword.
+    for dp in &report.design_patterns {
+        assert!(
+            !is_ocaml_kw(&dp.subject),
+            "keyword `{}` leaked as a design-pattern subject: {:?}",
+            dp.subject,
+            dp
+        );
+    }
+    // Specifically: the previously-minted bogus `struct` ModuleSignature.
+    assert!(
+        !report.design_patterns.iter().any(|d| d.subject == "struct"),
+        "bogus struct-named pattern still minted: {:?}",
+        report.design_patterns
+    );
+
+    // (2) The genuine `module type COMPARABLE = sig … end` IS still surfaced
+    //     — the keyword guard must not suppress real signatures.
+    assert!(
+        report
+            .design_patterns
+            .iter()
+            .any(|d| d.pattern == "ModuleSignature" && d.subject == "COMPARABLE"),
+        "real module type COMPARABLE was lost: {:?}",
+        report.design_patterns
+    );
+
+    // (3) No naming violation may be anchored on a reserved keyword.
+    if let Some(naming) = &report.naming {
+        for v in &naming.violations {
+            assert!(
+                !is_ocaml_kw(&v.name),
+                "keyword `{}` leaked as a naming violation: {:?}",
+                v.name,
+                v
+            );
+        }
+    }
+}
+
+/// Path-form `module type of` variants found in real corpora (dune) — the
+/// LHS name is a genuine identifier, so we only assert the invariant that no
+/// keyword leaks into any subject regardless of how the RHS error-recovers.
+#[test]
+fn test_ocaml_module_type_of_path_no_keyword_leak() {
+    let dir = create_test_dir();
+    let content = r#"module type New_console = module type of Console
+
+module type S = module type of B.A
+
+include module type of Imp_lib
+"#;
+    write_file(&dir, "variants.ml", content);
+
+    let report = detect_patterns(dir.path(), Some(Language::Ocaml)).unwrap();
+
+    for dp in &report.design_patterns {
+        assert!(
+            !is_ocaml_kw(&dp.subject),
+            "keyword `{}` leaked as a design-pattern subject: {:?}",
+            dp.subject,
+            dp
+        );
+    }
+    if let Some(naming) = &report.naming {
+        for v in &naming.violations {
+            assert!(
+                !is_ocaml_kw(&v.name),
+                "keyword `{}` leaked as a naming violation: {:?}",
+                v.name,
+                v
+            );
+        }
+    }
+}
