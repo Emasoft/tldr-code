@@ -227,6 +227,23 @@ impl ParserPool {
         let dialect = TsDialect::from_path_and_lang(path, lang);
         let key = ParserKey::new(lang, dialect);
 
+        // E1-root: neutralise C# conditional preprocessor directives
+        // (`#if`/`#elif`/`#else`/`#endif`) before parsing. When such a
+        // directive straddles an if/else chain it desyncs the tree-sitter C#
+        // parser and prematurely closes the enclosing class body, reparenting
+        // later members to the compilation unit. Blanking the directive lines
+        // (byte-length- and line-count-preserving) keeps the statements
+        // contiguous; the resulting tree's offsets still map 1:1 onto the
+        // caller's original `source`, so no downstream text extraction needs
+        // remapping. Other languages (including C/C++, which have native
+        // preprocessor grammars) are untouched.
+        let blanked = if lang == TldrLanguage::CSharp {
+            blank_csharp_conditional_directives(source)
+        } else {
+            None
+        };
+        let parse_source: &str = blanked.as_deref().unwrap_or(source);
+
         // Get or create parser for this (lang, dialect) pair.
         let mut parsers = self.parsers.lock().unwrap();
         let parser = parsers.entry(key).or_insert_with(|| {
@@ -249,7 +266,7 @@ impl ParserPool {
             })?;
 
         parser
-            .parse(source, None)
+            .parse(parse_source, None)
             .ok_or_else(|| TldrError::ParseError {
                 file: path
                     .map(|p| p.to_path_buf())
@@ -377,6 +394,93 @@ impl ParserPool {
 
         Ok((tree, source, lang))
     }
+}
+
+/// C# *conditional* preprocessor directives recognised by the blanking
+/// pre-pass. Only these wrap a body and can straddle an `if`/`else` chain.
+const CSHARP_CONDITIONAL_DIRECTIVES: [&str; 4] = ["if", "elif", "else", "endif"];
+
+/// Return `true` if `line` is a C# conditional preprocessor directive
+/// (`#if` / `#elif` / `#else` / `#endif`).
+///
+/// Recognises leading indentation and optional whitespace between `#` and the
+/// keyword (both legal in C#). Non-conditional directives (`#region`,
+/// `#define`, `#pragma`, `#nullable`, `#line`, …) do **not** match: they do
+/// not wrap a body and never desync the parser, so they are left untouched.
+fn is_csharp_conditional_directive(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    // Leading indentation.
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'#' {
+        return false;
+    }
+    i += 1;
+    // Optional whitespace between '#' and the directive keyword.
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    // `start..i` indexes ASCII-alphabetic bytes only, so this slice is a
+    // valid UTF-8 boundary.
+    let keyword = &line[start..i];
+    CSHARP_CONDITIONAL_DIRECTIVES.contains(&keyword)
+}
+
+/// Neutralise C# conditional preprocessor directives by blanking each
+/// directive **line** (never its body) to spaces of identical byte length.
+///
+/// # Why (E1-root)
+/// tree-sitter's C# grammar models `#if … #endif` as a node that *wraps* its
+/// body. When such a directive straddles an `if` / `else if` / `else` chain
+/// — e.g. a `#if` sitting between a `}` and the following `else if`, as in
+/// Newtonsoft `JsonTextReader.ParseReadString` — the wrapping directive node
+/// prematurely closes the enclosing `declaration_list`. Every member after
+/// that point is reparented to the compilation unit, collapsing a 2600-line
+/// class down to its first ~240 lines. The minimal pattern parses cleanly in
+/// isolation; the failure is emergent across a large file.
+///
+/// Blanking the directive lines removes the wrapping node, so the surrounding
+/// statements re-join into one contiguous chain. The inactive branch text
+/// simply becomes additional sibling statements — which tree-sitter already
+/// parsed anyway, so no structural information is lost.
+///
+/// # Offset safety
+/// Each directive line is replaced by spaces of the same byte length, and
+/// line count is preserved, so every byte offset in the returned string maps
+/// 1:1 onto the original `source`. Callers may pair the resulting tree with
+/// the *original* source for text extraction without any remapping. A
+/// directive-looking line that is actually inside a verbatim/raw string or a
+/// block comment is inert under this transform: blanking equal-length
+/// whitespace keeps the literal valid and can neither break the parse nor
+/// shift offsets.
+///
+/// Returns `None` when `source` contains no conditional directive, so the
+/// common case allocates nothing.
+fn blank_csharp_conditional_directives(source: &str) -> Option<String> {
+    if !source.lines().any(is_csharp_conditional_directive) {
+        return None;
+    }
+    let mut out = String::with_capacity(source.len());
+    for (idx, line) in source.split('\n').enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        if is_csharp_conditional_directive(line) {
+            // Byte-length-preserving blank: one space per original byte.
+            for _ in 0..line.len() {
+                out.push(' ');
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    Some(out)
 }
 
 impl Default for ParserPool {
@@ -687,6 +791,253 @@ mod tests {
             failures.is_empty(),
             "Parser audit failures (VAL-008): {}",
             failures.join(" | ")
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // E1-root: C# conditional preprocessor directives (`#if`/`#elif`/
+    // `#else`/`#endif`) that straddle an if/else chain desync the
+    // tree-sitter C# parser. The wrapping directive node prematurely closes
+    // the enclosing class `declaration_list`, reparenting every later member
+    // to the compilation unit (Newtonsoft `JsonTextReader`: 2600-line class
+    // truncated to ~240 lines, 67 members orphaned). The fix is a
+    // line-preserving, byte-length-preserving blanking pre-pass applied to
+    // C# sources before parsing. The minimal pattern parses cleanly in
+    // isolation — the failure is emergent across a large file — so the
+    // reproducer below uses TWO directive-straddled chains in one method.
+    // ---------------------------------------------------------------------
+
+    /// Count nodes of `kind` in the subtree rooted at `node`.
+    fn count_nodes_of_kind(node: tree_sitter::Node, kind: &str) -> usize {
+        let mut count = if node.kind() == kind { 1 } else { 0 };
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            count += count_nodes_of_kind(child, kind);
+        }
+        count
+    }
+
+    /// Return the first node of `kind` in a pre-order walk, if any.
+    fn first_node_of_kind<'a>(
+        node: tree_sitter::Node<'a>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = first_node_of_kind(child, kind) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_csharp_preproc_if_in_if_else_chain_keeps_class_intact() {
+        // Reproducer distilled from Newtonsoft JsonTextReader.ParseReadString:
+        // two `#if HAVE_DATE_TIME_OFFSET … #endif` blocks each sit between a
+        // `}` and the `else`/`else if` that continues the chain. Without the
+        // blanking pre-pass the C# parser desyncs, leaves ERROR nodes, and
+        // reparents the trailing `After` method out of the class.
+        let src = r#"public class C
+{
+    private void M(int readType)
+    {
+        switch (q)
+        {
+            default:
+                if (h != 0)
+                {
+                    int dph;
+                    if (readType == 1)
+                    {
+                        dph = 1;
+                    }
+#if HAVE_DATE_TIME_OFFSET
+                    else if (readType == 2)
+                    {
+                        dph = 2;
+                    }
+#endif
+                    else
+                    {
+                        dph = 3;
+                    }
+
+                    if (dph == 1)
+                    {
+                        if (T())
+                        {
+                            return;
+                        }
+                    }
+#if HAVE_DATE_TIME_OFFSET
+                    else
+                    {
+                        if (U())
+                        {
+                            return;
+                        }
+                    }
+#endif
+                }
+                break;
+        }
+    }
+
+    private void After()
+    {
+        y = 1;
+    }
+}
+"#;
+        let pool = ParserPool::new();
+        let tree = pool.parse(src, TldrLanguage::CSharp).unwrap();
+        let root = tree.root_node();
+
+        assert_eq!(
+            count_error_nodes(root),
+            0,
+            "C# #if straddling an if/else chain must not leave ERROR nodes"
+        );
+
+        let class = first_node_of_kind(root, "class_declaration")
+            .expect("class_declaration must be present");
+        // Both methods must remain UNDER the class, not reparented to the
+        // compilation unit.
+        assert_eq!(
+            count_nodes_of_kind(class, "method_declaration"),
+            2,
+            "both M and After must stay inside the class (no reparenting)"
+        );
+        // The class body must extend to the final member, not truncate early.
+        assert!(
+            class.end_position().row >= 50,
+            "class must span the whole body; truncated at end row {}",
+            class.end_position().row
+        );
+    }
+
+    #[test]
+    fn test_csharp_preproc_blanks_all_conditional_forms() {
+        // Generalization across the symptom class: EVERY conditional
+        // directive form — #if / #elif / #else / #endif — at arbitrary
+        // indentation must be neutralised so none can desync the class body.
+        let src = r#"public class C
+{
+    void A()
+    {
+        if (x == 1) { p = 1; }
+        #if FEATURE_A
+        else if (x == 2) { p = 2; }
+        #elif FEATURE_B
+        else if (x == 3) { p = 3; }
+        #else
+        else { p = 0; }
+        #endif
+    }
+    void B() { q = 1; }
+}
+"#;
+        let pool = ParserPool::new();
+        let tree = pool.parse(src, TldrLanguage::CSharp).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            count_error_nodes(root),
+            0,
+            "all conditional directive forms must parse clean once blanked"
+        );
+        let class = first_node_of_kind(root, "class_declaration").unwrap();
+        assert_eq!(
+            count_nodes_of_kind(class, "method_declaration"),
+            2,
+            "both A and B must stay inside the class across all forms"
+        );
+    }
+
+    #[test]
+    fn test_csharp_preproc_blank_in_verbatim_string_is_safe() {
+        // A `#if`-looking line INSIDE a verbatim string is a textual false
+        // positive for the line-based blanker. Because blanking is
+        // byte-length-preserving whitespace, the string literal stays valid:
+        // the parse must remain clean and the surrounding members intact.
+        let src = "public class C\n{\n    string s = @\"\n#if X\nstill string\n\";\n    void M() { x = 1; }\n    void N() { y = 2; }\n}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(src, TldrLanguage::CSharp).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            count_error_nodes(root),
+            0,
+            "false-positive blank inside a verbatim string must not break the parse"
+        );
+        let class = first_node_of_kind(root, "class_declaration").unwrap();
+        assert_eq!(count_nodes_of_kind(class, "method_declaration"), 2);
+    }
+
+    #[test]
+    fn test_csharp_preproc_blanking_is_csharp_gated() {
+        // The blanking pre-pass must only fire for C#. A C file using the
+        // identical directive keyword must be parsed by the native C grammar
+        // (which models the preprocessor correctly) — and still resolve its
+        // function, proving the C# pre-pass did not interfere.
+        let c_src = "#if FOO\nint a = 1;\n#endif\nint main(){return 0;}\n";
+        let pool = ParserPool::new();
+        let tree = pool.parse(c_src, TldrLanguage::C).unwrap();
+        assert!(
+            first_node_of_kind(tree.root_node(), "function_definition").is_some(),
+            "C preprocessor handling must remain native and unaffected"
+        );
+    }
+
+    #[test]
+    fn test_blank_csharp_conditional_directives_helper() {
+        // Detects all four conditional forms at any indentation and with an
+        // optional space after '#'.
+        assert!(is_csharp_conditional_directive("#if FOO"));
+        assert!(is_csharp_conditional_directive("    #if FOO"));
+        assert!(is_csharp_conditional_directive("\t# if FOO"));
+        assert!(is_csharp_conditional_directive("#elif BAR"));
+        assert!(is_csharp_conditional_directive("#else"));
+        assert!(is_csharp_conditional_directive("   #endif"));
+        // Non-conditional directives are intentionally NOT blanked.
+        assert!(!is_csharp_conditional_directive("#region License"));
+        assert!(!is_csharp_conditional_directive("#endregion"));
+        assert!(!is_csharp_conditional_directive("#define HAVE_X"));
+        assert!(!is_csharp_conditional_directive("#pragma warning disable"));
+        assert!(!is_csharp_conditional_directive("#nullable enable"));
+        // Not a directive: '#' is not the first non-whitespace token.
+        assert!(!is_csharp_conditional_directive("x = 1; // #if"));
+        assert!(!is_csharp_conditional_directive("    code;"));
+
+        // No conditional directive -> None (zero-allocation fast path).
+        assert!(
+            blank_csharp_conditional_directives("class C { void M() {} }\n#region X\n").is_none()
+        );
+
+        // Byte length AND line count preserved; only the #if/#endif lines
+        // blanked, bodies untouched.
+        let src = "a\n#if FOO\nbody;\n#endif\nb\n";
+        let out = blank_csharp_conditional_directives(src).expect("has conditional directive");
+        assert_eq!(out.len(), src.len(), "byte length must be preserved");
+        assert_eq!(
+            out.split('\n').count(),
+            src.split('\n').count(),
+            "line count must be preserved"
+        );
+        let out_lines: Vec<&str> = out.split('\n').collect();
+        let src_lines: Vec<&str> = src.split('\n').collect();
+        assert_eq!(out_lines[0], "a", "non-directive line untouched");
+        assert_eq!(out_lines[2], "body;", "directive body untouched");
+        assert_eq!(out_lines[4], "b", "non-directive line untouched");
+        assert!(
+            out_lines[1].trim().is_empty() && out_lines[1].len() == src_lines[1].len(),
+            "#if line blanked to equal-width whitespace"
+        );
+        assert!(
+            out_lines[3].trim().is_empty() && out_lines[3].len() == src_lines[3].len(),
+            "#endif line blanked to equal-width whitespace"
         );
     }
 }
