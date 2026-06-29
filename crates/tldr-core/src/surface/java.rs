@@ -23,14 +23,24 @@ pub fn extract_java_api_surface(
     limit: Option<usize>,
 ) -> TldrResult<ApiSurface> {
     let mut apis = Vec::new();
+    // Surface-level package is the AST `package declaration` of the resolved
+    // source(s), NOT the resolver-derived `package_name` (which is the file
+    // stem for a single-file target, e.g. `RequestFactory`). Take the first
+    // file's declared package; fall back to the resolver name only when no file
+    // declares one (default package). Mirrors the Kotlin CF2-S6 fix.
+    let mut surface_package: Option<String> = None;
 
     for file_path in find_java_files(&resolved.root_dir) {
-        apis.extend(extract_from_java_file(
+        let (file_apis, file_package) = extract_from_java_file(
             &file_path,
             &resolved.root_dir,
             &resolved.package_name,
             include_private,
-        )?);
+        )?;
+        if surface_package.is_none() {
+            surface_package = file_package;
+        }
+        apis.extend(file_apis);
     }
 
     if let Some(max) = limit {
@@ -39,7 +49,7 @@ pub fn extract_java_api_surface(
 
     let total = apis.len();
     Ok(ApiSurface {
-        package: resolved.package_name.clone(),
+        package: surface_package.unwrap_or_else(|| resolved.package_name.clone()),
         language: "java".to_string(),
         total,
         apis,
@@ -82,7 +92,7 @@ fn extract_from_java_file(
     root_dir: &Path,
     package_name: &str,
     include_private: bool,
-) -> TldrResult<Vec<ApiEntry>> {
+) -> TldrResult<(Vec<ApiEntry>, Option<String>)> {
     let source = std::fs::read_to_string(file_path).map_err(|e| {
         crate::error::TldrError::parse_error(
             file_path.to_path_buf(),
@@ -93,6 +103,7 @@ fn extract_from_java_file(
 
     let tree = parse(&source, Language::Java)?;
     let module_info = extract_from_tree(&tree, &source, Language::Java, file_path, Some(root_dir))?;
+    let ast_package = extract_java_package_declaration(&tree, &source);
     let module_path = compute_java_module_path(&tree, &source, file_path, root_dir, package_name);
     let relative_path = super::resolve::location_relative_path(file_path, root_dir);
 
@@ -199,7 +210,7 @@ fn extract_from_java_file(
         }
     }
 
-    Ok(apis)
+    Ok((apis, ast_package))
 }
 
 /// Compute the Java module (package) path for a source file.
@@ -569,6 +580,88 @@ public interface IService {
             names.iter().any(|n| n.ends_with("IService.compute")),
             "compute should be in surface: {:?}",
             names
+        );
+    }
+
+    /// CFr-RW4: `tldr surface` on a single-file Java target derived the
+    /// surface-level `package` from the FILENAME (the resolver sets
+    /// `package_name` = file stem, e.g. `RequestFactory`) instead of the
+    /// declared `package retrofit2;`. The fix reads the AST `package_declaration`
+    /// node so the surface `package` equals the declared package, never the
+    /// filename — mirroring the Kotlin CF2-S6 `package_header` fix.
+    ///
+    /// Generalization / anti-treadmill gate: asserts (a) the NEW Java sibling
+    /// case is correct, (b) the ORIGINAL Kotlin S6 case still passes (no
+    /// regression in the `package_header` path), and (c) a default-package Java
+    /// file falls back to the resolver name. Languages: java + kotlin.
+    #[test]
+    fn test_extract_surface_package_from_ast_declaration_not_filename() {
+        // (a) NEW Java sibling case: multi-segment package, single-file target
+        // named after the type. The resolver passes `RequestFactory` (file
+        // stem) as package_name; the surface must instead expose `retrofit2`.
+        let java_dir = TempDir::new().unwrap();
+        write_file(
+            &java_dir,
+            "RequestFactory.java",
+            "package retrofit2;\n\npublic class RequestFactory {\n    public void create() {}\n}\n",
+        );
+        let java_file = java_dir.path().join("RequestFactory.java");
+        let java_resolved = ResolvedPackage {
+            root_dir: java_file.clone(),
+            package_name: "RequestFactory".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let java_surface = extract_java_api_surface(&java_resolved, false, None).unwrap();
+        assert_eq!(
+            java_surface.package, "retrofit2",
+            "java surface package must be the AST package declaration, not the filename, got {:?}",
+            java_surface.package
+        );
+
+        // (b) ORIGINAL Kotlin S6 case must still pass: single-file Kotlin target
+        // with a `package_header` resolves to the declared package, not the stem.
+        let kt_dir = TempDir::new().unwrap();
+        let kt_path = kt_dir.path().join("JobSupport.kt");
+        std::fs::write(
+            &kt_path,
+            "package kotlinx.coroutines\n\nclass JobSupport {\n    fun start(): Boolean = true\n}\n",
+        )
+        .unwrap();
+        let kt_resolved = ResolvedPackage {
+            root_dir: kt_path.clone(),
+            package_name: "JobSupport".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let kt_surface =
+            crate::surface::kotlin::extract_kotlin_api_surface(&kt_resolved, false, None).unwrap();
+        assert_eq!(
+            kt_surface.package, "kotlinx.coroutines",
+            "kotlin S6 regression: surface package must be the package_header, got {:?}",
+            kt_surface.package
+        );
+
+        // (c) Default-package Java file (no `package` declaration) falls back
+        // gracefully to the resolver-derived name.
+        let default_dir = TempDir::new().unwrap();
+        write_file(
+            &default_dir,
+            "Widget.java",
+            "public class Widget {\n    public void run() {}\n}\n",
+        );
+        let default_file = default_dir.path().join("Widget.java");
+        let default_resolved = ResolvedPackage {
+            root_dir: default_file.clone(),
+            package_name: "Widget".to_string(),
+            is_pure_source: true,
+            public_names: None,
+        };
+        let default_surface = extract_java_api_surface(&default_resolved, false, None).unwrap();
+        assert_eq!(
+            default_surface.package, "Widget",
+            "default-package java surface must fall back to the resolver name, got {:?}",
+            default_surface.package
         );
     }
 }
