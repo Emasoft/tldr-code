@@ -1003,6 +1003,47 @@ impl CallGraphLanguageSupport for OcamlHandler {
             None
         }
 
+        /// True when `binding` (a `let_binding`) is a *local* value binding —
+        /// a plain `let x = <expr>` nested inside a function/expression body
+        /// (`let x = e in body`), as opposed to a top-level or module-`struct`
+        /// binding.
+        ///
+        /// A local value binding's RHS calls belong to the *enclosing*
+        /// function (the call graph already attributes them there). Registering
+        /// its own name as a standalone definition makes `resolve_caller_name`
+        /// prefer the zero-span local binding over the real enclosing function,
+        /// mis-attributing the call — e.g. `let info = Pp.box (pp_lib info)`
+        /// inside `pp_lib_and_dep_path` stealing the `pp_lib` caller and
+        /// colliding with the genuine top-level `info` accessor. Only *value*
+        /// bindings are filtered: a binding with `parameter` children or a
+        /// `fun`/`function` body is a named local function and is left intact.
+        ///
+        /// Locality is detected purely structurally: an expression-level
+        /// `let ... in` yields a `let_expression` ancestor, which top-level and
+        /// module-`struct` bindings never have, so module-init accessors stay
+        /// registered.
+        fn is_local_value_binding(binding: &Node) -> bool {
+            let has_params = (0..binding.child_count())
+                .filter_map(|i| binding.child(i))
+                .any(|c| c.kind() == "parameter");
+            if has_params {
+                return false;
+            }
+            if let Some(body) = binding.child_by_field_name("body") {
+                if matches!(body.kind(), "fun_expression" | "function_expression") {
+                    return false;
+                }
+            }
+            let mut ancestor = binding.parent();
+            while let Some(node) = ancestor {
+                if node.kind() == "let_expression" {
+                    return true;
+                }
+                ancestor = node.parent();
+            }
+            false
+        }
+
         fn collect_defs(
             node: Node,
             source: &[u8],
@@ -1068,6 +1109,15 @@ impl CallGraphLanguageSupport for OcamlHandler {
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
                             if child.kind() == "let_binding" || child.kind() == "value_definition" {
+                                // CFr-RW7: a LOCAL `let x = <expr> in ...` value
+                                // binding inside a function body is not a
+                                // module-level definition; skip it so its RHS
+                                // call stays attributed to the enclosing fn.
+                                if child.kind() == "let_binding"
+                                    && is_local_value_binding(&child)
+                                {
+                                    continue;
+                                }
                                 for j in 0..child.child_count() {
                                     if let Some(bc) = child.child(j) {
                                         if bc.kind() == "value_name" || bc.kind() == "value_pattern"
@@ -1098,6 +1148,12 @@ impl CallGraphLanguageSupport for OcamlHandler {
                             } else if child.kind() == "value_name"
                                 || child.kind() == "value_pattern"
                             {
+                                // CFr-RW7: `node` is the `let_binding`; skip a
+                                // LOCAL value binding nested in a function body
+                                // (same rationale as the sibling branch above).
+                                if is_local_value_binding(&node) {
+                                    continue;
+                                }
                                 let func_name = get_node_text(&child, source).to_string();
                                 // VAL-018: same filter as above branch (see comment).
                                 if func_name == "_" || func_name == "()" || func_name.is_empty() {
@@ -1237,6 +1293,163 @@ mod tests {
         handler
             .extract_definitions(source, Path::new("test.ml"), &tree)
             .expect("extract_definitions succeeds")
+    }
+
+    /// CFr-RW7 — GENERALIZATION across the OCaml let-binding call-attribution
+    /// symptom class (residual of S17).
+    ///
+    /// S17 routed `fun`/`function`-bodied bindings to the enclosing function
+    /// and mapped qualified `Module.Sub.func` callers to the bare def, but left
+    /// plain value bindings on the `<module>` node — correct only for
+    /// *top-level* module-init bindings. A **local** `let x = <expr>` inside a
+    /// function body was still mis-handled: it surfaced as a standalone
+    /// definition with a zero-width span, so `resolve_caller_name` (smallest
+    /// span wins) attributed the RHS call to `x` instead of the enclosing
+    /// function — and, in dune's `lib.ml`, `x` was literally `info`, colliding
+    /// with the genuine top-level `info` accessor.
+    ///
+    /// The class spans EVERY let-binding shape, so a single-variant fix can't
+    /// pass:
+    ///   * top-level value binding (`let config = ...`)   -> module-init, kept
+    ///   * module-`struct` value accessor (`let info`)    -> kept as a def
+    ///   * function binding (`let pp_lib info = ...`)      -> S17: body->fn
+    ///   * lambda-bodied binding (`let f = fun ...`)       -> S17: body->fn
+    ///   * qualified intra call (`Lib.pp_lib xs`)          -> S17: bare-def map
+    ///   * LOCAL value binding (`let info = ... in ...`)   -> RHS call->enclosing
+    #[test]
+    fn test_cfr_rw7_local_value_binding_attributes_to_enclosing_fn() {
+        use crate::callgraph::cross_file_types::FileIR;
+        use crate::callgraph::resolution::resolve_caller_name;
+        use std::path::PathBuf;
+
+        let source = r#"
+let config = load_config ()
+
+module Lib = struct
+  let info = Lib_info.create ()
+
+  let pp_lib info =
+    Pp.textf "%S" (Lib_info.name info)
+
+  let pp_lib_and_dep_path (info, dp) =
+    let info = Pp.box (pp_lib info) in
+    Pp.vbox info
+
+  let make_box = fun x -> Pp.box (render x)
+
+  let render_all xs =
+    Lib.pp_lib xs
+end
+"#;
+
+        let calls = extract_calls(source);
+        let (funcs, _classes) = extract_definitions(source);
+
+        let calls_of = |caller: &str| -> Vec<(String, CallType)> {
+            calls
+                .get(caller)
+                .map(|v| v.iter().map(|c| (c.target.clone(), c.call_type)).collect())
+                .unwrap_or_default()
+        };
+
+        // ------------------------------------------------------------------
+        // (1) THE BUG (residual): the LOCAL `let info = Pp.box (pp_lib info)`
+        // must NOT be registered as a definition nested inside its enclosing
+        // function, while the genuine module-level `info` accessor must remain.
+        // ------------------------------------------------------------------
+        let ppd = funcs
+            .iter()
+            .find(|f| f.name == "pp_lib_and_dep_path")
+            .expect("pp_lib_and_dep_path must be a definition");
+        assert!(
+            !funcs
+                .iter()
+                .any(|f| f.name == "info" && f.line > ppd.line && f.end_line <= ppd.end_line),
+            "LOCAL `let info = ...` inside pp_lib_and_dep_path must NOT be a definition; got {:?}",
+            funcs
+                .iter()
+                .filter(|f| f.name == "info")
+                .map(|f| (f.line, f.end_line))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            funcs.iter().any(|f| f.name == "info" && f.line < ppd.line),
+            "the genuine module-level `info` accessor must remain a definition"
+        );
+
+        // ------------------------------------------------------------------
+        // (1b) END-TO-END via the real resolver: the `pp_lib` RHS call resolves
+        // to the enclosing function, never to `info`. This is the exact path
+        // `impact`/`explain` use; it returned "info" before the fix.
+        // ------------------------------------------------------------------
+        let pp_lib_callsite = calls
+            .get("pp_lib_and_dep_path")
+            .and_then(|v| v.iter().find(|c| c.target == "pp_lib"))
+            .cloned()
+            .expect("pp_lib RHS call must be attributed to the enclosing function in the graph");
+        let mut ir = FileIR::new(PathBuf::from("test.ml"));
+        ir.funcs = funcs.clone();
+        assert_eq!(
+            resolve_caller_name(&ir, &pp_lib_callsite),
+            "pp_lib_and_dep_path",
+            "the local-`let` RHS call must resolve to the enclosing fn, not the `info` binding"
+        );
+        assert!(
+            !calls.contains_key("info"),
+            "no call may be attributed to the value-binding own name `info`"
+        );
+
+        // ------------------------------------------------------------------
+        // (2) S17 must still hold: function-binding bodies attribute calls to
+        // the enclosing function (bare + qualified caller keys).
+        // ------------------------------------------------------------------
+        for key in ["pp_lib", "Lib.pp_lib"] {
+            let targets = calls_of(key);
+            assert!(
+                targets.iter().any(|(t, _)| t == "Pp.textf"),
+                "S17: `pp_lib` body call `Pp.textf` must attribute to `{key}`, got {targets:?}"
+            );
+        }
+
+        // ------------------------------------------------------------------
+        // (3) S17 lambda-bodied binding: `let make_box = fun x -> ...` routes
+        // its body calls to the enclosing function, not to `<module>`.
+        // ------------------------------------------------------------------
+        let make_box_targets = calls_of("make_box");
+        assert!(
+            make_box_targets.iter().any(|(t, _)| t == "render"),
+            "S17: lambda-bodied `make_box` body call `render` must attribute to it, got {make_box_targets:?}"
+        );
+        assert!(
+            !calls_of("<module>").iter().any(|(t, _)| t == "render"),
+            "lambda-bodied binding body must not leak into the `<module>` node"
+        );
+
+        // ------------------------------------------------------------------
+        // (4) S17 qualified-caller mapping: `Lib.pp_lib xs` (a same-file
+        // module-qualified target) collapses to the bare `pp_lib` def as Intra.
+        // ------------------------------------------------------------------
+        let render_all_targets = calls_of("render_all");
+        assert!(
+            render_all_targets
+                .iter()
+                .any(|(t, ty)| t == "pp_lib" && *ty == CallType::Intra),
+            "S17: qualified `Lib.pp_lib` call must collapse to bare `pp_lib` Intra, got {render_all_targets:?}"
+        );
+
+        // ------------------------------------------------------------------
+        // (5) Top-level / module-`struct` VALUE bindings are module-init: their
+        // RHS calls stay on the `<module>` node (unchanged by this fix).
+        // ------------------------------------------------------------------
+        let module_targets = calls_of("<module>");
+        assert!(
+            module_targets.iter().any(|(t, _)| t == "load_config"),
+            "top-level value binding `let config = load_config ()` must stay module-init, got {module_targets:?}"
+        );
+        assert!(
+            module_targets.iter().any(|(t, _)| t == "Lib_info.create"),
+            "module-level value accessor `let info = Lib_info.create ()` must stay module-init, got {module_targets:?}"
+        );
     }
 
     /// F4a-definition-ocaml — GENERALIZATION across the OCaml
