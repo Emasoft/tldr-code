@@ -633,9 +633,69 @@ pub fn innermost_named_enclosing_function(
         if let Some(name) = function_node_name(&n, src, language) {
             return Some(name);
         }
+        // fix-CF2-S18r: a swift subscript's computed accessor (`get` / `set` /
+        // `_modify`) is a callable scope the S18 call graph resolves but
+        // `function_node_name` does not recognise (it has no `name` field).
+        // Surfacing its leaf label here lets the existing `ast_inner` dedup
+        // collapse the phantom `<module>` references caller against the
+        // already-resolved `<Type>.subscript.<label>` edge. The walk reaches
+        // the accessor node only when no NAMED inner function encloses the
+        // call first, so a nested named callback is still attributed to itself.
+        if let Some(label) = swift_subscript_accessor_label(&n, language) {
+            return Some(label.to_string());
+        }
         cur = n.parent();
     }
     None
+}
+
+/// fix-CF2-S18r: the leaf scope-label of a swift subscript computed accessor.
+///
+/// Wave-1 S18 made the swift call graph model a subscript's computed accessors
+/// (`get` / `set` / `_modify`, plus the implicit single-expression getter whose
+/// body sits directly under `computed_property`) as callable scopes named
+/// `<Type>.subscript.<label>`. Those scopes are NOT in [`crate::extract_file`]'s
+/// function list, so the references-enrichment fallback resolves a call inside
+/// one to the coarse `<module>` ancestor and mints a phantom caller for a call
+/// site the call graph already resolved to the accessor.
+///
+/// Given a node on the upward scope walk, return the accessor's leaf label iff
+/// `node` is a computed accessor whose enclosing `computed_property` is a direct
+/// child of a `subscript_declaration` — exactly (and only) the scopes the call
+/// graph mints a caller for. The returned leaf (`_modify`, `get`, `set`) matches
+/// the resolved caller's last segment, so the existing last-segment dedup fires.
+/// Regular computed *variable* properties (whose `computed_property` is NOT under
+/// a `subscript_declaration`) yield `None` and are deliberately not deduped,
+/// because the call graph does not mint accessor callers for them. AST node-kind
+/// only — no source-text heuristics. Swift-gated since the node-kinds are
+/// swift-specific.
+fn swift_subscript_accessor_label(
+    node: &tree_sitter::Node,
+    language: Language,
+) -> Option<&'static str> {
+    if !matches!(language, Language::Swift) {
+        return None;
+    }
+    // Map the accessor node-kind to the call graph's scope label. An explicit
+    // accessor wraps the body in `computed_getter`/`computed_setter`/
+    // `computed_modify`; the implicit single-expression getter has no wrapper,
+    // so the `computed_property` node itself stands in for an implicit `get`.
+    let (label, computed_property) = match node.kind() {
+        "computed_getter" => ("get", node.parent()?),
+        "computed_setter" => ("set", node.parent()?),
+        "computed_modify" => ("_modify", node.parent()?),
+        "computed_property" => ("get", *node),
+        _ => return None,
+    };
+    if computed_property.kind() != "computed_property" {
+        return None;
+    }
+    // Only subscript accessors are modelled as callers by the call graph.
+    if computed_property.parent()?.kind() == "subscript_declaration" {
+        Some(label)
+    } else {
+        None
+    }
 }
 
 /// fix-CF1-S16: if `node` is a *named* function-like definition, return its
@@ -3669,5 +3729,125 @@ mod tests {
         .unwrap();
         check("ts", &ts_root, crate::Language::TypeScript);
         let _ = std::fs::remove_dir_all(&ts_root);
+    }
+
+    // =====================================================================
+    // fix-CF2-S18r (v0.5.0 RC CF-wave): Wave-1 S18 taught the swift call graph
+    // to model a subscript's computed accessors (`get` / `set` / `_modify`) as
+    // callable scopes (`<Type>.subscript.<label>`). Wave-1 S16 added the
+    // `innermost_named_enclosing_function` dedup, but it only recognised
+    // AST-*named* functions — NOT the synthetic accessor scopes — so the
+    // references fallback STILL minted a phantom `<module>` caller for a call
+    // site the call graph had already resolved to an accessor.
+    //
+    // The fix generalises the S16 scope walk to recognise swift subscript
+    // accessors, so the accessor's leaf label dedups the phantom against the
+    // resolved `<Type>.subscript.<label>` edge. This generalization test drives
+    // the REAL resolution path (build_project_call_graph +
+    // impact_analysis_with_ast_fallback + enrich_impact_with_references) and
+    // asserts BOTH the swift accessor phantom is gone AND that the change does
+    // not over-suppress a genuinely distinct caller (the ordinary
+    // nested-named-closure case already handled by S16 stays intact).
+    // =====================================================================
+    #[test]
+    fn cf2_s18r_impact_dedups_swift_subscript_accessor_phantom() {
+        // ---- Swift subscript accessor (the slice's symptom) ----
+        // `finalizeWrite` is called from TWO resolved scopes: the subscript
+        // `_modify` accessor (modelled by the S18 call graph as
+        // `Box.subscript._modify`) and the ordinary method `directWrite`. The
+        // call graph resolves both; the references fallback must NOT also mint
+        // a phantom `<module>` caller for the accessor call site (which it does
+        // because `extract_file` cannot see the accessor scope).
+        let root = std::env::temp_dir().join("tldr_cf2_s18r_swift");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Sources")).unwrap();
+        std::fs::write(
+            root.join("Sources/Box.swift"),
+            "public struct Box {\n  \
+               var storage: [Int]\n  \
+               public subscript(i: Int) -> Int {\n    \
+                 _modify {\n      \
+                   prepareWrite()\n      \
+                   defer {\n        finalizeWrite()\n      }\n      \
+                   yield &storage[i]\n    }\n  }\n  \
+               func directWrite() {\n    finalizeWrite()\n  }\n}\n\
+             func prepareWrite() {}\n\
+             func finalizeWrite() {}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "finalizeWrite", crate::Language::Swift);
+        let callers: Vec<String> = targets
+            .iter()
+            .flat_map(|(_, _, cs)| cs.iter().cloned())
+            .collect();
+
+        // (1) NO phantom `<module>` caller for the accessor call site.
+        assert!(
+            !callers
+                .iter()
+                .any(|c| c == "<module>" || c.ends_with(".<module>")),
+            "phantom `<module>` caller for the subscript-accessor call site was \
+             not deduped against the resolved `subscript._modify` edge: {targets:?}"
+        );
+        // (2) The resolved subscript `_modify` accessor caller survives.
+        assert!(
+            callers
+                .iter()
+                .any(|c| c.contains("subscript") && c.ends_with("_modify")),
+            "resolved subscript `_modify` accessor caller missing: {targets:?}"
+        );
+        // (3) Anti-over-suppression: the genuinely distinct `directWrite` caller
+        // (a different scope sharing only the same callee) is NOT dropped.
+        assert!(
+            callers.iter().any(|c| c.ends_with("directWrite")),
+            "genuinely distinct `directWrite` caller over-suppressed: {targets:?}"
+        );
+        let total: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert_eq!(
+            total, 2,
+            "expected exactly 2 resolved callers (subscript._modify, \
+             directWrite), got {total}: {targets:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // ---- Anti-over-suppression: the ordinary nested-named-closure case
+        // (S16) must remain intact under the accessor-aware scope walk. A call
+        // nested in `inner` still dedups to `inner`, NOT a phantom `outer`. ----
+        let lua_root = std::env::temp_dir().join("tldr_cf2_s18r_lua_nested");
+        let _ = std::fs::remove_dir_all(&lua_root);
+        std::fs::create_dir_all(&lua_root).unwrap();
+        std::fs::write(
+            lua_root.join("mod.lua"),
+            "local function helper(x)\n  return x + 1\nend\n\n\
+             local function outer(items)\n  \
+             local function inner(it)\n    return helper(it)\n  end\n  \
+             local total = 0\n  for _, v in ipairs(items) do\n    \
+             total = total + inner(v)\n  end\n  return total\nend\n\n\
+             local function other()\n  return helper(5)\nend\n\n\
+             return { outer = outer, other = other }\n",
+        )
+        .unwrap();
+        let lua_targets = b5_resolve(&lua_root, "helper", crate::Language::Lua);
+        let lua_callers: Vec<String> = lua_targets
+            .iter()
+            .flat_map(|(_, _, cs)| cs.iter())
+            .map(|c| c.rsplit(['.', ':']).next().unwrap_or(c).to_string())
+            .collect();
+        assert!(
+            lua_callers.iter().any(|c| c == "inner"),
+            "[nested-closure] inner caller missing: {lua_targets:?}"
+        );
+        assert!(
+            !lua_callers.iter().any(|c| c == "outer"),
+            "[nested-closure] phantom `outer` caller present (accessor change \
+             regressed the named-function dedup): {lua_targets:?}"
+        );
+        let lua_total: usize = lua_targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert_eq!(
+            lua_total, 2,
+            "[nested-closure] expected exactly 2 callers (inner, other): {lua_targets:?}"
+        );
+        let _ = std::fs::remove_dir_all(&lua_root);
     }
 }
