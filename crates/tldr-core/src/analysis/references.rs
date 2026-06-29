@@ -2365,6 +2365,15 @@ fn classify_swift_reference(node: &Node, parent: &Node, _source: &[u8]) -> Refer
 
         "user_type" | "type_identifier" => ReferenceKind::Type,
 
+        // CFr-RW2: tree-sitter-swift error-recovers a modifier/attribute-
+        // decorated type declaration whose body holds unparseable syntax
+        // (e.g. `open class Session: @unchecked Sendable { … #if … #endif }`)
+        // by burying the type name inside an `ERROR` node that trails the
+        // recovered `class`/`struct`/`enum`/`actor` keyword token. The buried
+        // name is still the definition site, so classify it as a Definition
+        // (it is otherwise dropped to `Read` and never reaches `definitions[]`).
+        "ERROR" if swift_recovered_type_def_kind(node).is_some() => ReferenceKind::Definition,
+
         _ => ReferenceKind::Read,
     }
 }
@@ -3881,6 +3890,38 @@ fn check_cpp_definition(
 
     match node_kind {
         "function_definition" => {
+            // CFr-RW2: a macro/attribute-decorated class declaration such as
+            // `class TINYXML2_LIB XMLNode { … };` error-recovers in
+            // tree-sitter-cpp into a `function_definition` whose `type` is the
+            // (macro-named) `class_specifier` and whose `declarator` is the
+            // BARE class-name identifier — the export/visibility macro is
+            // absorbed as the class_specifier's `name`, and the real class
+            // name lands in the declarator. A genuine function always carries a
+            // `function_declarator` (parameter list); a plain `identifier`
+            // declarator under a class/struct/union specifier type is therefore
+            // this misparse. Classify it by the class keyword (kind:class)
+            // instead of the catch-all `function`.
+            if let Some(type_node) = node.child_by_field_name("type") {
+                if matches!(
+                    type_node.kind(),
+                    "class_specifier" | "struct_specifier" | "union_specifier"
+                ) {
+                    if let Some(decl) = node.child_by_field_name("declarator") {
+                        if decl.kind() == "identifier"
+                            && decl.utf8_text(source).unwrap_or("") == symbol
+                        {
+                            let signature = extract_signature(node, source, Language::Cpp);
+                            return Ok(Some(Definition {
+                                file: file_path.to_path_buf(),
+                                line: node.start_position().row + 1,
+                                column: decl.start_position().column + 1,
+                                kind: DefinitionKind::Class,
+                                signature,
+                            }));
+                        }
+                    }
+                }
+            }
             if let Some(decl) = node.child_by_field_name("declarator") {
                 if let Some((line, column)) =
                     find_cpp_declarator_match(&decl, symbol, source)
@@ -4671,6 +4712,18 @@ fn classify_promoted_definition_kind(
     let root = tree.root_node();
     let smallest = root.named_descendant_for_point_range(pt, pt)?;
 
+    // CFr-RW2: a Swift type declaration the grammar error-recovered (its name
+    // buried in an `ERROR` trailing the recovered `class`/`struct`/`enum`/
+    // `actor` keyword) never forms a `class_declaration`, so the generic
+    // ancestor walk below would classify it by the wrapping
+    // `function_declaration` (→ `function`). Classify by the recovered keyword
+    // instead.
+    if *language == Language::Swift {
+        if let Some(k) = swift_recovered_type_def_kind(&smallest) {
+            return Some(k);
+        }
+    }
+
     // Walk up to the first declaration-shaped ancestor.
     let mut current = Some(smallest);
     while let Some(node) = current {
@@ -4811,6 +4864,53 @@ fn swift_class_declaration_definition_kind(node: &Node) -> DefinitionKind {
         }
     }
     DefinitionKind::Class
+}
+
+/// CFr-RW2. Detect a tree-sitter-swift error-recovery of a
+/// modifier/attribute-decorated type declaration and return the
+/// [`DefinitionKind`] implied by its leading keyword.
+///
+/// When a declaration such as `open class Session: @unchecked Sendable { … }`
+/// contains body syntax the grammar cannot model (e.g. a `#if canImport(…)`
+/// conditional-compilation directive), tree-sitter does not form a
+/// `class_declaration`. Instead the enclosing declaration keeps the bare
+/// `class` / `struct` / `enum` / `actor` keyword token, and the type NAME is
+/// buried as the FIRST named child of an `ERROR` node whose immediately
+/// preceding sibling is that keyword token:
+///
+/// ```text
+/// function_declaration
+///   modifiers `open`
+///   class                     <- keyword token (ERROR.prev_sibling)
+///   ERROR
+///     simple_identifier `Session`   <- buried type name (named_child 0)
+///     …
+/// ```
+///
+/// `name_node` is the candidate identifier (the verified-reference leaf). The
+/// match is purely structural — the keyword's AST node-kind drives the result,
+/// no name allow-list is consulted. Returns `None` for every shape that is not
+/// this error-recovery (so a well-formed declaration is unaffected).
+fn swift_recovered_type_def_kind(name_node: &Node) -> Option<DefinitionKind> {
+    let err = name_node.parent()?;
+    if err.kind() != "ERROR" {
+        return None;
+    }
+    // The identifier must be the buried type name — the ERROR's first named
+    // child — not some other identifier salvaged into the same error region.
+    if err.named_child(0)?.id() != name_node.id() {
+        return None;
+    }
+    // The token immediately preceding the ERROR must be the type-declaration
+    // keyword the parser recovered before bailing out.
+    let keyword = err.prev_sibling()?;
+    match keyword.kind() {
+        "class" | "extension" => Some(DefinitionKind::Class),
+        "struct" => Some(DefinitionKind::Struct),
+        "enum" => Some(DefinitionKind::Enum),
+        "actor" => Some(DefinitionKind::Actor),
+        _ => None,
+    }
 }
 
 // =============================================================================
@@ -6191,6 +6291,190 @@ let _ = print_string (greet "Alice")
                     "[swift] `{symbol}` kind string mismatch"
                 );
             }
+        }
+    }
+
+    /// CFr-RW2 (residual of CF2-S19). `references` mis-classified the
+    /// DEFINITION KIND for two sibling declaration shapes the plain-keyword
+    /// reader missed:
+    ///
+    /// * **cpp** — a macro/attribute-decorated class such as
+    ///   `class TINYXML2_LIB XMLNode { … };`. tree-sitter-cpp absorbs the
+    ///   export/visibility macro as the `class_specifier`'s name and error-
+    ///   recovers the whole thing into a `function_definition` whose
+    ///   declarator is the BARE class name — so the def was reported as
+    ///   `kind:function`. It must report `kind:class`, while a PLAIN
+    ///   `class …` (the S19 original) still reports `kind:class`.
+    /// * **swift** — a modifier/attribute-decorated declaration whose body
+    ///   carries syntax the grammar cannot model (a `#if canImport(…)`
+    ///   conditional-compilation directive) never forms a `class_declaration`;
+    ///   the type name is buried in an `ERROR` trailing the recovered
+    ///   `class`/`struct`/`enum`/`actor` keyword. The def-site was dropped to
+    ///   `Read` (so `definitions[]` was empty). An `open class` /
+    ///   `public final class` must be recovered as `kind:class` WITH the def
+    ///   present, while a plain `struct` (the S19 original) still reports
+    ///   `kind:struct`.
+    ///
+    /// This test asserts BOTH the new sibling cases AND the S19 originals so it
+    /// guards against a regression in either direction.
+    #[test]
+    fn test_references_kind_macro_and_recovered_modifier_class_cfr_rw2() {
+        use std::io::Write;
+
+        // ---- cpp: macro-decorated class -> kind:class (NEW); plain class
+        //      still kind:class (S19 original). --------------------------------
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            // `MYLIB_API` is an unknown export/visibility macro token; it sits
+            // between the `class` keyword and the real class name `Gizmo`.
+            let src = b"class MYLIB_API Gizmo {\npublic:\n    Gizmo();\n    int value;\n};\n\nclass PlainGadget {\npublic:\n    int n;\n};\n";
+            let mut f = std::fs::File::create(root.join("widget.cpp")).unwrap();
+            f.write_all(src).unwrap();
+
+            let opts = ReferencesOptions::new()
+                .with_language("cpp".to_string())
+                .with_scope(SearchScope::Workspace);
+
+            // NEW sibling: the macro-decorated class must be kind:class, never
+            // the catch-all `function` the misparse produced.
+            let gizmo = find_references("Gizmo", root, &opts).unwrap();
+            assert!(
+                gizmo.definitions.iter().any(|d| d.kind == DefinitionKind::Class),
+                "[cpp macro-class] `class MYLIB_API Gizmo` must be kind:class; got {:?}",
+                gizmo
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line))
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                !gizmo
+                    .definitions
+                    .iter()
+                    .any(|d| d.kind == DefinitionKind::Function && d.line == 1),
+                "[cpp macro-class] the line-1 class def must NOT be reported as function; got {:?}",
+                gizmo
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line))
+                    .collect::<Vec<_>>()
+            );
+
+            // S19 original: a plain `class` is unaffected and stays kind:class.
+            let plain = find_references("PlainGadget", root, &opts).unwrap();
+            assert!(
+                plain.definitions.iter().any(|d| d.kind == DefinitionKind::Class),
+                "[cpp plain-class S19] `class PlainGadget` must stay kind:class; got {:?}",
+                plain
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // ---- swift: modifier-prefixed class that error-recovers (a `#if`
+        //      directive in the body) -> kind:class WITH the def present (NEW);
+        //      plain `struct` still kind:struct (S19 original). ----------------
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            // The `#if canImport(Darwin)` directive makes tree-sitter-swift
+            // error-recover the `open class` / `public final class`
+            // declarations: the type name lands inside an ERROR trailing the
+            // `class` keyword. Without the fix `definitions[]` is empty and the
+            // def line is classified `read`.
+            let src = b"import Foundation\n\nopen class Gadget: @unchecked Sendable {\n    public static let shared = Gadget()\n    #if canImport(Darwin)\n    @_spi(WebSocket) open func socket() {}\n    #endif\n}\n\npublic final class Widget: @unchecked Sendable {\n    static let d = Widget()\n    #if canImport(Darwin)\n    @_spi(X) open func go() {}\n    #endif\n}\n\nstruct Plain {\n    var n = 0\n}\n";
+            let mut f = std::fs::File::create(root.join("gadget.swift")).unwrap();
+            f.write_all(src).unwrap();
+
+            let opts = ReferencesOptions::new()
+                .with_language("swift".to_string())
+                .with_scope(SearchScope::Workspace);
+
+            // NEW sibling 1: `open class` (modifier-prefixed, error-recovered).
+            let gadget = find_references("Gadget", root, &opts).unwrap();
+            assert!(
+                gadget.definitions.iter().any(|d| d.kind == DefinitionKind::Class),
+                "[swift open class] `Gadget` def must be present with kind:class; got defs={:?}, l3 refs={:?}",
+                gadget
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line))
+                    .collect::<Vec<_>>(),
+                gadget
+                    .references
+                    .iter()
+                    .filter(|r| r.line == 3)
+                    .map(|r| r.kind)
+                    .collect::<Vec<_>>()
+            );
+            // The recovered def-site line must itself be a Definition, not Read.
+            assert!(
+                gadget
+                    .references
+                    .iter()
+                    .any(|r| r.line == 3 && r.kind == ReferenceKind::Definition),
+                "[swift open class] the `open class Gadget` line (3) must be a Definition; got {:?}",
+                gadget
+                    .references
+                    .iter()
+                    .map(|r| (r.line, r.kind))
+                    .collect::<Vec<_>>()
+            );
+
+            // NEW sibling 2: `public final class` (two leading modifiers).
+            let widget = find_references("Widget", root, &opts).unwrap();
+            assert!(
+                widget.definitions.iter().any(|d| d.kind == DefinitionKind::Class),
+                "[swift public final class] `Widget` def must be present with kind:class; got {:?}",
+                widget
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line))
+                    .collect::<Vec<_>>()
+            );
+
+            // S19 original: a plain `struct` still reports kind:struct (the
+            // error-recovery path must not hijack well-formed declarations).
+            let plain = find_references("Plain", root, &opts).unwrap();
+            assert!(
+                plain.definitions.iter().any(|d| d.kind == DefinitionKind::Struct),
+                "[swift struct S19] `struct Plain` must stay kind:struct; got {:?}",
+                plain
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line))
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // ---- ruby: a bareword self-send stays a Call (S19 original — guards
+        //      the cross-language classifier against collateral regressions). -
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let src = b"class Worker\n  def run\n    cleanup\n  end\n\n  def cleanup\n    @done = true\n  end\nend\n";
+            let mut f = std::fs::File::create(root.join("worker.rb")).unwrap();
+            f.write_all(src).unwrap();
+
+            let opts = ReferencesOptions::new()
+                .with_language("ruby".to_string())
+                .with_scope(SearchScope::Workspace);
+            let report = find_references("cleanup", root, &opts).unwrap();
+            assert!(
+                report
+                    .references
+                    .iter()
+                    .any(|r| r.line == 3 && r.kind == ReferenceKind::Call),
+                "[ruby bareword S19] `cleanup` self-send (line 3) must stay a Call; got {:?}",
+                report
+                    .references
+                    .iter()
+                    .map(|r| (r.line, r.kind))
+                    .collect::<Vec<_>>()
+            );
         }
     }
 }
