@@ -710,6 +710,28 @@ impl<'a> DfgBuilder<'a> {
                     }
                 }
             }
+            // fix-CF3-S12 (v0.5.0 RC CF-wave): every OCaml binding occurrence is a
+            // `value_pattern` leaf — a `match` / `function` / `try … with` arm
+            // binder (`Some y -> …`, `with exn -> …`), a `fun`'s own parameter,
+            // and the leaves of destructuring patterns. `let`-bound names and
+            // top-level parameters are already harvested above, but exception /
+            // match-arm binders were not, so they never entered
+            // `ocaml_local_names`. An unqualified `value_path` read of such a
+            // binder (`raise exn`, `!hook exn`) is gated through
+            // `is_ocaml_use_context`, which treats an unqualified `value_path` as
+            // a USE only when its name is a known local — so the handler-body use
+            // of `exn` was dropped and the binding looked like a dead store
+            // (ocaml-lwt `run_all_tasks`). Registering every `value_pattern`
+            // closes that, mirroring the `value_pattern` Definition rule in
+            // `extract_refs_from_node`. (A genuine read of a non-local stays a
+            // `value_path`/`value_name`, untouched.)
+            "value_pattern" => {
+                if let Ok(t) = node.utf8_text(self.source.as_bytes()) {
+                    if !t.is_empty() {
+                        self.ocaml_local_names.insert(t.to_string());
+                    }
+                }
+            }
             _ => {}
         }
         for child in node.children(&mut cursor) {
@@ -11648,6 +11670,237 @@ function f(a) {
                 .filter(|r| r.name == "x")
                 .map(|r| (r.ref_type, r.line, r.context.clone()))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// fix-CF3-S12 (v0.5.0 RC CF-wave): `dead-stores` loop / handler CFG
+    /// modeling across the OCaml + Scala symptom class.
+    ///
+    /// Two distinct root causes, one anti-treadmill gate:
+    ///   * OCaml `try … with exn -> … exn` — the handler binder `exn` is a
+    ///     `value_pattern`, but `collect_ocaml_local_names` only harvested
+    ///     `let`/`parameter` binders, so the handler-body read of `exn` (an
+    ///     unqualified `value_path`, gated through `is_ocaml_use_context`) was
+    ///     dropped and the binding looked like a dead store
+    ///     (ocaml-lwt `run_all_tasks`). Fixed in `dfg/extractor.rs`.
+    ///   * Scala `try { while (c) { … } } catch { … }` — the dispatcher routed
+    ///     the body-bearing `try_expression` to the Rust `?` handler, which
+    ///     never walked the body, so the `while` back-edge was missing
+    ///     (`has_loops:false`) and every loop-carried `var` collapsed into the
+    ///     entry block, yielding spurious dead stores (scala-zio
+    ///     `unsafeCompleteTakers`). Fixed in `cfg/extractor.rs`.
+    ///
+    /// The assertions mirror `tldr dead-stores` (`find_dead_stores_dfg`): a
+    /// faithful local copy of its predicate decides which stores are dead from
+    /// the real CFG + DFG. The same fixtures pin the anti-over-suppression
+    /// floor: a genuinely dead store is still flagged, and the OCaml fix never
+    /// fabricates a phantom `Use` for an unread handler binder.
+    #[test]
+    fn cf3_s12_dead_stores_ocaml_handler_scala_while_in_try() {
+        use crate::types::{EdgeType, RefType, VarRef};
+        use std::collections::HashMap;
+
+        // Faithful re-implementation of the `find_dead_stores_dfg` predicate
+        // (tldr-cli `dead_stores.rs`): a Definition is dead when the variable
+        // has NO use at all (and is not a parameter), or when it is overwritten
+        // by a later Definition in the SAME basic block with no intervening use.
+        // Read-modify-write `Update`s are never themselves flagged and count as
+        // reads. Returns the SET of variable names with at least one dead store.
+        fn dead_vars(src: &str, func: &str, lang: Language) -> Vec<String> {
+            let cfg = get_cfg_context(src, func, lang)
+                .unwrap_or_else(|e| panic!("cfg for {func}: {e}"));
+            let refs: Vec<VarRef> = get_dfg_context(src, func, lang)
+                .unwrap_or_else(|e| panic!("dfg for {func}: {e}"))
+                .refs;
+
+            let mut line_to_block: HashMap<u32, usize> = HashMap::new();
+            for b in &cfg.blocks {
+                for line in b.lines.0..=b.lines.1 {
+                    line_to_block.insert(line, b.id);
+                }
+            }
+            let first_def_line = refs
+                .iter()
+                .filter(|r| matches!(r.ref_type, RefType::Definition))
+                .map(|r| r.line)
+                .min();
+            let signature_line = cfg.blocks.iter().map(|b| b.lines.0).min();
+            let parameter_line = match (first_def_line, signature_line) {
+                (Some(f), Some(s)) if f == s => Some(f),
+                _ => None,
+            };
+
+            let mut by_var: HashMap<String, Vec<&VarRef>> = HashMap::new();
+            for r in &refs {
+                by_var.entry(r.name.clone()).or_default().push(r);
+            }
+
+            let mut dead: Vec<String> = Vec::new();
+            for (name, mut vrefs) in by_var {
+                vrefs.sort_by_key(|r| r.line);
+                let is_parameter = parameter_line
+                    .map(|line| {
+                        vrefs
+                            .first()
+                            .map(|r| {
+                                r.line == line
+                                    && matches!(r.ref_type, RefType::Definition)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+                let mut uses: Vec<u32> = vrefs
+                    .iter()
+                    .filter(|r| matches!(r.ref_type, RefType::Use | RefType::WeakUpdate))
+                    .map(|r| r.line)
+                    .collect();
+
+                // (line, block_id, is_update)
+                let mut defs: Vec<(u32, usize, bool)> = Vec::new();
+                for r in &vrefs {
+                    if matches!(r.ref_type, RefType::Definition | RefType::Update) {
+                        let block_id = line_to_block.get(&r.line).copied().unwrap_or(0);
+                        defs.push((r.line, block_id, matches!(r.ref_type, RefType::Update)));
+                    }
+                }
+                let update_lines: Vec<u32> =
+                    defs.iter().filter(|(_, _, u)| *u).map(|(l, _, _)| *l).collect();
+                uses.extend(update_lines);
+
+                if uses.is_empty() && !defs.is_empty() && !is_parameter {
+                    if defs.iter().any(|(_, _, is_update)| !*is_update) {
+                        dead.push(name.clone());
+                    }
+                    continue;
+                }
+                for (i, &(def_line, def_block, is_update)) in defs.iter().enumerate() {
+                    if (is_parameter && i == 0) || is_update {
+                        continue;
+                    }
+                    if let Some(&(next_def_line, _, _)) =
+                        defs.iter().skip(i + 1).find(|(_, b, _)| *b == def_block)
+                    {
+                        let has_use_between = uses
+                            .iter()
+                            .any(|&u| u > def_line && u <= next_def_line);
+                        if !has_use_between {
+                            dead.push(name.clone());
+                        }
+                    }
+                }
+            }
+            dead.sort();
+            dead.dedup();
+            dead
+        }
+
+        fn use_count(src: &str, func: &str, lang: Language, var: &str) -> usize {
+            get_dfg_context(src, func, lang)
+                .unwrap_or_else(|e| panic!("dfg for {func}: {e}"))
+                .refs
+                .iter()
+                .filter(|r| r.name == var && r.ref_type == RefType::Use)
+                .count()
+        }
+
+        fn has_back_edge(src: &str, func: &str, lang: Language) -> bool {
+            get_cfg_context(src, func, lang)
+                .unwrap_or_else(|e| panic!("cfg for {func}: {e}"))
+                .edges
+                .iter()
+                .any(|e| e.edge_type == EdgeType::BackEdge)
+        }
+
+        // ===== OCaml: try/with handler binding is NOT a dead store ============
+        // `exn` is bound by the `with exn ->` arm (a `value_pattern`) and read in
+        // the handler body. Its use must be collected so the binder stays live.
+        let ocaml_handler = "let run_all f =\n  \
+            try f ()\n  \
+            with exn ->\n    \
+            handle exn\n";
+        assert!(
+            !dead_vars(ocaml_handler, "run_all", Language::Ocaml).contains(&"exn".to_string()),
+            "ocaml: try/with handler binding `exn` must NOT be a dead store"
+        );
+        assert!(
+            use_count(ocaml_handler, "run_all", Language::Ocaml, "exn") >= 1,
+            "ocaml: the handler-body read of `exn` must be collected as a Use"
+        );
+
+        // OCaml guarded handler `with exn when … -> raise exn`: the binder is
+        // read in BOTH the guard and the body; still not dead.
+        let ocaml_guarded = "let reraise g =\n  \
+            try g ()\n  \
+            with exn when is_fatal exn ->\n    \
+            raise exn\n";
+        assert!(
+            !dead_vars(ocaml_guarded, "reraise", Language::Ocaml).contains(&"exn".to_string()),
+            "ocaml: guarded try/with handler binding `exn` must NOT be a dead store"
+        );
+
+        // OCaml anti-over-suppression: an UNREAD handler binder must NOT acquire
+        // a phantom Use — a genuinely unused binding stays detectable.
+        let ocaml_unused = "let swallow h =\n  \
+            try h ()\n  \
+            with exn ->\n    \
+            ()\n";
+        assert_eq!(
+            use_count(ocaml_unused, "swallow", Language::Ocaml, "exn"),
+            0,
+            "ocaml: an unread handler binder must not gain a phantom Use"
+        );
+
+        // ===== Scala: while inside try models the back-edge; loop-carried vars
+        // are NOT dead. Mirrors scala-zio `unsafeCompleteTakers`: `notify` and
+        // `current` are initialised before the loop, reassigned in the body
+        // (no use in between), and read after the loop. ==========================
+        let scala_loop_in_try = "object Q {\n  \
+            def drain(): Int = {\n    \
+            try {\n      \
+            var keepPolling = true\n      \
+            var notify      = false\n      \
+            var current     = 0\n      \
+            while (keepPolling) {\n        \
+            val item = poll()\n        \
+            if (item < 0) {\n          \
+            keepPolling = false\n        \
+            } else {\n          \
+            notify = true\n          \
+            current = item\n        \
+            }\n      \
+            }\n      \
+            if (notify) current else -1\n    \
+            } catch {\n      \
+            case _: Exception => -1\n    \
+            }\n  \
+            }\n}\n";
+        assert!(
+            has_back_edge(scala_loop_in_try, "drain", Language::Scala),
+            "scala: a while loop inside a try must produce a CFG back-edge (has_loops)"
+        );
+        let scala_dead = dead_vars(scala_loop_in_try, "drain", Language::Scala);
+        assert!(
+            !scala_dead.contains(&"notify".to_string()),
+            "scala: loop-carried `notify` must NOT be a dead store (got {scala_dead:?})"
+        );
+        assert!(
+            !scala_dead.contains(&"current".to_string()),
+            "scala: loop-carried `current` must NOT be a dead store (got {scala_dead:?})"
+        );
+
+        // ===== Anti-over-suppression: a GENUINE dead store is still caught. ====
+        // `x = 0` is overwritten by `x = 1` before any read — a real dead store
+        // that must survive both fixes.
+        let scala_genuine = "object G {\n  \
+            def f(): Int = {\n    \
+            var x = 0\n    \
+            x = 1\n    \
+            x\n  \
+            }\n}\n";
+        assert!(
+            dead_vars(scala_genuine, "f", Language::Scala).contains(&"x".to_string()),
+            "scala: a genuine overwrite-before-use dead store must still be flagged"
         );
     }
 }

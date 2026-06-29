@@ -731,12 +731,30 @@ impl<'a> CfgBuilder<'a> {
             "while_statement" | "while_expression" => self.process_while_loop(node, depth)?,
             "loop_expression" => self.process_loop_expression(node, depth)?,
             "try_statement" => self.process_try_statement(node, depth)?,
-            // tree-sitter produces "try_expression" for BOTH OCaml try/with AND
-            // Rust's ? operator. Distinguish by checking for "expression" field
-            // (present in OCaml, absent in Rust ?).
+            // tree-sitter produces "try_expression" for THREE distinct shapes:
+            //   * OCaml `try <expr> with <match_case>…` — carries an
+            //     `expression` field (the protected expression).
+            //   * Scala `try { <block> } catch { … } [finally { … }]` — carries
+            //     a `body` field (the protected `block`) plus `catch_clause` /
+            //     `finally_clause` siblings.
+            //   * Rust `<expr>?` — neither field; just the inner expression and
+            //     a `?` token.
+            // fix-CF3-S12 (v0.5.0 RC CF-wave): the pre-fix code routed EVERY
+            // `try_expression` lacking an `expression` field to the Rust `?`
+            // handler. That swallowed the Scala try body — a `while` loop nested
+            // inside the `try` was never walked, so its back-edge was missing
+            // (`has_loops:false`) and every loop-carried `var` collapsed into the
+            // entry block, producing spurious dead stores (scala-zio
+            // `unsafeCompleteTakers`: `notifyEmptySpace`/`currentItem`). Route
+            // the Scala body-bearing form through `process_try_statement`, whose
+            // standard arm walks the `block`/`catch_clause`/`finally_clause`
+            // children (and recurses into the loop). Only the field-less Rust `?`
+            // falls through to the question-mark handler.
             "try_expression" => {
-                if node.child_by_field_name("expression").is_some() {
-                    // OCaml: try <expression> with <match_case>...
+                if node.child_by_field_name("expression").is_some()
+                    || node.child_by_field_name("body").is_some()
+                {
+                    // OCaml `try <expr> with …` / Scala `try { … } catch { … }`.
                     self.process_try_statement(node, depth)?
                 } else {
                     // Rust: <expr>? — hidden branch on Result/Option
