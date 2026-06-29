@@ -1707,9 +1707,20 @@ fn extract_generic_signature(func_node: Node, source: &[u8]) -> String {
 
 /// Extract a typed parameter (name: type) - Python-specific.
 fn extract_typed_parameter(node: Node, source: &[u8]) -> String {
+    // The bound name is normally the first `identifier` child. For an
+    // ANNOTATED variadic splat (`*args: T` / `**kwargs: T`) the first child is
+    // instead a `list_splat_pattern` / `dictionary_splat_pattern` that carries
+    // the `*`/`**` prefix together with the name; use its full text so the
+    // rendered signature keeps `*args: T` / `**kwargs: T` rather than collapsing
+    // to a bare `: T`.
     let name = node
         .child(0)
-        .filter(|c| c.kind() == "identifier")
+        .filter(|c| {
+            matches!(
+                c.kind(),
+                "identifier" | "list_splat_pattern" | "dictionary_splat_pattern"
+            )
+        })
         .map(|n| node_text(n, source))
         .unwrap_or("");
     let type_hint = node
@@ -5886,6 +5897,38 @@ def foo():
 
         let sig = extract_function_signature(func_node, source.as_bytes(), Language::Python);
         assert!(sig.contains("x: int = 10") || sig.contains("x: int=10"));
+    }
+
+    /// CF3-S3 (v0.5.0 RC) sub-bug A (python interface): an ANNOTATED variadic
+    /// splat (`*args: T` / `**kwargs: T`) must keep the `*`/`**` prefix AND the
+    /// name in the rendered signature, not collapse to a bare `: T`.
+    /// tree-sitter wraps the splat name in a `list_splat_pattern` /
+    /// `dictionary_splat_pattern` child of the `typed_parameter`, which the
+    /// previous identifier-only lookup missed.
+    #[test]
+    fn cf3_s3_typed_variadic_splat_signature_keeps_star_names() {
+        let source = "def f(*args: t.Any, **kwargs: t.Any) -> None: pass";
+        let pool = ParserPool::new();
+        let tree = pool.parse(source, Language::Python).unwrap();
+        let root = tree.root_node();
+        let func_node = root.child(0).unwrap();
+
+        let sig = extract_function_signature(func_node, source.as_bytes(), Language::Python);
+        assert!(
+            sig.contains("*args: t.Any"),
+            "signature must keep the *args annotation; got {:?}",
+            sig
+        );
+        assert!(
+            sig.contains("**kwargs: t.Any"),
+            "signature must keep the **kwargs annotation; got {:?}",
+            sig
+        );
+        assert!(
+            !sig.contains("(: ") && !sig.contains(", : "),
+            "signature must not render a bare `: T` param; got {:?}",
+            sig
+        );
     }
 
     // -------------------------------------------------------------------------

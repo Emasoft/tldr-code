@@ -782,19 +782,44 @@ fn extract_rich_param(node: &tree_sitter::Node, source: &str) -> Option<Param> {
             })
         }
         "typed_parameter" => {
-            let name = node
-                .child(0)
-                .map(|n| node_text(&n, source))
-                .unwrap_or_default();
+            // The bound name is the first child. For an ANNOTATED variadic splat
+            // (`*args: T` / `**kwargs: T`) that first child is a
+            // `list_splat_pattern` / `dictionary_splat_pattern`; recover the bare
+            // identifier and flag the param variadic/keyword so a typed splat is
+            // reported exactly like an untyped one (and matches the runtime
+            // `inspect` VAR_POSITIONAL / VAR_KEYWORD convention, where the name
+            // carries no `*`/`**`).
+            let first = node.child(0);
             let type_ann = node
                 .child_by_field_name("type")
                 .map(|n| node_text(&n, source));
+            let (name, is_variadic, is_keyword) = match first.map(|c| c.kind()) {
+                Some("list_splat_pattern") => (
+                    first
+                        .and_then(|c| find_child_identifier(&c, source))
+                        .unwrap_or_else(|| "args".to_string()),
+                    true,
+                    false,
+                ),
+                Some("dictionary_splat_pattern") => (
+                    first
+                        .and_then(|c| find_child_identifier(&c, source))
+                        .unwrap_or_else(|| "kwargs".to_string()),
+                    false,
+                    true,
+                ),
+                _ => (
+                    first.map(|n| node_text(&n, source)).unwrap_or_default(),
+                    false,
+                    false,
+                ),
+            };
             Some(Param {
                 name,
                 type_annotation: type_ann,
                 default: None,
-                is_variadic: false,
-                is_keyword: false,
+                is_variadic,
+                is_keyword,
             })
         }
         "default_parameter" => {
@@ -1363,6 +1388,36 @@ def greet(name: str, greeting: str = "Hello", *args, **kwargs) -> str:
 
         assert_eq!(params[3].name, "kwargs");
         assert!(params[3].is_keyword);
+    }
+
+    /// CF3-S3 (v0.5.0 RC) sub-bug A (python surface): an ANNOTATED variadic
+    /// splat (`*args: T` / `**kwargs: T`) must set `is_variadic` / `is_keyword`
+    /// and carry its annotation, exactly like an UNTYPED splat — and report the
+    /// bare name (no `*`/`**`), matching the runtime `inspect`
+    /// VAR_POSITIONAL / VAR_KEYWORD convention. Before the fix the
+    /// `typed_parameter` arm left both flags false (and leaked the `*`/`**`
+    /// into the name) because it never inspected the inner
+    /// `list_splat_pattern` / `dictionary_splat_pattern`.
+    #[test]
+    fn cf3_s3_typed_variadic_splat_sets_flags() {
+        let source = r#"
+def f(a: int, *args: str, **kwargs: bytes) -> None:
+    return None
+"#;
+        let tree = parse(source, Language::Python).unwrap();
+        let params = extract_rich_params_from_source(&tree, source, "f", false);
+
+        assert_eq!(params.len(), 3, "all three params must survive; got {:?}", params);
+
+        assert_eq!(params[1].name, "args");
+        assert_eq!(params[1].type_annotation, Some("str".to_string()));
+        assert!(params[1].is_variadic, "*args: str must be variadic; got {:?}", params[1]);
+        assert!(!params[1].is_keyword);
+
+        assert_eq!(params[2].name, "kwargs");
+        assert_eq!(params[2].type_annotation, Some("bytes".to_string()));
+        assert!(params[2].is_keyword, "**kwargs: bytes must be keyword; got {:?}", params[2]);
+        assert!(!params[2].is_variadic);
     }
 
     #[test]

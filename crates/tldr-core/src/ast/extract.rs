@@ -606,6 +606,57 @@ pub fn decl_keyword_line_from_node(node: &Node) -> u32 {
     node.start_position().row as u32 + 1
 }
 
+/// Comment node kinds across the grammars tldr supports. Used by
+/// [`decl_end_line_from_node`] to skip a trailing comment that tree-sitter
+/// folded into a declaration's span.
+fn is_comment_node_kind(kind: &str) -> bool {
+    matches!(kind, "comment" | "line_comment" | "block_comment")
+}
+
+/// Return the 1-indexed END line of `node`, EXCLUDING any trailing comment that
+/// tree-sitter absorbed into the node's span.
+///
+/// END-line analogue of [`decl_keyword_line_from_node`]: the per-function
+/// span-keyed commands (`complexity` / `explain` / `reaching-defs`) should
+/// route their reported `line_end` through this so the function span stops at
+/// its body instead of leaking into a following declaration's doc comment.
+///
+/// tree-sitter-scala folds a `/** ScalaDoc */` block comment that documents the
+/// NEXT `def` into the PREVIOUS `def`'s body block as its trailing child,
+/// over-extending that def's `end_position` into the following doc block. The
+/// absorption can be NESTED (the comment lands inside the body `indented_block`,
+/// not as a direct child of the `function_definition`), so — for Scala — this
+/// walks DOWN the last-non-comment-child spine: at each level it takes the last
+/// child that is not a comment and recurses, returning that leaf's true end row.
+/// This mirrors the structure-axis `def_line_end` normaliser in
+/// [`super::extractor`].
+///
+/// Gated to Scala because that is the only grammar known to fold a trailing
+/// sibling's doc comment into the previous declaration; for every other
+/// language this is a no-op that returns `node.end_position()`.
+pub fn decl_end_line_from_node(node: &Node, language: Language) -> u32 {
+    if !matches!(language, Language::Scala) {
+        return node.end_position().row as u32 + 1;
+    }
+    fn meaningful_end_row(node: Node) -> usize {
+        let mut cursor = node.walk();
+        let mut last_noncomment: Option<Node> = None;
+        for child in node.children(&mut cursor) {
+            if !is_comment_node_kind(child.kind()) {
+                last_noncomment = Some(child);
+            }
+        }
+        match last_noncomment {
+            // Descend into the last non-comment child: after its OWN trailing
+            // comments are trimmed, its end row is the meaningful end.
+            Some(child) => meaningful_end_row(child),
+            // Leaf token, or a node whose only children are comments.
+            None => node.end_position().row,
+        }
+    }
+    meaningful_end_row(*node) as u32 + 1
+}
+
 // =============================================================================
 // Python detailed extraction
 // =============================================================================
@@ -711,12 +762,24 @@ fn extract_python_params(node: &Node, source: &str) -> Vec<String> {
                     params.push(get_node_text(&child, source));
                 }
                 "typed_parameter" | "default_parameter" | "typed_default_parameter" => {
-                    // The identifier is the first child, not a named field
+                    // The bound name is normally a direct `identifier` child. For
+                    // an ANNOTATED variadic splat (`*args: T` / `**kwargs: T`)
+                    // tree-sitter-python wraps the name in a `list_splat_pattern` /
+                    // `dictionary_splat_pattern` (carrying the `*`/`**` + the
+                    // identifier) as the first child, so there is NO direct
+                    // `identifier` — descend to recover the splat text so the
+                    // param is not dropped (mirrors the untyped-splat arm below
+                    // and keeps `*args`/`**kwargs` as the surface name).
                     let mut inner_cursor = child.walk();
                     for inner_child in child.children(&mut inner_cursor) {
-                        if inner_child.kind() == "identifier" {
-                            params.push(get_node_text(&inner_child, source));
-                            break;
+                        match inner_child.kind() {
+                            "identifier"
+                            | "list_splat_pattern"
+                            | "dictionary_splat_pattern" => {
+                                params.push(get_node_text(&inner_child, source));
+                                break;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -10846,6 +10909,93 @@ end
             Some("module"),
             "elixir module ClassInfo.kind must be \"module\", got {:?}",
             module.kind
+        );
+    }
+
+    /// CF3-S3 (v0.5.0 RC) sub-bug A (python extract): an ANNOTATED variadic
+    /// splat (`*args: T` / `**kwargs: T`) must NOT be dropped from the extracted
+    /// param list. tree-sitter wraps the splat name in a `list_splat_pattern` /
+    /// `dictionary_splat_pattern` child of the `typed_parameter`, so the old
+    /// identifier-only descent recovered nothing and silently dropped the param.
+    #[test]
+    fn cf3_s3_python_typed_variadic_splats_not_dropped() {
+        use crate::ast::parser::parse;
+        let source = "def f(a: int, *args: str, **kwargs: bytes) -> None:\n    return None\n";
+        let tree = parse(source, Language::Python).unwrap();
+        let func = tree.root_node().child(0).unwrap();
+        assert_eq!(func.kind(), "function_definition");
+
+        let params = extract_function_params(&func, source, Language::Python);
+        assert!(
+            params.iter().any(|p| p == "a"),
+            "named param must be kept; got {:?}",
+            params
+        );
+        assert!(
+            params.iter().any(|p| p == "*args"),
+            "annotated *args splat must be recovered; got {:?}",
+            params
+        );
+        assert!(
+            params.iter().any(|p| p == "**kwargs"),
+            "annotated **kwargs splat must be recovered; got {:?}",
+            params
+        );
+    }
+
+    /// CF3-S3 (v0.5.0 RC) sub-bug B (scala span): the per-function span
+    /// normaliser [`decl_end_line_from_node`] must EXCLUDE a trailing
+    /// `/** ScalaDoc */` block that tree-sitter-scala folds into the PREVIOUS
+    /// `def`'s body. The function node resolved by `find_function_node`
+    /// over-extends its raw `end_position` into the next def's doc block; the
+    /// helper trims it back to the function body so the span-keyed commands
+    /// (`complexity` / `explain` / `reaching-defs`) can report the true
+    /// `line_end`. (Wiring those consumers lives in their own crates/files.)
+    #[test]
+    fn cf3_s3_scala_decl_end_line_excludes_trailing_scaladoc() {
+        use crate::ast::function_finder::find_function_node;
+        use crate::ast::parser::parse;
+        let source = "\
+trait Thing {
+  def provideSome[R0] =
+    new Applied[R0](self)
+
+  /**
+   * Doc for the NEXT def, not provideSome.
+   */
+  def provide[E1] =
+    impl()
+}
+";
+        let tree = parse(source, Language::Scala).unwrap();
+        let node = find_function_node(tree.root_node(), "provideSome", Language::Scala, source)
+            .expect("provideSome must resolve");
+
+        // Sanity: the RAW tree-sitter span absorbs the trailing ScalaDoc (the bug).
+        let raw_end = node.end_position().row as u32 + 1;
+        assert!(
+            raw_end >= 5,
+            "sanity: raw scala span should absorb the following ScalaDoc; got {}",
+            raw_end
+        );
+
+        // The normaliser trims it back to the function body (line 3).
+        let trimmed = decl_end_line_from_node(&node, Language::Scala);
+        assert_eq!(
+            trimmed, 3,
+            "scala line_end must stop at the body (line 3), not extend into the \
+             next def's ScalaDoc; got {}",
+            trimmed
+        );
+
+        // Control: for a non-folding language the helper is a faithful no-op.
+        let py_src = "def g():\n    return 1\n";
+        let py_tree = parse(py_src, Language::Python).unwrap();
+        let py_fn = py_tree.root_node().child(0).unwrap();
+        assert_eq!(
+            decl_end_line_from_node(&py_fn, Language::Python),
+            py_fn.end_position().row as u32 + 1,
+            "non-scala languages must be a no-op (return raw end line)"
         );
     }
 
