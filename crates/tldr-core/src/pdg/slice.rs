@@ -670,6 +670,99 @@ fn slice_lines(
         }
     }
 
+    // CFr-RW6 (v0.5.0 RC CF-resid): detect a dependency-isolated BARE
+    // DECLARATION criterion. A hoisted `uint256 id;` (no initializer) whose
+    // name is only assigned in OTHER blocks (e.g. a later loop body) has an
+    // empty genuine backward dependence: nothing defines a value it reads, and
+    // its own enclosing block computes the name nowhere else. The CFG lowers
+    // such a declaration into a coarse continuation block that ALSO holds the
+    // preceding `require(...)` guard (the block start IS the guard line); the
+    // block's control-dependence on that guard then grafts the guard — and the
+    // guard's own data dep, an unrelated parameter — onto the declaration,
+    // yielding a disconnected slice ({param, require, decl}). When this holds,
+    // the backward control closure below must NOT climb to a guard the
+    // declaration does not genuinely depend on.
+    //
+    // This is strictly NARROWER than S13's inline `uint256 d;`: there the value
+    // IS computed in the SAME guarded block (`d = c + 1;`), so the declared
+    // name recurs within the block and the require stays a real
+    // control-dependence (correctly KEPT). The recurrence test is what
+    // separates a genuinely-guarded local from a merely-hoisted declaration —
+    // both derived from tree-sitter-anchored DFG refs and CFG block ranges, no
+    // string/name heuristics.
+    let criterion_is_isolated_bare_decl = matches!(direction, SliceDirection::Backward)
+        && variable.is_none()
+        && {
+            let mut has_def = false;
+            let mut has_non_def = false;
+            let mut crit_vars: Vec<&str> = Vec::new();
+            for r in &pdg.dfg.refs {
+                if r.line != criterion_line {
+                    continue;
+                }
+                match r.ref_type {
+                    crate::types::RefType::Definition => {
+                        has_def = true;
+                        crit_vars.push(r.name.as_str());
+                    }
+                    _ => has_non_def = true,
+                }
+            }
+            let no_incoming_data = !pdg.dfg.edges.iter().any(|e| e.use_line == criterion_line);
+            if has_def && !has_non_def && no_incoming_data {
+                let block_lo = pdg
+                    .nodes
+                    .iter()
+                    .filter(|n| criterion_line >= n.lines.0 && criterion_line <= n.lines.1)
+                    .map(|n| n.lines.0)
+                    .min();
+                let block_hi = pdg
+                    .nodes
+                    .iter()
+                    .filter(|n| criterion_line >= n.lines.0 && criterion_line <= n.lines.1)
+                    .map(|n| n.lines.1)
+                    .max();
+                match (block_lo, block_hi) {
+                    (Some(blo), Some(bhi)) => {
+                        // The declared name must recur nowhere else in the
+                        // criterion's enclosing block. A recurrence (S13's
+                        // `d = c + 1;`) means the block genuinely computes the
+                        // guarded value, keeping the guard a real
+                        // control-dependence.
+                        let var_recurs_in_block = pdg.dfg.refs.iter().any(|r| {
+                            r.line != criterion_line
+                                && r.line >= blo
+                                && r.line <= bhi
+                                && crit_vars.contains(&r.name.as_str())
+                        });
+                        // The guard must be DEGENERATELY LUMPED: a control
+                        // predicate that guards the criterion has its OWN line
+                        // inside the criterion's coarse block (the `require`
+                        // shares the continuation block). A predicate in a
+                        // SEPARATE earlier block is a genuine branch guard
+                        // (e.g. a real `if`, RC5's `if avail > 0:`) and stays.
+                        let guard_lumped_in_block = pdg.edges.iter().any(|e| {
+                            matches!(e.dep_type, DependenceType::Control)
+                                && pdg.nodes.iter().any(|n| {
+                                    n.id == e.target_id
+                                        && criterion_line >= n.lines.0
+                                        && criterion_line <= n.lines.1
+                                })
+                                && pdg.nodes.iter().any(|n| {
+                                    n.id == e.source_id
+                                        && n.lines.0 >= blo
+                                        && n.lines.0 <= bhi
+                                })
+                        });
+                        !var_recurs_in_block && guard_lumped_in_block
+                    }
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        };
+
     // (3) Control dependence closure. Build a quick map: which blocks does each
     // line belong to, and for each block, what is its controlling predicate
     // block (the source of an incoming Control edge). Predicate line = the
@@ -724,6 +817,15 @@ fn slice_lines(
         let mut ctrl_lines: Vec<u32> = lines.iter().copied().collect();
         let mut ctrl_seen_lines: HashSet<u32> = lines.iter().copied().collect();
         while let Some(cur) = ctrl_lines.pop() {
+            // CFr-RW6: a dependency-isolated bare declaration has no genuine
+            // control dependence — do not climb to (and graft) the guard that
+            // merely shares its coarse continuation block. A bare-decl criterion
+            // with no data dependence has no other slice line, so this is the
+            // only frontier entry; suppressing it yields the criterion's true
+            // (empty) backward closure instead of {param, require, decl}.
+            if criterion_is_isolated_bare_decl && cur == criterion_line {
+                continue;
+            }
             // Blocks covering `cur`.
             let blocks: Vec<usize> = pdg
                 .nodes
@@ -1710,6 +1812,137 @@ contract C {
             !sol_slice.contains(&5),
             "Solidity: bare-decl slice must NOT pull in the unrelated sibling \
              `uint256 c = b;`@5; got {sol_slice:?}"
+        );
+    }
+
+    // =========================================================================
+    // CFr-RW6 (v0.5.0 RC CF-resid): RESIDUAL of CF1-S13. The S13 gate stopped
+    // *block-half recovery* from grafting siblings, but a sibling-class variant
+    // (solidity-solmate `ERC1155.safeBatchTransferFrom`, bare `uint256 id;`@90)
+    // still returned the DISCONNECTED set {79,87,90}: the bare declaration's
+    // coarse continuation block also holds the preceding `require(...)` guard,
+    // and the block's *control-dependence* on that guard grafted the guard (87)
+    // plus the guard's own data-dep parameter (`from`@79) onto a declaration
+    // that genuinely depends on neither.
+    //
+    // The distinguishing structural fact: the declared name is HOISTED — it is
+    // assigned only in a LATER block (the loop body), never recurring inside its
+    // own guarded block — so its true backward closure is just the criterion.
+    // The original S13 `uint256 d;` differs precisely because its value IS
+    // computed in the same guarded block (`d = c + 1;`), keeping the require a
+    // real control-dependence. This one test asserts BOTH the new variant is
+    // fixed AND every original S13 sub-case (solidity require KEPT, JS
+    // switch-case, OCaml independent-binding) still holds (anti-treadmill gate).
+    #[test]
+    fn test_slice_cfr_rw6_hoisted_decl_does_not_graft_require_all_langs() {
+        // --- NEW VARIANT: a hoisted Solidity bare declaration after a `require`
+        // guard, whose value is assigned only inside a later loop (mirrors
+        // solmate ERC1155 `safeBatchTransferFrom`'s `uint256 id;`). The backward
+        // slice of the declaration must be its TRUE closure (just the criterion)
+        // — NOT the grafted {param, require, decl}.
+        let sol_hoist = r#"
+contract C {
+    function g(uint256[] calldata xs, address from) external {
+        require(from != address(0), "ZERO");
+
+        uint256 id;
+        uint256 amt;
+
+        for (uint256 i = 0; i < xs.length; ) {
+            id = xs[i];
+            amt = id + 1;
+            unchecked { ++i; }
+        }
+    }
+}
+"#;
+        // Line 6 is the bare decl `uint256 id;`; 4 is the `require` guard; 3 is
+        // the signature (defines `from`, used by the guard).
+        let hoist_slice =
+            get_slice(sol_hoist, "g", 6, SliceDirection::Backward, None, Language::Solidity)
+                .unwrap();
+        assert!(
+            hoist_slice.contains(&6),
+            "RW6: slice must contain the hoisted bare-decl criterion @6; got {hoist_slice:?}"
+        );
+        assert!(
+            !hoist_slice.contains(&4),
+            "RW6: hoisted bare-decl slice must NOT graft the non-dependent `require` \
+             guard @4 (the declaration's value is computed in the loop, not the \
+             guarded block); got {hoist_slice:?}"
+        );
+        assert!(
+            !hoist_slice.contains(&3),
+            "RW6: hoisted bare-decl slice must NOT graft the guard's parameter \
+             `from`@3 pulled via the require's data dependence; got {hoist_slice:?}"
+        );
+        assert!(
+            !hoist_slice.contains(&7),
+            "RW6: hoisted bare-decl slice must NOT pull the unrelated sibling \
+             declaration `uint256 amt;`@7; got {hoist_slice:?}"
+        );
+
+        // --- S13 ORIGINAL solidity: the require GENUINELY control-dominates the
+        // declaration whose value is computed in the SAME guarded block, so it
+        // is KEPT (must not regress under the RW6 fix).
+        let sol = r#"
+contract C {
+    function f(uint256 a, uint256 b) internal pure returns (uint256) {
+        require(a > 0, "bad");
+        uint256 c = b;
+        uint256 d;
+        d = c + 1;
+        return d;
+    }
+}
+"#;
+        let sol_slice =
+            get_slice(sol, "f", 6, SliceDirection::Backward, None, Language::Solidity).unwrap();
+        assert!(
+            sol_slice.contains(&6) && sol_slice.contains(&4) && !sol_slice.contains(&5),
+            "RW6 must not regress S13 solidity: keep crit@6 + require@4, exclude \
+             sibling@5; got {sol_slice:?}"
+        );
+
+        // --- S13 ORIGINAL JavaScript: a `switch_case`-body criterion must still
+        // reach its controlling `switch` predicate (not a bare decl — unaffected).
+        let js = r#"
+function classify(val) {
+  var out;
+  switch (val) {
+    case 'a':
+      out = compute(val);
+      break;
+    default:
+      out = 0;
+  }
+  return out;
+}
+"#;
+        let js_slice =
+            get_slice(js, "classify", 6, SliceDirection::Backward, None, Language::JavaScript)
+                .unwrap();
+        assert!(
+            js_slice.contains(&6) && js_slice.contains(&4),
+            "RW6 must not regress S13 js: switch_case criterion@6 must reach \
+             `switch (val)`@4; got {js_slice:?}"
+        );
+
+        // --- S13 ORIGINAL OCaml: backward slice of `res` must exclude the
+        // independent `let start` binding it does not depend on.
+        let ml = r#"
+let process fd =
+  let start = timer_start () in
+  let res = run fd in
+  stop_timer start;
+  res
+"#;
+        let ml_slice =
+            get_slice(ml, "process", 6, SliceDirection::Backward, None, Language::Ocaml).unwrap();
+        assert!(
+            ml_slice.contains(&6) && !ml_slice.contains(&3),
+            "RW6 must not regress S13 ocaml: keep `res`@6, exclude independent \
+             `let start`@3; got {ml_slice:?}"
         );
     }
 }
