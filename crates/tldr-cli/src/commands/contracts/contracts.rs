@@ -3857,7 +3857,20 @@ fn extract_return_type_postconditions(
 
     // v0.5.0 CL-10 (GH #81): anchor to the decl-keyword line.
     let line = config.func_decl_line(func);
-    let type_str = get_node_text(return_type, source);
+    let mut type_str = get_node_text(return_type, source).to_string();
+
+    // fix-CFr-RW1: a C++11 trailing-return function (`auto f(...) -> T`) carries
+    // the placeholder `auto` in the leading `type` field; the real return type
+    // lives in the `trailing_return_type` node off the `function_declarator`.
+    // When the leading type is the bare `auto` placeholder, prefer the trailing
+    // type so we report `return: T` instead of `return: auto` (mirrors the
+    // `extract` fix). Gated to C/C++ where this AST shape exists.
+    if type_str == "auto" && matches!(config.language, Language::C | Language::Cpp) {
+        if let Some(trailing) = cpp_trailing_return_type(func, source) {
+            type_str = trailing;
+        }
+    }
+    let type_str = type_str.as_str();
 
     // Skip void/None/unit return types
     if type_str == "None" || type_str == "void" || type_str == "()" || type_str.is_empty() {
@@ -3872,6 +3885,62 @@ fn extract_return_type_postconditions(
     conditions.push(Condition::low("return".to_string(), constraint, line));
 
     Ok(())
+}
+
+/// fix-CFr-RW1: for a C++11 trailing-return function (`auto f(...) -> T`), read
+/// the real return type out of the `trailing_return_type` node. That node is a
+/// child of the `function_declarator` (not a field on the
+/// `function_definition`), so descend the declarator chain first. The
+/// `trailing_return_type` wraps a `type_descriptor` carrying the actual type
+/// text (`T`, `int`, `char*`, ...). This replicates the node-kind read in
+/// `tldr_core::ast::extract::cpp_trailing_return_type` (private there) so the
+/// `contracts` return postcondition agrees with `extract`/`interface`.
+fn cpp_trailing_return_type(func_node: Node, source: &[u8]) -> Option<String> {
+    let declarator = func_node.child_by_field_name("declarator")?;
+    let func_decl = unwrap_c_function_declarator(declarator)?;
+    let mut cursor = func_decl.walk();
+    for child in func_decl.children(&mut cursor) {
+        if child.kind() == "trailing_return_type" {
+            // The `type_descriptor` child holds the canonical type text.
+            let mut tc = child.walk();
+            for inner in child.children(&mut tc) {
+                if inner.kind() == "type_descriptor" {
+                    let text = get_node_text(inner, source);
+                    if !text.trim().is_empty() {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+            // Fallback: strip the leading `->` from the raw node text.
+            let text = get_node_text(child, source).trim_start_matches("->").trim();
+            if !text.is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// fix-CFr-RW1: unwrap a declarator chain (any depth of `pointer_declarator`)
+/// to the inner `function_declarator`. Pointer-returning trailing-return
+/// functions wrap the function declarator in one `pointer_declarator` per `*`.
+/// Returns `None` when the chain does not bottom out on a function declarator.
+fn unwrap_c_function_declarator(node: Node) -> Option<Node> {
+    if node.kind() == "function_declarator" {
+        return Some(node);
+    }
+    if node.kind() == "pointer_declarator" {
+        if let Some(inner) = node.child_by_field_name("declarator") {
+            return unwrap_c_function_declarator(inner);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = unwrap_c_function_declarator(child) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 // =============================================================================
