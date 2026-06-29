@@ -450,6 +450,30 @@ impl OcamlHandler {
         line: u32,
         defined_funcs: &HashSet<String>,
     ) -> CallSite {
+        // Collapse a fully-qualified reference to a SAME-FILE definition
+        // (`Outer.Sub.target`) down to its bare name (`target`).
+        // `collect_definitions` records BOTH the bare and *every*
+        // module-qualified spelling of each local binding, so a dotted target
+        // that is present in `defined_funcs` is provably defined in this file
+        // and is really an intra-file call. Collapsing it lets the
+        // reverse-call-graph (`impact`) count these qualified call sites
+        // against the single local definition — matching what `explain`
+        // resolves — instead of dropping them as unresolved `Attr` calls.
+        // External qualified calls (`List.map`) are absent from
+        // `defined_funcs` and keep their `Attr` classification below.
+        if name.contains('.') && defined_funcs.contains(&name) {
+            if let Some(bare) = name.rsplit('.').next() {
+                return CallSite::new(
+                    caller.to_string(),
+                    bare.to_string(),
+                    CallType::Intra,
+                    Some(line),
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
         let (call_type, receiver) = self.classify_call_target(&name, defined_funcs);
         CallSite::new(
             caller.to_string(),
@@ -700,6 +724,17 @@ impl OcamlHandler {
         let body = binding.child_by_field_name("body");
         let has_params = Self::is_function_binding(&binding);
         let is_unit = Self::is_unit_pattern(&binding, source);
+        // A binding whose body is a lambda (`let f = fun x -> ...`) or a
+        // pattern-matching function (`let f = function | ... -> ...`) is still
+        // a *named function*: its parameters live on the `fun_expression` /
+        // `function_expression`, not as `parameter` children of the
+        // `let_binding`, so `is_function_binding` (which only sees the latter)
+        // reports false. Without recognising this form, the body's calls were
+        // siphoned into the `<module>` pseudo-node below and the function `f`
+        // reported `callees = 0`. Attribute them to the enclosing `f` instead.
+        let body_is_lambda = body
+            .map(|b| matches!(b.kind(), "fun_expression" | "function_expression"))
+            .unwrap_or(false);
 
         if is_unit {
             let module_caller = if module_path.is_empty() {
@@ -737,7 +772,7 @@ impl OcamlHandler {
         };
         let full_name = qualify_name(module_prefix.as_deref(), &name, ".");
 
-        if has_params {
+        if has_params || body_is_lambda {
             let mut all_calls = Vec::new();
             if let Some(body_node) = body {
                 all_calls.extend(self.extract_calls_from_node(
