@@ -3042,16 +3042,39 @@ struct RustLineContext<'a> {
 ///     reassignment, not a new global. Per-scope refinement is out of
 ///     scope for v0.4.1.
 ///
-/// The context is consulted ONLY for LU001 inside [`check_regex_rule`].
-/// Other Lua rules (LU002–LU005) and other languages are unaffected.
+/// The context gates LU001 and LU002 inside [`check_regex_rule`]; other Lua
+/// rules (LU003–LU005) and other languages are unaffected.
+///
+/// fix-CF2-S21 (v0.5.0 RC CF-wave) extends it with two more AST sets:
+///
+///   - `long_bracket_string_line_set`: the INTERIOR lines of a `[[ ... ]]`
+///     long-bracket string literal (e.g. an `ffi.cdef[[ ... ]]` C
+///     declaration block, an embedded SQL/template heredoc). The parser
+///     lexes the whole literal as one `string` node; its interior lines are
+///     pure string data, never executable statements, so an `ident = ...`
+///     there (`ERROR_SUCCESS = 0L`, `title = "x"`) is NOT an implicit
+///     global. Used to gate LU001.
+///   - `unqualified_load_call_line_set`: lines carrying a genuine
+///     UNQUALIFIED `load(...)` / `loadstring(...)` call — a `function_call`
+///     whose `name` field is a bare `identifier`. A member call such as
+///     `ffi.load(...)` has a `dot_index_expression` callee and is therefore
+///     NOT in this set. Used to drive LU002 positively (fail-open on a
+///     parse failure via `parsed`).
 ///
 /// The grammar node names are identical between `tree-sitter-lua` and
 /// `tree-sitter-luau` (see `node-types.json` for both crates):
 /// `variable_declaration` is the local-declaration form, `table_constructor`
 /// holds `field` children, `assignment_statement` is the non-local
-/// assignment.
+/// assignment, `string` covers both quoted and `[[ ]]` long-bracket forms,
+/// and `function_call.name` resolves (via the inlined `variable` supertype)
+/// to the concrete callee node (`identifier` vs `dot_index_expression`).
 #[derive(Debug, Default)]
 pub(crate) struct LuaApiCheckContext {
+    /// Whether the file parsed successfully. When `false` (parse error or
+    /// non-Lua language), the LU002 positive gate falls back to regex-only
+    /// behaviour so a parser hiccup cannot suppress real `load`/`loadstring`
+    /// findings.
+    pub parsed: bool,
     /// Line numbers (1-indexed) that fall inside a `table_constructor`
     /// node. A line in this set must not flag LU001 — the matched
     /// `name =` is a field key, not a global assignment.
@@ -3070,6 +3093,19 @@ pub(crate) struct LuaApiCheckContext {
     /// block as ONE `comment` node, so marking every line it overlaps is
     /// the root-cause gate. A line in this set must not flag any rule.
     pub comment_line_set: HashSet<u32>,
+    /// fix-CF2-S21 (v0.5.0 RC CF-wave): INTERIOR line numbers (1-indexed) of
+    /// every `[[ ... ]]` long-bracket `string` node. A line in this set must
+    /// not flag LU001 — it is string content (a C decl inside `ffi.cdef[[
+    /// ]]`, an embedded SQL/template heredoc), not an implicit-global
+    /// assignment. The opening line is deliberately excluded so a genuine
+    /// `foo = [[` global assignment on it is still flagged.
+    pub long_bracket_string_line_set: HashSet<u32>,
+    /// fix-CF2-S21 (v0.5.0 RC CF-wave): line numbers (1-indexed) carrying a
+    /// genuine UNQUALIFIED `load(...)` / `loadstring(...)` call — a
+    /// `function_call` whose `name` field is a bare `identifier`. LU002 fires
+    /// ONLY on lines in this set, so a member call like `ffi.load(...)`
+    /// (a `dot_index_expression` callee) is excluded as a false positive.
+    pub unqualified_load_call_line_set: HashSet<u32>,
 }
 
 /// Build a [`LuaApiCheckContext`] by parsing `content` as Lua or Luau and
@@ -3087,11 +3123,59 @@ fn compute_lua_api_check_context(content: &str, language: ApiLanguage) -> LuaApi
         Ok(t) => t,
         Err(_) => return LuaApiCheckContext::default(),
     };
-    let mut ctx = LuaApiCheckContext::default();
+    let mut ctx = LuaApiCheckContext {
+        parsed: true,
+        ..LuaApiCheckContext::default()
+    };
     let bytes = content.as_bytes();
 
     fn visit(node: tree_sitter::Node, source: &[u8], ctx: &mut LuaApiCheckContext) {
         let kind = node.kind();
+
+        if kind == "string" {
+            // fix-CF2-S21 (v0.5.0 RC CF-wave): a `[[ ... ]]` (or `[==[ ...
+            // ]==]`) long-bracket string is lexed as one `string` node whose
+            // opening delimiter byte is `[`. Quoted strings open with `"`,
+            // `'`, or a backtick (Luau interpolation), so the first byte
+            // uniquely identifies the long-bracket form straight off the
+            // parsed node — no text heuristic. Mark its INTERIOR lines
+            // (start+1 ..= end): those are pure string data (a C decl block
+            // in `ffi.cdef[[ ]]`, an embedded SQL/template) where an `ident =
+            // ...` is NOT an implicit global. The opening line is left out so
+            // a genuine `foo = [[` global assignment on it is still flagged.
+            if source.get(node.start_byte()) == Some(&b'[') {
+                let start_line = node.start_position().row as u32 + 1;
+                let end_line = node.end_position().row as u32 + 1;
+                for ln in (start_line + 1)..=end_line {
+                    ctx.long_bracket_string_line_set.insert(ln);
+                }
+            }
+            // String children are `string_content` / `escape_sequence` /
+            // `interpolation`; none introduce locals or call sites relevant
+            // here, but recursion below is harmless and keeps the visitor
+            // uniform (interpolated `{expr}` segments are still walked).
+        }
+
+        if kind == "function_call" {
+            // fix-CF2-S21 (v0.5.0 RC CF-wave): record the line of every
+            // UNQUALIFIED `load(...)` / `loadstring(...)` call so LU002 can
+            // fire positively. The `name` field resolves (via the inlined
+            // `variable` supertype) to the concrete callee: a bare
+            // `identifier` for `load(x)`, a `dot_index_expression` for
+            // `ffi.load(x)`. Only the bare-identifier form is a real
+            // dynamic-load risk; the member form is excluded as a false
+            // positive.
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if name_node.kind() == "identifier" {
+                    if let Ok(callee) = std::str::from_utf8(&source[name_node.byte_range()]) {
+                        if callee == "load" || callee == "loadstring" {
+                            let ln = name_node.start_position().row as u32 + 1;
+                            ctx.unqualified_load_call_line_set.insert(ln);
+                        }
+                    }
+                }
+            }
+        }
 
         if kind == "comment" {
             // fix-C5-1: a `--[[ ... ]]` block comment is one `comment` node
@@ -4527,6 +4611,14 @@ fn check_regex_rule(
         if lua_ctx.table_constructor_line_set.contains(&line) {
             return None;
         }
+        // fix-CF2-S21 (v0.5.0 RC CF-wave): skip the interior lines of a
+        // `[[ ... ]]` long-bracket string. A C declaration inside
+        // `ffi.cdef[[ ]]` (`ERROR_SUCCESS = 0L`) or an embedded
+        // SQL/template heredoc (`title = "x"`) matches the LU001 regex but
+        // is string content, not an implicit-global assignment.
+        if lua_ctx.long_bracket_string_line_set.contains(&line) {
+            return None;
+        }
         // Skip reassignment of previously declared locals: if `local x`
         // appears anywhere in the file, treat `x = ...` as a local
         // reassignment rather than a new global.
@@ -4535,6 +4627,22 @@ fn check_regex_rule(
                 return None;
             }
         }
+    }
+
+    // fix-CF2-S21 (v0.5.0 RC CF-wave): LU002 `dynamic-load` is a bare-word
+    // regex (`\b(?:loadstring|load)\s*\(`) whose `\bload` boundary matches
+    // the `load` in a member call like `ffi.load('lib.so')` — a foreign-
+    // function-interface library load, NOT Lua's dynamic-code `load`. Drive
+    // LU002 off the AST instead: fire ONLY on a line carrying a genuine
+    // UNQUALIFIED `load(...)` / `loadstring(...)` call (bare-identifier
+    // callee). Fail-open when the file did not parse so a parser hiccup
+    // cannot suppress real findings.
+    if rule.id == "LU002"
+        && matches!(language, ApiLanguage::Lua | ApiLanguage::Luau)
+        && lua_ctx.parsed
+        && !lua_ctx.unqualified_load_call_line_set.contains(&line)
+    {
+        return None;
     }
 
     // scala-column-unification-v1 (v0.4.1 bug-B): `regex.find().map(m.start())`
@@ -5904,6 +6012,138 @@ mod tests {
             !ctx.comment_line_set.contains(&4),
             "line 4 (local a = 1) is real code, not a comment"
         );
+    }
+
+    /// fix-CF2-S21 (v0.5.0 RC CF-wave) GENERALIZATION GATE (anti-treadmill):
+    /// one fixture, run against BOTH Lua and Luau, that exercises every part
+    /// of the symptom class at once:
+    ///   - LU001 must NOT fire on `ident = ...` lines INSIDE a `ffi.cdef[[
+    ///     ]]` C-decl block or an embedded `[[ ]]` heredoc (long-bracket
+    ///     string interior). Mirrors lua-luvit `deps/dns.lua:79-83`.
+    ///   - LU002 must NOT fire on the member call `ffi.load('lib')` (a
+    ///     `dot_index_expression` callee, not Lua's dynamic-code `load`).
+    ///     Mirrors lua-luvit `deps/dns.lua:112`.
+    /// Anti-over-suppression (must STILL fire):
+    ///   - LU001 on a genuine top-level implicit global (`REAL_GLOBAL = 42`).
+    ///   - LU002 on a genuine unqualified `loadstring(...)` and `load(...)`.
+    /// The LU001/LU002 regexes + AST gates are shared between Lua and Luau,
+    /// so a single-language assertion would not catch a luau-only regression.
+    const CF2_S21_SRC: &str = "local ffi = require('ffi')\n\
+ffi.cdef[[\n\
+  enum {\n\
+    ERROR_SUCCESS = 0,\n\
+    MAX_LEN = 128\n\
+  };\n\
+]]\n\
+local query = [[\n\
+title = \"x\"\n\
+value = \"y\"\n\
+]]\n\
+ipapi = ffi.load('Iphlpapi.dll')\n\
+local a = loadstring(\"return 1\")\n\
+local b = load(\"return 2\")\n\
+REAL_GLOBAL = 42\n";
+
+    #[test]
+    fn test_cf2_s21_lua_luau_apicheck_false_positives() {
+        for (lang, ext) in [(ApiLanguage::Lua, "lua"), (ApiLanguage::Luau, "luau")] {
+            let dir = TempDir::new().unwrap();
+            let path = write_tmp(&dir, &format!("probe.{ext}"), CF2_S21_SRC);
+            let rules = rules_for_language(lang);
+            let findings = analyze_file(&path, &rules, lang).unwrap();
+
+            let lu001: Vec<(u32, String)> = findings
+                .iter()
+                .filter(|f| f.rule.id == "LU001")
+                .map(|f| (f.line, f.code_context.trim().to_string()))
+                .collect();
+            let lu002: Vec<(u32, String)> = findings
+                .iter()
+                .filter(|f| f.rule.id == "LU002")
+                .map(|f| (f.line, f.code_context.trim().to_string()))
+                .collect();
+
+            // Bug 1: LU001 false positives inside the long-bracket strings.
+            for needle in ["ERROR_SUCCESS", "MAX_LEN", "title =", "value ="] {
+                assert!(
+                    !lu001.iter().any(|(_, c)| c.contains(needle)),
+                    "{lang:?}: LU001 must NOT fire on long-bracket-string interior {needle:?}, got {lu001:?}"
+                );
+            }
+            // Anti-over-suppression: genuine implicit globals STILL flagged.
+            assert!(
+                lu001.iter().any(|(_, c)| c.contains("REAL_GLOBAL")),
+                "{lang:?}: LU001 must STILL flag the genuine `REAL_GLOBAL = 42` global, got {lu001:?}"
+            );
+            assert!(
+                lu001.iter().any(|(_, c)| c.contains("ipapi =")),
+                "{lang:?}: LU001 must STILL flag the genuine `ipapi = ...` global, got {lu001:?}"
+            );
+
+            // Bug 2: LU002 false positive on the `ffi.load(...)` member call.
+            assert!(
+                !lu002.iter().any(|(_, c)| c.contains("ffi.load")),
+                "{lang:?}: LU002 must NOT fire on the qualified `ffi.load(...)` call, got {lu002:?}"
+            );
+            // Anti-over-suppression: genuine unqualified loads STILL flagged.
+            assert!(
+                lu002.iter().any(|(_, c)| c.contains("loadstring(")),
+                "{lang:?}: LU002 must STILL flag the genuine `loadstring(...)` call, got {lu002:?}"
+            );
+            assert!(
+                lu002.iter().any(|(_, c)| c.contains("= load(")),
+                "{lang:?}: LU002 must STILL flag the genuine unqualified `load(...)` call, got {lu002:?}"
+            );
+        }
+    }
+
+    /// fix-CF2-S21: direct unit test on the two new AST line-sets, for BOTH
+    /// Lua and Luau. The long-bracket INTERIOR lines are captured (opening
+    /// line excluded); the genuine unqualified `load`/`loadstring` call lines
+    /// are captured while the `ffi.load` member-call line is not.
+    #[test]
+    fn test_cf2_s21_lua_luau_context_sets() {
+        for lang in [ApiLanguage::Lua, ApiLanguage::Luau] {
+            let ctx = compute_lua_api_check_context(CF2_S21_SRC, lang);
+            assert!(ctx.parsed, "{lang:?}: expected a successful parse");
+
+            // Long-bracket interiors marked, opening line excluded.
+            assert!(
+                !ctx.long_bracket_string_line_set.contains(&2),
+                "{lang:?}: opening `ffi.cdef[[` line 2 must NOT be marked"
+            );
+            for ln in [4u32, 5] {
+                assert!(
+                    ctx.long_bracket_string_line_set.contains(&ln),
+                    "{lang:?}: cdef interior line {ln} must be marked, set={:?}",
+                    ctx.long_bracket_string_line_set
+                );
+            }
+            assert!(
+                !ctx.long_bracket_string_line_set.contains(&8),
+                "{lang:?}: opening `local query = [[` line 8 must NOT be marked"
+            );
+            for ln in [9u32, 10] {
+                assert!(
+                    ctx.long_bracket_string_line_set.contains(&ln),
+                    "{lang:?}: heredoc interior line {ln} must be marked, set={:?}",
+                    ctx.long_bracket_string_line_set
+                );
+            }
+
+            // Unqualified load/loadstring call lines captured; ffi.load not.
+            assert!(
+                !ctx.unqualified_load_call_line_set.contains(&12),
+                "{lang:?}: `ffi.load` line 12 must NOT be an unqualified-load call"
+            );
+            for ln in [13u32, 14] {
+                assert!(
+                    ctx.unqualified_load_call_line_set.contains(&ln),
+                    "{lang:?}: unqualified-load line {ln} must be captured, set={:?}",
+                    ctx.unqualified_load_call_line_set
+                );
+            }
+        }
     }
 
     /// lu001-loopvar-param-binder-v1 (v0.5.0 RC5-LU001): a bare `x = ...`
