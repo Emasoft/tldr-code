@@ -302,6 +302,20 @@ fn extract_from_javascript_file(
         &relative_path,
     );
 
+    // CFr-RW3: plain CommonJS decorated-instance exports (express
+    // `lib/response.js`: `module.exports = res; res.status = …; res.send = …`).
+    // The bound id is an `Object.create(...)` instance — not a top-level
+    // function/class — so none of the scans above mint its ~22 decorated
+    // methods. This resolver recovers them, gated on the literal `module.exports`
+    // sink so a non-module `<x>.exports = bar` mints nothing.
+    append_js_commonjs_instance_apis(
+        tree.root_node(),
+        &source,
+        &mut apis,
+        &module_path,
+        &relative_path,
+    );
+
     Ok(apis)
 }
 
@@ -661,6 +675,176 @@ fn append_js_umd_factory_apis(
                 });
             }
         }
+    }
+}
+
+// =============================================================================
+// CFr-RW3: plain CommonJS decorated-instance module-export resolution
+// (express `lib/response.js`: `module.exports = res; res.status = …`).
+// =============================================================================
+
+/// Append the surface members a CommonJS module exposes by binding an identifier
+/// to `module.exports` and then decorating it (`module.exports = res; res.x = …;
+/// res.y = …`). Unlike the UMD resolver this sink is at the module top level, and
+/// unlike `synthesize_commonjs_exports` the bound id need not be a top-level
+/// function/class — it is typically a plain `Object.create(...)` instance whose
+/// whole public API arrives via later member assignments.
+///
+/// Module-provenance gate (R2): the sink must be the literal `module.exports`
+/// (object identifier `module`, property `exports`); a non-module
+/// `<x>.exports = bar` is not a module-export sink and mints nothing.
+fn append_js_commonjs_instance_apis(
+    root: tree_sitter::Node,
+    source: &str,
+    apis: &mut Vec<ApiEntry>,
+    module_path: &str,
+    relative_path: &Path,
+) {
+    let export_ids = collect_js_commonjs_export_ids(root, source);
+    if export_ids.is_empty() {
+        return;
+    }
+    let mut seen: HashSet<String> = apis.iter().map(|a| a.qualified_name.clone()).collect();
+    for export_id in export_ids {
+        let mut members = Vec::new();
+        let mut member_seen = HashSet::new();
+        // Reuse the UMD decorated-member collector: it recursively resolves
+        // `<export_id>.<member> = <value>` (including chained `a = b = fn`) and
+        // classifies each value as function or property.
+        js_collect_decorated_members(
+            root,
+            source,
+            &export_id,
+            root,
+            &mut members,
+            &mut member_seen,
+        );
+        for member in members {
+            let qualified_name = format!("{}.{}", module_path, member.name);
+            if !seen.insert(qualified_name) {
+                continue;
+            }
+            push_js_resolved_member(&member, apis, module_path, relative_path);
+        }
+    }
+}
+
+/// Identifiers bound to a top-level `module.exports = <id>` sink, also handling
+/// the chained alias form `exports = module.exports = <id>`.
+fn collect_js_commonjs_export_ids(root: tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "expression_statement" {
+            continue;
+        }
+        if let Some(expr) = child.named_child(0) {
+            js_collect_commonjs_export_id(expr, source, &mut ids);
+        }
+    }
+    ids
+}
+
+/// Walk an assignment (and any chained right-hand assignment) for a
+/// `module.exports = <identifier>` binding, pushing each bound id.
+fn js_collect_commonjs_export_id(node: tree_sitter::Node, source: &str, ids: &mut Vec<String>) {
+    if node.kind() != "assignment_expression" {
+        return;
+    }
+    let (Some(left), Some(right)) = (
+        node.child_by_field_name("left"),
+        node.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    if js_is_module_exports_target(left, source) && right.kind() == "identifier" {
+        let id = source[right.byte_range()].trim().to_string();
+        if !id.is_empty() && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    // Chained alias: `exports = module.exports = <id>` nests right-associatively.
+    if right.kind() == "assignment_expression" {
+        js_collect_commonjs_export_id(right, source, ids);
+    }
+}
+
+/// True when `node` is the literal `module.exports` member target — the
+/// provenance gate distinguishing a module-export sink from a non-module
+/// `<x>.exports = …` assignment.
+fn js_is_module_exports_target(node: tree_sitter::Node, source: &str) -> bool {
+    if node.kind() != "member_expression" {
+        return false;
+    }
+    let (Some(obj), Some(prop)) = (
+        node.child_by_field_name("object"),
+        node.child_by_field_name("property"),
+    ) else {
+        return false;
+    };
+    obj.kind() == "identifier"
+        && source[obj.byte_range()].trim() == "module"
+        && prop.kind() == "property_identifier"
+        && source[prop.byte_range()].trim() == "exports"
+}
+
+/// Push a resolved [`JsDefaultMember`] onto `apis` as a function or property API
+/// entry, mirroring the `export default` / UMD member shaping.
+fn push_js_resolved_member(
+    member: &JsDefaultMember,
+    apis: &mut Vec<ApiEntry>,
+    module_path: &str,
+    relative_path: &Path,
+) {
+    let qualified_name = format!("{}.{}", module_path, member.name);
+    let location = Some(Location {
+        file: relative_path.to_path_buf(),
+        line: member.line,
+        column: None,
+    });
+    if member.is_function {
+        let params: Vec<Param> = member
+            .params
+            .iter()
+            .map(|name| Param {
+                name: name.clone(),
+                type_annotation: None,
+                default: None,
+                is_variadic: name == "...",
+                is_keyword: false,
+            })
+            .collect();
+        let example = generate_js_function_example(module_path, &member.name, &params, None);
+        apis.push(ApiEntry {
+            qualified_name,
+            kind: ApiKind::Function,
+            module: module_path.to_string(),
+            signature: Some(Signature {
+                params,
+                return_type: None,
+                is_async: false,
+                is_generator: false,
+            }),
+            docstring: None,
+            example,
+            triggers: extract_triggers(&member.name, None),
+            is_property: false,
+            return_type: None,
+            location,
+        });
+    } else {
+        apis.push(ApiEntry {
+            qualified_name: qualified_name.clone(),
+            kind: ApiKind::Constant,
+            module: module_path.to_string(),
+            signature: None,
+            docstring: None,
+            example: Some(qualified_name),
+            triggers: extract_triggers(&member.name, None),
+            is_property: true,
+            return_type: None,
+            location,
+        });
     }
 }
 
@@ -2485,6 +2669,97 @@ mod tests {
         assert_eq!(s.language, "javascript");
         assert_eq!(s.package, "testpkg");
         assert_eq!(s.total, 0);
+    }
+
+    // ---- CFr-RW3: CommonJS decorated-instance module exports ----
+
+    /// Generalization test (anti-treadmill). Asserts BOTH the NEW sibling case
+    /// (`module.exports = res; res.x = fn` decorated-instance CommonJS, express
+    /// `lib/response.js`) is now resolved AND the R2 provenance guards still hold:
+    /// a non-module `<x>.exports = bar` mints nothing, and the UMD/IIFE
+    /// factory-return idiom (lodash) is still resolved. Fails on pre-fix source
+    /// (decorated-instance members dropped → total 0).
+    #[test]
+    fn test_commonjs_decorated_instance_module_exports_members() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("tldr_cfr_rw3_commonjs_decorated");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("lib")).unwrap();
+
+        let member_names = |apis: &[ApiEntry]| -> HashSet<String> {
+            apis.iter()
+                .filter_map(|a| a.qualified_name.rsplit('.').next().map(str::to_string))
+                .collect()
+        };
+
+        // (a) SIBLING — decorated-instance CommonJS. `res` is a plain
+        // `Object.create(...)` instance (not a top-level fn/class), decorated
+        // with methods incl. a chained `res.contentType = res.type = fn`.
+        let response = "var http = require('http');\n\
+var res = Object.create(http.ServerResponse.prototype);\n\
+module.exports = res;\n\
+res.status = function status(code) { this.statusCode = code; return this; };\n\
+res.send = function send(body) { return this; };\n\
+res.contentType =\n\
+res.type = function contentType(type) { return this; };\n\
+res.get = function(field) { return this.getHeader(field); };\n";
+        let resp_path = tmp.join("lib/response.js");
+        fs::write(&resp_path, response).unwrap();
+        let apis = extract_from_javascript_file(&resp_path, &tmp, "express", false).unwrap();
+        let names = member_names(&apis);
+        for m in ["status", "send", "contentType", "type", "get"] {
+            assert!(
+                names.contains(m),
+                "decorated-instance member `{m}` missing from surface: {names:?}"
+            );
+        }
+        // The bound id itself is NOT a member.
+        assert!(
+            !names.contains("res"),
+            "module-bound id `res` must not be minted as a member: {names:?}"
+        );
+
+        // (b) GUARD — non-module `<x>.exports = bar`. `foo` is a plain object,
+        // not `module`, so its decorations must NOT be minted as surface.
+        let nonmod = "var foo = {};\n\
+foo.exports = bar;\n\
+foo.hidden = function hidden() {};\n\
+foo.secret = function secret() {};\n";
+        let nonmod_path = tmp.join("lib/nonmod.js");
+        fs::write(&nonmod_path, nonmod).unwrap();
+        let nm_apis = extract_from_javascript_file(&nonmod_path, &tmp, "pkg", false).unwrap();
+        let nm_names = member_names(&nm_apis);
+        assert!(
+            !nm_names.contains("hidden") && !nm_names.contains("secret"),
+            "non-module `foo.exports = bar` must not mint foo.* members: {nm_names:?}"
+        );
+
+        // (c) ORIGINAL/R2 — UMD/IIFE factory-return (lodash) still resolves via
+        // the module-reference-provenance path, and the new top-level resolver
+        // (gated on literal `module.exports`) does not interfere.
+        let umd = ";(function() {\n\
+  var freeExports = typeof exports == 'object' && exports;\n\
+  function runInContext() {\n\
+    function lodash() {}\n\
+    lodash.map = function map(arr, fn) {};\n\
+    lodash.filter = function filter(arr, fn) {};\n\
+    return lodash;\n\
+  }\n\
+  var _ = runInContext();\n\
+  freeExports.exports = _;\n\
+}.call(this));\n";
+        let umd_path = tmp.join("lodash.js");
+        fs::write(&umd_path, umd).unwrap();
+        let umd_apis = extract_from_javascript_file(&umd_path, &tmp, "lodash", false).unwrap();
+        let umd_names = member_names(&umd_apis);
+        for m in ["map", "filter"] {
+            assert!(
+                umd_names.contains(m),
+                "UMD factory-return member `{m}` regressed: {umd_names:?}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     // ---- compute_js_module_path ----
