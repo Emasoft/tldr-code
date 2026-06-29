@@ -208,6 +208,25 @@ pub enum DefinitionKind {
     /// Class definition
     Class,
 
+    /// Struct definition (a value-type aggregate, e.g. Swift / Rust `struct`).
+    ///
+    /// CF2-S19: Swift folds `struct`/`enum`/`actor`/`class` into one
+    /// `class_declaration` node distinguished only by the leading keyword
+    /// token. `references` must classify a `struct X {}` definition as
+    /// `"struct"` (not the conservative `"class"`), mirroring the keyword the
+    /// `structure`/`extract` producers already read in `entity::classify_node`.
+    Struct,
+
+    /// Enum definition (e.g. Swift / Rust `enum`).
+    ///
+    /// CF2-S19: see [`DefinitionKind::Struct`].
+    Enum,
+
+    /// Actor definition (Swift concurrency `actor`).
+    ///
+    /// CF2-S19: see [`DefinitionKind::Struct`].
+    Actor,
+
     /// Variable definition
     Variable,
 
@@ -237,6 +256,9 @@ impl DefinitionKind {
         match self {
             DefinitionKind::Function => "function",
             DefinitionKind::Class => "class",
+            DefinitionKind::Struct => "struct",
+            DefinitionKind::Enum => "enum",
+            DefinitionKind::Actor => "actor",
             DefinitionKind::Variable => "variable",
             DefinitionKind::Constant => "constant",
             DefinitionKind::Type => "type",
@@ -2486,6 +2508,25 @@ fn classify_ruby_reference(node: &Node, parent: &Node, _source: &[u8]) -> Refere
             ReferenceKind::Read
         }
 
+        // CF2-S19: a bareword self-send — a method invoked with NO receiver and
+        // NO parentheses, e.g. `cleanup` / `do_thing` on its own line inside a
+        // method body. tree-sitter-ruby parses such a no-argument bareword call
+        // as a lone `identifier` sitting directly in a statement-sequence
+        // container (the method/block/begin body, or an `if`/`unless` branch),
+        // NOT as a `call` node. The `call` arm above therefore never fires and
+        // the occurrence fell through to `_ => Read`, mislabelling every
+        // bareword self-send. An `identifier` that IS a whole statement in one
+        // of these containers is in call position (a local-variable read is
+        // virtually never written as a standalone no-op statement), so classify
+        // it as a `Call`. Receivers, call callees (handled by `call`),
+        // assignment targets (handled above) and definition names (handled by
+        // `method`/`class`) all have other parents and are unaffected.
+        "body_statement" | "then" | "else" | "ensure" | "begin"
+            if node.kind() == "identifier" =>
+        {
+            ReferenceKind::Call
+        }
+
         _ => ReferenceKind::Read,
     }
 }
@@ -3208,7 +3249,22 @@ fn find_definition_in_file(
     file_path: &Path,
     _language_str: Option<&str>,
 ) -> TldrResult<Option<Definition>> {
-    let parsed = parse_file(file_path)?;
+    // CF2-S19: a C++ header kept as `.h` (the common `tinyxml2.h` / `tinyxml2.cpp`
+    // layout, and every header-only library such as fmt) is mapped to
+    // `Language::C` by the bare-extension classifier `parse_file` uses. The C
+    // grammar has no `class`/`struct`/`namespace`, so `class Foo : public Bar {…}`
+    // error-recovers into a `function_definition` whose declarator is the bare
+    // class name — and `check_cpp_definition` then reports the class as
+    // `kind:function` carrying a MEMBER (e.g. the destructor) signature, since
+    // the real `class_specifier` node never forms. Resolve the header's true
+    // language via the shared AST-content-sniffing resolver
+    // (`Language::resolve_header_language`, used by structure/extract/interface)
+    // and parse with that grammar, so a C++ class/struct definition forms a
+    // proper `class_specifier`/`struct_specifier` and carries its OWN kind +
+    // signature. Non-`.h` paths and genuine pure-C headers are unaffected (the
+    // resolver returns the same language as `from_path`).
+    let lang_hint = Language::from_path_with_siblings(file_path);
+    let parsed = crate::ast::parser::parse_file_with_lang(file_path, lang_hint)?;
     let (tree, source, language) = parsed;
     let source_bytes = source.as_bytes();
 
@@ -4618,7 +4674,7 @@ fn classify_promoted_definition_kind(
     // Walk up to the first declaration-shaped ancestor.
     let mut current = Some(smallest);
     while let Some(node) = current {
-        if let Some(k) = node_kind_to_definition_kind(node.kind(), *language) {
+        if let Some(k) = decl_node_to_definition_kind(&node, *language) {
             return Some(k);
         }
         // Also accept a name-field match: an enclosing decl whose
@@ -4648,7 +4704,7 @@ fn walk_for_decl_containing(
         return None;
     }
 
-    let mut best: Option<DefinitionKind> = node_kind_to_definition_kind(node.kind(), language);
+    let mut best: Option<DefinitionKind> = decl_node_to_definition_kind(node, language);
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if let Some(child_kind) = walk_for_decl_containing(&child, row, col, language, _source) {
@@ -4717,6 +4773,44 @@ fn node_kind_to_definition_kind(kind: &str, _language: Language) -> Option<Defin
         _ => return None,
     };
     Some(dk)
+}
+
+/// Node-aware refinement of [`node_kind_to_definition_kind`].
+///
+/// Most declaration node kinds are fully decided by their bare kind string,
+/// but a few grammars fold several declaration axes into a single node kind
+/// disambiguated only by a child keyword token. CF2-S19: tree-sitter-swift
+/// folds `struct` / `enum` / `actor` / `class` / `extension` into ONE
+/// `class_declaration` node, so the string-keyed mapping conservatively
+/// returns `Class`. Consult the leading keyword child here (mirroring
+/// `entity::classify_node`) so a Swift struct/enum/actor definition reports
+/// its own kind instead of the catch-all `"class"`.
+fn decl_node_to_definition_kind(node: &Node, language: Language) -> Option<DefinitionKind> {
+    if language == Language::Swift && node.kind() == "class_declaration" {
+        return Some(swift_class_declaration_definition_kind(node));
+    }
+    node_kind_to_definition_kind(node.kind(), language)
+}
+
+/// Map a Swift `class_declaration` to the precise [`DefinitionKind`] implied
+/// by its leading declaration keyword.
+///
+/// CF2-S19. tree-sitter-swift emits the keyword as a dedicated token child
+/// (`struct` / `enum` / `actor` / `class`); `extension` carriers stay on the
+/// class axis. Defaults to `Class` when no keyword child is found (defensive —
+/// every well-formed `class_declaration` has one).
+fn swift_class_declaration_definition_kind(node: &Node) -> DefinitionKind {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "struct" => return DefinitionKind::Struct,
+            "enum" => return DefinitionKind::Enum,
+            "actor" => return DefinitionKind::Actor,
+            "class" | "extension" => return DefinitionKind::Class,
+            _ => {}
+        }
+    }
+    DefinitionKind::Class
 }
 
 // =============================================================================
@@ -5956,5 +6050,147 @@ let _ = print_string (greet "Alice")
                 .map(|r| (r.line, r.kind))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// CF2-S19 generalization gate (anti-treadmill): the `references`
+    /// definition-kind and reference-kind classifier must be correct for
+    /// EVERY language in this slice's symptom class — cpp, ruby AND swift.
+    ///
+    /// Each sub-case fails on the pre-fix source and passes after the fix:
+    ///
+    /// * **cpp** — a `class` kept in a `.h` header. The bare-extension
+    ///   classifier maps `.h` → C, whose grammar has no `class`, so
+    ///   `class Shape {…}` error-recovers into a `function_definition` and the
+    ///   definition was reported as `kind:function` carrying a MEMBER
+    ///   signature (the destructor). The header-aware parse forms a real
+    ///   `class_specifier`, so the def is `kind:class` with its OWN signature.
+    /// * **ruby** — a bareword self-send (`cleanup` on its own line, no
+    ///   receiver, no parens) parses as a lone `identifier` in a statement
+    ///   container, which fell through to `Read`; it must be a `Call`.
+    /// * **swift** — `struct`/`enum`/`actor` fold into one `class_declaration`
+    ///   node and were promoted as the catch-all `kind:class`; each must
+    ///   report its own keyword (`struct`/`enum`/`actor`), while a real
+    ///   `class` stays `class`.
+    #[test]
+    fn test_references_definition_and_reference_kind_cpp_ruby_swift() {
+        use std::io::Write;
+
+        // ---- cpp: a `class` in a `.h` header reports kind:class (not
+        // kind:function with a member's signature). -----------------------
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            // Header kept as `.h`; C++-exclusive `namespace`/`class` make the
+            // content sniffer resolve it to C++. The class carries members
+            // (ctor + destructor + method) whose signatures the pre-fix code
+            // wrongly attributed to the class definition.
+            let src = b"namespace demo {\nclass Shape {\npublic:\n    Shape();\n    virtual ~Shape();\n    void draw();\n};\n}\n";
+            let mut f = std::fs::File::create(root.join("shape.h")).unwrap();
+            f.write_all(src).unwrap();
+
+            // language=None: `is_source_file` accepts the `.h` (it maps to C),
+            // while `find_definition_in_file` resolves the true C++ language
+            // per-file and parses with the C++ grammar.
+            let opts = ReferencesOptions::new().with_scope(SearchScope::Workspace);
+            let report = find_references("Shape", root, &opts).unwrap();
+
+            let class_def = report.definitions.iter().find(|d| d.kind == DefinitionKind::Class);
+            assert!(
+                class_def.is_some(),
+                "[cpp] `class Shape` must be reported with kind:class (not function); got {:?}",
+                report
+                    .definitions
+                    .iter()
+                    .map(|d| (d.kind.as_str(), d.line, d.signature.clone()))
+                    .collect::<Vec<_>>()
+            );
+            let class_def = class_def.unwrap();
+            // The signature must be the class's OWN declaration line, never a
+            // member (e.g. the `~Shape()` destructor) carried by the off-by-one.
+            if let Some(sig) = &class_def.signature {
+                assert!(
+                    sig.starts_with("class"),
+                    "[cpp] class def must carry its OWN signature `class Shape …`, got {sig:?}"
+                );
+                assert!(
+                    !sig.contains("~Shape") && !sig.contains("draw"),
+                    "[cpp] class def signature must not be a member's, got {sig:?}"
+                );
+            }
+        }
+
+        // ---- ruby: a bareword self-send is a Call, not a Read. -----------
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            // `cleanup` on line 4 is a no-receiver, no-paren bareword call.
+            let src = b"class Worker\n  def run\n    prepare\n    cleanup\n  end\n\n  def cleanup\n    @done = true\n  end\nend\n";
+            let mut f = std::fs::File::create(root.join("worker.rb")).unwrap();
+            f.write_all(src).unwrap();
+
+            let opts = ReferencesOptions::new()
+                .with_language("ruby".to_string())
+                .with_scope(SearchScope::Workspace);
+            let report = find_references("cleanup", root, &opts).unwrap();
+
+            // The bareword self-send on line 4 must be classified Call.
+            let bareword = report.references.iter().find(|r| r.line == 4);
+            assert!(
+                bareword.is_some(),
+                "[ruby] expected the bareword `cleanup` reference on line 4; got {:?}",
+                report.references.iter().map(|r| (r.line, r.kind)).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                bareword.unwrap().kind,
+                ReferenceKind::Call,
+                "[ruby] bareword self-send `cleanup` (line 4) must be a Call, not {:?}; all refs: {:?}",
+                bareword.unwrap().kind,
+                report.references.iter().map(|r| (r.line, r.kind)).collect::<Vec<_>>()
+            );
+            // The definition itself must still be a Definition, not a Call.
+            assert!(
+                report.references.iter().any(|r| r.line == 7 && r.kind == ReferenceKind::Definition),
+                "[ruby] `def cleanup` (line 7) must still be a Definition; got {:?}",
+                report.references.iter().map(|r| (r.line, r.kind)).collect::<Vec<_>>()
+            );
+        }
+
+        // ---- swift: struct/enum/actor/class each report their own kind. ---
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let src = b"public struct OrderedDictionary {\n    var count = 0\n}\nenum Direction {\n    case north\n}\nactor Counter {\n    var n = 0\n}\nclass Base {\n    var x = 0\n}\n";
+            let mut f = std::fs::File::create(root.join("collections.swift")).unwrap();
+            f.write_all(src).unwrap();
+
+            let expected = [
+                ("OrderedDictionary", DefinitionKind::Struct, "struct"),
+                ("Direction", DefinitionKind::Enum, "enum"),
+                ("Counter", DefinitionKind::Actor, "actor"),
+                ("Base", DefinitionKind::Class, "class"),
+            ];
+            for (symbol, want_kind, want_str) in expected {
+                let opts = ReferencesOptions::new()
+                    .with_language("swift".to_string())
+                    .with_scope(SearchScope::Workspace);
+                let report = find_references(symbol, root, &opts).unwrap();
+                assert!(
+                    report.definitions.iter().any(|d| d.kind == want_kind),
+                    "[swift] `{symbol}` must be reported with kind:{want_str}; got {:?}",
+                    report
+                        .definitions
+                        .iter()
+                        .map(|d| (d.kind.as_str(), d.line))
+                        .collect::<Vec<_>>()
+                );
+                // The serialized JSON `kind` string must be the keyword.
+                let first = report.definitions.iter().find(|d| d.kind == want_kind).unwrap();
+                assert_eq!(
+                    first.kind.as_str(),
+                    want_str,
+                    "[swift] `{symbol}` kind string mismatch"
+                );
+            }
+        }
     }
 }
