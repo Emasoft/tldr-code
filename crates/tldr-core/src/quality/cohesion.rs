@@ -6666,7 +6666,23 @@ pub fn extract_field_accesses_ast(
     // inventing a phantom `helper` field on every fieldless method-only type
     // (the live R2 mis-count). Parse-failure still falls back to regex above
     // (5467-ish), so a genuinely unparseable snippet is unaffected.
-    if fields.is_empty() && !matches!(language, Language::Rust) {
+    //
+    // fix-CFr-RW5 (v0.5.0 RC CF-resid): EXTEND that exclusion to Go for the same
+    // reason — the AST walk (`extract_go_field_access`) is authoritative: it
+    // credits genuine `recv.field` and REJECTS `recv.method()` (the
+    // `selector_expression` that is the `function` child of a `call_expression`,
+    // including a chained `recv.findCaseInsensitivePathRec(..)`). An empty AST
+    // result therefore means "this method touches no receiver field", which is
+    // the truth. The Go regex (`extract_go_receiver_accesses`, `n\.(\w+)`) cannot
+    // tell a method CALL from a field READ, so on a field-less method that only
+    // calls a receiver method it re-captured the METHOD name as a phantom field
+    // (go-httprouter `node`: `findCaseInsensitivePath` calls
+    // `n.findCaseInsensitivePathRec(..)` and nothing else → phantom
+    // `findCaseInsensitivePathRec` field, field_count 8 vs the true 7). The
+    // S7 receiver-scoping already drives the in-AST counts; this only removes the
+    // empty-AST phantom, never a real field. Parse-failure still falls back to
+    // regex above, so an unparseable snippet is unaffected.
+    if fields.is_empty() && !matches!(language, Language::Rust | Language::Go) {
         let regex_fields = extract_field_accesses_regex(method_source, language, receiver_name);
         if !regex_fields.is_empty() {
             return regex_fields;
