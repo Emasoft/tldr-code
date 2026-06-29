@@ -30,7 +30,7 @@ use super::error::RemainingError;
 use super::types::{CallInfo, ComplexityInfo, ExplainReport, ParamInfo, PurityInfo, SignatureInfo};
 
 use crate::output::{OutputFormat, OutputWriter};
-use tldr_core::ast::extract::decl_keyword_line_from_node;
+use tldr_core::ast::extract::{decl_end_line_from_node, decl_keyword_line_from_node};
 use tldr_core::types::Language;
 use tldr_core::analysis::impact::innermost_named_enclosing_function;
 use tldr_core::{
@@ -283,9 +283,14 @@ fn get_line_number(node: Node) -> u32 {
     node.start_position().row as u32 + 1
 }
 
-/// Get the end line number (1-indexed) for a node
-fn get_end_line_number(node: Node) -> u32 {
-    node.end_position().row as u32 + 1
+/// Get the end line number (1-indexed) for a node.
+///
+/// CF3-S3b (v0.5.0 RC): routes through the Scala-gated end-line normaliser so
+/// a trailing `/** ScalaDoc */` that tree-sitter-scala folds into an
+/// expression-bodied `def`'s span does not leak into the reported `line_end`.
+/// No-op for every other language (returns the raw `end_position`).
+fn get_end_line_number(node: Node, language: Language) -> u32 {
+    decl_end_line_from_node(&node, language)
 }
 
 /// Get the column number (0-indexed) for a node.
@@ -3238,7 +3243,7 @@ impl ExplainArgs {
             &function,
             &file_path,
             line_start,
-            get_end_line_number(func_node),
+            get_end_line_number(func_node, language),
             language_name,
         );
 

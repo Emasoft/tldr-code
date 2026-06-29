@@ -547,7 +547,29 @@ impl<'a> CfgBuilder<'a> {
     fn process_statement(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         let kind = node.kind();
         let start_line = node.start_position().row as u32 + 1;
-        let end_line = node.end_position().row as u32 + 1;
+        // CF3-S3b (v0.5.0 RC): route a statement's END line through the
+        // Scala-gated normaliser so that, when tree-sitter-scala folds a
+        // following def's `/** ScalaDoc */` INTO this statement's own span as a
+        // trailing child, the basic block stops at the real statement body
+        // rather than the doc comment. No-op for every other language and for
+        // Scala statements that do not absorb a trailing comment.
+        let end_line = crate::ast::extract::decl_end_line_from_node(&node, self.language);
+
+        // CF3-S3b (v0.5.0 RC): tree-sitter-scala also folds that `/** ScalaDoc */`
+        // into the previous expression-bodied `def`'s `indented_block` as a
+        // SEPARATE trailing child (a sibling of the body expression). Walked as
+        // its own statement it would fall through to the catch-all arm and
+        // stretch the enclosing CFG basic block — and thus the reaching-defs /
+        // dead-stores span — into the next def's documentation. A comment is
+        // never an executable statement, so for Scala it must not extend any
+        // block. Gated to Scala (the only grammar that folds a sibling's doc
+        // comment into the previous declaration) so every other language is
+        // untouched.
+        if matches!(self.language, Language::Scala)
+            && matches!(kind, "comment" | "block_comment" | "line_comment")
+        {
+            return Ok(());
+        }
 
         // cfg-ruby-rebuild-v1 (v0.4.2 M-102): tree-sitter-ruby emits BARE
         // kinds for control-flow constructs (`"if"`, `"while"`, `"until"`,

@@ -286,7 +286,12 @@ impl<'a> ComplexityCalculator<'a> {
 
     fn analyze_function(&mut self, func_node: Node) -> TldrResult<()> {
         self.start_line = func_node.start_position().row as u32 + 1;
-        self.end_line = func_node.end_position().row as u32 + 1;
+        // CF3-S3b (v0.5.0 RC): route the function's END line through the
+        // Scala-gated normaliser so a trailing `/** ScalaDoc */` that
+        // tree-sitter-scala folds into an expression-bodied `def`'s span does
+        // not inflate `lines_of_code`. No-op for every other language.
+        self.end_line =
+            crate::ast::extract::decl_end_line_from_node(&func_node, self.language);
         self.lines_of_code = self.end_line - self.start_line + 1;
 
         // C1 GAP-1 (v0.5.0 AUDIT-FIX): an Elixir clause-head `when` guard is a
