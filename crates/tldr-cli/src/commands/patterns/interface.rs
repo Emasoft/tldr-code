@@ -3125,6 +3125,12 @@ pub fn extract_interface_with_lang(
             &mut classes,
             &mut values,
         );
+        // CF3-S5b: UMD/IIFE factory-return module exports (lodash.js idiom).
+        // The whole module is wrapped in `;(function(){ … }.call(this))` and the
+        // public surface is decorated onto the object returned by an inner
+        // factory, then assigned to `<moduleRef>.exports`. None of the
+        // root-level scans above descend into the IIFE, so this resolves it.
+        collect_js_umd_factory_exports(root, source_bytes, &mut functions, &mut values);
     }
 
     // rc2-lua-interface-return-table-convention: a Lua/Luau module's public
@@ -4703,6 +4709,500 @@ fn extract_js_member_signature(rhs: Node, source: &[u8]) -> String {
         }
     }
     String::new()
+}
+
+// =============================================================================
+// CF3-S5b: UMD / IIFE factory-return module-export resolution (lodash idiom)
+// =============================================================================
+
+/// A member resolved from a UMD/IIFE factory-return module export.
+struct JsUmdMember {
+    name: String,
+    is_function: bool,
+    signature: String,
+    value_kind: String,
+    line: u32,
+}
+
+/// CF3-S5b: resolve the UMD/IIFE factory-return export idiom that whole-library
+/// JS bundles (e.g. lodash `lodash.js`) use:
+///
+/// ```js
+/// ;(function() {
+///   var freeExports = typeof exports == 'object' && exports && … && exports;
+///   var freeModule  = freeExports && typeof module == 'object' && … && module;
+///   var runInContext = (function runInContext(context) {
+///     function lodash(value) { … }
+///     lodash.map = map; lodash.filter = filter; …      // ← the public surface
+///     return lodash;
+///   });
+///   var _ = runInContext();
+///   else if (freeModule) { (freeModule.exports = _)._ = _; }   // ← module sink
+/// }.call(this));
+/// ```
+///
+/// The public surface is decorated onto the object an inner factory `return`s,
+/// then bound to the CommonJS module via `<moduleRef>.exports = <id>`. The whole
+/// program is wrapped in an immediately-invoked function expression, so the
+/// root-level export scans never see any of it.
+///
+/// Safety (false-positive guard): a `<alias>.exports = <id>` assignment is
+/// treated as a module-export sink ONLY when `<alias>` is *provably* a module
+/// reference — either the literal `module`, or a local whose initializer
+/// structurally tests `typeof module`/`typeof exports` (the UMD module-detection
+/// idiom). This is binding-provenance, not a name allowlist: a plain
+/// `foo.exports = bar` (where `foo` is unrelated to the module system) yields no
+/// exports.
+fn collect_js_umd_factory_exports(
+    root: Node,
+    source: &[u8],
+    functions: &mut Vec<FunctionInfo>,
+    values: &mut Vec<ValueInfo>,
+) {
+    let body = match find_js_umd_iife_body(root) {
+        Some(b) => b,
+        None => return,
+    };
+    // Binding-provenance gate: identifiers proven to reference the CommonJS
+    // module object via a `typeof module`/`typeof exports` detection initializer.
+    let module_refs = collect_js_umd_module_refs(body, source);
+    // Module-export sinks `<moduleRef>.exports = <id>` → the exported object id.
+    let export_ids = collect_js_umd_sink_ids(body, source, &module_refs);
+    if export_ids.is_empty() {
+        return;
+    }
+
+    let mut seen_funcs: std::collections::HashSet<String> =
+        functions.iter().map(|f| f.name.clone()).collect();
+    let mut seen_values: std::collections::HashSet<String> =
+        values.iter().map(|v| v.name.clone()).collect();
+
+    for export_id in export_ids {
+        for member in resolve_js_umd_members(body, source, &export_id) {
+            if !is_public_name(&member.name) {
+                continue;
+            }
+            if member.is_function {
+                if !seen_funcs.insert(member.name.clone())
+                    || functions.iter().any(|f| f.name == member.name)
+                {
+                    continue;
+                }
+                functions.push(FunctionInfo {
+                    name: member.name,
+                    signature: member.signature,
+                    docstring: None,
+                    lineno: member.line,
+                    is_async: false,
+                    kind: None,
+                });
+            } else {
+                if functions.iter().any(|f| f.name == member.name)
+                    || !seen_values.insert(member.name.clone())
+                {
+                    continue;
+                }
+                values.push(ValueInfo {
+                    name: member.name,
+                    lineno: member.line,
+                    kind: Some(member.value_kind),
+                });
+            }
+        }
+    }
+}
+
+/// Unwrap nested `parenthesized_expression` wrappers, returning the innermost
+/// named node.
+fn js_unwrap_parens(node: Node) -> Node {
+    let mut n = node;
+    while n.kind() == "parenthesized_expression" {
+        let mut next = None;
+        {
+            let mut cursor = n.walk();
+            for ch in n.children(&mut cursor) {
+                if ch.is_named() {
+                    next = Some(ch);
+                    break;
+                }
+            }
+        }
+        match next {
+            Some(ch) => n = ch,
+            None => break,
+        }
+    }
+    n
+}
+
+/// Locate the body (`statement_block`) of a top-level immediately-invoked
+/// function expression (`(function(){…})()`, `(function(){…}.call(this))`,
+/// `(()=>{…})()`). Returns `None` when the program has no such IIFE.
+fn find_js_umd_iife_body(root: Node) -> Option<Node> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "expression_statement" {
+            continue;
+        }
+        let mut inner = child.walk();
+        for expr in child.children(&mut inner) {
+            if !expr.is_named() {
+                continue;
+            }
+            if let Some(body) = js_iife_function_body(expr) {
+                return Some(body);
+            }
+        }
+    }
+    None
+}
+
+/// Given the expression of a top-level statement, return the invoked function's
+/// body when it is an IIFE call (direct, parenthesized, or `.call`/`.apply`).
+fn js_iife_function_body(expr: Node) -> Option<Node> {
+    let call = js_unwrap_parens(expr);
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let callee = js_unwrap_parens(call.child_by_field_name("function")?);
+    let fn_node = if is_js_function_value(callee) {
+        callee
+    } else if callee.kind() == "member_expression" {
+        // `(function(){…}).call(this)` / `.apply(this)`.
+        let obj = js_unwrap_parens(callee.child_by_field_name("object")?);
+        if is_js_function_value(obj) {
+            obj
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    fn_node.child_by_field_name("body")
+}
+
+/// Collect, from the IIFE body's *direct* statements, the identifiers bound to a
+/// module-detection initializer (`var x = … typeof module|exports … ;`). These
+/// are the provable CommonJS module references that gate the export sink.
+fn collect_js_umd_module_refs(body: Node, source: &[u8]) -> std::collections::HashSet<String> {
+    let mut refs = std::collections::HashSet::new();
+    let mut cursor = body.walk();
+    for stmt in body.children(&mut cursor) {
+        if !matches!(stmt.kind(), "variable_declaration" | "lexical_declaration") {
+            continue;
+        }
+        let mut dc = stmt.walk();
+        for decl in stmt.children(&mut dc) {
+            if decl.kind() != "variable_declarator" {
+                continue;
+            }
+            if let (Some(name), Some(value)) = (
+                decl.child_by_field_name("name"),
+                decl.child_by_field_name("value"),
+            ) {
+                if name.kind() == "identifier" && js_init_tests_module_global(value, source) {
+                    refs.insert(node_text(name, source).to_string());
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// True when `node`'s expression tree contains a `typeof module` / `typeof
+/// exports` test (the UMD module-detection idiom). Does not descend into nested
+/// function scopes — the detection test is always in the binding initializer.
+fn js_init_tests_module_global(node: Node, source: &[u8]) -> bool {
+    if matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function" | "generator_function"
+    ) {
+        return false;
+    }
+    if node.kind() == "unary_expression" {
+        let mut has_typeof = false;
+        let mut cursor = node.walk();
+        for ch in node.children(&mut cursor) {
+            if ch.kind() == "typeof" {
+                has_typeof = true;
+            }
+        }
+        if has_typeof {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if arg.kind() == "identifier" {
+                    let t = node_text(arg, source);
+                    if t == "module" || t == "exports" {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        if js_init_tests_module_global(ch, source) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Scan the IIFE top-level scope (skipping nested function bodies) for module
+/// export sinks `<moduleRef>.exports = <id>` and return each `<id>`.
+fn collect_js_umd_sink_ids(
+    body: Node,
+    source: &[u8],
+    module_refs: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    js_walk_umd_sinks(body, source, module_refs, &mut ids);
+    ids
+}
+
+fn js_walk_umd_sinks(
+    node: Node,
+    source: &[u8],
+    module_refs: &std::collections::HashSet<String>,
+    ids: &mut Vec<String>,
+) {
+    // Do not descend into nested function scopes: the module-export sink lives
+    // at the IIFE top level, never inside the factory.
+    if matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function" | "generator_function"
+    ) {
+        return;
+    }
+    if node.kind() == "assignment_expression" {
+        if let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            if right.kind() == "identifier" && left.kind() == "member_expression" {
+                if let (Some(obj), Some(prop)) = (
+                    left.child_by_field_name("object"),
+                    left.child_by_field_name("property"),
+                ) {
+                    if obj.kind() == "identifier"
+                        && prop.kind() == "property_identifier"
+                        && node_text(prop, source) == "exports"
+                    {
+                        let obj_name = node_text(obj, source);
+                        if obj_name == "module" || module_refs.contains(obj_name) {
+                            let id = node_text(right, source).to_string();
+                            if !ids.contains(&id) {
+                                ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        js_walk_umd_sinks(ch, source, module_refs, ids);
+    }
+}
+
+/// Resolve the exported object id to the set of members decorated onto it.
+/// Handles `var <id> = factory()` (resolving the factory's returned object),
+/// `var <id> = <obj>` (decorated-instance), and `var <id> = { … }` (object
+/// literal).
+fn resolve_js_umd_members(body: Node, source: &[u8], export_id: &str) -> Vec<JsUmdMember> {
+    let init = match js_find_var_init(body, source, export_id) {
+        Some(i) => js_unwrap_parens(i),
+        None => return Vec::new(),
+    };
+    match init.kind() {
+        "call_expression" => {
+            // `<id> = factory()` — resolve the factory's returned object.
+            let callee = match init.child_by_field_name("function") {
+                Some(c) => c,
+                None => return Vec::new(),
+            };
+            if callee.kind() != "identifier" {
+                return Vec::new();
+            }
+            let factory_name = node_text(callee, source);
+            let factory = match js_find_function_node(body, source, factory_name) {
+                Some(f) => f,
+                None => return Vec::new(),
+            };
+            let factory_body = match factory.child_by_field_name("body") {
+                Some(b) => b,
+                None => return Vec::new(),
+            };
+            let ret = match js_find_factory_return_ident(factory_body, source) {
+                Some(r) => r,
+                None => return Vec::new(),
+            };
+            let mut out = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            js_collect_decorated_members(
+                factory_body,
+                source,
+                &ret,
+                factory_body,
+                &mut out,
+                &mut seen,
+            );
+            out
+        }
+        "identifier" => {
+            let obj = node_text(init, source).to_string();
+            let mut out = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            js_collect_decorated_members(body, source, &obj, body, &mut out, &mut seen);
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Find the initializer value of `var <name> = <value>` anywhere in `scope`.
+fn js_find_var_init<'a>(scope: Node<'a>, source: &[u8], name: &str) -> Option<Node<'a>> {
+    if scope.kind() == "variable_declarator" {
+        if let (Some(nm), Some(val)) = (
+            scope.child_by_field_name("name"),
+            scope.child_by_field_name("value"),
+        ) {
+            if nm.kind() == "identifier" && node_text(nm, source) == name {
+                return Some(val);
+            }
+        }
+    }
+    let mut cursor = scope.walk();
+    for ch in scope.children(&mut cursor) {
+        if let Some(found) = js_find_var_init(ch, source, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Find the function node (declaration / `var f = function|arrow`) named `name`.
+fn js_find_function_node<'a>(scope: Node<'a>, source: &[u8], name: &str) -> Option<Node<'a>> {
+    if scope.kind() == "function_declaration" || scope.kind() == "generator_function_declaration" {
+        if let Some(nm) = scope.child_by_field_name("name") {
+            if node_text(nm, source) == name {
+                return Some(scope);
+            }
+        }
+    }
+    if scope.kind() == "variable_declarator" {
+        if let (Some(nm), Some(val)) = (
+            scope.child_by_field_name("name"),
+            scope.child_by_field_name("value"),
+        ) {
+            if nm.kind() == "identifier" && node_text(nm, source) == name {
+                let val = js_unwrap_parens(val);
+                if is_js_function_value(val) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    let mut cursor = scope.walk();
+    for ch in scope.children(&mut cursor) {
+        if let Some(found) = js_find_function_node(ch, source, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Find the identifier a factory body `return`s, without descending into nested
+/// function scopes (we want the factory's own `return`, not a callback's).
+fn js_find_factory_return_ident(body: Node, source: &[u8]) -> Option<String> {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "arrow_function"
+            | "generator_function" => continue,
+            "return_statement" => {
+                let mut rc = child.walk();
+                for rchild in child.children(&mut rc) {
+                    if rchild.kind() == "identifier" {
+                        return Some(node_text(rchild, source).to_string());
+                    }
+                }
+            }
+            _ => {
+                if let Some(found) = js_find_factory_return_ident(child, source) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Collect `<obj_name>.<member> = <value>` assignments within `scope`, resolving
+/// each member's value (function value, an identifier naming a function in
+/// `lookup_scope`, or a plain value) to a [`JsUmdMember`].
+fn js_collect_decorated_members(
+    scope: Node,
+    source: &[u8],
+    obj_name: &str,
+    lookup_scope: Node,
+    out: &mut Vec<JsUmdMember>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    if scope.kind() == "assignment_expression" {
+        if let (Some(left), Some(right)) = (
+            scope.child_by_field_name("left"),
+            scope.child_by_field_name("right"),
+        ) {
+            if left.kind() == "member_expression" {
+                if let (Some(obj), Some(prop)) = (
+                    left.child_by_field_name("object"),
+                    left.child_by_field_name("property"),
+                ) {
+                    if obj.kind() == "identifier"
+                        && node_text(obj, source) == obj_name
+                        && prop.kind() == "property_identifier"
+                    {
+                        let name = node_text(prop, source).to_string();
+                        if seen.insert(name.clone()) {
+                            let (is_function, signature, value_kind) =
+                                js_classify_umd_member(right, source, lookup_scope);
+                            out.push(JsUmdMember {
+                                name,
+                                is_function,
+                                signature,
+                                value_kind,
+                                line: scope.start_position().row as u32 + 1,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = scope.walk();
+    for ch in scope.children(&mut cursor) {
+        js_collect_decorated_members(ch, source, obj_name, lookup_scope, out, seen);
+    }
+}
+
+/// Classify a decorated-member RHS: a direct function value, an identifier
+/// resolving to a function in `lookup_scope`, or a plain exported value.
+fn js_classify_umd_member(value: Node, source: &[u8], lookup_scope: Node) -> (bool, String, String) {
+    if is_js_function_value(value) {
+        return (true, extract_js_member_signature(value, source), String::new());
+    }
+    if value.kind() == "identifier" {
+        let name = node_text(value, source);
+        if let Some(fnode) = js_find_function_node(lookup_scope, source, name) {
+            return (true, extract_js_member_signature(fnode, source), String::new());
+        }
+        return (false, String::new(), "reference".to_string());
+    }
+    (false, String::new(), js_value_kind(value))
 }
 
 /// Collect top-level function and class definitions from the AST root.

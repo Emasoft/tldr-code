@@ -288,6 +288,20 @@ fn extract_from_javascript_file(
         &relative_path,
     );
 
+    // CF3-S5b: UMD/IIFE factory-return module exports (lodash `lodash.js`). The
+    // whole library is wrapped in `;(function(){ … }.call(this))` and its public
+    // surface is decorated onto the object an inner factory returns, then bound
+    // via `<moduleRef>.exports = <id>`. None of the scans above descend into the
+    // IIFE, so this resolver recovers those members (gated on module-reference
+    // binding provenance to avoid false positives).
+    append_js_umd_factory_apis(
+        tree.root_node(),
+        &source,
+        &mut apis,
+        &module_path,
+        &relative_path,
+    );
+
     Ok(apis)
 }
 
@@ -555,6 +569,490 @@ fn collect_js_instance_member_assignments(
             is_function,
         });
     }
+}
+
+// =============================================================================
+// CF3-S5b: UMD / IIFE factory-return module-export resolution (lodash idiom)
+// =============================================================================
+
+/// Append the UMD/IIFE factory-return module-export surface of a whole-library
+/// JS bundle (e.g. lodash `lodash.js`). See [`append_js_default_export_apis`]
+/// for the ESM/CommonJS idioms; this handles the harder case where the entire
+/// module is wrapped in `;(function(){ … }.call(this))`, its public surface is
+/// decorated onto the object an inner factory `return`s, and that object is
+/// bound to CommonJS via `<moduleRef>.exports = <id>`.
+///
+/// False-positive guard: a `<alias>.exports = <id>` assignment is treated as a
+/// module-export sink only when `<alias>` is *provably* a module reference —
+/// the literal `module`, or a local whose initializer structurally tests
+/// `typeof module`/`typeof exports`. Binding-provenance, not a name allowlist.
+fn append_js_umd_factory_apis(
+    root: tree_sitter::Node,
+    source: &str,
+    apis: &mut Vec<ApiEntry>,
+    module_path: &str,
+    relative_path: &Path,
+) {
+    let body = match find_js_umd_iife_body(root) {
+        Some(b) => b,
+        None => return,
+    };
+    let module_refs = collect_js_umd_module_refs(body, source);
+    let export_ids = collect_js_umd_sink_ids(body, source, &module_refs);
+    if export_ids.is_empty() {
+        return;
+    }
+
+    let mut seen: HashSet<String> = apis.iter().map(|a| a.qualified_name.clone()).collect();
+    for export_id in export_ids {
+        for member in resolve_js_umd_members(body, source, &export_id) {
+            let qualified_name = format!("{}.{}", module_path, member.name);
+            if !seen.insert(qualified_name.clone()) {
+                continue;
+            }
+            let location = Some(Location {
+                file: relative_path.to_path_buf(),
+                line: member.line,
+                column: None,
+            });
+            if member.is_function {
+                let params: Vec<Param> = member
+                    .params
+                    .iter()
+                    .map(|name| Param {
+                        name: name.clone(),
+                        type_annotation: None,
+                        default: None,
+                        is_variadic: name == "...",
+                        is_keyword: false,
+                    })
+                    .collect();
+                let example =
+                    generate_js_function_example(module_path, &member.name, &params, None);
+                apis.push(ApiEntry {
+                    qualified_name,
+                    kind: ApiKind::Function,
+                    module: module_path.to_string(),
+                    signature: Some(Signature {
+                        params,
+                        return_type: None,
+                        is_async: false,
+                        is_generator: false,
+                    }),
+                    docstring: None,
+                    example,
+                    triggers: extract_triggers(&member.name, None),
+                    is_property: false,
+                    return_type: None,
+                    location,
+                });
+            } else {
+                apis.push(ApiEntry {
+                    qualified_name,
+                    kind: ApiKind::Constant,
+                    module: module_path.to_string(),
+                    signature: None,
+                    docstring: None,
+                    example: Some(format!("{}.{}", module_path, member.name)),
+                    triggers: extract_triggers(&member.name, None),
+                    is_property: true,
+                    return_type: None,
+                    location,
+                });
+            }
+        }
+    }
+}
+
+/// Unwrap nested `parenthesized_expression` wrappers to the innermost named node.
+fn js_unwrap_parens(node: tree_sitter::Node) -> tree_sitter::Node {
+    let mut n = node;
+    while n.kind() == "parenthesized_expression" {
+        let mut next = None;
+        {
+            let mut cursor = n.walk();
+            for ch in n.children(&mut cursor) {
+                if ch.is_named() {
+                    next = Some(ch);
+                    break;
+                }
+            }
+        }
+        match next {
+            Some(ch) => n = ch,
+            None => break,
+        }
+    }
+    n
+}
+
+/// Locate the body of a top-level immediately-invoked function expression.
+fn find_js_umd_iife_body(root: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() != "expression_statement" {
+            continue;
+        }
+        let mut inner = child.walk();
+        for expr in child.children(&mut inner) {
+            if !expr.is_named() {
+                continue;
+            }
+            if let Some(body) = js_iife_function_body(expr) {
+                return Some(body);
+            }
+        }
+    }
+    None
+}
+
+/// Return the invoked function's body for an IIFE call (direct, parenthesized,
+/// or `.call`/`.apply`).
+fn js_iife_function_body(expr: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let call = js_unwrap_parens(expr);
+    if call.kind() != "call_expression" {
+        return None;
+    }
+    let callee = js_unwrap_parens(call.child_by_field_name("function")?);
+    let fn_node = if js_is_function_value(callee) {
+        callee
+    } else if callee.kind() == "member_expression" {
+        let obj = js_unwrap_parens(callee.child_by_field_name("object")?);
+        if js_is_function_value(obj) {
+            obj
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    fn_node.child_by_field_name("body")
+}
+
+/// Identifiers bound to a module-detection initializer in the IIFE body's direct
+/// statements — the provable CommonJS module references gating the export sink.
+fn collect_js_umd_module_refs(body: tree_sitter::Node, source: &str) -> HashSet<String> {
+    let mut refs = HashSet::new();
+    let mut cursor = body.walk();
+    for stmt in body.children(&mut cursor) {
+        if !matches!(stmt.kind(), "variable_declaration" | "lexical_declaration") {
+            continue;
+        }
+        let mut dc = stmt.walk();
+        for decl in stmt.children(&mut dc) {
+            if decl.kind() != "variable_declarator" {
+                continue;
+            }
+            if let (Some(name), Some(value)) = (
+                decl.child_by_field_name("name"),
+                decl.child_by_field_name("value"),
+            ) {
+                if name.kind() == "identifier" && js_init_tests_module_global(value, source) {
+                    refs.insert(source[name.byte_range()].trim().to_string());
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// True when `node`'s expression tree contains a `typeof module`/`typeof
+/// exports` test, not descending into nested function scopes.
+fn js_init_tests_module_global(node: tree_sitter::Node, source: &str) -> bool {
+    if matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function" | "generator_function"
+    ) {
+        return false;
+    }
+    if node.kind() == "unary_expression" {
+        let mut has_typeof = false;
+        let mut cursor = node.walk();
+        for ch in node.children(&mut cursor) {
+            if ch.kind() == "typeof" {
+                has_typeof = true;
+            }
+        }
+        if has_typeof {
+            if let Some(arg) = node.child_by_field_name("argument") {
+                if arg.kind() == "identifier" {
+                    let t = source[arg.byte_range()].trim();
+                    if t == "module" || t == "exports" {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        if js_init_tests_module_global(ch, source) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Scan the IIFE top-level scope (skipping nested function bodies) for module
+/// export sinks `<moduleRef>.exports = <id>` and return each `<id>`.
+fn collect_js_umd_sink_ids(
+    body: tree_sitter::Node,
+    source: &str,
+    module_refs: &HashSet<String>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    js_walk_umd_sinks(body, source, module_refs, &mut ids);
+    ids
+}
+
+fn js_walk_umd_sinks(
+    node: tree_sitter::Node,
+    source: &str,
+    module_refs: &HashSet<String>,
+    ids: &mut Vec<String>,
+) {
+    if matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function" | "generator_function"
+    ) {
+        return;
+    }
+    if node.kind() == "assignment_expression" {
+        if let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        ) {
+            if right.kind() == "identifier" && left.kind() == "member_expression" {
+                if let (Some(obj), Some(prop)) = (
+                    left.child_by_field_name("object"),
+                    left.child_by_field_name("property"),
+                ) {
+                    if obj.kind() == "identifier"
+                        && prop.kind() == "property_identifier"
+                        && &source[prop.byte_range()] == "exports"
+                    {
+                        let obj_name = source[obj.byte_range()].trim();
+                        if obj_name == "module" || module_refs.contains(obj_name) {
+                            let id = source[right.byte_range()].trim().to_string();
+                            if !ids.contains(&id) {
+                                ids.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        js_walk_umd_sinks(ch, source, module_refs, ids);
+    }
+}
+
+/// Resolve the exported object id to the members decorated onto it (factory
+/// return object, decorated instance, or object literal).
+fn resolve_js_umd_members(
+    body: tree_sitter::Node,
+    source: &str,
+    export_id: &str,
+) -> Vec<JsDefaultMember> {
+    let init = match js_find_var_init(body, source, export_id) {
+        Some(i) => js_unwrap_parens(i),
+        None => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    match init.kind() {
+        "call_expression" => {
+            let callee = match init.child_by_field_name("function") {
+                Some(c) => c,
+                None => return Vec::new(),
+            };
+            if callee.kind() != "identifier" {
+                return Vec::new();
+            }
+            let factory_name = source[callee.byte_range()].trim();
+            let factory = match js_find_function_node(body, source, factory_name) {
+                Some(f) => f,
+                None => return Vec::new(),
+            };
+            let factory_body = match factory.child_by_field_name("body") {
+                Some(b) => b,
+                None => return Vec::new(),
+            };
+            let ret = match js_find_factory_return_ident(factory_body, source) {
+                Some(r) => r,
+                None => return Vec::new(),
+            };
+            js_collect_decorated_members(
+                factory_body,
+                source,
+                &ret,
+                factory_body,
+                &mut out,
+                &mut seen,
+            );
+        }
+        "identifier" => {
+            let obj = source[init.byte_range()].trim().to_string();
+            js_collect_decorated_members(body, source, &obj, body, &mut out, &mut seen);
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Find the initializer value of `var <name> = <value>` anywhere in `scope`.
+fn js_find_var_init<'a>(
+    scope: tree_sitter::Node<'a>,
+    source: &str,
+    name: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    if scope.kind() == "variable_declarator" {
+        if let (Some(nm), Some(val)) = (
+            scope.child_by_field_name("name"),
+            scope.child_by_field_name("value"),
+        ) {
+            if nm.kind() == "identifier" && source[nm.byte_range()].trim() == name {
+                return Some(val);
+            }
+        }
+    }
+    let mut cursor = scope.walk();
+    for ch in scope.children(&mut cursor) {
+        if let Some(found) = js_find_var_init(ch, source, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Find the function node (declaration / `var f = function|arrow`) named `name`.
+fn js_find_function_node<'a>(
+    scope: tree_sitter::Node<'a>,
+    source: &str,
+    name: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    if scope.kind() == "function_declaration" || scope.kind() == "generator_function_declaration" {
+        if let Some(nm) = scope.child_by_field_name("name") {
+            if source[nm.byte_range()].trim() == name {
+                return Some(scope);
+            }
+        }
+    }
+    if scope.kind() == "variable_declarator" {
+        if let (Some(nm), Some(val)) = (
+            scope.child_by_field_name("name"),
+            scope.child_by_field_name("value"),
+        ) {
+            if nm.kind() == "identifier" && source[nm.byte_range()].trim() == name {
+                let val = js_unwrap_parens(val);
+                if js_is_function_value(val) {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    let mut cursor = scope.walk();
+    for ch in scope.children(&mut cursor) {
+        if let Some(found) = js_find_function_node(ch, source, name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Identifier a factory body `return`s, ignoring nested function scopes.
+fn js_find_factory_return_ident(body: tree_sitter::Node, source: &str) -> Option<String> {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration"
+            | "generator_function_declaration"
+            | "function_expression"
+            | "arrow_function"
+            | "generator_function" => continue,
+            "return_statement" => {
+                let mut rc = child.walk();
+                for rchild in child.children(&mut rc) {
+                    if rchild.kind() == "identifier" {
+                        return Some(source[rchild.byte_range()].trim().to_string());
+                    }
+                }
+            }
+            _ => {
+                if let Some(found) = js_find_factory_return_ident(child, source) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Collect `<obj_name>.<member> = <value>` assignments within `scope`,
+/// classifying each value as a function (direct or an identifier naming a
+/// function in `lookup_scope`) or a plain property.
+fn js_collect_decorated_members(
+    scope: tree_sitter::Node,
+    source: &str,
+    obj_name: &str,
+    lookup_scope: tree_sitter::Node,
+    out: &mut Vec<JsDefaultMember>,
+    seen: &mut HashSet<String>,
+) {
+    if scope.kind() == "assignment_expression" {
+        if let (Some(left), Some(right)) = (
+            scope.child_by_field_name("left"),
+            scope.child_by_field_name("right"),
+        ) {
+            if left.kind() == "member_expression" {
+                if let (Some(obj), Some(prop)) = (
+                    left.child_by_field_name("object"),
+                    left.child_by_field_name("property"),
+                ) {
+                    if obj.kind() == "identifier"
+                        && source[obj.byte_range()].trim() == obj_name
+                        && prop.kind() == "property_identifier"
+                    {
+                        let name = source[prop.byte_range()].trim().to_string();
+                        if !name.is_empty() && seen.insert(name.clone()) {
+                            let (is_function, params) =
+                                js_classify_umd_member(right, source, lookup_scope);
+                            out.push(JsDefaultMember {
+                                name,
+                                params,
+                                line: scope.start_position().row + 1,
+                                is_function,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut cursor = scope.walk();
+    for ch in scope.children(&mut cursor) {
+        js_collect_decorated_members(ch, source, obj_name, lookup_scope, out, seen);
+    }
+}
+
+/// Classify a decorated-member RHS value, returning `(is_function, params)`.
+fn js_classify_umd_member(
+    value: tree_sitter::Node,
+    source: &str,
+    lookup_scope: tree_sitter::Node,
+) -> (bool, Vec<String>) {
+    if js_is_function_value(value) {
+        return (true, js_default_param_names(value, source));
+    }
+    if value.kind() == "identifier" {
+        let name = source[value.byte_range()].trim();
+        if let Some(fnode) = js_find_function_node(lookup_scope, source, name) {
+            return (true, js_default_param_names(fnode, source));
+        }
+    }
+    (false, Vec::new())
 }
 
 /// True when a node is a JS/TS function value (function expression, arrow, or
