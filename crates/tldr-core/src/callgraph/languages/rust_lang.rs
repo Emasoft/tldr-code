@@ -271,55 +271,25 @@ impl RustLangHandler {
                     }
                 }
                 "impl_item" => {
-                    // Collect methods from impl blocks
-                    let mut type_name: Option<String> = None;
+                    // Collect methods from impl blocks, keyed under the
+                    // IMPLEMENTING type (impl_item `type` field), not the trait.
+                    let type_name = self.impl_owner_type(&node, source);
 
-                    for i in 0..node.child_count() {
-                        if let Some(child) = node.child(i) {
-                            match child.kind() {
-                                "type_identifier" | "generic_type" => {
-                                    // Get the base type name
-                                    if child.kind() == "generic_type" {
-                                        for j in 0..child.child_count() {
-                                            if let Some(tc) = child.child(j) {
-                                                if tc.kind() == "type_identifier" {
-                                                    type_name = Some(
-                                                        get_node_text(&tc, source).to_string(),
-                                                    );
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        type_name = Some(get_node_text(&child, source).to_string());
-                                    }
-                                }
-                                "declaration_list" => {
-                                    // Index methods
-                                    for j in 0..child.named_child_count() {
-                                        if let Some(item) = child.named_child(j) {
-                                            if item.kind() == "function_item" {
-                                                if let Some(name_node) =
-                                                    item.child_by_field_name("name")
-                                                {
-                                                    let method_name =
-                                                        get_node_text(&name_node, source)
-                                                            .to_string();
-                                                    functions.insert(method_name.clone());
+                    if let Some(body) = node.child_by_field_name("body") {
+                        for j in 0..body.named_child_count() {
+                            if let Some(item) = body.named_child(j) {
+                                if item.kind() == "function_item" {
+                                    if let Some(name_node) = item.child_by_field_name("name") {
+                                        let method_name =
+                                            get_node_text(&name_node, source).to_string();
+                                        functions.insert(method_name.clone());
 
-                                                    // Also add as Type::method
-                                                    if let Some(ref tn) = type_name {
-                                                        functions.insert(format!(
-                                                            "{}::{}",
-                                                            tn, method_name
-                                                        ));
-                                                    }
-                                                }
-                                            }
+                                        // Also add as Type::method
+                                        if let Some(ref tn) = type_name {
+                                            functions.insert(format!("{tn}::{method_name}"));
                                         }
                                     }
                                 }
-                                _ => {}
                             }
                         }
                     }
@@ -426,33 +396,13 @@ impl RustLangHandler {
                             if let Some(container) = decl_list.parent() {
                                 match container.kind() {
                                     "impl_item" => {
-                                        // Find the type name
-                                        for i in 0..container.child_count() {
-                                            if let Some(child) = container.child(i) {
-                                                match child.kind() {
-                                                    "type_identifier" => {
-                                                        return format!(
-                                                            "{}::{}",
-                                                            get_node_text(&child, source),
-                                                            func_name
-                                                        );
-                                                    }
-                                                    "generic_type" => {
-                                                        for j in 0..child.child_count() {
-                                                            if let Some(tc) = child.child(j) {
-                                                                if tc.kind() == "type_identifier" {
-                                                                    return format!(
-                                                                        "{}::{}",
-                                                                        get_node_text(&tc, source),
-                                                                        func_name
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
+                                        // Use the implementing type (impl_item
+                                        // `type` field), not the trait of an
+                                        // `impl Trait for Type` block.
+                                        if let Some(owner) =
+                                            self.impl_owner_type(&container, source)
+                                        {
+                                            return format!("{owner}::{func_name}");
                                         }
                                     }
                                     "trait_item" => {
@@ -649,6 +599,51 @@ impl RustLangHandler {
         insert_calls_if_any(calls_by_func, func_name, calls);
     }
 
+    /// Resolve the bare name of the type an `impl_item` is *for*.
+    ///
+    /// tree-sitter-rust exposes the implemented type under the `type` field of
+    /// an `impl_item` and (only for `impl Trait for Type`) the trait under a
+    /// separate `trait` field. Reading the `type` field is what makes
+    /// `impl Trait for Type { fn m }` key `m` under `Type` rather than `Trait`:
+    /// a flat left-to-right child scan would otherwise hit the trait's
+    /// `type_identifier` first. Plain `impl Type` has no `trait` field, so the
+    /// `type` field is still the implementing type.
+    ///
+    /// The implementing type may be wrapped: generic (`Type<T>`), reference
+    /// (`&Type`), pointer/array, or module-qualified (`module::Type`). Those
+    /// wrappers are peeled down to the bare `type_identifier`.
+    fn impl_owner_type(&self, impl_node: &Node, source: &[u8]) -> Option<String> {
+        let type_node = impl_node.child_by_field_name("type")?;
+        Self::bare_type_name(&type_node, source)
+    }
+
+    /// Peel generic/reference/scoped wrappers down to a bare `type_identifier`.
+    fn bare_type_name(node: &Node, source: &[u8]) -> Option<String> {
+        match node.kind() {
+            "type_identifier" => Some(get_node_text(node, source).to_string()),
+            _ => {
+                // `Type<T>`, `&Type`, `*const Type`, `[Type; N]`, ... all carry
+                // the inner type under a `type` field.
+                if let Some(inner) = node.child_by_field_name("type") {
+                    return Self::bare_type_name(&inner, source);
+                }
+                // `module::Type` exposes the final segment under `name`.
+                if let Some(name) = node.child_by_field_name("name") {
+                    return Self::bare_type_name(&name, source);
+                }
+                // Fallback: first named descendant resolving to a type_identifier.
+                for i in 0..node.named_child_count() {
+                    if let Some(child) = node.named_child(i) {
+                        if let Some(found) = Self::bare_type_name(&child, source) {
+                            return Some(found);
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
     fn process_impl_item_calls(
         &self,
         node: &Node,
@@ -656,55 +651,35 @@ impl RustLangHandler {
         defined_funcs: &HashSet<String>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
     ) {
-        let mut type_name: Option<String> = None;
+        // Key outgoing edges under the IMPLEMENTING type (impl_item `type`
+        // field), never the trait of an `impl Trait for Type` block.
+        let type_name = self.impl_owner_type(node, source);
 
-        for i in 0..node.child_count() {
-            let Some(child) = node.child(i) else {
+        let Some(body) = node.child_by_field_name("body") else {
+            return;
+        };
+        for j in 0..body.named_child_count() {
+            let Some(item) = body.named_child(j) else {
                 continue;
             };
-            match child.kind() {
-                "type_identifier" | "generic_type" => {
-                    if child.kind() == "generic_type" {
-                        for j in 0..child.child_count() {
-                            if let Some(type_child) = child.child(j) {
-                                if type_child.kind() == "type_identifier" {
-                                    type_name =
-                                        Some(get_node_text(&type_child, source).to_string());
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        type_name = Some(get_node_text(&child, source).to_string());
-                    }
-                }
-                "declaration_list" => {
-                    for j in 0..child.named_child_count() {
-                        let Some(item) = child.named_child(j) else {
-                            continue;
-                        };
-                        if item.kind() != "function_item" {
-                            continue;
-                        }
-                        let Some(name_node) = item.child_by_field_name("name") else {
-                            continue;
-                        };
-                        let method_name = get_node_text(&name_node, source).to_string();
-                        let full_name = if let Some(type_name) = type_name.as_deref() {
-                            format!("{type_name}::{method_name}")
-                        } else {
-                            method_name
-                        };
-                        let Some(body) = item.child_by_field_name("body") else {
-                            continue;
-                        };
-                        let calls =
-                            self.extract_calls_from_node(&body, source, defined_funcs, &full_name);
-                        insert_calls_if_any(calls_by_func, full_name, calls);
-                    }
-                }
-                _ => {}
+            if item.kind() != "function_item" {
+                continue;
             }
+            let Some(name_node) = item.child_by_field_name("name") else {
+                continue;
+            };
+            let method_name = get_node_text(&name_node, source).to_string();
+            let full_name = if let Some(type_name) = type_name.as_deref() {
+                format!("{type_name}::{method_name}")
+            } else {
+                method_name
+            };
+            let Some(item_body) = item.child_by_field_name("body") else {
+                continue;
+            };
+            let calls =
+                self.extract_calls_from_node(&item_body, source, defined_funcs, &full_name);
+            insert_calls_if_any(calls_by_func, full_name, calls);
         }
     }
 
@@ -948,44 +923,16 @@ impl CallGraphLanguageSupport for RustLangHandler {
                                 if let Some(gp) = p.parent() {
                                     match gp.kind() {
                                         "impl_item" => {
-                                            // Find the type name (impl block).
-                                            for i in 0..gp.child_count() {
-                                                if let Some(child) = gp.child(i) {
-                                                    match child.kind() {
-                                                        "type_identifier" => {
-                                                            method_owner = Some(
-                                                                get_node_text(
-                                                                    &child,
-                                                                    source_bytes,
-                                                                )
-                                                                .to_string(),
-                                                            );
-                                                        }
-                                                        "generic_type" => {
-                                                            for j in 0..child.child_count() {
-                                                                if let Some(tc) = child.child(j) {
-                                                                    if tc.kind()
-                                                                        == "type_identifier"
-                                                                    {
-                                                                        method_owner = Some(
-                                                                            get_node_text(
-                                                                                &tc,
-                                                                                source_bytes,
-                                                                            )
-                                                                            .to_string(),
-                                                                        );
-                                                                        break;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        _ => {}
-                                                    }
-                                                    if method_owner.is_some() {
-                                                        break;
-                                                    }
-                                                }
-                                            }
+                                            // Key the method under the IMPLEMENTING
+                                            // type (the impl_item `type` field), not
+                                            // the trait. For `impl Trait for Type`
+                                            // a flat child scan would hit the
+                                            // trait's `type_identifier` first and
+                                            // mis-file the method under the trait,
+                                            // merging distinct types' same-named
+                                            // methods into one node.
+                                            method_owner =
+                                                self.impl_owner_type(&gp, source_bytes);
                                         }
                                         "trait_item" => {
                                             // Find the trait name. trait_item carries
@@ -1977,6 +1924,198 @@ trait Greeter {
                 trait_method_count, 1,
                 "Expected exactly 1 trait default method 'greet' (is_method=true, class_name=Some(\"Greeter\")), got {}: {:?}",
                 trait_method_count, greet_entries
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Impl Owner Keying Tests (FEATURE-1 stage d.1)
+    //
+    // An impl method must key under the IMPLEMENTING type, read from the
+    // `impl_item` `type` field, in EVERY impl shape. The pre-fix code
+    // flat-scanned children for the first `type_identifier`, so for
+    // `impl Trait for Type` the *trait* name came first and the method was
+    // mis-filed under the trait. That merged distinct types' same-named
+    // methods into one node and broke receiver-type resolution.
+    // -------------------------------------------------------------------------
+    mod impl_owner_keying_tests {
+        use super::*;
+
+        fn extract_defs(source: &str) -> (Vec<FuncDef>, Vec<ClassDef>) {
+            let handler = RustLangHandler::new();
+            let tree = handler.parse_source(source).unwrap();
+            handler
+                .extract_definitions(source, Path::new("test.rs"), &tree)
+                .unwrap()
+        }
+
+        /// Owner of `m` for a given impl shape, asserting exactly one method
+        /// FuncDef named `m` is emitted.
+        fn method_owner(source: &str) -> Option<String> {
+            let (funcs, _) = extract_defs(source);
+            let methods: Vec<&FuncDef> =
+                funcs.iter().filter(|f| f.name == "m" && f.is_method).collect();
+            assert_eq!(
+                methods.len(),
+                1,
+                "expected exactly one method FuncDef named 'm', got {:?}",
+                funcs.iter().map(|f| (&f.name, f.is_method, &f.class_name)).collect::<Vec<_>>()
+            );
+            methods[0].class_name.clone()
+        }
+
+        // (a) Every impl SHAPE keys the method under the implementing Type,
+        //     never under the trait.
+        #[test]
+        fn test_plain_impl_keys_under_type() {
+            assert_eq!(
+                method_owner("struct Foo; impl Foo { fn m(&self) {} }").as_deref(),
+                Some("Foo"),
+                "`impl Foo` must key m under Foo"
+            );
+        }
+
+        #[test]
+        fn test_impl_trait_for_type_keys_under_type_not_trait() {
+            // The trait name (`Tr`) precedes the type (`Foo`) in source order;
+            // the method MUST still key under Foo.
+            assert_eq!(
+                method_owner("struct Foo; trait Tr {} impl Tr for Foo { fn m(&self) {} }")
+                    .as_deref(),
+                Some("Foo"),
+                "`impl Tr for Foo` must key m under Foo, NOT the trait Tr"
+            );
+        }
+
+        #[test]
+        fn test_generic_impl_trait_for_type_keys_under_bare_type() {
+            // `impl<T> Tr for Foo<T>` -> bare type identifier `Foo`.
+            assert_eq!(
+                method_owner(
+                    "struct Foo<T>(T); trait Tr {} impl<T> Tr for Foo<T> { fn m(&self) {} }"
+                )
+                .as_deref(),
+                Some("Foo"),
+                "generic `impl<T> Tr for Foo<T>` must key m under bare Foo, NOT Tr"
+            );
+        }
+
+        #[test]
+        fn test_reference_and_where_clause_impls_key_under_type() {
+            // reference receiver type
+            assert_eq!(
+                method_owner("struct Foo; trait Tr {} impl Tr for &Foo { fn m(&self) {} }")
+                    .as_deref(),
+                Some("Foo"),
+                "`impl Tr for &Foo` must key m under Foo"
+            );
+            // where-clause variant
+            assert_eq!(
+                method_owner(
+                    "struct Foo; trait Tr {} impl<T> Tr for Foo where T: Clone { fn m(&self) {} }"
+                )
+                .as_deref(),
+                Some("Foo"),
+                "`impl<T> Tr for Foo where ...` must key m under Foo"
+            );
+        }
+
+        // (b) Two structs implementing the SAME trait must produce DISTINCT
+        //     call-graph nodes (the un-merge), not one merged trait node.
+        #[test]
+        fn test_same_trait_two_structs_unmerge() {
+            let source = r#"
+fn a_helper() {}
+fn b_helper() {}
+trait Runner { fn run(&self); }
+struct A;
+struct B;
+impl Runner for A { fn run(&self) { a_helper(); } }
+impl Runner for B { fn run(&self) { b_helper(); } }
+"#;
+            // DEF side: `run` keyed under both A and B, never merged under Runner.
+            let (funcs, _) = extract_defs(source);
+            let run_owners: Vec<Option<String>> = funcs
+                .iter()
+                .filter(|f| f.name == "run" && f.is_method)
+                .map(|f| f.class_name.clone())
+                .collect();
+            assert!(
+                run_owners.contains(&Some("A".to_string())),
+                "run must be keyed under A, got {run_owners:?}"
+            );
+            assert!(
+                run_owners.contains(&Some("B".to_string())),
+                "run must be keyed under B, got {run_owners:?}"
+            );
+            assert!(
+                !run_owners.contains(&Some("Runner".to_string())),
+                "run must NOT be keyed under the trait Runner (the merge bug), got {run_owners:?}"
+            );
+
+            // CALL side: distinct callers A::run -> a_helper, B::run -> b_helper.
+            let calls = extract_calls(source);
+            assert!(
+                calls
+                    .get("A::run")
+                    .is_some_and(|cs| cs.iter().any(|c| c.target == "a_helper")),
+                "A::run must call a_helper; got callers {:?}",
+                calls.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                calls
+                    .get("B::run")
+                    .is_some_and(|cs| cs.iter().any(|c| c.target == "b_helper")),
+                "B::run must call b_helper; got callers {:?}",
+                calls.keys().collect::<Vec<_>>()
+            );
+        }
+
+        // (c) `let p = JsonParser::new(); p.parse()` precondition: the concrete
+        //     `parse` method must key under JsonParser (the implementing type),
+        //     so the JsonParser.parse node exists for receiver-type resolution,
+        //     and the call site is recorded.
+        #[test]
+        fn test_concrete_parse_keyed_under_struct_for_resolution() {
+            let source = r#"
+pub trait Parser { fn parse(&self) -> i32; }
+pub struct JsonParser;
+impl JsonParser {
+    pub fn new() -> Self { JsonParser }
+}
+impl Parser for JsonParser {
+    fn parse(&self) -> i32 { 0 }
+}
+fn run() {
+    let p = JsonParser::new();
+    p.parse();
+}
+"#;
+            let (funcs, _) = extract_defs(source);
+            // The concrete `parse` (impl Parser for JsonParser) must key under
+            // JsonParser, NOT the Parser trait. The abstract trait signature has
+            // no body and is not emitted, so this is the only `parse` method.
+            let parse = funcs
+                .iter()
+                .find(|f| f.name == "parse" && f.is_method)
+                .expect("concrete parse method should be emitted");
+            assert_eq!(
+                parse.class_name.as_deref(),
+                Some("JsonParser"),
+                "concrete parse must key under JsonParser, not the Parser trait"
+            );
+
+            // The call site `p.parse()` is recorded under `run` (receiver `p`,
+            // method `parse`), so receiver-type resolution has an edge to attach
+            // to JsonParser.parse.
+            let calls = extract_calls(source);
+            let run_calls = calls.get("run").expect("run should have recorded calls");
+            assert!(
+                run_calls.iter().any(|c| {
+                    c.receiver.as_deref() == Some("p")
+                        && c.target.rsplit(['.', ':']).next() == Some("parse")
+                }),
+                "run must record the p.parse() method call; got {run_calls:?}"
             );
         }
     }
