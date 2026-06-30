@@ -1,0 +1,5031 @@
+{
+"_note": "d.1 reviewed intended deltas: rust caller-owner reconciliation (impl Trait for Type method now keyed under Type). Callee targets are pre-existing name-match (refined in d.2/d.3). 0 flips, 0 non-rust, positive-control intact.",
+"allow": [
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/arg.rs",
+"src_func": "Arg.cmp",
+"dst_func": "Arg.get_id"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/arg.rs",
+"src_func": "Arg.eq",
+"dst_func": "Arg.get_id"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/arg.rs",
+"src_func": "Arg.from",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/arg.rs",
+"src_func": "Arg.render_arg_val",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/arg_group.rs",
+"src_func": "ArgGroup.from",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._build_bin_names_internal",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._build_self",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._build_subcommand",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._copy_subtree_for_help",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._panic_on_missing_help",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._propagate_global_args",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command._propagate_subcommand",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command.arg_internal",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command.get_used_global_args",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command.groups_for_arg",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command.required_graph",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command.unroll_args_in_group",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/command.rs",
+"src_func": "Command.write_version_err",
+"dst_func": "StyledStr.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "Inner.cmp",
+"dst_func": "Inner.as_os_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "Inner.default",
+"dst_func": "Inner.from_static_ref"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "Inner.eq",
+"dst_func": "Inner.as_os_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "OsStr.from",
+"dst_func": "OsStr.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "OsString.eq",
+"dst_func": "OsStr.as_os_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "String.eq",
+"dst_func": "OsStr.as_os_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/os_str.rs",
+"src_func": "eq",
+"dst_func": "OsStr.as_os_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/possible_value.rs",
+"src_func": "PossibleValue.from",
+"dst_func": "PossibleValue.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/range.rs",
+"src_func": "ValueRange.from",
+"dst_func": "ValueRange.raw"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/resettable.rs",
+"src_func": "Resettable.from",
+"dst_func": "Value.Value"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "Inner.cmp",
+"dst_func": "Inner.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "Inner.default",
+"dst_func": "Inner.from_static_ref"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "Inner.eq",
+"dst_func": "Inner.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "OsStr.eq",
+"dst_func": "Str.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "Str.eq",
+"dst_func": "Str.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "Str.from",
+"dst_func": "Str.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "String.eq",
+"dst_func": "Str.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/str.rs",
+"src_func": "eq",
+"dst_func": "Str.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/styled_str.rs",
+"src_func": "StyledStr.wrap",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "BoolValueParser.default",
+"dst_func": "BoolValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "BoolValueParser.parse_ref",
+"dst_func": "BoolValueParser.possible_values"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "BoolValueParser.possible_values",
+"dst_func": "BoolValueParser.possible_values"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "BoolishValueParser.default",
+"dst_func": "BoolishValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "BoolishValueParser.parse_ref",
+"dst_func": "str_to_bool"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "BoolishValueParser.possible_values",
+"dst_func": "BoolishValueParser.possible_values"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "EnumValueParser.default",
+"dst_func": "EnumValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "EnumValueParser.parse_ref",
+"dst_func": "Arg.is_ignore_case_set"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "FalseyValueParser.default",
+"dst_func": "FalseyValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "FalseyValueParser.parse_ref",
+"dst_func": "str_to_bool"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "FalseyValueParser.possible_values",
+"dst_func": "FalseyValueParser.possible_values"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "MapValueParser.parse",
+"dst_func": "parse"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "MapValueParser.parse_ref",
+"dst_func": "MapValueParser.parse_ref"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "NonEmptyStringValueParser.default",
+"dst_func": "NonEmptyStringValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "OsStringValueParser.default",
+"dst_func": "OsStringValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "OsStringValueParser.parse_ref",
+"dst_func": "TypedValueParser.parse"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "P.parse_ref",
+"dst_func": "AnyValue.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "P.parse_ref_",
+"dst_func": "AnyValue.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "P.parse_ref_",
+"dst_func": "TypedValueParser.parse_ref_"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "PathBufValueParser.default",
+"dst_func": "PathBufValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "PathBufValueParser.parse_ref",
+"dst_func": "TypedValueParser.parse"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "PossibleValuesParser.parse",
+"dst_func": "Arg.is_ignore_case_set"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "PossibleValuesParser.parse",
+"dst_func": "PathCompleter.any"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "PossibleValuesParser.parse",
+"dst_func": "PossibleValue.matches"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "PossibleValuesParser.parse_ref",
+"dst_func": "TypedValueParser.parse"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedI64ValueParser.default",
+"dst_func": "RangedI64ValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedI64ValueParser.from",
+"dst_func": "ValueRange.end_bound"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedI64ValueParser.from",
+"dst_func": "ValueRange.start_bound"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedI64ValueParser.new",
+"dst_func": "RangedI64ValueParser.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedI64ValueParser.parse_ref",
+"dst_func": "Error.with_cmd"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedI64ValueParser.parse_ref",
+"dst_func": "RangedI64ValueParser.format_bounds"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedU64ValueParser.default",
+"dst_func": "RangedU64ValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedU64ValueParser.from",
+"dst_func": "ValueRange.end_bound"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedU64ValueParser.from",
+"dst_func": "ValueRange.start_bound"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedU64ValueParser.new",
+"dst_func": "RangedU64ValueParser.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedU64ValueParser.parse_ref",
+"dst_func": "Error.with_cmd"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "RangedU64ValueParser.parse_ref",
+"dst_func": "RangedU64ValueParser.format_bounds"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "StringValueParser.default",
+"dst_func": "StringValueParser.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "StringValueParser.parse_ref",
+"dst_func": "TypedValueParser.parse"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "TryMapValueParser.parse_ref",
+"dst_func": "TryMapValueParser.parse_ref"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "UnknownArgumentValueParser.parse_ref",
+"dst_func": "TypedValueParser.parse_ref_"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "UnknownArgumentValueParser.parse_ref_",
+"dst_func": "Error.insert_context_unchecked"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "UnknownArgumentValueParser.parse_ref_",
+"dst_func": "TypedValueParser.parse_ref_"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "UnknownArgumentValueParser.parse_ref_",
+"dst_func": "Usage.create_usage_with_title"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "ValueParser.from",
+"dst_func": "ValueParser.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/builder/value_parser.rs",
+"src_func": "_infer_ValueParser_for.value_parser",
+"dst_func": "_AnonymousValueParser"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Box.command",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Box.command_for_update",
+"dst_func": "Box.command_for_update"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "FromArgMatches.from_arg_matches_mut",
+"dst_func": "Box.from_arg_matches"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Infallible.from_arg_matches",
+"dst_func": "Error.raw"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Parser.parse",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Parser.parse_from",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Parser.try_parse",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Parser.try_parse_from",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Parser.try_update_from",
+"dst_func": "Box.command_for_update"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "Parser.update_from",
+"dst_func": "Box.command_for_update"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/derive.rs",
+"src_func": "format_error",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "KindFormatter.format_error",
+"dst_func": "Error.kind"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "KindFormatter.format_error",
+"dst_func": "StyledStr.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "KindFormatter.format_error",
+"dst_func": "StyledStr.push_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "KindFormatter.format_error",
+"dst_func": "start_error"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "Error.get"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "Error.kind"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "StyledStr.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "StyledStr.push_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "StyledStr.push_styled"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "Styles.get_valid"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "did_you_mean"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "put_usage"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "start_error"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "try_help"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "RichFormatter.format_error",
+"dst_func": "write_dynamic_context"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/format.rs",
+"src_func": "write_dynamic_context",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/mod.rs",
+"src_func": "Error.fmt",
+"dst_func": "Error.formatted"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/mod.rs",
+"src_func": "Error.invalid_value",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/error/mod.rs",
+"src_func": "Error.with_cmd",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/mkeymap.rs",
+"src_func": "append_keys",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.help",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.write_about",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.write_after_help",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.write_all_args",
+"dst_func": "Str.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.write_all_args",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.write_before_help",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "HelpTemplate.write_templated_help",
+"dst_func": "OsStr.split_once"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/help_template.rs",
+"src_func": "wrap_help_last_word",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/usage.rs",
+"src_func": "Usage.get_required_usage_from",
+"dst_func": "FlatSet.extend"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/usage.rs",
+"src_func": "Usage.get_required_usage_from",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/usage.rs",
+"src_func": "Usage.write_args",
+"dst_func": "FlatSet.extend"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/usage.rs",
+"src_func": "Usage.write_args",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/output/usage.rs",
+"src_func": "Usage.write_help_usage",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/arg_matcher.rs",
+"src_func": "ArgMatcher.fill_in_global_values",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/arg_matcher.rs",
+"src_func": "ArgMatcher.new",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/arg_matcher.rs",
+"src_func": "ArgMatcher.start_custom_arg",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/matches/arg_matches.rs",
+"src_func": "RawValues.default",
+"dst_func": "flatten"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/matches/arg_matches.rs",
+"src_func": "Values.default",
+"dst_func": "flatten"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/matches/arg_matches.rs",
+"src_func": "ValuesRef.default",
+"dst_func": "flatten"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/matches/matched_arg.rs",
+"src_func": "test_grouped_vals_first",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/matches/matched_arg.rs",
+"src_func": "test_grouped_vals_first",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse_help_subcommand",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse_long_arg",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse_long_arg",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse_opt_value",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse_short_arg",
+"dst_func": "OsStr.strip_prefix"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.parse_short_arg",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.possible_long_flag_subcommand",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.possible_subcommand",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.react",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.react",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.start_custom_arg",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/parser.rs",
+"src_func": "Parser.start_custom_arg",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/validator.rs",
+"src_func": "Conflicts.gather_conflicts",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/validator.rs",
+"src_func": "Conflicts.with_args",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/validator.rs",
+"src_func": "Validator.gather_requires",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/validator.rs",
+"src_func": "Validator.validate_required",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/validator.rs",
+"src_func": "gather_arg_direct_conflicts",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/parser/validator.rs",
+"src_func": "gather_group_direct_conflicts",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/any_value.rs",
+"src_func": "AnyValue.downcast_into",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/color.rs",
+"src_func": "ColorChoice.from_str",
+"dst_func": "ColorChoice.value_variants"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/color.rs",
+"src_func": "ColorChoice.possible_values",
+"dst_func": "ColorChoice.value_variants"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/color.rs",
+"src_func": "ColorChoice.to_possible_value",
+"dst_func": "PossibleValue.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/flat_map.rs",
+"src_func": "Entry.or_insert_with",
+"dst_func": "FlatMap.default"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/flat_map.rs",
+"src_func": "Iter.next",
+"dst_func": "MatchesError.unwrap"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/flat_map.rs",
+"src_func": "Iter.next_back",
+"dst_func": "MatchesError.unwrap"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/flat_map.rs",
+"src_func": "IterMut.next",
+"dst_func": "MatchesError.unwrap"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/flat_map.rs",
+"src_func": "IterMut.next_back",
+"dst_func": "MatchesError.unwrap"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/flat_set.rs",
+"src_func": "FlatSet.from_iter",
+"dst_func": "FlatSet.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/graph.rs",
+"src_func": "ChildGraph.with_capacity",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/id.rs",
+"src_func": "Id.eq",
+"dst_func": "Id.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/id.rs",
+"src_func": "Str.eq",
+"dst_func": "Id.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_builder/src/util/id.rs",
+"src_func": "eq",
+"dst_func": "Id.as_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/examples/completion-derive.rs",
+"src_func": "main",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/generator/mod.rs",
+"src_func": "generate_to",
+"dst_func": "PathBuf.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "Bash.try_generate",
+"dst_func": "Command.get_bin_name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "Bash.try_generate",
+"dst_func": "all_options_for_path"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "Bash.try_generate",
+"dst_func": "all_subcommands"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "Bash.try_generate",
+"dst_func": "option_details_for_path"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "Bash.try_generate",
+"dst_func": "subcommand_details"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "add_command",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/bash.rs",
+"src_func": "vals_for",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/elvish.rs",
+"src_func": "Elvish.try_generate",
+"dst_func": "Command.get_bin_name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/elvish.rs",
+"src_func": "Elvish.try_generate",
+"dst_func": "generate_inner"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/elvish.rs",
+"src_func": "generate_inner",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "Fish.try_generate",
+"dst_func": "Command.get_bin_name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "Fish.try_generate",
+"dst_func": "Command.has_subcommands"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "Fish.try_generate",
+"dst_func": "escape_name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "Fish.try_generate",
+"dst_func": "gen_fish_inner"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "Fish.try_generate",
+"dst_func": "gen_subcommand_helpers"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "gen_fish_inner",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/fish.rs",
+"src_func": "gen_fish_inner",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/powershell.rs",
+"src_func": "PowerShell.try_generate",
+"dst_func": "Command.get_bin_name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/powershell.rs",
+"src_func": "PowerShell.try_generate",
+"dst_func": "generate_inner"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/powershell.rs",
+"src_func": "generate_inner",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/shell.rs",
+"src_func": "Shell.from_str",
+"dst_func": "MatchesError.unwrap"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/shell.rs",
+"src_func": "Shell.from_str",
+"dst_func": "PossibleValue.matches"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/shell.rs",
+"src_func": "Shell.from_str",
+"dst_func": "Shell.value_variants"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/shell.rs",
+"src_func": "Shell.to_possible_value",
+"dst_func": "PossibleValue.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/zsh.rs",
+"src_func": "Zsh.try_generate",
+"dst_func": "Command.get_bin_name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/zsh.rs",
+"src_func": "Zsh.try_generate",
+"dst_func": "get_args_of"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/zsh.rs",
+"src_func": "Zsh.try_generate",
+"dst_func": "get_subcommands_of"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/zsh.rs",
+"src_func": "Zsh.try_generate",
+"dst_func": "subcommand_details"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/zsh.rs",
+"src_func": "get_args_of",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/aot/shells/zsh.rs",
+"src_func": "get_subcommands_of",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_arg_value",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_arg_value",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_custom_arg_value",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_external_subcommand",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_option",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_option",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "complete_subcommand",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/complete.rs",
+"src_func": "opt_allows_hyphen",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "PathCompleter.complete",
+"dst_func": "CompletionCandidate.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "PathCompleter.complete",
+"dst_func": "MKeyMap.push"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "PathCompleter.complete",
+"dst_func": "PathCompleter.current_dir"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "PathCompleter.complete",
+"dst_func": "complete_path"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "PathCompleter.default",
+"dst_func": "PathCompleter.any"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "complete_path",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "complete_path",
+"dst_func": "OsStr.strip_prefix"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/engine/custom.rs",
+"src_func": "is_hidden",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Bash.write_complete",
+"dst_func": "CompleteEnv.var"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Elvish.write_complete",
+"dst_func": "CompleteEnv.var"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Fish.write_registration",
+"dst_func": "fish_quote"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Fish.write_registration",
+"dst_func": "fish_quote_for_eval"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Powershell.write_registration",
+"dst_func": "Split"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Zsh.write_complete",
+"dst_func": "CompleteEnv.var"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Zsh.write_complete",
+"dst_func": "MKeyMap.push"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Zsh.write_complete",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Zsh.write_complete",
+"dst_func": "Zsh.escape_help"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "Zsh.write_complete",
+"dst_func": "Zsh.escape_value"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "fish_env_command_name_with_backslash",
+"dst_func": "Fish.Fish.write_registration"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "fish_env_completer_path_with_backslash",
+"dst_func": "Fish.Fish.write_registration"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "fish_env_completer_path_with_dollar",
+"dst_func": "Fish.Fish.write_registration"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "fish_quote",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/src/env/shells.rs",
+"src_func": "fish_quote_for_eval",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/tests/testsuite/engine.rs",
+"src_func": "UpstreamCompleter.complete_at",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/tests/testsuite/engine.rs",
+"src_func": "complete",
+"dst_func": "OsStr.split_once"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete/tests/testsuite/engine.rs",
+"src_func": "custom_completer",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete_nushell/src/lib.rs",
+"src_func": "Nushell.try_generate",
+"dst_func": "Command.get_subcommands"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_complete_nushell/src/lib.rs",
+"src_func": "Nushell.try_generate",
+"dst_func": "generate_completion"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/attr.rs",
+"src_func": "ClapAttr.parse",
+"dst_func": "RawArgs.peek"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/attr.rs",
+"src_func": "ClapAttr.parse",
+"dst_func": "Sp.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/attr.rs",
+"src_func": "ClapAttr.parse",
+"dst_func": "Vec.from_iter"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/derives/args.rs",
+"src_func": "derive_args",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/derives/parser.rs",
+"src_func": "derive_parser",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/derives/subcommand.rs",
+"src_func": "derive_subcommand",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/derives/value_enum.rs",
+"src_func": "derive_value_enum",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/derives/value_enum.rs",
+"src_func": "lits",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Deprecation.to_tokens",
+"dst_func": "Item.id"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.action",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.cased_name",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.from_args_field",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.from_args_struct",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.from_subcommand_enum",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.from_subcommand_variant",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.from_value_enum",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.from_value_enum_variant",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.infer_kind",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.kind",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.push_attrs",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.push_doc_comment",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.value_name",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Item.value_parser",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Method.to_tokens",
+"dst_func": "Kind.name"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "Name.to_tokens",
+"dst_func": "ValueParser.span"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/item.rs",
+"src_func": "process_author_str",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_derive/src/utils/doc_comments.rs",
+"src_func": "format_doc_comment",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.is_long",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.is_negative_number",
+"dst_func": "OsStr.strip_prefix"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.is_short",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.to_long",
+"dst_func": "OsStr.split_once"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.to_long",
+"dst_func": "OsStr.strip_prefix"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.to_short",
+"dst_func": "OsStr.starts_with"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "ParsedArg.to_short",
+"dst_func": "OsStr.strip_prefix"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "RawArgs.new",
+"dst_func": "RawArgs.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_lex/src/lib.rs",
+"src_func": "split_nonutf8_once",
+"dst_func": "OsStr.try_str"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "clap_mangen/tests/testsuite/roff.rs",
+"src_func": "sub_subcommands_help",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.augment_args",
+"dst_func": "Arg.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.augment_args_for_update",
+"dst_func": "Arg.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.from_arg_matches",
+"dst_func": "CliArgs.from_arg_matches_mut"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.from_arg_matches",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.from_arg_matches_mut",
+"dst_func": "ArgMatches.get_flag"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.update_from_arg_matches",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/flatten_hand_args.rs",
+"src_func": "CliArgs.update_from_arg_matches_mut",
+"dst_func": "ArgMatches.get_flag"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.augment_subcommands",
+"dst_func": "Command.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.augment_subcommands",
+"dst_func": "Command.subcommand_required"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.augment_subcommands_for_update",
+"dst_func": "Command.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.augment_subcommands_for_update",
+"dst_func": "Command.subcommand_required"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.from_arg_matches",
+"dst_func": "Add.Add"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.from_arg_matches",
+"dst_func": "Error.raw"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.update_from_arg_matches",
+"dst_func": "Add.Add"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/derive_ref/hand_subcommand.rs",
+"src_func": "CliSub.update_from_arg_matches",
+"dst_func": "Error.raw"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/find.rs",
+"src_func": "Value.extract",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/tutorial_builder/04_01_enum.rs",
+"src_func": "Mode.from_str",
+"dst_func": "Mode.value_variants"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/tutorial_builder/04_01_enum.rs",
+"src_func": "Mode.to_possible_value",
+"dst_func": "PossibleValue.new"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/tutorial_builder/04_04_custom.rs",
+"src_func": "main",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/tutorial_derive/04_04_custom.rs",
+"src_func": "main",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "examples/tutorial_derive/05_01_assert.rs",
+"src_func": "verify_cli",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/app_settings.rs",
+"src_func": "allow_ext_sc_when_sc_required",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/app_settings.rs",
+"src_func": "built_in_subcommand_escaped",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/app_settings.rs",
+"src_func": "external_subcommand_looks_like_built_in",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "default_ifs_arg_present",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "default_ifs_arg_present_order",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "default_ifs_arg_present_user_override",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "default_values_ifs_arg_present",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "default_values_ifs_arg_present_order",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "default_values_ifs_arg_present_user_override",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/default_vals.rs",
+"src_func": "no_default_ifs_arg_present",
+"dst_func": "ArgPredicate.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/double_require.rs",
+"src_func": "valid_cases",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/help.rs",
+"src_func": "issue_688_hide_pos_vals",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/tests.rs",
+"src_func": "mut_arg_all",
+"dst_func": "ValueParser.clone"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf16.rs",
+"src_func": "invalid_utf16_option_long_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf16.rs",
+"src_func": "invalid_utf16_option_long_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf16.rs",
+"src_func": "invalid_utf16_option_short_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf16.rs",
+"src_func": "invalid_utf16_option_short_no_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf16.rs",
+"src_func": "invalid_utf16_option_short_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf16.rs",
+"src_func": "invalid_utf16_positional",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "allow_invalid_utf8_subcommand_args_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_option_long_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_option_long_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_option_short_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_option_short_no_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_option_short_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_positional",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_invalid_long",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_invalid_short",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_option_long_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_option_long_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_option_short_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_option_short_no_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_option_short_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "invalid_utf8_strict_positional",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "refuse_invalid_utf8_subcommand_args_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "refuse_invalid_utf8_subcommand_when_args_are_allowed_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utf8.rs",
+"src_func": "refuse_invalid_utf8_subcommand_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/builder/utils.rs",
+"src_func": "assert_output",
+"dst_func": "ChildGraph.with_capacity"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/app_name.rs",
+"src_func": "app_name_in_long_version_from_enum",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/app_name.rs",
+"src_func": "app_name_in_long_version_from_struct",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/app_name.rs",
+"src_func": "app_name_in_short_version_from_enum",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/app_name.rs",
+"src_func": "app_name_in_short_version_from_struct",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/custom_string_parsers.rs",
+"src_func": "test_parser_with_default_value",
+"dst_func": "PathBuf.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/custom_string_parsers.rs",
+"src_func": "test_path_opt_simple",
+"dst_func": "PathBuf.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/default_value.rs",
+"src_func": "default_value_os_t",
+"dst_func": "PathBuf.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/default_value.rs",
+"src_func": "default_values_os_t",
+"dst_func": "PathBuf.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/default_value.rs",
+"src_func": "detect_os_variant",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/doc_comments_help.rs",
+"src_func": "doc_comment_about_handles_both_abouts",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/flags.rs",
+"src_func": "inferred_help",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/flags.rs",
+"src_func": "inferred_version",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/groups.rs",
+"src_func": "helpful_panic_on_duplicate_groups",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/groups.rs",
+"src_func": "skip_group_avoids_duplicate_ids",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "app_help_heading_applied",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "app_help_heading_flattened",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "arg_help_heading_applied",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "derive_order_next_order",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "derive_order_next_order_flatten",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "derive_order_no_next_order",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "derive_possible_value_help",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/help.rs",
+"src_func": "flatten_field_with_help_heading",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/skip.rs",
+"src_func": "skip_2",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/subcommands.rs",
+"src_func": "built_in_subcommand_escaped",
+"dst_func": "String.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "allow_invalid_utf8_subcommand_args_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_option_long_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_option_long_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_option_short_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_option_short_no_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_option_short_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_positional",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_strict_option_long_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_strict_option_long_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_strict_option_short_equals",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_strict_option_short_no_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_strict_option_short_space",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "invalid_utf8_strict_positional",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "refuse_invalid_utf8_subcommand_args_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utf8.rs",
+"src_func": "refuse_invalid_utf8_subcommand_with_allow_external_subcommands",
+"dst_func": "OsString.from"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utils.rs",
+"src_func": "get_help",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utils.rs",
+"src_func": "get_long_help",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-clap",
+"type": "added",
+"src_file": "tests/derive/utils.rs",
+"src_func": "get_subcommand_long_help",
+"dst_func": "Box.command"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/cli/src/decompress.rs",
+"src_func": "DecompressionMatcherBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/cli/src/decompress.rs",
+"src_func": "DecompressionMatcherBuilder.try_associate",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/cli/src/decompress.rs",
+"src_func": "DecompressionReaderBuilder.build",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/cli/src/process.rs",
+"src_func": "CommandReader.close",
+"dst_func": "CommandReader.drop"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "AfterContext.update",
+"dst_func": "ContextMode.set_after"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "AfterContext.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "AfterContext.update",
+"dst_func": "usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "AutoHybridRegex.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "BeforeContext.update",
+"dst_func": "ContextMode.set_before"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "BeforeContext.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "BeforeContext.update",
+"dst_func": "usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Binary.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "BlockBuffered.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "ByteOffset.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Color.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Colors.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Column.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Context.update",
+"dst_func": "ContextMode.set_both"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Context.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Context.update",
+"dst_func": "usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Crlf.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "DfaSizeLimit.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "DfaSizeLimit.update",
+"dst_func": "human_readable_usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Engine.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "FieldContextSeparator.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "FieldMatchSeparator.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "File.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "FixedStrings.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Follow.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Generate.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Glob.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Glob.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "GlobCaseInsensitive.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Heading.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Hidden.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "HostnameBin.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "HyperlinkFormat.doc_choices",
+"dst_func": "HyperlinkAlias.display_priority"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "HyperlinkFormat.doc_choices",
+"dst_func": "hyperlink_aliases"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "HyperlinkFormat.doc_long",
+"dst_func": "HyperlinkAlias.display_priority"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "HyperlinkFormat.doc_long",
+"dst_func": "hyperlink_aliases"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "HyperlinkFormat.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "IGlob.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "IGlob.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "IgnoreFile.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "IgnoreFileCaseInsensitive.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "IncludeZero.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "InvertMatch.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "JSON.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "LineBuffered.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxColumns.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxColumns.update",
+"dst_func": "u64"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxColumnsPreview.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxCount.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxCount.update",
+"dst_func": "u64"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxDepth.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxDepth.update",
+"dst_func": "usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxFilesize.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MaxFilesize.update",
+"dst_func": "human_readable_u64"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Mmap.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Multiline.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "MultilineDotall.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnore.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreDot.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreExclude.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreFiles.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreGlobal.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreMessages.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreParent.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoIgnoreVcs.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoMessages.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoPcre2Unicode.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoRequireGit.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "NoUnicode.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "OneFileSystem.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "PCRE2.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "PathSeparator.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "PathSeparator.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "PreGlob.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "PreGlob.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "RegexSizeLimit.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "RegexSizeLimit.update",
+"dst_func": "human_readable_usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Regexp.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Regexp.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Replace.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Replace.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "SearchZip.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Sort.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "SortFiles.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Sortr.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Stats.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Text.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Threads.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Threads.update",
+"dst_func": "usize"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Trim.update",
+"dst_func": "FlagValue.unwrap_switch"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Type.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Type.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "TypeAdd.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "TypeAdd.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "TypeClear.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "TypeClear.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "TypeNot.update",
+"dst_func": "FlagValue.unwrap_value"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "TypeNot.update",
+"dst_func": "string"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Unrestricted.update",
+"dst_func": "Binary.Binary.update"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Unrestricted.update",
+"dst_func": "Hidden.Hidden.update"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "Unrestricted.update",
+"dst_func": "NoIgnore.NoIgnore.update"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "non_switches_have_variable_names",
+"dst_func": "AfterContext.doc_variable"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "test_after_context",
+"dst_func": "ContextMode.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "test_before_context",
+"dst_func": "ContextMode.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "test_context",
+"dst_func": "ContextMode.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/defs.rs",
+"src_func": "test_passthru",
+"dst_func": "ContextMode.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/doc/help.rs",
+"src_func": "generate_short_flag",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.buffer_writer",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.from_low_args",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.path_printer_builder",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.printer_json",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.printer_standard",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.printer_summary",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.search_worker",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.searcher",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.stats",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "HiArgs.walk_builder",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/hiargs.rs",
+"src_func": "Patterns.from_low_args",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/lowargs.rs",
+"src_func": "ContextSeparator.default",
+"dst_func": "ContextSeparator"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/lowargs.rs",
+"src_func": "FieldContextSeparator.default",
+"dst_func": "FieldContextSeparator"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/flags/lowargs.rs",
+"src_func": "FieldMatchSeparator.default",
+"dst_func": "FieldMatchSeparator"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/main.rs",
+"src_func": "files_parallel",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/main.rs",
+"src_func": "files_parallel",
+"dst_func": "TempDir.drop"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/main.rs",
+"src_func": "search_parallel",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "SearchResult.stats",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "SearchWorker.search",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "SearchWorker.search_preprocessor",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "SearchWorker.should_decompress",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "SearchWorkerBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "search_path",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/core/search.rs",
+"src_func": "search_reader",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/fnv.rs",
+"src_func": "Hasher.default",
+"dst_func": "Hasher"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/glob.rs",
+"src_func": "Parser.parse_class",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "Candidate.from_bytes",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "Candidate.new",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "Error.glob",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "GlobSet.is_match",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "GlobSet.matches",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "GlobSet.matches_all",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "GlobSet.matches_into",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "GlobSet.new",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/lib.rs",
+"src_func": "RequiredExtensionStrategyBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/pathutil.rs",
+"src_func": "file_name",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/pathutil.rs",
+"src_func": "file_name_ext",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/serde_impl.rs",
+"src_func": "Glob.serialize",
+"dst_func": "Glob.glob"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/serde_impl.rs",
+"src_func": "GlobSetVisitor.visit_seq",
+"dst_func": "GlobSetBuilder.add"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/serde_impl.rs",
+"src_func": "GlobSetVisitor.visit_seq",
+"dst_func": "GlobSetBuilder.build"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/serde_impl.rs",
+"src_func": "GlobSetVisitor.visit_seq",
+"dst_func": "GlobSetBuilder.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/globset/src/serde_impl.rs",
+"src_func": "GlobVisitor.visit_str",
+"dst_func": "Glob.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/examples/walk.rs",
+"src_func": "main",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.absolute_base",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.add_child",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.add_child",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.add_child_path",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.add_parents",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.add_parents",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.matched",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.parent",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "Ignore.parent",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "IgnoreBuilder.add_custom_ignore_filename",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "IgnoreBuilder.build_with_cwd",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/dir.rs",
+"src_func": "create_gitignore",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Gitignore.matched",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Gitignore.matched_path_or_any_parents",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Gitignore.matched_stripped",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Gitignore.new",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Gitignore.new",
+"dst_func": "GlobSet.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Gitignore.strip",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.add",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.add",
+"dst_func": "GlobSet.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.add_line",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.add_str",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.build_global",
+"dst_func": "GlobSet.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "GitignoreBuilder.new",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/gitignore.rs",
+"src_func": "Glob.from",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/lib.rs",
+"src_func": "Error.tagged",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/lib.rs",
+"src_func": "Error.with_path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/types.rs",
+"src_func": "Types.matched",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/types.rs",
+"src_func": "TypesBuilder.add_def",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/types.rs",
+"src_func": "TypesBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/types.rs",
+"src_func": "TypesBuilder.definitions",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "DirEntry.error",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Stack.new_for_each_thread",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Walk.next",
+"dst_func": "DirEntry.path"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Walk.next",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Walk.next",
+"dst_func": "Error.from_walkdir"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Walk.next",
+"dst_func": "Ignore.add_child"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Walk.next",
+"dst_func": "Ignore.parent"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Walk.next",
+"dst_func": "ParseResult.and_then"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.add",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.add_ignore",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.add_ignore",
+"dst_func": "GlobSet.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.build_parallel",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.current_dir",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkBuilder.get_or_set_current_dir",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkEventIter.next",
+"dst_func": "DirEntryRaw.depth"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkEventIter.next",
+"dst_func": "walkdir_is_dir"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "WalkParallel.visit",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Work.read_dir",
+"dst_func": "Error.from"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Worker.generate_work",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "Worker.generate_work",
+"dst_func": "Error.from"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "check_symlink_loop",
+"dst_func": "Error.from"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/ignore/src/walk.rs",
+"src_func": "walk_collect_entries_parallel",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/matcher/tests/util.rs",
+"src_func": "RegexCaptures.get",
+"dst_func": "Core.pos"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/matcher/tests/util.rs",
+"src_func": "RegexCaptures.get",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/matcher/tests/util.rs",
+"src_func": "RegexMatcher.find_at",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/matcher/tests/util.rs",
+"src_func": "RegexMatcher.new_captures",
+"dst_func": "RegexCaptures"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/matcher/tests/util.rs",
+"src_func": "RegexMatcherNoCaps.find_at",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/matcher/tests/util.rs",
+"src_func": "RegexMatcherNoCaps.new_captures",
+"dst_func": "NoCaptures.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/pcre2/src/matcher.rs",
+"src_func": "RegexCaptures.get",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/pcre2/src/matcher.rs",
+"src_func": "RegexMatcher.find_at",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/pcre2/src/matcher.rs",
+"src_func": "RegexMatcher.try_find_iter",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/pcre2/src/matcher.rs",
+"src_func": "RegexMatcherBuilder.build_many",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/color.rs",
+"src_func": "SpecValue.merge_into",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/hyperlink/mod.rs",
+"src_func": "FormatBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/hyperlink/mod.rs",
+"src_func": "Interpolator.new",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/hyperlink/mod.rs",
+"src_func": "Part.interpolate_to",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSON.sink_with_path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.begin",
+"dst_func": "CounterWriter.reset_count"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.binary_data",
+"dst_func": "BinaryDetection.quit_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.binary_data",
+"dst_func": "Searcher.binary_detection"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.context",
+"dst_func": "Searcher.invert_match"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.context",
+"dst_func": "SubMatches.as_slice"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "SinkFinish.binary_byte_offset"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Stats.add_bytes_printed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Stats.add_bytes_searched"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Stats.add_elapsed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Stats.add_searches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Stats.add_searches_with_match"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.finish",
+"dst_func": "Stats.elapsed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.matched",
+"dst_func": "SinkMatch.bytes_range_in_buffer"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.matched",
+"dst_func": "Stats.add_matched_lines"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.matched",
+"dst_func": "Stats.add_matches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.matched",
+"dst_func": "SubMatches.as_slice"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.record_matches",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/json.rs",
+"src_func": "JSONSink.replace",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/path.rs",
+"src_func": "PathPrinter.write",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/path.rs",
+"src_func": "PathPrinterBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "Standard.sink_with_path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardImpl.path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.begin",
+"dst_func": "CounterWriter.reset_count"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.binary_data",
+"dst_func": "BinaryDetection.quit_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.binary_data",
+"dst_func": "Searcher.binary_detection"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.context",
+"dst_func": "BinaryDetection.convert_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.context",
+"dst_func": "Searcher.binary_detection"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.context",
+"dst_func": "Searcher.invert_match"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.finish",
+"dst_func": "Stats.add_bytes_printed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.finish",
+"dst_func": "Stats.add_bytes_searched"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.finish",
+"dst_func": "Stats.add_elapsed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.finish",
+"dst_func": "Stats.add_searches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.finish",
+"dst_func": "Stats.add_searches_with_match"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.finish",
+"dst_func": "Stats.elapsed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.matched",
+"dst_func": "BinaryDetection.convert_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.matched",
+"dst_func": "Searcher.binary_detection"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.matched",
+"dst_func": "SinkMatch.bytes_range_in_buffer"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.matched",
+"dst_func": "Stats.add_matched_lines"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.matched",
+"dst_func": "Stats.add_matches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.record_matches",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.replace",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "StandardSink.stats",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "reports_stats",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/standard.rs",
+"src_func": "reports_stats_multiple",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/stats.rs",
+"src_func": "Stats.add",
+"dst_func": "NiceDuration"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "Summary.sink_with_path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummaryBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.begin",
+"dst_func": "CounterWriter.reset_count"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.binary_data",
+"dst_func": "BinaryDetection.quit_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.binary_data",
+"dst_func": "Searcher.binary_detection"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "BinaryDetection.quit_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Searcher.binary_detection"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "SinkFinish.binary_byte_offset"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.add_bytes_printed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.add_bytes_searched"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.add_elapsed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.add_searches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.add_searches_with_match"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.elapsed"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.finish",
+"dst_func": "Stats.matches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.matched",
+"dst_func": "SinkMatch.bytes_range_in_buffer"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.matched",
+"dst_func": "Stats.add_matched_lines"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.matched",
+"dst_func": "Stats.add_matches"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.start_hyperlink",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.stats",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/summary.rs",
+"src_func": "SummarySink.write_path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/util.rs",
+"src_func": "PrinterPath.as_hyperlink",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/util.rs",
+"src_func": "Replacer.replace_all",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/util.rs",
+"src_func": "find_iter_at_in_context",
+"dst_func": "M.find_iter_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/printer/src/util.rs",
+"src_func": "replace_with_captures_in_context",
+"dst_func": "M.captures_iter_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/config.rs",
+"src_func": "Config.is_fixed_strings",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/config.rs",
+"src_func": "ConfiguredHIR.new",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/literal.rs",
+"src_func": "Extractor.extract_repetition",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/literal.rs",
+"src_func": "e",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexCaptures.get",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcher.captures_at",
+"dst_func": "RegexCaptures.captures_mut"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcher.find_at",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcher.find_candidate_line",
+"dst_func": "Match.offset"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcher.shortest_match_at",
+"dst_func": "Match.offset"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcher.try_find_iter",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcherBuilder.build_many",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/regex/src/matcher.rs",
+"src_func": "RegexMatcherBuilder.new",
+"dst_func": "Config.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mmap.rs",
+"src_func": "MmapChoice.default",
+"dst_func": "MmapChoice"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Config.default",
+"dst_func": "BinaryDetection.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Config.default",
+"dst_func": "LineTerminator.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Config.default",
+"dst_func": "MmapChoice.default"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Searcher.check_config",
+"dst_func": "M.line_terminator"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Searcher.multi_line_with_matcher",
+"dst_func": "M.line_terminator"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Searcher.search_path",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "Searcher.set_binary_detection",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "SearcherBuilder.build",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/searcher/mod.rs",
+"src_func": "SearcherBuilder.build",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/sink.rs",
+"src_func": "Bytes.matched",
+"dst_func": "SinkMatch.line_number"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/sink.rs",
+"src_func": "Lossy.matched",
+"dst_func": "SinkMatch.line_number"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/sink.rs",
+"src_func": "SinkError.error_config",
+"dst_func": "Error.error_message"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/sink.rs",
+"src_func": "SinkError.error_io",
+"dst_func": "Error.error_message"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/sink.rs",
+"src_func": "SinkMatch.bytes_range_in_buffer",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/sink.rs",
+"src_func": "UTF8.matched",
+"dst_func": "SinkMatch.line_number"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "KitchenSink.context",
+"dst_func": "SinkContext.line_number"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "KitchenSink.matched",
+"dst_func": "SinkMatch.line_number"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "RegexMatcher.find_at",
+"dst_func": "Match.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "RegexMatcher.find_candidate_line",
+"dst_func": "LineTerminator.as_byte"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "RegexMatcher.new_captures",
+"dst_func": "NoCaptures.new"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "SearcherTester.configs",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "SearcherTester.configs",
+"dst_func": "Glob.as_ref"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "empty_line1",
+"dst_func": "RegexMatcher.find_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "empty_line2",
+"dst_func": "RegexMatcher.find_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "empty_line3",
+"dst_func": "RegexMatcher.find_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "empty_line4",
+"dst_func": "RegexMatcher.find_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "empty_line5",
+"dst_func": "RegexMatcher.find_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "crates/searcher/src/testutil.rs",
+"src_func": "empty_line6",
+"dst_func": "RegexMatcher.find_at"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "tests/json.rs",
+"src_func": "Message.unwrap_begin",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "tests/json.rs",
+"src_func": "Message.unwrap_context",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "tests/json.rs",
+"src_func": "Message.unwrap_end",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "tests/json.rs",
+"src_func": "Message.unwrap_match",
+"dst_func": "Error.clone"
+},
+{
+"repo": "rust-ripgrep",
+"type": "added",
+"src_file": "tests/json.rs",
+"src_func": "Message.unwrap_summary",
+"dst_func": "Error.clone"
+}
+]
+}
