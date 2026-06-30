@@ -1,0 +1,619 @@
+{
+ "_about": "FEATURE-1 d.0 committed baseline summary. Full per-repo edge sets live OUT of repo at the baseline-dir; here we keep counts + sha digests + capture provenance so the baseline is documented in-tree. Excluded repos are nondeterministic and NOT gated on.",
+ "reference_binary": "tldr 0.4.1",
+ "repos_captured": 37,
+ "repos_excluded": [
+  "php-symfony-console"
+ ],
+ "total_edges": 137445,
+ "repos": [
+  {
+   "repo": "c-redis",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/c-redis",
+   "captured_path_rel": "c-redis",
+   "edges": 25853,
+   "sha": "070eaffaeacf3f689426b270acdc5c4b8e09ec207609e86aac88588f9fc96473",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "c-sds",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/c-sds",
+   "captured_path_rel": "c-sds",
+   "edges": 71,
+   "sha": "dd498f18e84b752f5c942c466f441e35f7c2dcd74ca6e868bccd0d7e7aba6630",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "cpp-fmt",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/cpp-fmt",
+   "captured_path_rel": "cpp-fmt",
+   "edges": 1880,
+   "sha": "a92db8cad26b8adf276455157380cf88cc6cec6841a462135eb2148b46874be4",
+   "unstable": 4,
+   "unstable_frac": 0.00212,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/cpp-tinyxml2",
+   "captured_path_rel": "cpp-tinyxml2",
+   "edges": 166,
+   "sha": "633dc77ed14dd8125ff32962e4d1cc786d3a9b2a39f37ac83d2ad3626bf2aa49",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "csharp-newtonsoft-bson",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/csharp-newtonsoft-bson",
+   "captured_path_rel": "csharp-newtonsoft-bson",
+   "edges": 940,
+   "sha": "56eafff545aa589c48c4b49798b1cf894003aa5f68fdcd22b74d055214110d04",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "csharp-newtonsoft-json",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/csharp-newtonsoft-json",
+   "captured_path_rel": "csharp-newtonsoft-json",
+   "edges": 13148,
+   "sha": "10a46de983e954c8815df8cfc173f2c1f8aadfd70b833fa9ee365ab3e9c46f9c",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "elixir-phoenix",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/elixir-phoenix",
+   "captured_path_rel": "elixir-phoenix",
+   "edges": 2413,
+   "sha": "0346eb7fadc8f0f1ead20598fe873f640c00392d30e3b25338627d09ba8f85c5",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "elixir-plug",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/elixir-plug",
+   "captured_path_rel": "elixir-plug",
+   "edges": 586,
+   "sha": "059cee1effc379dbd7c5cb55f563707a91fca3f5c40c666a5a07777382034429",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "go-gin",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/go-gin",
+   "captured_path_rel": "go-gin",
+   "edges": 2245,
+   "sha": "066a0c80a5d5a0aa283d0449175a628c74071d7837f725eca540c131bcf17165",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "go-httprouter",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/go-httprouter",
+   "captured_path_rel": "go-httprouter",
+   "edges": 93,
+   "sha": "07ceb346b2f48ff44febbd29d76db5a8951cd63b08d476e0b4e625599ebf1e18",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "java-petclinic",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/java-petclinic",
+   "captured_path_rel": "java-petclinic",
+   "edges": 205,
+   "sha": "ca677e722a1705ab551170d149ae68dbf2cf7a701af8a7f8bd897bf2bb6b7974",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "java-retrofit",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/java-retrofit",
+   "captured_path_rel": "java-retrofit",
+   "edges": 3043,
+   "sha": "4d5e251ca1beb380c468e29758ae2a99dde6e67826e7d9d96e47c4cbc794b7aa",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "js-express",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/js-express",
+   "captured_path_rel": "js-express",
+   "edges": 331,
+   "sha": "5fcdd8b2f8e492cabcfa27bae293e73966075fa1fff3a4b31816d944951ed555",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "js-lodash",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/js-lodash",
+   "captured_path_rel": "js-lodash",
+   "edges": 2946,
+   "sha": "052daefb3d66199cbcc0b44c171393c9d36b0f1ee1ea02c3ade8f68867fd4c0f",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "kotlin-coroutines",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/kotlin-coroutines",
+   "captured_path_rel": "kotlin-coroutines",
+   "edges": 8046,
+   "sha": "cc2857259b536ea88d25944998439e97de850d5b4cc3638719aca0a2a4582600",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "kotlin-datetime",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/kotlin-datetime",
+   "captured_path_rel": "kotlin-datetime",
+   "edges": 2056,
+   "sha": "b601a6f0da70be7e2a8ee67de7ad6363130ddf8792d199216131a89ff5971c12",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "lua-lsp",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/lua-lsp",
+   "captured_path_rel": "lua-lsp",
+   "edges": 226,
+   "sha": "0aa19d8ded4d39da5016c92c734266886aaf7258eddca41601250db34f7bc21c",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "lua-luvit",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/lua-luvit",
+   "captured_path_rel": "lua-luvit",
+   "edges": 816,
+   "sha": "c60c71e59b1b71ba7e392571ddd3f3c8be158735ed92553c3b0f8e08dc8d0e6a",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "luau",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/luau",
+   "captured_path_rel": "luau",
+   "edges": 12037,
+   "sha": "cf55e8f12b01b5ae529fdefa20833e4fd7cabe5ac9f7e33af535768768a3af6b",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "luau-roact",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/luau-roact",
+   "captured_path_rel": "luau-roact",
+   "edges": 111,
+   "sha": "06c6c4e59e0b06ec45250d9e1d6fae8a781dd183b098ad330b3b8f628a4ac1fe",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "ocaml-dune",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/ocaml-dune",
+   "captured_path_rel": "ocaml-dune",
+   "edges": 22752,
+   "sha": "aa2e20fb6e07894c1cdc2ec117be8ed63e3c663cd48a702d81a5035b14be4240",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "ocaml-lwt",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/ocaml-lwt",
+   "captured_path_rel": "ocaml-lwt",
+   "edges": 3143,
+   "sha": "1201f59ca52fa5c8c9f6753b32e579c03e60d9aeaad90159d8bdda3b880fada8",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "php-guzzle",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/php-guzzle",
+   "captured_path_rel": "php-guzzle",
+   "edges": 1879,
+   "sha": "9f06fb42ce5d43dc4be1951ca80d7e87abb4ff18f57bc31ea1976d0036b260ed",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "php-symfony-console",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/php-symfony-console",
+   "captured_path_rel": "php-symfony-console",
+   "edges": 1880,
+   "sha": "831d6eeba6b7fc5538271d4a5c3da031ae3cce5b195601edb982612c8a3b7f72",
+   "unstable": 46,
+   "unstable_frac": 0.02388,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": true,
+   "reason": "nondeterministic: 46/1926 edges unstable (0.024 > 0.020)"
+  },
+  {
+   "repo": "python-flask",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/python-flask",
+   "captured_path_rel": "python-flask",
+   "edges": 161,
+   "sha": "6bcb8e836110ceab55af6eeedb91ba89210aa9ecbd4421d660edad0c12b52122",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "python-requests",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/python-requests",
+   "captured_path_rel": "python-requests",
+   "edges": 721,
+   "sha": "cb004ff1d8866ce724eac0eb2eb86bcd6a3e024898d71a466beaa4a3756b5398",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "ruby-rubocop",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/ruby-rubocop",
+   "captured_path_rel": "ruby-rubocop",
+   "edges": 72,
+   "sha": "585050bc58aaf613feeeff75d5700802d36fbf980527453ddaa86dd3687a510b",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "ruby-sinatra",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/ruby-sinatra",
+   "captured_path_rel": "ruby-sinatra",
+   "edges": 1031,
+   "sha": "855f241890cdf3c003ff977de42957d007b4e1dfff7b46c0d00344cba5f8a779",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "rust-clap",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/rust-clap",
+   "captured_path_rel": "rust-clap",
+   "edges": 6487,
+   "sha": "1f471afcadb40b4206ced09fede8f1718566de4197d585ea51086009f5d867bd",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "rust-ripgrep",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/rust-ripgrep",
+   "captured_path_rel": "rust-ripgrep",
+   "edges": 2261,
+   "sha": "efe8c96bcada55b31b8ad5b07a7741e60a2c901e7681730e5ad954a70a5b558e",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "scala-cats-effect",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/scala-cats-effect",
+   "captured_path_rel": "scala-cats-effect",
+   "edges": 671,
+   "sha": "d8a5c05c4a36b4e206ccaa5229d70b5dfcd843194c8a19ff8651c5abc4ec0dfa",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "scala-zio",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/scala-zio",
+   "captured_path_rel": "scala-zio",
+   "edges": 14113,
+   "sha": "f1c6b7c5b7607ec77eecbb78345e60281279373c1d40527239a5b9648f953270",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "solidity-openzeppelin",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/solidity-openzeppelin",
+   "captured_path_rel": "solidity-openzeppelin",
+   "edges": 1307,
+   "sha": "b3fc15bc49f0eace71877203db9cb1d2feabc444ede99eada73ac6ac3f24e2cf",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "solidity-solmate",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/solidity-solmate",
+   "captured_path_rel": "solidity-solmate",
+   "edges": 422,
+   "sha": "af5c8f8ad3aef7558970a9698d3432e1e4c5277c93f90c3442cef9db55c72ece",
+   "unstable": 5,
+   "unstable_frac": 0.01171,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "swift-alamofire",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/swift-alamofire",
+   "captured_path_rel": "swift-alamofire",
+   "edges": 2707,
+   "sha": "bf2cd3f8e5b3ec9f2b0d6642584f07fef4e7c9ab18b719a495d7ef73a8cdc730",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "swift-collections",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/swift-collections",
+   "captured_path_rel": "swift-collections",
+   "edges": 1586,
+   "sha": "c84c37d8b33d9db356fa165fdd8c7b7eb0c211b37cc528168d005e2daae83d37",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "typescript-axios",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/typescript-axios",
+   "captured_path_rel": "typescript-axios",
+   "edges": 820,
+   "sha": "b0de599cfc97f4377d3123c64f2c2b718f8e0fdd0b323fb33b94fcfb00079106",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  },
+  {
+   "repo": "typescript-nest",
+   "captured_path": "/Users/cosimo/.tldr-audit/corpora/typescript-nest",
+   "captured_path_rel": "typescript-nest",
+   "edges": 100,
+   "sha": "f55e5a9e0c3e0f49d94f459319550999fb90257e5fc2b7b1774a7a8c67ccdf64",
+   "unstable": 0,
+   "unstable_frac": 0.0,
+   "run_statuses": [
+    "ok",
+    "ok",
+    "ok"
+   ],
+   "excluded": false,
+   "reason": ""
+  }
+ ]
+}

@@ -1,0 +1,26 @@
+==============================================================
+SELFTEST (i): current-vs-own-baseline MUST PASS    repo=c-sds
+==============================================================
+COUNTS {"repos": 1, "baseline_edges": 71, "removed": 0, "added": 0, "flipped": 0, "flips_on_unique_name": 0, "new_low_or_unreviewed": 0, "cluster_fixed": 0, "cluster_still_buggy": 0}
+CLUSTER {"fixed": 0, "improved": 0, "still_buggy": 0, "correct": 0, "regressed": 0, "uncomputed": 0}
+PARITY: PASS
+exit=0
+
+==============================================================
+SELFTEST (ii): injected unique-name flip MUST FAIL  repo=c-sds
+==============================================================
+INJECTED flip: sds.c::sdscatfmt -> sdsull2str  was@sds.c now@sds.h
+COUNTS {"repos": 1, "baseline_edges": 71, "removed": 0, "added": 0, "flipped": 1, "flips_on_unique_name": 1, "new_low_or_unreviewed": 0, "cluster_fixed": 0, "cluster_still_buggy": 0}
+CLUSTER {"fixed": 0, "improved": 0, "still_buggy": 0, "correct": 0, "regressed": 0, "uncomputed": 0}
+OFFENDERS[c-sds]
+  FLIP_UNIQUE sds.c::sdscatfmt -> sdsull2str  base=['sds.h'] cur=['sds.c']
+FAIL_REASON rule(a): 1 flip(s) on a UNIQUE baseline callee name
+PARITY: FAIL
+exit=1
+flips_on_unique_name=1
+
+==============================================================
+SELFTEST RESULT
+  (i)  current-vs-own-baseline PASS : OK
+  (ii) injected-flip caught (FAIL)  : OK
+SELFTEST: PASS (the gate has teeth)

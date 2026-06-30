@@ -1,0 +1,169 @@
+{
+  "_about": "FEATURE-1 cluster goldens. Each cell encodes a repro command, the BUGGY-NOW signature (verified on the reference name-match binary tldr 0.4.1, 2026-06-30), and the EXPECTED-FIXED target. check.kind names a metric extractor in parity_lib.cluster_value; `buggy`/`fixed` are {op,value} predicates. cluster_status(value) => still_buggy | improved | fixed (or correct | regressed for positive controls). These cells are PROGRESS indicators reported by check_parity.py; the hard never-worse FAIL is the edge-set diff. {repo} -> corpora/<repo>; {feature1} -> this harness dir.",
+  "reference_binary": "tldr 0.4.1 (/Users/cosimo/.cargo/bin/tldr)",
+  "captured_at": "2026-06-30",
+  "cells": [
+    {
+      "id": "csharp-read-broadcast",
+      "lang": "csharp",
+      "repo": "csharp-newtonsoft-json",
+      "repro": ["impact", "Read", "{repo}"],
+      "check": {"kind": "impact_max_caller_count", "params": {}},
+      "buggy": {"op": ">=", "value": 100},
+      "fixed": {"op": "<", "value": 30},
+      "buggy_observed": 218,
+      "note": "Name-match: 19 targets named Read, several broadcasting ~180-218 identical callers. Fixed: per-receiver-class resolution, no single Read target with a ~180-wide broadcast."
+    },
+    {
+      "id": "csharp-read-targets",
+      "lang": "csharp",
+      "repo": "csharp-newtonsoft-json",
+      "repro": ["impact", "Read", "{repo}"],
+      "check": {"kind": "impact_target_count", "params": {}},
+      "buggy": {"op": ">=", "value": 10},
+      "fixed": {"op": "<=", "value": 4},
+      "buggy_observed": 19,
+      "note": "19 distinct Read targets is the name-collision broadcast. Fixed: a call to .Read() resolves to few real receiver methods."
+    },
+    {
+      "id": "csharp-bson-readnormal",
+      "lang": "csharp",
+      "repo": "csharp-newtonsoft-bson",
+      "repro": ["whatbreaks", "ReadNormal", "{repo}"],
+      "check": {"kind": "whatbreaks_direct_callers", "params": {}},
+      "buggy": {"op": ">=", "value": 4},
+      "fixed": {"op": "<=", "value": 2},
+      "buggy_observed": 4,
+      "note": "Buggy: 2 ReadNormal targets (a phantom in BsonDataReader.Async.cs) with 4 direct callers. Fixed: 1 target, 2 callers."
+    },
+    {
+      "id": "cpp-size-broadcast",
+      "lang": "cpp",
+      "repo": "cpp-fmt",
+      "repro": ["impact", "size", "{repo}"],
+      "check": {"kind": "impact_target_count", "params": {}},
+      "buggy": {"op": ">=", "value": 8},
+      "fixed": {"op": "<=", "value": 4},
+      "buggy_observed": 10,
+      "note": "'size' broadcasts to ~10 targets. Fixed: per-receiver-type resolution narrows it sharply."
+    },
+    {
+      "id": "cpp-getfilesize-gtest",
+      "lang": "cpp",
+      "repo": "cpp-fmt",
+      "repro": ["explain", "{repo}/src/os.cc", "size"],
+      "check": {"kind": "explain_callee_nonexternal", "params": {"names": ["GetFileSize"]}},
+      "buggy": {"op": ">=", "value": 1},
+      "fixed": {"op": "==", "value": 0},
+      "buggy_observed": 1,
+      "note": "Win32 GetFileSize is mis-bound to gmock-gtest-all.cc. Fixed: GetFileSize is external (Win32 API)."
+    },
+    {
+      "id": "ts-isbuffer-selfedge",
+      "lang": "typescript",
+      "repo": "typescript-axios",
+      "repro": ["explain", "{repo}/lib/utils.js", "isBuffer"],
+      "check": {"kind": "explain_self_edge", "params": {"func": "isBuffer"}},
+      "buggy": {"op": ">=", "value": 1},
+      "fixed": {"op": "==", "value": 0},
+      "buggy_observed": 1,
+      "note": "isBuffer -> isBuffer self-edge (val.constructor.isBuffer mis-resolved to the local fn). Fixed: that callee is external, no self-recursion."
+    },
+    {
+      "id": "swift-finalizekeying",
+      "lang": "swift",
+      "repo": "swift-collections",
+      "repro": ["explain", "{repo}/Sources/OrderedCollections/OrderedDictionary/OrderedDictionary.swift", "_finalizeKeyingModify"],
+      "check": {"kind": "explain_callee_nonexternal", "params": {"names": ["append", "remove"]}},
+      "buggy": {"op": ">=", "value": 1},
+      "fixed": {"op": "==", "value": 0},
+      "buggy_observed": 2,
+      "note": "callees append/remove are bound to Deque/OrderedSet swift files; they are ContiguousArray methods and should be external."
+    },
+    {
+      "id": "rust-parse-collide",
+      "lang": "rust",
+      "repo": "rust-clap",
+      "repro": ["impact", "parse", "{repo}"],
+      "check": {"kind": "impact_target_count", "params": {}},
+      "buggy": {"op": ">=", "value": 5},
+      "fixed": {"op": "<=", "value": 3},
+      "buggy_observed": 6,
+      "note": "Parser trait (derive.rs) and Parser struct (parser.rs) both expose parse and collide; callers mis-attributed across a 3-way broadcast. Fixed: trait/struct distinct, callers narrowed."
+    },
+    {
+      "id": "php-render-crossattr",
+      "lang": "php",
+      "repo": "php-symfony-console",
+      "repro": ["impact", "render", "{repo}"],
+      "check": {"kind": "impact_two_targets_equal_cc", "params": {"target_a_substr": "Table.php", "target_b_substr": "TreeHelper.php"}},
+      "buggy": {"op": "==", "value": 1},
+      "fixed": {"op": "==", "value": 0},
+      "buggy_observed": 1,
+      "note": "Table.render and TreeHelper.render both report caller_count 33 (identical) = cross-attribution. Fixed: per-receiver-class caller sets diverge."
+    },
+    {
+      "id": "python-prepareurl-falseconftest",
+      "lang": "python",
+      "repo": "python-requests",
+      "repro": ["impact", "prepare_url", "{repo}"],
+      "check": {"kind": "impact_false_callers", "params": {"target_substr": "prepare_url", "caller_file_substr": "conftest"}},
+      "buggy": {"op": ">=", "value": 1},
+      "fixed": {"op": "==", "value": 0},
+      "buggy_observed": 2,
+      "note": "PreparedRequest.prepare_url picks up 2 false conftest callers (httpbin, httpbin_secure via reference fallback). Fixed: the method keeps its 1 real caller; the free-fn variant keeps its 2."
+    },
+    {
+      "id": "luau-setstate-component-absent",
+      "lang": "luau",
+      "repo": "luau-roact",
+      "repro": ["impact", "setState", "{repo}"],
+      "check": {"kind": "impact_has_target", "params": {"target_substr": "Component.lua"}},
+      "buggy": {"op": "==", "value": 0},
+      "fixed": {"op": "==", "value": 1},
+      "buggy_observed": 0,
+      "note": "Buggy: Component:setState (colon method on Component.lua) is absent; setState binds only to *.spec.lua targets (each cc 26, broadcast). Fixed: the colon-method binds to its enclosing Component class table."
+    },
+    {
+      "id": "lua-initialize-conflated",
+      "lang": "lua",
+      "repo": "lua-luvit",
+      "repro": ["impact", "initialize", "{repo}"],
+      "check": {"kind": "impact_target_count", "params": {}},
+      "buggy": {"op": ">=", "value": 4},
+      "fixed": {"op": "<=", "value": 2},
+      "buggy_observed": 4,
+      "note": "colon-method `initialize` conflated across stream_*.lua classes. Fixed: each colon-method bound to its enclosing class table, callers per-receiver."
+    },
+    {
+      "id": "kotlin-minus-overloads",
+      "lang": "kotlin",
+      "repo": "kotlin-datetime",
+      "repro": ["whatbreaks", "minus", "{repo}"],
+      "check": {"kind": "whatbreaks_direct_callers", "params": {}},
+      "buggy": {"op": ">=", "value": 20},
+      "fixed": {"op": "<=", "value": 12},
+      "buggy_observed": 49,
+      "note": "10 `minus` overloads collapse to 49 direct callers. Fixed: per-receiver/param-type resolution. (Companion fact: `impact Clock` correctly errors Function-not-found -> Clock stays external; that must not regress into spurious internal targets.)"
+    },
+    {
+      "id": "posctl-cat-dog",
+      "lang": "python",
+      "repo": "",
+      "positive_control": true,
+      "repro": ["calls", "{feature1}/fixtures/posctl"],
+      "check": {"kind": "calls_edge_assert", "params": {
+        "required": [
+          {"src_func": "use_cat", "dst_func": "Cat.speak", "dst_file": "animals.py"},
+          {"src_func": "use_dog", "dst_func": "Dog.speak", "dst_file": "animals.py"}
+        ],
+        "forbidden": [
+          {"src_func": "use_cat", "dst_func": "Dog.speak"},
+          {"src_func": "use_dog", "dst_func": "Cat.speak"}
+        ]
+      }},
+      "buggy_observed": 0,
+      "note": "POSITIVE CONTROL: a constructor-typed local receiver (c=Cat(); c.speak()) resolves per-type already on the reference binary. value 0 = correct. It MUST stay correct (no broadcast to the sibling class) through every stage; value 1 = regressed."
+    }
+  ]
+}
