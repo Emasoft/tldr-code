@@ -769,6 +769,25 @@ pub fn enrich_impact_with_references(
     // targets.
     let any_resolved = report.targets.values().any(|t| !t.callers.is_empty());
 
+    // FEATURE-1 d.3: the number of distinct definitions the impact query
+    // resolved to IS the method-definer cardinality (one `report.targets` entry
+    // per `(file, Type.method)` definition). `>= 2` is a genuine
+    // method-name-on-type collision — the same signal d.2's
+    // `method_definer_cardinality` gates on. For such AMBIGUOUS targets a
+    // reference-discovered caller must prove receiver-TYPE compatibility to be
+    // attributed (the instance-variable relaxation is retired), so a same-named
+    // sibling on another type drops out of the caller set. A UNIQUE target
+    // (cardinality 1) keeps the never-worse relaxation: its sole owner means an
+    // untyped caller name-match would have kept is never dropped.
+    let is_ambiguous = report.targets.len() >= 2;
+    // Resolve receivers to their declared TYPE only for a genuine collision the
+    // call graph DECLINED. When the graph already resolved an edge
+    // (`any_resolved`) the historic name-based receiver is kept so a resolved
+    // call is never sprayed onto a same-named sibling class in another file
+    // (the f69904c python class-collision guard); for a unique target
+    // type-resolution is unnecessary and could only risk dropping a correct edge.
+    let resolve_receiver_types = !any_resolved && is_ambiguous;
+
     let mut options = ReferencesOptions::new();
     options.kinds = Some(vec![ReferenceKind::Call]);
     options.language = Some(language.as_str().to_string());
@@ -897,8 +916,14 @@ pub fn enrich_impact_with_references(
         // class body in the same file) to its declared TYPE, so the CL-2
         // compatibility check matches the target's type qualifier instead of
         // wrongly rejecting the variable name.
-        let receiver =
-            extract_call_receiver(&caller_file, r.line, r.column, bare_target, language);
+        let receiver = extract_call_receiver(
+            &caller_file,
+            r.line,
+            r.column,
+            bare_target,
+            language,
+            resolve_receiver_types,
+        );
 
         let key_pair = (enclosing.clone(), caller_file.clone());
         if additions
@@ -930,8 +955,14 @@ pub fn enrich_impact_with_references(
         if let Ok(read_refs) = find_references(target_func, project_root, &read_opts) {
             for r in &read_refs.references {
                 let caller_file = r.file.clone();
-                let receiver =
-                    extract_call_receiver(&caller_file, r.line, r.column, bare_target, language);
+                let receiver = extract_call_receiver(
+                    &caller_file,
+                    r.line,
+                    r.column,
+                    bare_target,
+                    language,
+                    resolve_receiver_types,
+                );
                 // Only accept AST-confirmed receiver-qualified call sites; a
                 // bare/unknown/shadowed receiver is not a method invocation we
                 // can attribute to a typed definition.
@@ -1038,21 +1069,32 @@ pub fn enrich_impact_with_references(
             // callers of `rpc.decode`, and `Codec::decode` self-calls from
             // the callers of `Parser::decode`.
             //
-            // fix-PW2-B5-impact-alias: when strict matching rejects a site,
-            // do NOT blank it if this is a genuinely-unresolvable
-            // method-name-on-type collision (`!any_resolved`) AND the site is
-            // a lowercase instance-variable receiver against a TYPE qualifier
-            // (`set.filter` vs `OrderedSet.filter`). Such a receiver cannot be
-            // proven to belong to a DIFFERENT type without full receiver-type
-            // inference (deferred THEME-D), so keep it rather than blank every
-            // caller. Module-qualified targets (lowercase qualifier like lua
-            // `rpc`) and type-named receivers (uppercase like `Mutex`) stay
+            // FEATURE-1 d.3: strict matching now compares the receiver's
+            // resolved declared TYPE against the target's type qualifier (the
+            // receiver was upgraded in `extract_call_receiver` via the same
+            // SourceTypeIndex machinery the call-graph builder uses). For an
+            // AMBIGUOUS (>= 2 definer) collision that type check is REQUIRED — the
+            // former blanket instance-variable relaxation that sprayed one call
+            // site onto every sibling `Type.method` is retired. Only a
+            // CARDINALITY-1 (unique) target keeps the relaxation (`!is_ambiguous`
+            // below), so an untyped caller of the sole owner is never dropped
+            // (never-worse). Module-qualified targets (lowercase qualifier like
+            // lua `rpc`) and type-named receivers (uppercase like `Mutex`) stay
             // strict, preserving the CL-2 / f69904c discriminations.
             let strict_ok =
                 receiver_compatible(receiver, target_qualifier.as_deref(), &tree.file, file);
+            // FEATURE-1 d.3: the instance-variable relaxation is retired for
+            // AMBIGUOUS (>= 2 definer) collisions — those now require the
+            // receiver's declared TYPE to match this target (the receiver was
+            // upgraded to its type in `extract_call_receiver`), so a same-named
+            // sibling on a DIFFERENT type drops out instead of being sprayed onto
+            // every definition. It is kept ONLY for a CARDINALITY-1 (unique)
+            // target, where the sole possible owner means an untyped caller that a
+            // name-match would have kept must never be dropped (never-worse).
             let keep = strict_ok
                 || (!any_resolved
-                    && unresolvable_collision_keeps(receiver, target_qualifier.as_deref()));
+                    && !is_ambiguous
+                    && never_worse_unique_keep(receiver, target_qualifier.as_deref()));
             if !keep {
                 continue;
             }
@@ -1331,21 +1373,22 @@ fn receiver_is_instance_like(receiver: &str) -> bool {
     matches!(first_alpha_is_uppercase(receiver), Some(false))
 }
 
-/// fix-PW2-B5-impact-alias: should a reference-discovered call site be KEPT as
-/// a caller of a collision-suppressed method definition even though strict
-/// receiver matching rejected it?
+/// FEATURE-1 d.3 (was `unresolvable_collision_keeps`): the never-worse guard for
+/// a CARDINALITY-1 (unique) target. When the receiver's declared type CANNOT be
+/// inferred, a lowercase instance-variable receiver (`set.filter(...)`) against a
+/// TYPE qualifier (`OrderedSet.filter`) is KEPT — a unique method name has only
+/// one possible owner, so a caller a name-match would have kept must never be
+/// dropped just because the receiver stayed untyped.
 ///
-/// Only `true` for a lowercase instance-variable receiver (`set.filter(...)`)
-/// against a TYPE qualifier (`OrderedSet.filter`). Without full receiver-type
-/// inference (deferred THEME-D) we cannot prove `set` is a DIFFERENT type than
-/// `OrderedSet`, so — for a genuinely-unresolvable collision (the caller gates
-/// this on `any_resolved == false`) — we must not blank EVERY caller.
-///
-/// Module-qualified targets (lowercase qualifier like lua `rpc`) and
-/// type-named receivers (uppercase like `Mutex`, `Codec`) return `false` and
-/// keep strict matching, preserving the CL-2 `json`≠`rpc` and OCaml
-/// stdlib-homonym discriminations.
-fn unresolvable_collision_keeps(receiver: &CallReceiver, target_qualifier: Option<&str>) -> bool {
+/// The caller now gates this on `!is_ambiguous` (unique target) in ADDITION to
+/// the historic `any_resolved == false`. For an AMBIGUOUS (>= 2 definer)
+/// collision this relaxation is NO LONGER applied: those callers must instead
+/// prove receiver-TYPE compatibility (the retirement of the spray). Module-
+/// qualified targets (lowercase qualifier like lua `rpc`) and type-named
+/// receivers (uppercase like `Mutex`, `Codec`) return `false` and keep strict
+/// matching, preserving the CL-2 `json`≠`rpc` and OCaml stdlib-homonym
+/// discriminations.
+fn never_worse_unique_keep(receiver: &CallReceiver, target_qualifier: Option<&str>) -> bool {
     match (receiver, target_qualifier) {
         (CallReceiver::Named(r), Some(q)) => {
             qualifier_is_type_like(q) && receiver_is_instance_like(r)
@@ -1365,6 +1408,7 @@ fn extract_call_receiver(
     column: usize,
     bare_target: &str,
     language: Language,
+    resolve_var_types: bool,
 ) -> CallReceiver {
     use tree_sitter::Point;
 
@@ -1422,9 +1466,59 @@ fn extract_call_receiver(
                 return CallReceiver::Named(ty);
             }
         }
+        // FEATURE-1 d.3: general receiver->declared-type resolution. The C++
+        // block above only covered same-file out-of-line member fields; this
+        // generalizes it to every language the resolver understands by delegating
+        // to the SAME `SourceTypeIndex` / `resolve_receiver_type_indexed`
+        // machinery the call-graph builder (d.2) uses for typed dispatch. When
+        // the variable's declared type is recoverable (`AlphaReader ar = ...`,
+        // `let c: Codec`, `$a = new Alpha()`, a typed parameter), the receiver is
+        // upgraded to that TYPE so `receiver_compatible` becomes a type check and
+        // the call is attributed only to the matching definition. A miss keeps
+        // the variable name unchanged so the never-worse invariant holds.
+        //
+        // Gated by `resolve_var_types` (set only for a genuine multi-definer
+        // collision the call graph DECLINED, `!any_resolved && is_ambiguous`): for
+        // a unique target or a call graph that already resolved the edge, the
+        // historic name-based receiver is preserved verbatim, so no resolved edge
+        // is ever sprayed onto a same-named sibling class in another file.
+        if resolve_var_types {
+            if let Some(ty) = resolve_receiver_declared_type(&source, language, line as u32, var) {
+                return CallReceiver::Named(ty);
+            }
+        }
     }
 
     receiver
+}
+
+/// FEATURE-1 d.3: resolve the bare variable receiver `var` to its DECLARED TYPE
+/// using the same `SourceTypeIndex` / `resolve_receiver_type_indexed` machinery
+/// the call-graph builder relies on for typed dispatch, with `find_enclosing_class`
+/// supplying the enclosing-scope context. Returns the bare type name, or `None`
+/// when the type cannot be inferred (untyped / dynamic receiver).
+fn resolve_receiver_declared_type(
+    source: &str,
+    language: Language,
+    line: u32,
+    var: &str,
+) -> Option<String> {
+    use crate::callgraph::find_enclosing_class;
+    use crate::callgraph::type_resolver::{resolve_receiver_type_indexed, SourceTypeIndex};
+
+    if var.is_empty() || is_self_token(var) {
+        return None;
+    }
+    let index = SourceTypeIndex::build(language, source);
+    let enclosing = find_enclosing_class(source, line);
+    let (ty, _confidence) =
+        resolve_receiver_type_indexed(&index, language, source, line, var, enclosing.as_deref());
+    // Reject a degenerate self-mapping (`var` -> `var`) so an unresolved receiver
+    // is never presented as its own type.
+    match ty {
+        Some(t) if t != var => Some(t),
+        _ => None,
+    }
 }
 
 /// c3-cpp-method-caller-v1 (v0.5.0 AUDIT-FIX, C3 gap-a): if the call leaf
@@ -1625,6 +1719,41 @@ fn receiver_for_call_name(
             CallReceiver::Bare
         }
 
+        // FEATURE-1 d.3: PHP instance method call `$obj->method(...)` /
+        // nullsafe `$obj?->method(...)`. The grammar (tree-sitter-php) exposes the
+        // receiver on the `object` field and the method on `name`; without this
+        // arm the method leaf's parent is unmatched and every PHP member call
+        // resolved to `Bare` (compatible with everything -> sprayed onto every
+        // sibling `format`/`render` definition). Recovering the receiver lets the
+        // type-discrimination below attribute the call to the correct class only.
+        "member_call_expression" | "nullsafe_member_call_expression" => {
+            if let Some(obj) = parent.child_by_field_name("object") {
+                return receiver_from_expr(&obj, src);
+            }
+            CallReceiver::Bare
+        }
+
+        // FEATURE-1 d.3: C# member access `recv.Method(...)`. tree-sitter-c-sharp
+        // parses `recv.Read()` as `invocation_expression(function:
+        // member_access_expression(expression: recv, name: Read))`, so the method
+        // leaf's parent is the `member_access_expression` and the receiver is its
+        // `expression` field. Without this arm C# member calls resolved to `Bare`
+        // and `impact Read` broadcast one call site across every `Read` definer.
+        "member_access_expression" => {
+            if let Some(obj) = parent
+                .child_by_field_name("expression")
+                .or_else(|| parent.child_by_field_name("object"))
+            {
+                return receiver_from_expr(&obj, src);
+            }
+            if let Some(first) = parent.named_child(0) {
+                if first.id() != node.id() {
+                    return receiver_from_expr(&first, src);
+                }
+            }
+            CallReceiver::Bare
+        }
+
         // Java/C#/Kotlin field/member access: receiver.method.
         //
         // fix-PW2-B5-impact-alias: Swift `recv.method` parses as
@@ -1639,6 +1768,17 @@ fn receiver_for_call_name(
                 if let Some(grand) = parent.parent() {
                     if let Some(tgt) = grand.child_by_field_name("target") {
                         return receiver_from_expr(&tgt, src);
+                    }
+                    // FEATURE-1 d.3: Kotlin `c.doIt()` parses as
+                    // `navigation_expression(<subject> navigation_suffix(. doIt))`
+                    // with NO `target` field (unlike Swift). The receiver is the
+                    // first named child of the navigation_expression that precedes
+                    // the suffix. Without this Kotlin member calls resolved to
+                    // `Bare` and sprayed across every same-named method definer.
+                    if let Some(first) = grand.named_child(0) {
+                        if first.id() != parent.id() {
+                            return receiver_from_expr(&first, src);
+                        }
                     }
                 }
             }
@@ -3062,7 +3202,11 @@ mod tests {
         let path = dir.join(fname);
         std::fs::write(&path, src).unwrap();
         let (line, col) = r8_locate(src, anchor, name);
-        let r = extract_call_receiver(&path, line, col, name, lang);
+        // FEATURE-1 d.3: these tests assert the raw receiver CLASSIFICATION
+        // (Named/Bare/SelfRef/ShadowedLocal), independent of the collision
+        // cardinality gate, so the declared-type upgrade is enabled to exercise
+        // the full extraction path.
+        let r = extract_call_receiver(&path, line, col, name, lang, true);
         let _ = std::fs::remove_dir_all(&dir);
         r
     }
@@ -3607,6 +3751,290 @@ mod tests {
             targets
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // =====================================================================
+    // FEATURE-1 d.3: retire the impact/references TEXTUAL back-fill spray.
+    //
+    // On a genuine multi-definer method collision the call graph DECLINES, so
+    // impact back-fills callers from a textual `find_references(name, Call)`.
+    // The OLD path kept a lowercase instance-variable receiver against EVERY
+    // sibling type-qualifier (the `unresolvable_collision_keeps` relaxation),
+    // spraying ONE call site onto ALL N definitions (C# `impact Read` -> ~180
+    // callers across 19 targets; php `render` cross-attributing Table/TreeHelper;
+    // swift `_finalizeKeyingModify` binding to BitArray).
+    //
+    // d.3 resolves the call-site receiver to its DECLARED TYPE (the same
+    // `SourceTypeIndex` machinery the call-graph builder uses) and attributes the
+    // caller ONLY to the definition whose owning type matches — the same-named
+    // siblings on OTHER types drop out. A CARDINALITY-1 unique target still keeps
+    // an untyped caller (never-worse). These generalization tests drive the REAL
+    // path (build_project_call_graph + impact_analysis_with_ast_fallback +
+    // enrich_impact_with_references) across csharp, php, swift, python, kotlin.
+    // =====================================================================
+
+    /// Count how many distinct targets attribute a caller whose function name
+    /// contains `caller_frag`. The anti-spray invariant is that a single call
+    /// site is attributed to exactly ONE definition, not broadcast to every
+    /// same-named sibling.
+    fn d3_targets_with_caller(
+        targets: &[(String, usize, Vec<String>)],
+        caller_frag: &str,
+    ) -> usize {
+        targets
+            .iter()
+            .filter(|(_, _, callers)| callers.iter().any(|c| c.contains(caller_frag)))
+            .count()
+    }
+
+    #[test]
+    fn d3_csharp_read_collision_attributes_to_receiver_type_only() {
+        // `Read` defined on two C# classes in two files -> genuine collision.
+        // `App.Run` calls `ar.Read()` where `ar` is a typed `AlphaReader`.
+        // Pre-d.3 the C# member call resolved to `Bare` and the call site was
+        // sprayed onto BOTH `Read` definitions; d.3 attributes it to
+        // `AlphaReader.Read` ONLY.
+        let root = std::env::temp_dir().join("tldr_d3_csharp_read");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.cs"),
+            "class AlphaReader\n{\n    public int Read()\n    {\n        return 1;\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.cs"),
+            "class BetaReader\n{\n    public int Read()\n    {\n        return 2;\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.cs"),
+            "class App\n{\n    public void Run()\n    {\n        AlphaReader ar = new AlphaReader();\n        ar.Read();\n    }\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "Read", crate::Language::CSharp);
+        // The call site must be attributed to exactly ONE definition (no spray).
+        assert_eq!(
+            d3_targets_with_caller(&targets, "Run"),
+            1,
+            "d3: C# `ar.Read()` sprayed across sibling `Read` definers; targets: {:?}",
+            targets
+        );
+        // And that one definition must be the AlphaReader one (the receiver type),
+        // never the BetaReader sibling.
+        let beta = targets.iter().find(|(f, _, _)| f.contains("BetaReader"));
+        if let Some((_, cc, callers)) = beta {
+            assert_eq!(
+                *cc, 0,
+                "d3: BetaReader.Read must not be credited the AlphaReader call; callers: {:?}",
+                callers
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn d3_php_render_collision_no_cross_attribution() {
+        // php `render` on Table and TreeHelper; `run` calls `$t->render()` with
+        // `$t = new Table()`. Pre-d.3 the php member call resolved to `Bare` and
+        // cross-attributed the call to TreeHelper; d.3 keeps it on Table only.
+        let root = std::env::temp_dir().join("tldr_d3_php_render");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("table.php"),
+            "<?php\nclass Table {\n    public function render() { return 1; }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tree.php"),
+            "<?php\nclass TreeHelper {\n    public function render() { return 2; }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("app.php"),
+            "<?php\nfunction run() {\n    $t = new Table();\n    $t->render();\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "render", crate::Language::Php);
+        assert_eq!(
+            d3_targets_with_caller(&targets, "run"),
+            1,
+            "d3: php `$t->render()` cross-attributed to a sibling class; targets: {:?}",
+            targets
+        );
+        let tree = targets.iter().find(|(f, _, _)| f.contains("TreeHelper"));
+        if let Some((_, cc, callers)) = tree {
+            assert_eq!(
+                *cc, 0,
+                "d3: TreeHelper.render must not be credited the Table call; callers: {:?}",
+                callers
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn d3_swift_filter_collision_discriminates_by_receiver_type() {
+        // Two structs each define `filter`; TWO distinct callers each use a
+        // differently-typed receiver. d.3 must route each caller to its OWN
+        // type's definition with NO cross-attribution.
+        let root = std::env::temp_dir().join("tldr_d3_swift_filter");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Sources")).unwrap();
+        std::fs::write(
+            root.join("Sources/Ordered.swift"),
+            "public struct OrderedThing {\n    var items: [Int]\n    public func filter(_ p: (Int) -> Bool) -> OrderedThing {\n        return self\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Bitty.swift"),
+            "public struct BitThing {\n    var bits: [Int]\n    public func filter(_ p: (Int) -> Bool) -> BitThing {\n        return self\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Helper.swift"),
+            "func isPositive(_ x: Int) -> Bool { return x > 0 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Sources/Use.swift"),
+            "func useAlpha(_ ot: OrderedThing) {\n    let _ = ot.filter(isPositive)\n}\nfunc useBeta(_ bt: BitThing) {\n    let _ = bt.filter(isPositive)\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "filter", crate::Language::Swift);
+        let ordered = targets.iter().find(|(f, _, _)| f.contains("OrderedThing"));
+        let bitty = targets.iter().find(|(f, _, _)| f.contains("BitThing"));
+        // OrderedThing.filter has useAlpha and NOT useBeta.
+        if let Some((_, _, callers)) = ordered {
+            assert!(
+                callers.iter().any(|c| c.contains("useAlpha")),
+                "d3: OrderedThing.filter should be called by useAlpha; callers: {:?}",
+                callers
+            );
+            assert!(
+                !callers.iter().any(|c| c.contains("useBeta")),
+                "d3: OrderedThing.filter cross-attributed the BitThing caller; callers: {:?}",
+                callers
+            );
+        }
+        // BitThing.filter has useBeta and NOT useAlpha.
+        if let Some((_, _, callers)) = bitty {
+            assert!(
+                !callers.iter().any(|c| c.contains("useAlpha")),
+                "d3: BitThing.filter cross-attributed the OrderedThing caller; callers: {:?}",
+                callers
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn d3_python_speak_collision_no_spray() {
+        // Positive control (Cat/Dog): `speak` on two classes; `run` constructs a
+        // `Cat` and calls `c.speak()`. The resolved call must land on Cat.speak
+        // only — Dog.speak stays at zero.
+        let root = std::env::temp_dir().join("tldr_d3_py_speak");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("animals.py"),
+            "class Cat:\n    def speak(self):\n        return \"meow\"\n\n\nclass Dog:\n    def speak(self):\n        return \"woof\"\n\n\ndef run():\n    c = Cat()\n    return c.speak()\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "speak", crate::Language::Python);
+        assert_eq!(
+            d3_targets_with_caller(&targets, "run"),
+            1,
+            "d3: python `c.speak()` sprayed onto the Dog sibling; targets: {:?}",
+            targets
+        );
+        let dog = targets.iter().find(|(f, _, _)| f.contains("Dog"));
+        if let Some((_, cc, callers)) = dog {
+            assert_eq!(
+                *cc, 0,
+                "d3: Dog.speak must not be credited the Cat call; callers: {:?}",
+                callers
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn d3_kotlin_method_collision_no_spray() {
+        // Kotlin `doIt` on two classes; `run` uses `val a = Alpha()` then
+        // `a.doIt()`. d.3 recovers the Kotlin navigation receiver, resolves its
+        // type, and attributes the call to Alpha.doIt only.
+        let root = std::env::temp_dir().join("tldr_d3_kotlin");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Alpha.kt"),
+            "class Alpha {\n    fun doIt(): Int {\n        return 1\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Beta.kt"),
+            "class Beta {\n    fun doIt(): Int {\n        return 2\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("App.kt"),
+            "fun run() {\n    val a = Alpha()\n    a.doIt()\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "doIt", crate::Language::Kotlin);
+        assert_eq!(
+            d3_targets_with_caller(&targets, "run"),
+            1,
+            "d3: kotlin `a.doIt()` sprayed onto the Beta sibling; targets: {:?}",
+            targets
+        );
+        let beta = targets.iter().find(|(f, _, _)| f.contains("Beta"));
+        if let Some((_, cc, callers)) = beta {
+            assert_eq!(
+                *cc, 0,
+                "d3: Beta.doIt must not be credited the Alpha call; callers: {:?}",
+                callers
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn d3_never_worse_unique_target_keeps_untyped_caller() {
+        // NEVER-WORSE INVARIANT: a method uniquely defined on ONE class
+        // (cardinality 1) must keep its caller even when the receiver type cannot
+        // be inferred. `w`'s type is not statically knowable here, yet
+        // `Widget.Frobnicate` has exactly one possible owner, so the caller must
+        // NOT be dropped.
+        let root = std::env::temp_dir().join("tldr_d3_never_worse");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("widget.cs"),
+            "class Widget\n{\n    public void Frobnicate()\n    {\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("user.cs"),
+            "class User\n{\n    public void Run(dynamic w)\n    {\n        w.Frobnicate();\n    }\n}\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "Frobnicate", crate::Language::CSharp);
+        let total_callers: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
+        assert!(
+            total_callers >= 1,
+            "d3 never-worse: unique-target caller dropped when receiver type unknown; targets: {:?}",
+            targets
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

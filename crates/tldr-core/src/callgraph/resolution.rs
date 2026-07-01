@@ -945,6 +945,62 @@ pub fn resolve_call(
     }
 }
 
+/// FEATURE-1 d.3 (carried selection thread): does the class entry `e` DEFINE the
+/// method `method_name` — either listed directly in its extracted `methods` or
+/// present in the func_index under `<Class>.<method>` keyed by `e`'s module?
+/// AST/index-driven, no source-text inspection.
+fn class_entry_defines_method(
+    e: &ClassEntry,
+    class_name: &str,
+    method_name: &str,
+    func_index: &FuncIndex,
+    language: &str,
+) -> bool {
+    if e.methods.iter().any(|m| m == method_name) {
+        return true;
+    }
+    let module = path_to_module(&e.file_path, language);
+    func_index
+        .get(&module, &format!("{}.{}", class_name, method_name))
+        .is_some()
+}
+
+/// FEATURE-1 d.3 (carried selection thread): choose which same-bare-name class
+/// definition owns a method call. When the name is defined more than once,
+/// prefer the definition that actually DEFINES this method and is CONCRETE over
+/// a declaration-only (interface/trait/protocol/abstract) one — so the resolved
+/// edge lands on the implementation (lib/core/Axios.js `class Axios`,
+/// `impl OsStrExt for OsStr`) rather than the type DECLARATION (axios `.d.ts`
+/// `interface Axios`, the clap `OsStr` type-def). Non-test wins over test within
+/// each band, mirroring [`ClassIndex::get`]. A pure tiebreak: a single entry, or
+/// a name no entry defines the method on, falls back to the historic
+/// production-preferred [`ClassIndex::get`] pick unchanged.
+fn pick_method_defining_class<'a>(
+    class_name: &str,
+    method_name: &str,
+    class_index: &'a ClassIndex,
+    func_index: &FuncIndex,
+    language: &str,
+) -> Option<&'a ClassEntry> {
+    let entries = class_index.get_all(class_name);
+    if entries.len() <= 1 {
+        return class_index.get(class_name);
+    }
+    // Precedence bands: concrete before declaration-only, non-test before test.
+    for want_decl in [false, true] {
+        for want_test in [false, true] {
+            if let Some(e) = entries.iter().find(|e| {
+                e.kind.is_declaration_only() == want_decl
+                    && is_test_path(&e.file_path) == want_test
+                    && class_entry_defines_method(e, class_name, method_name, func_index, language)
+            }) {
+                return Some(e);
+            }
+        }
+    }
+    class_index.get(class_name)
+}
+
 /// Resolve a method lookup in a specific class via class_index and func_index.
 pub(crate) fn resolve_method_in_class(
     class_name: &str,
@@ -953,7 +1009,8 @@ pub(crate) fn resolve_method_in_class(
     func_index: &FuncIndex,
     language: &str,
 ) -> Option<ResolvedTarget> {
-    let class_entry = class_index.get(class_name)?;
+    let class_entry =
+        pick_method_defining_class(class_name, method_name, class_index, func_index, language)?;
     let module = path_to_module(&class_entry.file_path, language);
     let qualified = format!("{}.{}", class_name, method_name);
 
@@ -1956,12 +2013,33 @@ pub(crate) fn pick_disambiguated_class<'a>(
         return entries.first();
     }
 
+    // FEATURE-1 d.3 (carried selection thread): when the same bare name is
+    // spelled BOTH as a concrete definition and as a declaration-only
+    // (interface/trait/protocol/abstract) one, the concrete definition is the
+    // real implementation the declaration's members point at. Narrow to the
+    // concrete candidates before the module/sourceset ladder so the resolved
+    // edge lands on the implementation, not the type declaration (axios `.d.ts`
+    // `interface Axios` vs `lib/core/Axios.js`; clap OsStr type-def vs impl).
+    // Only narrows when BOTH kinds are present, so it is a pure tiebreak; a
+    // declaration-only class still wins when no concrete spelling exists.
+    let concrete: Vec<&ClassEntry> =
+        entries.iter().filter(|e| !e.kind.is_declaration_only()).collect();
+    let candidates: Vec<&ClassEntry> = if concrete.is_empty() || concrete.len() == entries.len() {
+        entries.iter().collect()
+    } else {
+        concrete
+    };
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+
     let caller_module = path_to_module(caller_file, language);
     let caller_ss = sourceset_of_path(caller_file);
 
     // (2) Same module AND same sourceset as the caller.
-    let r2: Vec<&ClassEntry> = entries
+    let r2: Vec<&ClassEntry> = candidates
         .iter()
+        .copied()
         .filter(|e| e.scope.module == caller_module && e.scope.sourceset == caller_ss)
         .collect();
     if r2.len() == 1 {
@@ -1970,8 +2048,9 @@ pub(crate) fn pick_disambiguated_class<'a>(
 
     // (3) Same module, sourceset visible from the caller via the default
     // dependsOn lattice (jvm caller sees jvm-native/common, never js).
-    let r3: Vec<&ClassEntry> = entries
+    let r3: Vec<&ClassEntry> = candidates
         .iter()
+        .copied()
         .filter(|e| e.scope.module == caller_module && caller_ss.can_see(&e.scope.sourceset))
         .collect();
     if r3.len() == 1 {
@@ -1980,8 +2059,9 @@ pub(crate) fn pick_disambiguated_class<'a>(
 
     // (3b) Any module, sourceset visible from the caller (handles cross-build
     // variants whose package qualifier is identical but path platform differs).
-    let r3b: Vec<&ClassEntry> = entries
+    let r3b: Vec<&ClassEntry> = candidates
         .iter()
+        .copied()
         .filter(|e| caller_ss.can_see(&e.scope.sourceset))
         .collect();
     if r3b.len() == 1 {
@@ -1989,8 +2069,9 @@ pub(crate) fn pick_disambiguated_class<'a>(
     }
 
     // (4) A unique non-test production candidate.
-    let prod: Vec<&ClassEntry> = entries
+    let prod: Vec<&ClassEntry> = candidates
         .iter()
+        .copied()
         .filter(|e| !e.scope.sourceset.is_test)
         .collect();
     if prod.len() == 1 {
@@ -2562,6 +2643,96 @@ mod tests {
         assert!(
             got.is_none(),
             "two same-tier production candidates, neither visible -> decline"
+        );
+    }
+
+    // FEATURE-1 d.3 (carried selection thread): prefer a concrete definition over
+    // a declaration-only (interface/trait/protocol/abstract) spelling of the same
+    // bare name. Mirrors the axios `.d.ts interface Axios` vs `lib/core/Axios.js`
+    // and clap `OsStr` type-def vs `impl OsStrExt for OsStr` cross-crate picks.
+
+    /// A same-bare-name pair (declaration-only + concrete) resolves the class
+    /// binding to the CONCRETE one, order-independently.
+    #[test]
+    fn pick_class_prefers_concrete_over_declaration_only() {
+        let decl = ClassEntry::new(PathBuf::from("index.d.ts"), 1, 5, vec![], vec![])
+            .with_kind(ClassKind::Interface);
+        let concrete = ClassEntry::new(PathBuf::from("lib/core/Axios.js"), 1, 20, vec![], vec![])
+            .with_kind(ClassKind::Class);
+        let entries = vec![decl.clone(), concrete.clone()];
+        let got = pick_disambiguated_class(&entries, Path::new("src/app.js"), "javascript").unwrap();
+        assert_eq!(
+            got.file_path,
+            PathBuf::from("lib/core/Axios.js"),
+            "the concrete impl must win over the .d.ts declaration"
+        );
+        // Order-independent: reversing candidate order yields the same pick.
+        let entries_rev = vec![concrete, decl];
+        let got_rev =
+            pick_disambiguated_class(&entries_rev, Path::new("src/app.js"), "javascript").unwrap();
+        assert_eq!(got_rev.file_path, PathBuf::from("lib/core/Axios.js"));
+    }
+
+    /// A declaration-only class still wins when NO concrete spelling exists — the
+    /// concrete filter is a pure tiebreak, never a spurious decline.
+    #[test]
+    fn pick_class_declaration_only_survives_when_no_concrete() {
+        let a = ClassEntry::new(PathBuf::from("p1/I.ts"), 1, 5, vec![], vec![])
+            .with_kind(ClassKind::Interface)
+            .with_scope(ClassScope {
+                module: "mod_one".into(),
+                sourceset: SourceSet::default(),
+            });
+        let b = ClassEntry::new(PathBuf::from("p2/I.ts"), 1, 5, vec![], vec![])
+            .with_kind(ClassKind::Interface)
+            .with_scope(ClassScope {
+                module: "mod_two".into(),
+                sourceset: SourceSet::default(),
+            });
+        let entries = vec![a, b];
+        let got = pick_disambiguated_class(&entries, Path::new("p3/caller.ts"), "typescript");
+        assert!(
+            got.is_none(),
+            "all-declaration-only ambiguity still declines, not narrowed away"
+        );
+    }
+
+    /// The method-call resolver prefers the concrete definer of the method over a
+    /// declaration-only one, so `Axios.request` / `OsStr.try_str` land on the
+    /// implementation file, not the type declaration.
+    #[test]
+    fn resolve_method_prefers_concrete_definer() {
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Axios",
+            ClassEntry::new(
+                PathBuf::from("index.d.ts"),
+                1,
+                5,
+                vec!["request".to_string()],
+                vec![],
+            )
+            .with_kind(ClassKind::Interface),
+        );
+        class_index.insert(
+            "Axios",
+            ClassEntry::new(
+                PathBuf::from("lib/core/Axios.js"),
+                1,
+                30,
+                vec!["request".to_string()],
+                vec![],
+            )
+            .with_kind(ClassKind::Class),
+        );
+        let func_index = FuncIndex::new();
+        let got =
+            resolve_method_in_class("Axios", "request", &class_index, &func_index, "javascript")
+                .expect("request must resolve");
+        assert_eq!(
+            got.file,
+            PathBuf::from("lib/core/Axios.js"),
+            "request must resolve to the concrete impl, not the .d.ts declaration"
         );
     }
 
