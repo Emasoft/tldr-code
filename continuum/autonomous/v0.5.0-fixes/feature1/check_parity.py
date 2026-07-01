@@ -5,21 +5,32 @@ Re-runs `tldr calls` (and the cluster repros) on the CURRENT installed binary,
 diffs the normalized edge set against the captured name-match baseline, and emits
 a structured PASS/FAIL verdict. Exits non-zero on FAIL.
 
-HARD FAIL conditions (the "never worse" rules):
-  (a) flips_on_unique_name > 0
-      A call-site (caller, callee-name) whose baseline callee NAME was UNIQUE
-      across the repo baseline now resolves to a DIFFERENT definition file.
-      Name-match was definitionally correct for a unique name, so a flip there
-      is a regression.
+Every diff CHANNEL is gated; a delta passes only if it carries an explicit,
+owner-pinned (--allow) entry. HARD FAIL conditions:
+  (a) flipped_unreviewed > 0
+      A call-site (caller, callee-name) present in BOTH baseline and current
+      resolves to a DIFFERENT owner-file set and is NOT allowlisted for that new
+      owner -- UNIQUE OR non-unique name (d.2-d.4 re-point ambiguous calls).
+      flips_on_unique_name is the louder sub-signal: a flip on a UNIQUE baseline
+      name was definitionally correct, so it is a regression.
   (b) new_low_or_unreviewed > 0
       `calls` exposes no confidence/resolution-kind field, so every NET-NEW edge
       at a previously-UNRESOLVED call-site (an ADDED (caller, callee-name) pair)
-      is treated as REVIEW and FAILS unless it is on the --allow allowlist.
+      is treated as REVIEW and FAILS unless allowlisted for its resolved owner.
   (c) a POSITIVE-CONTROL cluster cell regressed (constructor-typed receiver lost
       its per-type resolution).
+  (d) removed_unreviewed > 0
+      d.2 REMOVES edges (declining bad fuzzy matches); every removed call-site
+      FAILS unless allowlisted -- an un-reviewed removal could be a genuine loss
+      of a correct edge, not a broadcast-collapse byproduct.
+  (hard-error) an UNEXPECTED missing baseline (a NON-excluded repo with no
+      .calls.json), a current-binary run that is not "ok" (crash/timeout/empty),
+      or a well-formed-but-EMPTY edge set vs a non-empty baseline. These used to
+      append to `errors` and vacuously PASS; they now FAIL.
 
-REPORTED but not auto-failing: removed edges, non-unique flips (broadcast
-collapse is the whole point), and cluster still_buggy/improved/fixed progress.
+CLEANLY SKIPPED (not a failure): a repo declared in baseline_summary.json
+repos_excluded (nondeterministic). REPORTED but not auto-failing: cluster
+still_buggy/improved/fixed progress.
 
 Usage:
   python3 check_parity.py \
@@ -82,9 +93,16 @@ def main():
 
     totals = {"repos": 0, "baseline_edges": 0, "current_edges": 0,
               "removed": 0, "added": 0, "flipped": 0,
+              "removed_unreviewed": 0, "flipped_unreviewed": 0,
               "flips_on_unique_name": 0, "new_low_or_unreviewed": 0}
     repo_reports = []
     errors = []
+    # HOLE 1 (vacuous-pass): an UNEXPECTED missing baseline, a current-binary
+    # run that is not "ok" (crash/timeout/empty), or a well-formed-but-EMPTY edge
+    # set against a non-empty baseline must FAIL -- not silently `continue` into
+    # a PASS. These are hard failures kept SEPARATE from the intentional,
+    # cleanly-skipped exclusion of nondeterministic repos (excluded_skipped).
+    hard_errors = []
     excluded_skipped = []
 
     for entry in summary.get("repos", []):
@@ -92,20 +110,45 @@ def main():
         if repo_filter and repo not in repo_filter:
             continue
         if entry.get("excluded"):
+            # LEGITIMATE intentional exclusion of a nondeterministic repo
+            # (declared in baseline_summary.json repos_excluded, e.g.
+            # php-symfony-console). Skipped cleanly, never gated on. This is the
+            # ONLY path that may skip a repo without failing.
             excluded_skipped.append(repo)
             continue
         bdoc = load_baseline_doc(a.baseline_dir, repo)
         if bdoc is None:
-            errors.append({"repo": repo, "error": "baseline edge file missing"})
+            # UNEXPECTED missing baseline for a NON-excluded repo -> hard FAIL.
+            err = {"repo": repo,
+                   "error": "baseline edge file missing (repo is NOT in "
+                            "repos_excluded -> unexpected, cannot vacuously pass)"}
+            errors.append(err)
+            hard_errors.append(err)
             continue
         baseline_edges = frozenset(pl.edge_from_list(e) for e in bdoc.get("stable", []))
         cur = pl.stable_calls(a.binary, entry.get("captured_path",
                               os.path.join(a.root, repo)), a.root,
                               a.runs, a.timeout)
         if cur["status"] != "ok":
-            errors.append({"repo": repo, "error": "current run " + cur["status"]})
+            # current binary crashed / timed out / produced no output -> hard FAIL.
+            err = {"repo": repo,
+                   "error": "current binary run status=%s (crash/timeout/empty "
+                            "output) -> cannot vacuously pass" % cur["status"]}
+            errors.append(err)
+            hard_errors.append(err)
             continue
         cur_edges = frozenset(pl.edge_from_list(e) for e in cur["stable"])
+        if len(cur_edges) == 0 and len(baseline_edges) > 0:
+            # well-formed JSON but ZERO edges against a non-empty baseline is a
+            # vacuous pass in disguise (would report every baseline edge as a
+            # 'removed' at most) -> hard FAIL explicitly.
+            err = {"repo": repo,
+                   "error": "current binary produced 0 stable edges vs %d "
+                            "baseline edges (empty calls output)"
+                            % len(baseline_edges)}
+            errors.append(err)
+            hard_errors.append(err)
+            continue
         # jitter immunity: skip deltas on any call-site that is unstable in
         # either the baseline or the current capture.
         ignore = (pl.callsite_keys_of(bdoc.get("unstable", []))
@@ -114,7 +157,8 @@ def main():
         d = pl.diff_repo(repo, baseline_edges, cur_edges, allow_repo,
                          ignore_callsites=ignore)
         for k in ("baseline_edges", "current_edges", "removed", "added",
-                  "flipped", "flips_on_unique_name", "new_low_or_unreviewed"):
+                  "flipped", "removed_unreviewed", "flipped_unreviewed",
+                  "flips_on_unique_name", "new_low_or_unreviewed"):
             totals[k] += d[k]
         totals["repos"] += 1
         repo_reports.append(d)
@@ -137,15 +181,23 @@ def main():
 
     # ---- verdict ----
     fail_reasons = []
-    if totals["flips_on_unique_name"] > 0:
-        fail_reasons.append("rule(a): %d flip(s) on a UNIQUE baseline callee name"
-                            % totals["flips_on_unique_name"])
+    if totals["flipped_unreviewed"] > 0:
+        fail_reasons.append(
+            "rule(a): %d flipped call-site(s) (unique OR non-unique) not on "
+            "allowlist for their resolved owner (of which %d flip a UNIQUE "
+            "baseline callee name)" % (totals["flipped_unreviewed"],
+                                       totals["flips_on_unique_name"]))
     if totals["new_low_or_unreviewed"] > 0:
         fail_reasons.append("rule(b): %d net-new edge(s) at previously-unresolved "
                             "call-sites not on allowlist" % totals["new_low_or_unreviewed"])
     if posctl_regressed:
         fail_reasons.append("rule(c): positive control regressed: "
                             + ",".join(posctl_regressed))
+    if totals["removed_unreviewed"] > 0:
+        fail_reasons.append("rule(d): %d removed edge(s) not on allowlist"
+                            % totals["removed_unreviewed"])
+    for he in hard_errors:
+        fail_reasons.append("hard-error[%s]: %s" % (he["repo"], he["error"]))
     passed = not fail_reasons
 
     counts = {
@@ -154,6 +206,8 @@ def main():
         "removed": totals["removed"],
         "added": totals["added"],
         "flipped": totals["flipped"],
+        "removed_unreviewed": totals["removed_unreviewed"],
+        "flipped_unreviewed": totals["flipped_unreviewed"],
         "flips_on_unique_name": totals["flips_on_unique_name"],
         "new_low_or_unreviewed": totals["new_low_or_unreviewed"],
         "cluster_fixed": cluster["fixed"],
@@ -185,15 +239,23 @@ def main():
             print("ERRORS " + json.dumps(errors))
         # show the actual offending call-sites so a stage can triage / allowlist
         for d in repo_reports:
-            if d["flips_on_unique_name"] or d["new_low_or_unreviewed"]:
+            if (d["flipped_unreviewed"] or d["new_low_or_unreviewed"]
+                    or d["removed_unreviewed"]):
                 print("OFFENDERS[%s]" % d["repo"])
-                for f in d["_flips_on_unique_name"]:
-                    print("  FLIP_UNIQUE %s::%s -> %s  base=%s cur=%s" % (
-                        f["src_file"], f["src_func"], f["dst_func"],
+                for f in d["_flipped_unreviewed"]:
+                    tag = ("FLIP_UNIQUE" if len(f["baseline_dst_files"]) == 1
+                           and f in d["_flips_on_unique_name"] else "FLIP")
+                    print("  %s %s::%s -> %s  base=%s cur=%s" % (
+                        tag, f["src_file"], f["src_func"], f["dst_func"],
                         f["baseline_dst_files"], f["current_dst_files"]))
                 for n in d["_new_low_or_unreviewed"]:
                     print("  NEW_UNREVIEWED %s::%s -> %s @ %s" % (
                         n["src_file"], n["src_func"], n["dst_func"], n["dst_files"]))
+                for r in d["_removed_unreviewed"]:
+                    print("  REMOVED_UNREVIEWED %s::%s -> %s @ %s" % (
+                        r["src_file"], r["src_func"], r["dst_func"], r["dst_files"]))
+        for he in hard_errors:
+            print("HARD_ERROR[%s] %s" % (he["repo"], he["error"]))
         for fr in fail_reasons:
             print("FAIL_REASON " + fr)
         print("PARITY: " + ("PASS" if passed else "FAIL"))

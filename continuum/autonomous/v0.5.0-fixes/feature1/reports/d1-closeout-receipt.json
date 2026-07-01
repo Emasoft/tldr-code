@@ -1,0 +1,2161 @@
+{
+  "_about": "FEATURE-1 d.1 CLOSEOUT RECEIPT. Independent measurement: the d.1-FIXED binary run across the FULL corpus (prior 0-delta claim rested on a pre-fix stored artifact; this re-runs the actual fixed binary). READ-ONLY.",
+  "generated_at": "2026-07-01T02:55:14",
+  "binary": "/Users/cosimo/.cargo/bin/tldr",
+  "binary_version": "tldr 0.4.1",
+  "fixed_build_confirmed": true,
+  "fixed_build_evidence": "impact parse @ rust-clap: derive.rs:Parser.parse (TRAIT, cc=2) and parser/parser.rs:Parser.parse (STRUCT, cc=1) are DISTINCT targets with distinct owners -> same-named methods UN-merged.",
+  "methodology": {
+    "runs_per_repo": 3,
+    "timeout_s": 180,
+    "edge_identity": "(src_file, src_func, dst_file, dst_func), paths relpath'd to repo root",
+    "diff_level": "call-site key (src_file, src_func, dst_func) -> set(dst_file); flip=same key diff dst set",
+    "jitter_control": "ignore = callsite keys of (baseline.unstable UNION current.unstable); current stable = intersection across 3 runs -- matches baseline capture protocol",
+    "note": "own diff, did NOT invoke check_parity.py; replicates parity_lib.py normalization verbatim"
+  },
+  "repos_run": 38,
+  "repos_excluded_from_gate": [
+    "php-symfony-console"
+  ],
+  "only_rust_deltas": true,
+  "nonrust_with_deltas": [],
+  "invariant_assertion": "PASS: non-zero calls-edge deltas appear ONLY in rust-clap/rust-ripgrep; all other gated repos = 0/0/0",
+  "per_repo_deltas": [
+    {
+      "repo": "c-redis",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 25853,
+      "current_edges": 25853,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "c-sds",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 71,
+      "current_edges": 71,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "cpp-fmt",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 1880,
+      "current_edges": 1880,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "cpp-tinyxml2",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 166,
+      "current_edges": 166,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "csharp-newtonsoft-bson",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 940,
+      "current_edges": 940,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "csharp-newtonsoft-json",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 13148,
+      "current_edges": 13148,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "elixir-phoenix",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 2413,
+      "current_edges": 2413,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "elixir-plug",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 586,
+      "current_edges": 586,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "go-gin",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 2245,
+      "current_edges": 2245,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "go-httprouter",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 93,
+      "current_edges": 93,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "java-petclinic",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 205,
+      "current_edges": 205,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "java-retrofit",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 3043,
+      "current_edges": 3043,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "js-express",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 331,
+      "current_edges": 331,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "js-lodash",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 2946,
+      "current_edges": 2946,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "kotlin-coroutines",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 8046,
+      "current_edges": 8046,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "kotlin-datetime",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 2056,
+      "current_edges": 2056,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "lua-lsp",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 226,
+      "current_edges": 226,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "lua-luvit",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 816,
+      "current_edges": 816,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "luau-roact",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 111,
+      "current_edges": 111,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "luau",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 12037,
+      "current_edges": 12037,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "ocaml-dune",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 22752,
+      "current_edges": 22752,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "ocaml-lwt",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 3143,
+      "current_edges": 3143,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "php-guzzle",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 1879,
+      "current_edges": 1879,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "php-symfony-console",
+      "excluded": true,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 1880,
+      "current_edges": 1880,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "python-flask",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 161,
+      "current_edges": 161,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "python-requests",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 721,
+      "current_edges": 721,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "ruby-rubocop",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 72,
+      "current_edges": 72,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "ruby-sinatra",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 1031,
+      "current_edges": 1031,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "rust-clap",
+      "excluded": false,
+      "is_rust": true,
+      "run_status": "ok",
+      "baseline_edges": 6487,
+      "current_edges": 6537,
+      "added": 374,
+      "removed": 325,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "rust-ripgrep",
+      "excluded": false,
+      "is_rust": true,
+      "run_status": "ok",
+      "baseline_edges": 2261,
+      "current_edges": 2327,
+      "added": 344,
+      "removed": 278,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "scala-cats-effect",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 671,
+      "current_edges": 671,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "scala-zio",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 14113,
+      "current_edges": 14113,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "solidity-openzeppelin",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 1307,
+      "current_edges": 1307,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "solidity-solmate",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 422,
+      "current_edges": 422,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "swift-alamofire",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 2707,
+      "current_edges": 2707,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "swift-collections",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 1586,
+      "current_edges": 1586,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "typescript-axios",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 820,
+      "current_edges": 820,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    },
+    {
+      "repo": "typescript-nest",
+      "excluded": false,
+      "is_rust": false,
+      "run_status": "ok",
+      "baseline_edges": 100,
+      "current_edges": 100,
+      "added": 0,
+      "removed": 0,
+      "flipped": 0,
+      "jitter_skipped": 0
+    }
+  ],
+  "rust_delta_detail": {
+    "rust-clap": {
+      "added": [
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "Arg.cmp",
+          "dst_func": "Arg.get_id",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "Arg.eq",
+          "dst_func": "Arg.get_id",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "Arg.from",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "Arg.render_arg_val",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg_group.rs",
+          "src_func": "ArgGroup.from",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._build_bin_names_internal",
+          "dst_func": "String.from",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._build_self",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._build_subcommand",
+          "dst_func": "String.from",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._copy_subtree_for_help",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._panic_on_missing_help",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._propagate_global_args",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._propagate_subcommand",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.arg_internal",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.get_used_global_args",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.groups_for_arg",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.required_graph",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.unroll_args_in_group",
+          "dst_func": "ValueParser.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.write_version_err",
+          "dst_func": "StyledStr.from",
+          "dst_files": [
+            "clap_builder/src/builder/styled_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "Inner.cmp",
+          "dst_func": "Inner.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "Inner.default",
+          "dst_func": "Inner.from_static_ref",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "Inner.eq",
+          "dst_func": "Inner.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "OsStr.from",
+          "dst_func": "OsStr.from",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "OsString.eq",
+          "dst_func": "OsStr.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "String.eq",
+          "dst_func": "OsStr.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "eq",
+          "dst_func": "OsStr.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/possible_value.rs",
+          "src_func": "PossibleValue.from",
+          "dst_func": "PossibleValue.new",
+          "dst_files": [
+            "clap_builder/src/builder/possible_value.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/range.rs",
+          "src_func": "ValueRange.from",
+          "dst_func": "ValueRange.raw",
+          "dst_files": [
+            "clap_builder/src/builder/range.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/resettable.rs",
+          "src_func": "Resettable.from",
+          "dst_func": "Value.Value",
+          "dst_files": [
+            "examples/find.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Inner.cmp",
+          "dst_func": "Inner.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Inner.default",
+          "dst_func": "Inner.from_static_ref",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Inner.eq",
+          "dst_func": "Inner.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "OsStr.eq",
+          "dst_func": "Str.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Str.eq",
+          "dst_func": "Str.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Str.from",
+          "dst_func": "Str.from",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "String.eq",
+          "dst_func": "Str.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "eq",
+          "dst_func": "Str.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/styled_str.rs",
+          "src_func": "StyledStr.wrap",
+          "dst_func": "ChildGraph.with_capacity",
+          "dst_files": [
+            "clap_builder/src/util/graph.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "BoolValueParser.default",
+          "dst_func": "BoolValueParser.new",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "BoolValueParser.parse_ref",
+          "dst_func": "BoolValueParser.possible_values",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "BoolValueParser.possible_values",
+          "dst_func": "BoolValueParser.possible_values",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "BoolishValueParser.default",
+          "dst_func": "BoolishValueParser.new",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "BoolishValueParser.parse_ref",
+          "dst_func": "str_to_bool",
+          "dst_files": [
+            "clap_builder/src/util/str_to_bool.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "BoolishValueParser.possible_values",
+          "dst_func": "BoolishValueParser.possible_values",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "EnumValueParser.default",
+          "dst_func": "EnumValueParser.new",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "EnumValueParser.parse_ref",
+          "dst_func": "Arg.is_ignore_case_set",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "FalseyValueParser.default",
+          "dst_func": "FalseyValueParser.new",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "FalseyValueParser.parse_ref",
+          "dst_func": "str_to_bool",
+          "dst_files": [
+            "clap_builder/src/util/str_to_bool.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "FalseyValueParser.possible_values",
+          "dst_func": "FalseyValueParser.possible_values",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "MapValueParser.parse",
+          "dst_func": "parse",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "MapValueParser.parse_ref",
+          "dst_func": "MapValueParser.parse_ref",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        }
+      ],
+      "removed": [
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "Arg.render_arg_val",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "From.from",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "Ord.cmp",
+          "dst_func": "Arg.get_id",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg.rs",
+          "src_func": "PartialEq.eq",
+          "dst_func": "Arg.get_id",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/arg_group.rs",
+          "src_func": "From.from",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._build_self",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._copy_subtree_for_help",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._do_parse",
+          "dst_func": "Default.default",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._panic_on_missing_help",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._propagate_global_args",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command._propagate_subcommand",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.arg_internal",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.get_arg_conflicts_with",
+          "dst_func": "MKeyMap.push",
+          "dst_files": [
+            "clap_builder/src/mkeymap.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.get_subcommands_containing",
+          "dst_func": "MKeyMap.push",
+          "dst_files": [
+            "clap_builder/src/mkeymap.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.get_used_global_args",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.groups_for_arg",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.new_inner",
+          "dst_func": "Default.default",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.required_graph",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.unroll_args_in_group",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Command.write_version_err",
+          "dst_func": "From.from",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/command.rs",
+          "src_func": "Default.default",
+          "dst_func": "Default.default",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "Default.default",
+          "dst_func": "OsStr.from_static_ref",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "From.from",
+          "dst_func": "From.from",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "Ord.cmp",
+          "dst_func": "Inner.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "PartialEq.eq",
+          "dst_func": "Inner.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/os_str.rs",
+          "src_func": "PartialEq.eq",
+          "dst_func": "OsStr.as_os_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/possible_value.rs",
+          "src_func": "From.from",
+          "dst_func": "PossibleValue.new",
+          "dst_files": [
+            "clap_builder/src/builder/possible_value.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/possible_value.rs",
+          "src_func": "PossibleValue.new",
+          "dst_func": "Default.default",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/range.rs",
+          "src_func": "From.from",
+          "dst_func": "ValueRange.raw",
+          "dst_files": [
+            "clap_builder/src/builder/range.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/resettable.rs",
+          "src_func": "From.from",
+          "dst_func": "Value.Value",
+          "dst_files": [
+            "examples/find.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Default.default",
+          "dst_func": "Str.from_static_ref",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "From.from",
+          "dst_func": "From.from",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "Ord.cmp",
+          "dst_func": "Inner.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "PartialEq.eq",
+          "dst_func": "Inner.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/os_str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/str.rs",
+          "src_func": "PartialEq.eq",
+          "dst_func": "Str.as_str",
+          "dst_files": [
+            "clap_builder/src/builder/str.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/styling.rs",
+          "src_func": "Default.default",
+          "dst_func": "Styles.styled",
+          "dst_files": [
+            "clap_builder/src/builder/styling.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "AnyValueParser.parse_ref",
+          "dst_func": "AnyValue.new",
+          "dst_files": [
+            "clap_builder/src/util/any_value.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "AnyValueParser.parse_ref",
+          "dst_func": "TypedValueParser.parse_ref",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "AnyValueParser.parse_ref_",
+          "dst_func": "AnyValue.new",
+          "dst_files": [
+            "clap_builder/src/util/any_value.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "AnyValueParser.parse_ref_",
+          "dst_func": "TypedValueParser.parse_ref_",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "Default.default",
+          "dst_func": "ValueParser.new",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "EnumValueParser.new",
+          "dst_func": "Default.default",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "From.from",
+          "dst_func": "Default.default",
+          "dst_files": [
+            "clap_builder/src/builder/command.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "From.from",
+          "dst_func": "From.from",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "From.from",
+          "dst_func": "ValueRange.end_bound",
+          "dst_files": [
+            "clap_builder/src/builder/range.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "From.from",
+          "dst_func": "ValueRange.start_bound",
+          "dst_files": [
+            "clap_builder/src/builder/range.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "RangedI64ValueParser.new",
+          "dst_func": "From.from",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "RangedU64ValueParser.new",
+          "dst_func": "From.from",
+          "dst_files": [
+            "clap_builder/src/builder/value_parser.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "TypedValueParser.parse",
+          "dst_func": "Arg.is_ignore_case_set",
+          "dst_files": [
+            "clap_builder/src/builder/arg.rs"
+          ]
+        },
+        {
+          "src_file": "clap_builder/src/builder/value_parser.rs",
+          "src_func": "TypedValueParser.parse",
+          "dst_func": "PathCompleter.any",
+          "dst_files": [
+            "clap_complete/src/engine/custom.rs"
+          ]
+        }
+      ],
+      "flipped": []
+    },
+    "rust-ripgrep": {
+      "added": [
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "DecompressionMatcherBuilder.build",
+          "dst_func": "Error.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "DecompressionMatcherBuilder.try_associate",
+          "dst_func": "Glob.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "DecompressionReaderBuilder.build",
+          "dst_func": "Glob.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/process.rs",
+          "src_func": "CommandReader.close",
+          "dst_func": "CommandReader.drop",
+          "dst_files": [
+            "crates/cli/src/process.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "AfterContext.update",
+          "dst_func": "ContextMode.set_after",
+          "dst_files": [
+            "crates/core/flags/lowargs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "AfterContext.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "AfterContext.update",
+          "dst_func": "usize",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "AutoHybridRegex.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "BeforeContext.update",
+          "dst_func": "ContextMode.set_before",
+          "dst_files": [
+            "crates/core/flags/lowargs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "BeforeContext.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "BeforeContext.update",
+          "dst_func": "usize",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Binary.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "BlockBuffered.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "ByteOffset.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Color.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Colors.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Column.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Context.update",
+          "dst_func": "ContextMode.set_both",
+          "dst_files": [
+            "crates/core/flags/lowargs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Context.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Context.update",
+          "dst_func": "usize",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Crlf.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "DfaSizeLimit.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "DfaSizeLimit.update",
+          "dst_func": "human_readable_usize",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Engine.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "FieldContextSeparator.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "FieldMatchSeparator.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "File.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "FixedStrings.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Follow.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Generate.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Glob.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Glob.update",
+          "dst_func": "string",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "GlobCaseInsensitive.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Heading.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Hidden.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "HostnameBin.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "HyperlinkFormat.doc_choices",
+          "dst_func": "HyperlinkAlias.display_priority",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "HyperlinkFormat.doc_choices",
+          "dst_func": "hyperlink_aliases",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "HyperlinkFormat.doc_long",
+          "dst_func": "HyperlinkAlias.display_priority",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "HyperlinkFormat.doc_long",
+          "dst_func": "hyperlink_aliases",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "HyperlinkFormat.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "IGlob.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "IGlob.update",
+          "dst_func": "string",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "IgnoreFile.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "IgnoreFileCaseInsensitive.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "IncludeZero.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "InvertMatch.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "JSON.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "LineBuffered.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "MaxColumns.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        }
+      ],
+      "removed": [
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "DecompressionMatcherBuilder.build",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "DecompressionMatcherBuilder.try_associate",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "DecompressionReaderBuilder.build",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "resolve_binary",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/decompress.rs",
+          "src_func": "try_resolve_binary",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/pattern.rs",
+          "src_func": "patterns_from_path",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/cli/src/process.rs",
+          "src_func": "CommandReader.close",
+          "dst_func": "Drop.drop",
+          "dst_files": [
+            "crates/cli/src/process.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/complete/bash.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.name_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/complete/fish.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.doc_short",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/complete/fish.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.is_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/complete/fish.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.name_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/complete/powershell.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.doc_short",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/complete/powershell.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.name_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/config.rs",
+          "src_func": "parse",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.doc_choices",
+          "dst_func": "HyperlinkAlias.display_priority",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.doc_choices",
+          "dst_func": "hyperlink_aliases",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.doc_long",
+          "dst_func": "HyperlinkAlias.display_priority",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.doc_long",
+          "dst_func": "hyperlink_aliases",
+          "dst_files": [
+            "crates/printer/src/hyperlink/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "ContextMode.set_after",
+          "dst_files": [
+            "crates/core/flags/lowargs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "ContextMode.set_before",
+          "dst_files": [
+            "crates/core/flags/lowargs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "ContextMode.set_both",
+          "dst_files": [
+            "crates/core/flags/lowargs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "FlagValue.unwrap_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "FlagValue.unwrap_value",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "human_readable_u64",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "human_readable_usize",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "string",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "u64",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "Flag.update",
+          "dst_func": "usize",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/defs.rs",
+          "src_func": "non_switches_have_variable_names",
+          "dst_func": "Flag.doc_variable",
+          "dst_files": [
+            "crates/core/flags/defs.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/help.rs",
+          "src_func": "generate_long",
+          "dst_func": "Flag.doc_category",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/help.rs",
+          "src_func": "generate_long_flag",
+          "dst_func": "Flag.doc_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/help.rs",
+          "src_func": "generate_long_flag",
+          "dst_func": "Flag.is_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/help.rs",
+          "src_func": "generate_long_flag",
+          "dst_func": "Flag.name_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/help.rs",
+          "src_func": "generate_short",
+          "dst_func": "Flag.doc_category",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/help.rs",
+          "src_func": "generate_short_flag",
+          "dst_func": "AsRef.as_ref",
+          "dst_files": [
+            "crates/globset/src/glob.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/man.rs",
+          "src_func": "generate",
+          "dst_func": "Flag.doc_category",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/man.rs",
+          "src_func": "generate_flag",
+          "dst_func": "Flag.doc_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/man.rs",
+          "src_func": "generate_flag",
+          "dst_func": "Flag.is_switch",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/doc/man.rs",
+          "src_func": "generate_flag",
+          "dst_func": "Flag.name_long",
+          "dst_files": [
+            "crates/core/flags/mod.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.buffer_writer",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.from_low_args",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.path_printer_builder",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.printer_json",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.printer_standard",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.printer_summary",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.search_worker",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.searcher",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.stats",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "HiArgs.walk_builder",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        },
+        {
+          "src_file": "crates/core/flags/hiargs.rs",
+          "src_func": "Patterns.from_low_args",
+          "dst_func": "Clone.clone",
+          "dst_files": [
+            "crates/ignore/src/lib.rs"
+          ]
+        }
+      ],
+      "flipped": []
+    }
+  },
+  "cluster_goldens": {
+    "baseline_still_buggy": 13,
+    "fixed_now": 0,
+    "cells": [
+      {
+        "cell": "csharp-read-broadcast",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "csharp-read-targets",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "csharp-bson-readnormal",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "cpp-size-broadcast",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "cpp-getfilesize-gtest",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "ts-isbuffer-selfedge",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "swift-finalizekeying",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "rust-parse-collide",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "php-render-crossattr",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "python-prepareurl-falseconftest",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "luau-setstate-component-absent",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "lua-initialize-conflated",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "kotlin-minus-overloads",
+        "status": "still_buggy->still_buggy"
+      },
+      {
+        "cell": "posctl-cat-dog",
+        "status": "correct->correct"
+      }
+    ]
+  },
+  "cluster_note": "d.1 = rust owner un-merge fix. Rust clap cell (rust-parse-collide) reflects the trait/struct un-merge at the edge-set level (see rust_delta_detail); remaining cluster cells (csharp/cpp/ts/swift/php/python/lua/luau/kotlin) await d.2-d.7 and are expected to remain still_buggy at this stage.",
+  "verdict": "PASS: d.1-FIXED binary verified live across 38 corpus repos; calls-edge deltas confined to rust-clap/rust-ripgrep (0 non-rust repos with deltas); cluster goldens 0 fixed / 13 baseline-still-buggy; the 0-delta-on-unchanged claim now rests on the ACTUAL fixed binary, not a stored artifact."
+}

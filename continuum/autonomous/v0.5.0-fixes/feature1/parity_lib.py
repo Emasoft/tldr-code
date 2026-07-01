@@ -237,21 +237,56 @@ def callsite_map(edges):
     return m
 
 
+def _dst_sig(dst_files):
+    """Canonical, order-independent signature of a call-site's resolved-owner
+    dst_file SET. Used inside the allowlist key so an allowlisted call-site is
+    bound to the specific owner file(s) it was reviewed against."""
+    return "\x1f".join(sorted(dst_files))
+
+
 def _allow_index(allow_entries):
-    """Index allow entries by (type, src_file, src_func, dst_func). Each entry:
-       {repo, type:'added'|'flipped', src_file, src_func, dst_func}."""
+    """Index allow entries into a set of
+       (type, repo, src_file, src_func, dst_func, dst_sig) tuples.
+
+    Each entry: {repo, type:'added'|'removed'|'flipped', src_file, src_func,
+    dst_func, dst_file}. `dst_file` is the resolved callee OWNER file(s) and is
+    REQUIRED: it may be a single string or a list. Including it in the key means
+    an allowlisted call-site can NOT silently absorb a future owner-flip to a
+    DIFFERENT file (the owner-blind-key hole). `repo` may be '*' (any repo)."""
     idx = set()
     for a in allow_entries or []:
+        df = a.get("dst_file", "")
+        if isinstance(df, str):
+            df = [df] if df else []
         idx.add((
             a.get("type", ""), a.get("repo", ""),
             a.get("src_file", ""), a.get("src_func", ""), a.get("dst_func", ""),
+            _dst_sig(df),
         ))
     return idx
+
+
+def _allow_has(idx, type_, repo, sf, sfn, dfunc, dst_files):
+    """True iff this delta is explicitly allowlisted. Matches the CONCRETE repo
+    OR '*' (fixes the latent '*'-never-matches scoping bug: entries stored under
+    '*' were previously unreachable because the lookup used the concrete repo)
+    AND requires the resolved dst_file OWNER set to match the reviewed entry."""
+    sig = _dst_sig(dst_files)
+    return ((type_, repo, sf, sfn, dfunc, sig) in idx
+            or (type_, "*", sf, sfn, dfunc, sig) in idx)
 
 
 def diff_repo(repo, baseline_edges, current_edges, allow_entries,
               ignore_callsites=None):
     """Categorize the per-repo delta. Returns a dict of counts + detail lists.
+
+    Every channel is GATED: a delta must carry an explicit allowlist entry that
+    pins the EXACT resolved owner file(s), else it FAILS.
+      * added   call-sites -> new_low_or_unreviewed  (rule b)
+      * flipped call-sites -> flipped_unreviewed      (rule a; unique OR not)
+      * removed call-sites -> removed_unreviewed       (rule d)
+    `flips_on_unique_name` is the louder sub-signal: a flip whose baseline callee
+    NAME was UNIQUE is a definitional regression (name-match was provably right).
 
     `ignore_callsites` is a set of (src_file, src_func, dst_func) keys that are
     KNOWN-UNSTABLE (jitter) in the baseline and/or current capture; deltas on
@@ -264,7 +299,9 @@ def diff_repo(repo, baseline_edges, current_edges, allow_entries,
     allow = _allow_index(allow_entries)
 
     removed, added, flipped = [], [], []
+    removed_unreviewed = []
     flips_on_unique = []
+    flipped_unreviewed = []
     new_unreviewed = []
     jitter_skipped = 0
 
@@ -276,8 +313,14 @@ def diff_repo(repo, baseline_edges, current_edges, allow_entries,
             jitter_skipped += 1
             continue
         sf, sfn, dfunc = k
-        removed.append({"src_file": sf, "src_func": sfn, "dst_func": dfunc,
-                        "dst_files": sorted(bmap[k])})
+        rec = {"src_file": sf, "src_func": sfn, "dst_func": dfunc,
+               "dst_files": sorted(bmap[k])}
+        removed.append(rec)
+        # rule (d): d.2 REMOVES edges (declining bad fuzzy matches). A removed
+        # edge is only OK if it is an explicitly reviewed, owner-pinned entry;
+        # an un-reviewed removal could be a genuine loss of a correct edge.
+        if not _allow_has(allow, "removed", repo, sf, sfn, dfunc, bmap[k]):
+            removed_unreviewed.append(rec)
 
     for k in sorted(ckeys - bkeys):
         if k in ignore:
@@ -288,8 +331,9 @@ def diff_repo(repo, baseline_edges, current_edges, allow_entries,
                "dst_files": sorted(cmap[k])}
         added.append(rec)
         # rule (b): confidence is NOT exposed -> every NET-NEW edge at a
-        # previously-unresolved call-site is REVIEW; FAIL unless allowlisted.
-        if ("added", repo, sf, sfn, dfunc) not in allow:
+        # previously-unresolved call-site is REVIEW; FAIL unless allowlisted for
+        # the exact resolved OWNER file(s).
+        if not _allow_has(allow, "added", repo, sf, sfn, dfunc, cmap[k]):
             new_unreviewed.append(rec)
 
     for k in sorted(bkeys & ckeys):
@@ -303,10 +347,14 @@ def diff_repo(repo, baseline_edges, current_edges, allow_entries,
                "baseline_dst_files": sorted(bmap[k]),
                "current_dst_files": sorted(cmap[k])}
         flipped.append(rec)
-        allowed = ("flipped", repo, sf, sfn, dfunc) in allow
-        # rule (a): a flip whose baseline callee NAME was UNIQUE is a regression.
-        if (not allowed) and len(card.get(dfunc, set())) == 1:
-            flips_on_unique.append(rec)
+        # rule (a): d.2-d.4 RE-POINT ambiguous (non-unique) calls, so EVERY flip
+        # -- unique or not -- must be allowlisted for its exact NEW resolved
+        # owner set; an un-reviewed flip FAILS.
+        if not _allow_has(allow, "flipped", repo, sf, sfn, dfunc, cmap[k]):
+            flipped_unreviewed.append(rec)
+            # louder sub-signal: a flip on a UNIQUE baseline callee name.
+            if len(card.get(dfunc, set())) == 1:
+                flips_on_unique.append(rec)
 
     return {
         "repo": repo,
@@ -315,12 +363,16 @@ def diff_repo(repo, baseline_edges, current_edges, allow_entries,
         "removed": len(removed),
         "added": len(added),
         "flipped": len(flipped),
+        "removed_unreviewed": len(removed_unreviewed),
+        "flipped_unreviewed": len(flipped_unreviewed),
         "flips_on_unique_name": len(flips_on_unique),
         "new_low_or_unreviewed": len(new_unreviewed),
         "jitter_skipped": jitter_skipped,
         "_removed": removed,
+        "_removed_unreviewed": removed_unreviewed,
         "_added": added,
         "_flipped": flipped,
+        "_flipped_unreviewed": flipped_unreviewed,
         "_flips_on_unique_name": flips_on_unique,
         "_new_low_or_unreviewed": new_unreviewed,
     }

@@ -22,7 +22,9 @@ pure test tooling that shells out to the `tldr` binary and diffs JSON.
 | `check_parity.py` | The gate. Re-runs `calls` on the **current** binary, diffs vs baseline, evaluates cluster goldens, prints machine-readable counts + `PARITY: PASS/FAIL`, exits non-zero on FAIL. |
 | `cluster_goldens.json` | The FEATURE-1 cluster cells: repro command, buggy-now signature, expected-fixed target. Progress reporting per stage. |
 | `baseline_summary.json` | **Committed** compact baseline: per-repo edge count + sha digest + capture provenance. The big per-repo edge sets live out-of-repo. |
-| `selftest_parity.sh` | Proves the gate has teeth (PASS on unchanged; FAIL on an injected unique-name flip). |
+| `expected_deltas.json` | **Committed** owner-pinned allowlist for the fixed d.1 binary (718 added + 603 removed, `dst_file` on every entry; `removed_audit` documents the removed-edge review). |
+| `selftest_parity.sh` | Runs the per-rule teeth self-test (thin wrapper over `selftest_cases.py`). |
+| `selftest_cases.py` | The self-test driver: injects ONE synthetic defect per case and asserts the gate reacts (12 cases; see below). |
 | `fixtures/posctl/animals.py` | Positive control: a constructor-typed receiver that must stay correctly per-type resolved. |
 
 **Out-of-repo (durable, NOT committed):**
@@ -100,40 +102,57 @@ Exit code is `0` on PASS, non-zero on FAIL.
 
 ## FAIL conditions ("never worse" rules)
 
+Every diff CHANNEL is gated. A delta passes only if it carries an explicit,
+**owner-pinned** allowlist entry (see below); otherwise the gate FAILS.
+
 | Rule | FAIL when | Meaning |
 |------|-----------|---------|
-| **(a)** | `flips_on_unique_name > 0` | A call-site whose baseline callee NAME was **unique** across the repo now resolves to a different definition file. Name-match was definitionally correct for a unique name → a flip there is a regression. |
-| **(b)** | `new_low_or_unreviewed > 0` | `calls` exposes no confidence field, so every **net-new** edge at a previously-unresolved call-site (an ADDED `(caller, callee-name)` pair) is treated as REVIEW and FAILS unless allowlisted. |
+| **(a)** | `flipped_unreviewed > 0` | A call-site present in BOTH baseline and current resolves to a DIFFERENT owner-file set and is not allowlisted for that new owner — **unique OR non-unique** name (d.2–d.4 re-point ambiguous calls, so non-unique flips are no longer waved through). `flips_on_unique_name` is the louder sub-signal: a flip on a UNIQUE baseline name was definitionally correct, so it is a regression. |
+| **(b)** | `new_low_or_unreviewed > 0` | `calls` exposes no confidence field, so every **net-new** edge at a previously-unresolved call-site (an ADDED `(caller, callee-name)` pair) is REVIEW and FAILS unless allowlisted for its resolved owner. |
 | **(c)** | a **positive-control** cluster cell `regressed` | The constructor-typed receiver lost its per-type resolution. |
+| **(d)** | `removed_unreviewed > 0` | d.2 REMOVES edges (declining bad fuzzy matches). Every **removed** call-site FAILS unless allowlisted — an un-reviewed removal could be a genuine loss of a correct edge, not a broadcast-collapse byproduct. |
+| **hard-error** | baseline / binary failure | An **unexpected missing baseline** (a non-excluded repo with no `.calls.json`), a current-binary run that is **not `ok`** (crash/timeout/empty output), or a well-formed-but-**empty** edge set against a non-empty baseline. These previously appended to `errors` and vacuously PASSED; they now FAIL. |
 
-**Reported but never auto-failing:** `removed` edges and **non-unique flips**
-(collapsing name-match broadcast is the entire point — those names have
-cardinality > 1, so they never trip rule (a)). Cluster `still_buggy / improved /
-fixed` are progress indicators, not gate failures (a stage need not target every
-cell at once).
+**Legitimately skipped (NOT a failure):** a repo declared in
+`baseline_summary.json` `repos_excluded` (nondeterministic, e.g.
+`php-symfony-console`) is skipped cleanly — the ONLY path that omits a repo
+without failing. Cluster `still_buggy / improved / fixed` are progress
+indicators, not gate failures (a stage need not target every cell at once).
 
 ---
 
 ## The allowlist mechanism (`--allow`)
 
 A stage *declares its intended changes* so its deliberate improvements don't trip
-rules (a)/(b). The allow file is JSON:
+rules (a)/(b)/(d). The allow file is JSON, and every entry is **owner-pinned**:
 
 ```json
 { "allow": [
-    { "repo": "csharp-newtonsoft-json", "type": "added",
-      "src_file": "Src/.../JsonReader.cs", "src_func": "JsonReader.ReadAsString",
-      "dst_func": "ReadInternal" },
-    { "repo": "rust-clap", "type": "flipped",
-      "src_file": "src/derive.rs", "src_func": "Parser.parse", "dst_func": "parse" }
+    { "repo": "rust-clap", "type": "added",
+      "src_file": "clap_builder/src/builder/arg.rs", "src_func": "Arg.cmp",
+      "dst_func": "Arg.get_id",
+      "dst_file": ["clap_builder/src/builder/arg.rs"] },
+    { "repo": "rust-clap", "type": "removed",
+      "src_file": "clap_builder/src/builder/arg.rs", "src_func": "Arg.render_arg_val",
+      "dst_func": "Clone.clone",
+      "dst_file": ["clap_builder/src/builder/value_parser.rs"] }
 ] }
 ```
 
-- `type` is `added` (exempts rule (b)) or `flipped` (exempts rule (a)).
-- `repo: "*"` matches any repo.
+- `type` is `added` (exempts rule (b)), `removed` (exempts rule (d)), or
+  `flipped` (exempts rule (a)).
+- **`dst_file` is REQUIRED** — the resolved callee OWNER file(s) (a string or a
+  list). It is part of the allow KEY: an allowlisted call-site can NOT silently
+  absorb a future owner-flip to a DIFFERENT file. Mutating the resolution to a
+  new owner re-trips the gate even though caller/callee names are unchanged.
+- `repo: "*"` matches any repo. (Both the concrete-repo and `*` keys are checked
+  at match time — previously a `*` entry was stored but never reachable.)
 - An exempted delta is still counted in the reported totals; it just no longer
   contributes to a FAIL. The gate prints the exact offending call-sites
-  (`OFFENDERS[...]`) so a stage can copy them into its allow file after review.
+  (`OFFENDERS[...]` / `HARD_ERROR[...]`) so a stage can copy them into its allow
+  file after review. `expected_deltas.json` is the committed allowlist for the
+  fixed d.1 binary (718 added + 603 removed, regenerated from a gate run; see its
+  `removed_audit` field for the removed-edge review).
 
 ---
 
@@ -143,10 +162,25 @@ rules (a)/(b). The allow file is JSON:
 bash continuum/autonomous/v0.5.0-fixes/feature1/selftest_parity.sh
 ```
 
-- **(i)** current-binary-vs-its-own-baseline → `PARITY: PASS`, exit 0.
-- **(ii)** a synthetic flip is injected into a copy of the baseline (one edge whose
-  callee name is unique is re-pointed to another existing file) → `PARITY: FAIL`
-  with `flips_on_unique_name >= 1`, exit non-zero.
+The driver (`selftest_cases.py`) injects exactly ONE synthetic defect per case
+and asserts the gate reacts. Every rule — not just the gate as a whole — must be
+able to fail:
 
-Both must hold; a gate that cannot fail is worthless.
+| Case | Injection | Expect |
+|------|-----------|--------|
+| `clean` | 0-delta current-vs-own-baseline | PASS |
+| `a_unique_flip` | re-point a UNIQUE-name edge | FAIL (rule a, `flips_on_unique_name≥1`) |
+| `b_added_unreviewed` | delete a call-site from baseline → ADDED | FAIL (rule b) |
+| `c_posctl_regressed` | force the positive control to `regressed` | FAIL (rule c) |
+| `d_nonunique_flip` | flip a NON-unique-name call-site | FAIL (rule a, `flips_on_unique_name==0`) |
+| `e_removed_unreviewed` | add a baseline-only phantom → REMOVED | FAIL (rule d) |
+| `f_empty_output` | binary shim prints nothing (status≠ok) | FAIL (hard-error) |
+| `f_crash_exit` | binary shim exits 1 | FAIL (hard-error) |
+| `g_missing_baseline` | no baseline for a non-excluded repo | FAIL (hard-error) |
+| `g_excluded_skip` | intentionally-excluded repo, no baseline | PASS (clean skip) |
+| `h_owner_flip_allowlisted` | allowlisted call-site, `dst_file` mutated | FAIL (owner-pinned key) |
+| `h_ok_owner_pinned` | allowlist entry with the CORRECT `dst_file` | PASS (absorbed) |
+
+A gate that cannot fail is worthless; a gate whose *individual rules* cannot fail
+is worthless per-rule.
 ```

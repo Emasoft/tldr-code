@@ -1,26 +1,20 @@
 ==============================================================
-SELFTEST (i): current-vs-own-baseline MUST PASS    repo=c-sds
+FEATURE-1 parity gate self-test (per-rule teeth)   repo=c-sds
 ==============================================================
-COUNTS {"repos": 1, "baseline_edges": 71, "removed": 0, "added": 0, "flipped": 0, "flips_on_unique_name": 0, "new_low_or_unreviewed": 0, "cluster_fixed": 0, "cluster_still_buggy": 0}
-CLUSTER {"fixed": 0, "improved": 0, "still_buggy": 0, "correct": 0, "regressed": 0, "uncomputed": 0}
-PARITY: PASS
-exit=0
+SELFTEST_CASE clean | expected=PASS actual=PASS exit=0 ok=True | 0 delta; rem_unrev/new/flip all 0
+SELFTEST_CASE a_unique_flip | expected=FAIL actual=FAIL exit=1 ok=True | flip sds.c::sdscatfmt->sdsull2str (unique) flip_unrev=1 uniq=1
+SELFTEST_CASE b_added_unreviewed | expected=FAIL actual=FAIL exit=1 ok=True | deleted callsite sds.c::sdsAllocPtr->sdsHdrSize from baseline -> added; new=1
+SELFTEST_CASE c_posctl_regressed | expected=FAIL actual=FAIL exit=1 ok=True | posctl required impossible edge; cluster.regressed=1
+SELFTEST_CASE d_nonunique_flip | expected=FAIL actual=FAIL exit=1 ok=True | callsite sds.c::sdsAllocPtr->sdsHdrSize baseline->{sds.c,sds.h} (card>=2); flip_unrev=1 uniq=0
+SELFTEST_CASE e_removed_unreviewed | expected=FAIL actual=FAIL exit=1 ok=True | baseline-only phantom callsite -> removed; rem_unrev=1
+SELFTEST_CASE f_empty_output | expected=FAIL actual=FAIL exit=1 ok=True | shim prints nothing -> status empty; errors=[{'repo': 'c-sds', 'error': 'current binary run status=empty (crash/timeout/empty output) -> cannot vacuously pass'}]
+SELFTEST_CASE f_crash_exit | expected=FAIL actual=FAIL exit=1 ok=True | shim exits 1 -> status error; errors=[{'repo': 'c-sds', 'error': 'current binary run status=error (crash/timeout/empty output) -> cannot vacuously pass'}]
+SELFTEST_CASE g_missing_baseline | expected=FAIL actual=FAIL exit=1 ok=True | no c-sds.calls.json for non-excluded repo; errors=[{'repo': 'c-sds', 'error': 'baseline edge file missing (repo is NOT in repos_excluded -> unexpected, cannot vacuously pass)'}]
+SELFTEST_CASE g_excluded_skip | expected=PASS actual=PASS exit=0 ok=True | excluded repo skipped cleanly even with no baseline; skipped=['php-symfony-console']
+SELFTEST_CASE h_owner_flip_allowlisted | expected=FAIL actual=FAIL exit=1 ok=True | allow dst_file=sds.h but resolved owner=['sds.c'] -> unabsorbed; new=1
+SELFTEST_CASE h_ok_owner_pinned | expected=PASS actual=PASS exit=0 ok=True | allow dst_file=['sds.c'] matches resolved owner -> absorbed; new=0 parity=PASS
+SELFTEST_SUMMARY {"total": 12, "passed": 12, "all_ok": true}
 
 ==============================================================
-SELFTEST (ii): injected unique-name flip MUST FAIL  repo=c-sds
+SELFTEST: PASS (every rule has teeth; clean + positive cases pass)
 ==============================================================
-INJECTED flip: sds.c::sdscatfmt -> sdsull2str  was@sds.c now@sds.h
-COUNTS {"repos": 1, "baseline_edges": 71, "removed": 0, "added": 0, "flipped": 1, "flips_on_unique_name": 1, "new_low_or_unreviewed": 0, "cluster_fixed": 0, "cluster_still_buggy": 0}
-CLUSTER {"fixed": 0, "improved": 0, "still_buggy": 0, "correct": 0, "regressed": 0, "uncomputed": 0}
-OFFENDERS[c-sds]
-  FLIP_UNIQUE sds.c::sdscatfmt -> sdsull2str  base=['sds.h'] cur=['sds.c']
-FAIL_REASON rule(a): 1 flip(s) on a UNIQUE baseline callee name
-PARITY: FAIL
-exit=1
-flips_on_unique_name=1
-
-==============================================================
-SELFTEST RESULT
-  (i)  current-vs-own-baseline PASS : OK
-  (ii) injected-flip caught (FAIL)  : OK
-SELFTEST: PASS (the gate has teeth)
