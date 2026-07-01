@@ -34,7 +34,9 @@ use tree_sitter::{Node, Parser, Tree};
 use super::base::{get_node_text, walk_tree};
 use super::common::{extend_calls_if_any, insert_calls_if_any};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // TypeScript Handler
@@ -1916,12 +1918,18 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
     fn extract_definitions(
         &self,
         source: &str,
-        _path: &Path,
+        path: &Path,
         tree: &Tree,
     ) -> Result<(Vec<FuncDef>, Vec<ClassDef>), super::ParseError> {
         let source_bytes = source.as_bytes();
         let mut funcs = Vec::new();
         let mut classes = Vec::new();
+        // A `.d.ts` ambient declaration file carries no runtime bodies: every
+        // `class`/`interface` in it is a DECLARATION pointing at a concrete
+        // `.js`/`.ts` implementation, not an independent `obj.method()` dispatch
+        // target. Mark them declaration-only so the cardinality gate skips them
+        // (FIX B) — e.g. axios `index.d.ts` must not shadow `lib/core/Axios.js`.
+        let is_declaration_file = path.to_string_lossy().ends_with(".d.ts");
 
         for node in walk_tree(tree.root_node()) {
             match node.kind() {
@@ -1987,6 +1995,12 @@ impl CallGraphLanguageSupport for TypeScriptHandler {
                     );
                 }
                 _ => {}
+            }
+        }
+
+        if is_declaration_file {
+            for class in &mut classes {
+                class.kind = ClassKind::Interface;
             }
         }
 

@@ -446,6 +446,61 @@ pub struct ClassDef {
     /// Base class names (for inheritance tracking).
     #[serde(default)]
     pub bases: Vec<String>,
+
+    /// Structural kind of this declaration (concrete struct/class/enum vs a
+    /// pure interface/trait/protocol/abstract *declaration*). Defaults to the
+    /// concrete [`ClassKind::Struct`] so cached IR and every existing
+    /// `ClassDef::new`/`ClassDef::simple` construction stays byte-compatible;
+    /// interface-bearing extractors opt in via [`ClassDef::with_kind`].
+    #[serde(default)]
+    pub kind: ClassKind,
+}
+
+/// The structural category of a class-like declaration, derived purely from the
+/// tree-sitter node kind at extraction time (never from source-text heuristics).
+///
+/// The distinction matters for the value-receiver ambiguity gate
+/// (`method_definer_cardinality`): a bodiless `Interface`/`Trait`/`Protocol`/
+/// `Abstract` method *signature* points at the single concrete implementation
+/// elsewhere, so it must NOT be tallied as an independent dispatch target the
+/// way a concrete `Struct`/`Class`/`Enum` method is. Counting declarations
+/// over-inflates the definer cardinality and wrongly declines calls to a method
+/// with exactly one concrete impl.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ClassKind {
+    /// Concrete struct (Go/Rust/Swift/C#). The default: any extractor that does
+    /// not opt in yields a concrete, tallied definer — behaviour-preserving.
+    #[default]
+    Struct,
+    /// Concrete class (OO languages: Java/Kotlin/TS/PHP/Python/Ruby/Scala).
+    Class,
+    /// Concrete enum type.
+    Enum,
+    /// Interface *declaration* (Go/Java/C#/PHP/TypeScript): bodiless dispatch
+    /// signatures binding to a concrete implementor.
+    Interface,
+    /// Trait *declaration* (Rust/Scala/PHP): signature/default-method contract
+    /// resolved through the implementing type.
+    Trait,
+    /// Protocol *declaration* (Swift): witness-table contract.
+    Protocol,
+    /// Abstract class declaration (may carry both concrete and abstract members;
+    /// biased toward "declaration" so it never over-gates).
+    Abstract,
+}
+
+impl ClassKind {
+    /// True when this kind is a pure *declaration* whose method signatures point
+    /// at a single concrete implementation elsewhere rather than being an
+    /// independent dispatch target. Such definers must be skipped when tallying
+    /// method-definer cardinality so an interface/trait/protocol/abstract decl
+    /// shadowing one concrete impl does not wrongly read as ambiguous (`>= 2`).
+    pub fn is_declaration_only(self) -> bool {
+        matches!(
+            self,
+            ClassKind::Interface | ClassKind::Trait | ClassKind::Protocol | ClassKind::Abstract
+        )
+    }
 }
 
 impl ClassDef {
@@ -463,6 +518,7 @@ impl ClassDef {
             end_line,
             methods,
             bases,
+            kind: ClassKind::default(),
         };
         assert!(
             class.is_valid(),
@@ -475,6 +531,15 @@ impl ClassDef {
     /// Creates a simple class with no methods or bases.
     pub fn simple(name: impl Into<String>, line: u32, end_line: u32) -> Self {
         Self::new(name.into(), line, end_line, vec![], vec![])
+    }
+
+    /// Sets the structural [`ClassKind`] (builder style), so interface-bearing
+    /// extractors can mark a declaration as `Interface`/`Trait`/`Protocol`/
+    /// `Abstract` without a new required constructor parameter. The concrete
+    /// default is preserved for every call site that does not opt in.
+    pub fn with_kind(mut self, kind: ClassKind) -> Self {
+        self.kind = kind;
+        self
     }
 
     /// Validates all invariants.

@@ -39,7 +39,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Scala Handler
@@ -813,7 +815,15 @@ impl CallGraphLanguageSupport for ScalaHandler {
                             }
                         }
 
-                        classes.push(ClassDef::new(name, line, end_line, methods, bases));
+                        // A `trait` is a declaration resolved through the concrete
+                        // implementor; `class` stays a concrete dispatch target (FIX B).
+                        let kind = match node.kind() {
+                            "trait_definition" => ClassKind::Trait,
+                            _ => ClassKind::Class,
+                        };
+                        classes.push(
+                            ClassDef::new(name, line, end_line, methods, bases).with_kind(kind),
+                        );
                     }
                 }
                 "object_definition" => {

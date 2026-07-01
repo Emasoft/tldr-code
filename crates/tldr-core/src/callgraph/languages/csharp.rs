@@ -31,7 +31,9 @@ use tree_sitter::{Node, Parser, Tree};
 use super::base::{get_node_text, walk_tree};
 use super::common::{extend_calls_if_any, insert_calls_if_any};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // C# Handler
@@ -921,7 +923,16 @@ impl CallGraphLanguageSupport for CsharpHandler {
                             }
                         }
 
-                        classes.push(ClassDef::new(name, line, end_line, methods, bases));
+                        // Skip `interface` declarations in the cardinality gate (FIX B);
+                        // `struct`/`class` remain concrete dispatch targets.
+                        let kind = match node.kind() {
+                            "interface_declaration" => ClassKind::Interface,
+                            "struct_declaration" => ClassKind::Struct,
+                            _ => ClassKind::Class,
+                        };
+                        classes.push(
+                            ClassDef::new(name, line, end_line, methods, bases).with_kind(kind),
+                        );
                     }
                 }
                 _ => {}

@@ -36,7 +36,9 @@ use tree_sitter::{Node, Parser, Tree};
 use super::base::{get_node_text, walk_tree};
 use super::common::{extend_calls_if_any, insert_calls_if_any};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Rust Handler
@@ -987,7 +989,12 @@ impl CallGraphLanguageSupport for RustLangHandler {
                         let name = get_node_text(&name_node, source_bytes).to_string();
                         let line = node.start_position().row as u32 + 1;
                         let end_line = node.end_position().row as u32 + 1;
-                        classes.push(ClassDef::simple(name, line, end_line));
+                        // A `trait` is a declaration resolved through its concrete
+                        // implementor(s); the concrete `struct`/`enum` stays a real
+                        // dispatch target (FIX B).
+                        classes.push(
+                            ClassDef::simple(name, line, end_line).with_kind(ClassKind::Trait),
+                        );
                     }
                 }
                 _ => {}

@@ -227,7 +227,10 @@ pub fn build_indices_parallel(
                 class.methods.clone(),
                 class.bases.clone(),
             )
-            .with_scope(scope);
+            .with_scope(scope)
+            // Carry the extractor-derived structural kind so the value-receiver
+            // ambiguity gate can skip interface/trait/protocol/abstract decls.
+            .with_kind(class.kind);
             class_index.insert(&class.name, entry);
 
             // Add to FileIR

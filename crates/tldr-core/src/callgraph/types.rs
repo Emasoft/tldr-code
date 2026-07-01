@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tree_sitter::{Parser, Tree};
 
-use super::cross_file_types::CallGraphIR;
+use super::cross_file_types::{CallGraphIR, ClassKind};
 
 // =============================================================================
 // Python Built-in Types (Phase 2: Parity Fix)
@@ -574,10 +574,20 @@ pub struct ClassEntry {
     /// disambiguation. Defaults to empty (no qualifier) so cardinality-1 keys
     /// behave byte-for-byte as before.
     pub scope: ClassScope,
+
+    /// Structural kind (concrete struct/class/enum vs an interface/trait/
+    /// protocol/abstract *declaration*). Defaults to the concrete
+    /// [`ClassKind::Struct`] so every existing `ClassEntry::new` construction —
+    /// and cached IR that predates the field — is treated as a real, tallied
+    /// dispatch target, exactly as before. Populated from
+    /// [`ClassDef::kind`](super::cross_file_types::ClassDef) by the builder so
+    /// the value-receiver ambiguity gate can skip declaration-only definers.
+    pub kind: ClassKind,
 }
 
 impl ClassEntry {
-    /// Creates a new ClassEntry with an empty scope qualifier.
+    /// Creates a new ClassEntry with an empty scope qualifier and the concrete
+    /// default kind ([`ClassKind::Struct`]).
     pub fn new(
         file_path: PathBuf,
         line: u32,
@@ -592,12 +602,21 @@ impl ClassEntry {
             methods,
             bases,
             scope: ClassScope::default(),
+            kind: ClassKind::default(),
         }
     }
 
     /// Attaches a scope qualifier (builder pattern).
     pub fn with_scope(mut self, scope: ClassScope) -> Self {
         self.scope = scope;
+        self
+    }
+
+    /// Attaches the structural [`ClassKind`] (builder pattern). Used by the
+    /// builder to carry `ClassDef::kind` into the resolver's class index so the
+    /// cardinality gate can skip interface/trait/protocol/abstract declarations.
+    pub fn with_kind(mut self, kind: ClassKind) -> Self {
+        self.kind = kind;
         self
     }
 }

@@ -1183,6 +1183,113 @@ fn count_unrelated_method_definers(method_name: &str, class_index: &ClassIndex) 
     representatives.len()
 }
 
+/// FEATURE-1 d.2: number of DISTINCT CONCRETE class-method definers of a bare
+/// method name, unioning the AST-built `class_index` (concrete classes that
+/// DECLARE the method as a member) with the live `func_index` (concrete method
+/// entries carry a `class_name`). Inheritance-linked classes collapse to a
+/// single representative — a base/override pair is ONE definer — mirroring
+/// [`count_unrelated_method_definers`].
+///
+/// The value-receiver fuzzy gate treats a name with `>= 2` definers as
+/// AMBIGUOUS: with no receiver type to scope the lookup, binding to any single
+/// one is an arbitrary guess. A name UNIQUE to a single definer returns `1` and
+/// is therefore never gated — there is only one possible target so a bare
+/// name-match stays correct (the never-worse-than-name-match invariant).
+///
+/// It counts ONLY concrete, bodied, class-method dispatch targets; three
+/// structural corrections keep it from OVER-counting (over-counting wrongly
+/// declines a call to a method with a single concrete impl, a never-worse
+/// violation that drops correct call-graph edges):
+///   * FIX A — same-named FREE functions (`is_method == false`) are excluded;
+///     they are never `obj.method()` dispatch targets.
+///   * FIX B — `Interface`/`Trait`/`Protocol`/`Abstract` DECLARATIONS
+///     (`ClassKind::is_declaration_only`) are skipped; their bodiless
+///     signatures resolve through the single concrete implementor.
+///   * FIX C — definers dedup by BARE class name (scope qualifier stripped, see
+///     [`bare_class_name`]) so N pre-built/vendored bundle copies of one class
+///     collapse to ONE.
+///
+/// It still catches ambiguity that lives purely in `func_index` — e.g. methods
+/// on classes whose `ClassEntry.methods` list is incomplete — that the
+/// class-only [`count_unrelated_method_definers`] reports as `<= 1`.
+///
+/// Purely structural: consults only AST-extracted `ClassEntry.methods`/`.bases`/
+/// `.kind` (via [`is_in_inheritance_chain`]) and `FuncEntry` fields; no source
+/// text or name heuristics.
+fn method_definer_cardinality(
+    method_name: &str,
+    func_index: &FuncIndex,
+    class_index: &ClassIndex,
+) -> usize {
+    // Bare (scope-stripped) names of the CONCRETE, class-method dispatch targets
+    // that declare `method_name`. Three structural corrections keep this to the
+    // set of real `obj.method()` targets only — never over-counting, which would
+    // wrongly decline calls to a method with a single concrete implementation
+    // (a never-worse violation that drops correct call-graph edges):
+    //
+    //   FIX A: FREE functions are excluded. A same-named top-level/`#[test]`
+    //          function is never an `obj.method()` dispatch target, so it must
+    //          not add to the class-definer count.
+    //   FIX B: INTERFACE / TRAIT / PROTOCOL / ABSTRACT declarations are skipped.
+    //          Their bodiless signatures point at the one concrete implementor
+    //          (e.g. a Go `interface` method, a Rust `trait` method, a `.d.ts`
+    //          ambient class) — not an independent target.
+    //   FIX C: definers dedup by BARE class name (module/scope qualifier
+    //          stripped), so N pre-built/vendored bundle copies of the same
+    //          class (phoenix `priv/static/*.{js,cjs,mjs,min.js}`, lodash
+    //          `dist/`) collapse to ONE. Bias-toward-collapse = fewer gates =
+    //          never-worse-safe.
+    let mut definer_bare_names: HashSet<String> = HashSet::new();
+
+    // Classes that DECLARE the method (AST class members). Skip declaration-only
+    // kinds (FIX B): their signatures resolve through the concrete implementor.
+    for (name, entry) in class_index.iter() {
+        if entry.kind.is_declaration_only() {
+            continue;
+        }
+        if entry.methods.iter().any(|m| m == method_name) {
+            definer_bare_names.insert(bare_class_name(name).to_string());
+        }
+    }
+    // Actual definitions in the function index. Only CONCRETE class methods are
+    // dispatch targets (FIX A: skip free functions); dedup by bare owning-class
+    // name (FIX C) so module-alias / bundle-copy duplicates do not inflate.
+    for entry in func_index.find_by_name(method_name) {
+        if !entry.is_method {
+            continue;
+        }
+        if let Some(class) = &entry.class_name {
+            definer_bare_names.insert(bare_class_name(class).to_string());
+        }
+    }
+
+    // Collapse inheritance-linked classes into a single representative so a
+    // base/override pair is not double-counted.
+    let mut representatives: Vec<&str> = Vec::new();
+    for class in &definer_bare_names {
+        let linked = representatives
+            .iter()
+            .any(|&rep| is_in_inheritance_chain(class, rep, class_index));
+        if !linked {
+            representatives.push(class.as_str());
+        }
+    }
+
+    representatives.len()
+}
+
+/// The bare (unqualified) class name: the final component after any module /
+/// scope qualifier (`::`, `.`, `/`, `\`). Used by
+/// [`method_definer_cardinality`] so N pre-built copies of the same class under
+/// distinct scope qualifiers collapse to ONE definer (FIX C). Operates on the
+/// already-extracted, AST-derived class name — no source text or regex.
+fn bare_class_name(qualified: &str) -> &str {
+    qualified
+        .rsplit(|c| c == ':' || c == '.' || c == '/' || c == '\\')
+        .next()
+        .unwrap_or(qualified)
+}
+
 /// Check if `candidate_class` is in the inheritance chain of `receiver_class`.
 ///
 /// Returns true if:
@@ -1449,10 +1556,20 @@ pub fn resolve_call_with_receiver(
         None
     };
 
+    // FEATURE-1 d.2: a "value receiver" is an ordinary lowercase variable or
+    // expression — NOT self/this/cls/Self (those are resolved to the enclosing
+    // class earlier and must stay untouched) and NOT a capitalized type
+    // spelling (handled by `strict_receiver_class` / `resolve_capitalized_receiver`
+    // above). Only value receivers of unknown type are subject to the ambiguity
+    // gate inside the fuzzy matchers below.
+    let is_value_receiver = !matches!(receiver, "self" | "cls" | "this" | "Self")
+        && !receiver_is_type_spelling(receiver);
+
     if let Some(resolved) = resolve_local_fuzzy_match(
         bare_target,
         type_filter,
         strict_receiver_class,
+        is_value_receiver,
         func_index,
         class_index,
         current_file,
@@ -1463,6 +1580,7 @@ pub fn resolve_call_with_receiver(
         bare_target,
         type_filter,
         strict_receiver_class,
+        is_value_receiver,
         func_index,
         class_index,
     ) {
@@ -1961,10 +2079,27 @@ fn resolve_local_fuzzy_match(
     bare_target: &str,
     type_filter: Option<&str>,
     strict_receiver_class: Option<&str>,
+    is_value_receiver: bool,
     func_index: &FuncIndex,
     class_index: &ClassIndex,
     current_file: &Path,
 ) -> Option<ResolvedTarget> {
+    // FEATURE-1 d.2 (C2): a VALUE receiver (ordinary lowercase variable /
+    // expression — not self/this/cls/Self, not a capitalized type spelling) of
+    // UNKNOWN type calling a bare method name shared by >= 2 distinct definers
+    // is genuinely ambiguous. With no receiver type to scope the lookup,
+    // binding the single same-file survivor is an arbitrary guess that can flip
+    // a correct name-match to a wrong target and (via the impact references
+    // back-fill) spray every same-named call onto one target. DECLINE — emit no
+    // edge — rather than pick one. Cardinality-1 names are NOT gated (only one
+    // possible target, so name-match stays correct: the never-worse invariant).
+    if type_filter.is_none()
+        && is_value_receiver
+        && method_definer_cardinality(bare_target, func_index, class_index) >= 2
+    {
+        return None;
+    }
+
     // T4-py untyped-receiver ambiguity gate. Decline a bare method on an
     // untyped receiver when EITHER:
     //  (1) it is a well-known builtin-type method name (`items`, `append`,
@@ -2086,9 +2221,22 @@ fn resolve_global_fuzzy_match(
     bare_target: &str,
     type_filter: Option<&str>,
     strict_receiver_class: Option<&str>,
+    is_value_receiver: bool,
     func_index: &FuncIndex,
     class_index: &ClassIndex,
 ) -> Option<ResolvedTarget> {
+    // FEATURE-1 d.2 (C2): mirror the value-receiver ambiguity gate in
+    // `resolve_local_fuzzy_match`. A value receiver of UNKNOWN type calling a
+    // bare method name with >= 2 distinct definers must DECLINE rather than let
+    // the function-level fallback (or any single survivor) bind an arbitrary
+    // target. Cardinality-1 names remain unaffected (never-worse invariant).
+    if type_filter.is_none()
+        && is_value_receiver
+        && method_definer_cardinality(bare_target, func_index, class_index) >= 2
+    {
+        return None;
+    }
+
     // T4-py untyped-receiver ambiguity gate (see `resolve_local_fuzzy_match`
     // for the full rationale): decline when the bare method is a known builtin
     // name OR is declared on >1 mutually-unrelated class. The two checks are
@@ -2231,7 +2379,7 @@ mod tests {
     use super::super::module_path::path_to_module;
     use super::super::types::{ClassEntry, ClassIndex, FuncEntry, FuncIndex};
     // From existing sibling modules:
-    use crate::callgraph::cross_file_types::{CallType, ImportDef};
+    use crate::callgraph::cross_file_types::{CallType, ClassKind, ImportDef};
     use crate::callgraph::import_resolver::ReExportTracer;
     use crate::callgraph::module_index::ModuleIndex;
 
@@ -4688,6 +4836,436 @@ mod tests {
             resolved.file,
             PathBuf::from("src/app.ml"),
             "same-file nested-module call must bind to the caller's file"
+        );
+    }
+
+    // =================================================================
+    // FEATURE-1 d.2: gate the name-global fuzzy fallbacks so a VALUE
+    // receiver with an AMBIGUOUS bare method name no longer broadcasts
+    // /guesses.
+    //
+    // The resolver exercised here (`resolve_call_with_receiver`) is the
+    // SINGLE shared seam every name-keyed call-graph consumer reads —
+    // `impact`, `calls`, `whatbreaks`, and `explain` all build their edges
+    // from it. A decline at this seam is therefore what stops the observed
+    // command-level sprays (C# `impact Read` -> 19 targets, Kotlin
+    // `whatbreaks minus` -> 49 callers over 10 overloads, PHP `impact
+    // render` cross-attributing Table/TreeHelper): with no target bound,
+    // no consumer can attribute the ambiguous call to an arbitrary sibling.
+    //
+    // These are GENERALIZATION tests: the same duck-typed shape is asserted
+    // across Python, TypeScript, Kotlin, PHP, and C# to prove the gate is a
+    // language-agnostic property of the resolver, not a per-language patch.
+    // =================================================================
+
+    /// The five cluster languages plus the cluster's own ambiguous method
+    /// name for each. Every name is verified non-builtin (so the pre-existing
+    /// blocklist gate stays inert) inside the tests below.
+    const D2_LANG_METHOD: &[(&str, &str)] = &[
+        ("python", "prepare_url"),
+        ("typescript", "isBuffer"),
+        ("kotlin", "minus"),
+        ("php", "render"),
+        ("csharp", "Read"),
+    ];
+
+    /// Extension used for a language's synthetic source files. Only affects
+    /// `path_to_module` keying; the fuzzy path itself is language-agnostic.
+    fn d2_ext(language: &str) -> &'static str {
+        match language {
+            "python" => "py",
+            "typescript" => "ts",
+            "kotlin" => "kt",
+            "php" => "php",
+            "csharp" => "cs",
+            _ => "txt",
+        }
+    }
+
+    /// GENERALIZATION + FAIL-FIRST: an ambiguous bare method (defined on TWO
+    /// unrelated classes in TWO different files) called on a lowercase VALUE
+    /// receiver of UNKNOWN type must DECLINE — never bind the single same-file
+    /// survivor.
+    ///
+    /// The `class_index` is deliberately EMPTY, which makes both pre-existing
+    /// untyped-receiver gates provably inert:
+    ///   * `count_unrelated_method_definers(method, {}) == 0` (never `> 1`), and
+    ///   * `is_builtin_method_name(method) == false`.
+    /// So the ONLY mechanism that can decline is the FEATURE-1 d.2
+    /// `method_definer_cardinality >= 2` value-receiver gate. On the
+    /// pre-gate code the call reaches `resolve_local_fuzzy_match`, finds
+    /// exactly one match in the caller's file (`local_matches.len() == 1`), and
+    /// BINDS that arbitrary survivor — this test fails there and passes only
+    /// once the gate is in place.
+    #[test]
+    fn test_d2_ambiguous_value_receiver_declines_multilang() {
+        for &(language, method) in D2_LANG_METHOD {
+            let ext = d2_ext(language);
+            let file_a = format!("a_defs.{ext}");
+            let file_b = format!("b_defs.{ext}");
+
+            let mut func_index = FuncIndex::new();
+            // Two mutually-unrelated classes define `method`, one per file.
+            index_method_both_keys(&mut func_index, "a_defs", "Alpha", method, &file_a, 10);
+            index_method_both_keys(&mut func_index, "b_defs", "Beta", method, &file_b, 20);
+
+            // Empty class_index => both legacy gates inert (see doc above).
+            let class_index = ClassIndex::new();
+
+            // Preconditions that pin the decline onto the NEW gate only.
+            assert!(
+                !is_builtin_method_name(method),
+                "[{language}] precondition: `{method}` must be non-builtin so the blocklist gate stays inert"
+            );
+            assert_eq!(
+                count_unrelated_method_definers(method, &class_index),
+                0,
+                "[{language}] precondition: empty class_index => class-cardinality gate inert"
+            );
+            assert_eq!(
+                method_definer_cardinality(method, &func_index, &class_index),
+                2,
+                "[{language}] precondition: func_index carries exactly two distinct definers"
+            );
+
+            let import_map: ImportMap = HashMap::new();
+            let module_imports: ModuleImports = HashMap::new();
+            let module_index = ModuleIndex::new(PathBuf::from("."), language);
+            let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+            // `obj.<method>()` — lowercase value receiver, no receiver_type. The
+            // caller lives in file_a, where exactly ONE definer (Alpha) exists,
+            // so the pre-gate resolver would bind Alpha and drop Beta entirely.
+            let result = resolve_call_with_receiver!(
+                method,
+                "obj",
+                None,
+                &CallType::Method,
+                &import_map,
+                &module_imports,
+                &func_index,
+                &class_index,
+                &mut reexport_tracer,
+                Path::new(&file_a),
+                Path::new("."),
+                language,
+            );
+
+            assert_eq!(
+                result, None,
+                "[{language}] ambiguous `obj.{method}()` (two unrelated definers, unknown type) \
+                 must DECLINE, not bind an arbitrary same-file survivor. Got {:?}",
+                result
+            );
+        }
+    }
+
+    /// GENERALIZATION + FAIL-FIRST for the GLOBAL matcher gate. The caller is in
+    /// a THIRD file (so `resolve_local_fuzzy_match` finds nothing) and the bare
+    /// name has TWO GENUINE CONCRETE-CLASS definers: a method on `Alpha` present
+    /// in the function index, and a second concrete class `Beta` that declares
+    /// the method in the class index but whose method entry is NOT in the
+    /// function index (an index-incompleteness the d.2 gate exists to catch).
+    /// So exactly ONE *method* candidate exists in the func index — the pre-gate
+    /// `resolve_global_fuzzy_match` sees `candidates.len() == 1` and BINDS
+    /// `Alpha.<method>` — yet the true definer cardinality is 2. Because only
+    /// `Beta` lives in the class index, `count_unrelated_method_definers`
+    /// reports 1 (its `> 1` gate stays inert), so the DECLINE is attributable
+    /// SOLELY to the FEATURE-1 d.2 `method_definer_cardinality >= 2` gate. Fails
+    /// on the pre-gate code (binds Alpha), passes after.
+    ///
+    /// (Post free-fn-inflation fix: definer #2 is a real second CONCRETE class,
+    /// not a same-named free function — free functions no longer inflate the
+    /// cardinality, so a genuine class ambiguity is required.)
+    #[test]
+    fn test_d2_ambiguous_value_receiver_declines_global_multilang() {
+        for &(language, method) in D2_LANG_METHOD {
+            let ext = d2_ext(language);
+            let file_a = format!("a_defs.{ext}");
+            let file_b = format!("b_defs.{ext}");
+            let caller = format!("caller.{ext}");
+
+            let mut func_index = FuncIndex::new();
+            // Definer #1: a method on `Alpha` (present in the function index).
+            index_method_both_keys(&mut func_index, "a_defs", "Alpha", method, &file_a, 10);
+            // Definer #2: a second CONCRETE class `Beta` declaring the method in
+            // the class index only (no func-index method entry) — a genuine
+            // 2-concrete-class ambiguity with exactly one func-index candidate.
+            let mut class_index = ClassIndex::new();
+            class_index.insert(
+                "Beta",
+                ClassEntry::new(PathBuf::from(&file_b), 5, 30, vec![method.to_string()], vec![]),
+            );
+
+            // The pre-gate global matcher would bind: exactly ONE method
+            // candidate exists in the func index, so `candidates.len() == 1` fires.
+            let method_candidates = func_index
+                .find_by_name(method)
+                .filter(|e| e.is_method)
+                .count();
+            assert_eq!(
+                method_candidates, 1,
+                "[{language}] precondition: exactly one method candidate (pre-gate would bind it)"
+            );
+            // The `count_unrelated_method_definers` gate stays inert: only Beta
+            // lives in the class index (Alpha is func-index-only), so it is 1.
+            assert!(
+                count_unrelated_method_definers(method, &class_index) <= 1,
+                "[{language}] precondition: class-cardinality gate inert (only Beta in class_index)"
+            );
+            assert_eq!(
+                method_definer_cardinality(method, &func_index, &class_index),
+                2,
+                "[{language}] precondition: two concrete definers (Alpha func + Beta class) => cardinality 2"
+            );
+
+            let import_map: ImportMap = HashMap::new();
+            let module_imports: ModuleImports = HashMap::new();
+            let module_index = ModuleIndex::new(PathBuf::from("."), language);
+            let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+            let result = resolve_call_with_receiver!(
+                method,
+                "obj",
+                None,
+                &CallType::Method,
+                &import_map,
+                &module_imports,
+                &func_index,
+                &class_index,
+                &mut reexport_tracer,
+                Path::new(&caller),
+                Path::new("."),
+                language,
+            );
+
+            assert_eq!(
+                result, None,
+                "[{language}] ambiguous `obj.{method}()` (one method + one free-fn definer) from a \
+                 third file must DECLINE via the global fuzzy gate, not bind Alpha.{method}. Got {:?}",
+                result
+            );
+        }
+    }
+
+    /// NEVER-WORSE INVARIANT (GENERALIZATION): a method name UNIQUE to ONE
+    /// class (cardinality == 1) must STILL resolve via name-match on a value
+    /// receiver of unknown type — exactly as before the gate. There is only one
+    /// possible target, so name-match is correct and MUST NOT be gated. This
+    /// test passes both before and after the d.2 change; it fails only if the
+    /// gate is over-broad and starts declining unambiguous binds.
+    #[test]
+    fn test_d2_cardinality_one_value_receiver_still_resolves_multilang() {
+        for &(language, method) in D2_LANG_METHOD {
+            let ext = d2_ext(language);
+            let file_a = format!("only.{ext}");
+
+            let mut func_index = FuncIndex::new();
+            // Exactly ONE class defines `method`.
+            index_method_both_keys(&mut func_index, "only", "Solo", method, &file_a, 10);
+            let class_index = ClassIndex::new();
+
+            assert_eq!(
+                method_definer_cardinality(method, &func_index, &class_index),
+                1,
+                "[{language}] precondition: exactly one definer (cardinality 1)"
+            );
+
+            let import_map: ImportMap = HashMap::new();
+            let module_imports: ModuleImports = HashMap::new();
+            let module_index = ModuleIndex::new(PathBuf::from("."), language);
+            let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+            let result = resolve_call_with_receiver!(
+                method,
+                "obj",
+                None,
+                &CallType::Method,
+                &import_map,
+                &module_imports,
+                &func_index,
+                &class_index,
+                &mut reexport_tracer,
+                Path::new(&file_a),
+                Path::new("."),
+                language,
+            );
+
+            let resolved = result.unwrap_or_else(|| {
+                panic!(
+                    "[{language}] cardinality-1 `obj.{method}()` must STILL resolve by name-match \
+                     (never-worse invariant); got None"
+                )
+            });
+            assert_eq!(resolved.name, method, "[{language}] resolved name must match");
+            assert_eq!(
+                resolved.class_name.as_deref(),
+                Some("Solo"),
+                "[{language}] cardinality-1 bind must land on the sole definer Solo"
+            );
+        }
+    }
+
+    /// Locks in that the gate keys on RECEIVER KIND, not just the name:
+    /// self/this/cls/Self resolution is preserved untouched. A `self.<method>()`
+    /// call whose enclosing class defines the method must resolve to it even
+    /// when the same bare name is ambiguous across other classes — because self
+    /// carries a receiver type (the enclosing class) and is never a value
+    /// receiver. (Complements the value-receiver decline above.)
+    #[test]
+    fn test_d2_self_receiver_unaffected_by_gate() {
+        let method = "render";
+        let mut func_index = FuncIndex::new();
+        // Ambiguous across two unrelated classes...
+        index_method_both_keys(&mut func_index, "table", "Table", method, "table.php", 10);
+        index_method_both_keys(&mut func_index, "tree", "TreeHelper", method, "tree.php", 20);
+
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Table",
+            ClassEntry::new(PathBuf::from("table.php"), 5, 40, vec![method.to_string()], vec![]),
+        );
+        class_index.insert(
+            "TreeHelper",
+            ClassEntry::new(PathBuf::from("tree.php"), 5, 40, vec![method.to_string()], vec![]),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "php");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `$this->render()` inside Table -> receiver_type Some("Table"): the
+        // enclosing-class signal short-circuits before any fuzzy fallback, so
+        // the value-receiver gate never runs and the call binds to Table.render.
+        let result = resolve_call_with_receiver!(
+            method,
+            "$this",
+            Some("Table"),
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("table.php"),
+            Path::new("."),
+            "php",
+        );
+
+        let resolved = result.expect("self/$this receiver with a known enclosing class must resolve");
+        assert_eq!(
+            resolved.class_name.as_deref(),
+            Some("Table"),
+            "$this->render() in Table must bind to Table.render, never TreeHelper.render"
+        );
+    }
+
+    // =========================================================================
+    // d.2 over-gating regressions: `method_definer_cardinality` must count ONLY
+    // concrete, bodied, class-method dispatch targets. A single concrete impl
+    // shadowed by a same-named free function (FIX A), an interface/trait/etc.
+    // DECLARATION (FIX B), or duplicate build-bundle copies of the same class
+    // (FIX C) must read as cardinality 1 — otherwise the value-receiver gate
+    // wrongly declines and drops ~750-800 correct call-graph edges.
+    // =========================================================================
+
+    /// FIX A: a same-named FREE function (top-level fn, or a `#[test]` fn) is
+    /// never an `obj.method()` dispatch target, so it must NOT inflate the
+    /// class-definer cardinality of a method with exactly one concrete impl.
+    /// Before the fix, `representatives.len() + free_fn_sites.len()` added the
+    /// free-function sites and produced `>= 2`, declining rust-clap / go-gin /
+    /// ripgrep / kotlin value-receiver calls that had a single real target.
+    #[test]
+    fn test_cardinality_free_fn_does_not_inflate_single_concrete_impl() {
+        let method = "run";
+        let mut func_index = FuncIndex::new();
+        // Exactly one CONCRETE class method (Solo.run).
+        index_method_both_keys(&mut func_index, "only", "Solo", method, "only.rs", 10);
+        // A same-named free function and a `#[test]`-style free function in
+        // other files — both non-methods, never dispatch targets.
+        func_index.insert(
+            "helpers",
+            method,
+            FuncEntry::function(PathBuf::from("helpers.rs"), 20, 25),
+        );
+        func_index.insert(
+            "it_tests",
+            method,
+            FuncEntry::function(PathBuf::from("tests/it.rs"), 30, 35),
+        );
+        let class_index = ClassIndex::new();
+
+        assert_eq!(
+            method_definer_cardinality(method, &func_index, &class_index),
+            1,
+            "a single concrete impl shadowed by same-named free/#[test] fns must be cardinality 1 (FIX A)"
+        );
+    }
+
+    /// FIX B: bodiless INTERFACE / TRAIT method DECLARATIONS point at the single
+    /// concrete implementor, not an independent target. A concrete impl shadowed
+    /// by an interface decl (Go router verbs, axios `.d.ts`) and a trait decl
+    /// (rust-clap `OsStrExt`) of the same method must read as cardinality 1.
+    #[test]
+    fn test_cardinality_interface_and_trait_decls_do_not_inflate_single_concrete_impl() {
+        let method = "handle";
+        let func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+        // The one CONCRETE implementor.
+        class_index.insert(
+            "Solo",
+            ClassEntry::new(PathBuf::from("solo.go"), 1, 20, vec![method.to_string()], vec![]),
+        );
+        // An interface declaration of the same method (declaration-only kind).
+        class_index.insert(
+            "Handler",
+            ClassEntry::new(PathBuf::from("iface.go"), 1, 5, vec![method.to_string()], vec![])
+                .with_kind(ClassKind::Interface),
+        );
+        // A trait declaration of the same method (declaration-only kind).
+        class_index.insert(
+            "Handle",
+            ClassEntry::new(PathBuf::from("trait.rs"), 1, 5, vec![method.to_string()], vec![])
+                .with_kind(ClassKind::Trait),
+        );
+
+        assert_eq!(
+            method_definer_cardinality(method, &func_index, &class_index),
+            1,
+            "a single concrete impl shadowed by interface/trait method decls must be cardinality 1 (FIX B)"
+        );
+    }
+
+    /// FIX C: N pre-built / vendored bundle copies of the SAME class under
+    /// distinct scope qualifiers (phoenix `priv/static/*.{js,cjs,mjs,min.js}`,
+    /// lodash `dist/`) are the SAME logical dispatch target and must collapse to
+    /// ONE definer by bare class name — not read as cardinality N.
+    #[test]
+    fn test_cardinality_duplicate_bundle_copies_collapse_by_bare_name() {
+        let method = "on";
+        let mut func_index = FuncIndex::new();
+        // Four scope-qualified copies of the same `Socket` class from four
+        // pre-built bundle variants. Each is a distinct func-index entry
+        // (distinct file + owner spelling), but all denote the one `Socket`.
+        for (scope, file) in [
+            ("priv", "priv/static/phoenix.js"),
+            ("static", "priv/static/phoenix.cjs"),
+            ("esm", "priv/static/phoenix.mjs"),
+            ("min", "priv/static/phoenix.min.js"),
+        ] {
+            func_index.insert(
+                file,
+                method,
+                FuncEntry::method(PathBuf::from(file), 10, 20, format!("{scope}::Socket")),
+            );
+        }
+        let class_index = ClassIndex::new();
+
+        assert_eq!(
+            method_definer_cardinality(method, &func_index, &class_index),
+            1,
+            "N scope-qualified bundle copies of the same class collapse to ONE definer (FIX C)"
         );
     }
 }

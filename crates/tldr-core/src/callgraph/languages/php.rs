@@ -38,7 +38,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 /// Synthetic target emitted for a dynamic (runtime-computed) method dispatch
 /// such as `$obj->$method()` or `$this->{$expr}()`. The method name is only
@@ -836,7 +838,17 @@ impl CallGraphLanguageSupport for PhpHandler {
                             }
                         }
 
-                        classes.push(ClassDef::new(class_name, line, end_line, methods, bases));
+                        // `interface`/`trait` declarations resolve through the concrete
+                        // implementor, so skip them in the cardinality gate (FIX B).
+                        let kind = match node.kind() {
+                            "interface_declaration" => ClassKind::Interface,
+                            "trait_declaration" => ClassKind::Trait,
+                            _ => ClassKind::Class,
+                        };
+                        classes.push(
+                            ClassDef::new(class_name, line, end_line, methods, bases)
+                                .with_kind(kind),
+                        );
                     }
                 }
                 _ => {}

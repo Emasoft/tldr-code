@@ -29,7 +29,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Go Handler
@@ -480,6 +482,10 @@ impl CallGraphLanguageSupport for GoHandler {
                                     let end_line = spec.end_position().row as u32 + 1;
                                     // Check if it is a struct type or interface type
                                     let mut is_type_def = false;
+                                    // Go `interface_type` method sigs are bodiless dispatch
+                                    // contracts pointing at the concrete implementor — mark
+                                    // them so the cardinality gate skips them (FIX B).
+                                    let mut is_interface = false;
                                     let mut bases = Vec::new();
                                     let mut methods = Vec::new();
                                     for j in 0..spec.child_count() {
@@ -525,6 +531,7 @@ impl CallGraphLanguageSupport for GoHandler {
                                                 break;
                                             } else if child.kind() == "interface_type" {
                                                 is_type_def = true;
+                                                is_interface = true;
                                                 // Extract method signatures from interface
                                                 // interface_type contains method_elem children with field_identifier
                                                 for mi in 0..child.named_child_count() {
@@ -558,9 +565,15 @@ impl CallGraphLanguageSupport for GoHandler {
                                         }
                                     }
                                     if is_type_def {
-                                        classes.push(ClassDef::new(
-                                            name, line, end_line, methods, bases,
-                                        ));
+                                        let kind = if is_interface {
+                                            ClassKind::Interface
+                                        } else {
+                                            ClassKind::Struct
+                                        };
+                                        classes.push(
+                                            ClassDef::new(name, line, end_line, methods, bases)
+                                                .with_kind(kind),
+                                        );
                                     }
                                 }
                             }

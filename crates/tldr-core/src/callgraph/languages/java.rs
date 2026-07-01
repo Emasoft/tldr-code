@@ -31,7 +31,9 @@ use tree_sitter::{Node, Parser, Tree};
 use super::base::{get_node_text, walk_tree};
 use super::common::extend_calls_if_any;
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Java Handler
@@ -729,7 +731,16 @@ impl CallGraphLanguageSupport for JavaHandler {
                             }
                         }
 
-                        classes.push(ClassDef::new(name, line, end_line, methods, bases));
+                        // Map the tree-sitter node kind to the structural kind so
+                        // the cardinality gate skips `interface` declarations (FIX B).
+                        let kind = match node.kind() {
+                            "interface_declaration" => ClassKind::Interface,
+                            "enum_declaration" => ClassKind::Enum,
+                            _ => ClassKind::Class,
+                        };
+                        classes.push(
+                            ClassDef::new(name, line, end_line, methods, bases).with_kind(kind),
+                        );
                     }
                 }
                 _ => {}

@@ -38,7 +38,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Regex Patterns (kept for import parsing)
@@ -793,6 +795,10 @@ impl CallGraphLanguageSupport for SwiftHandler {
         let mut class_lines: HashMap<String, (u32, u32)> = HashMap::new();
         let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
         let mut methods_by_type: HashMap<String, Vec<String>> = HashMap::new();
+        // Names declared via `protocol_declaration`: their witness signatures are
+        // resolved through the concrete conformer, so they are marked
+        // `ClassKind::Protocol` and skipped by the cardinality gate (FIX B).
+        let mut protocol_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // Use tree-sitter for definitions with regex fallback for base parsing
         let lines: Vec<&str> = source.lines().collect();
@@ -893,6 +899,7 @@ impl CallGraphLanguageSupport for SwiftHandler {
 
                     if let Some(name_node) = node.child_by_field_name("name") {
                         let type_name = get_node_text(&name_node, source_bytes).to_string();
+                        protocol_names.insert(type_name.clone());
                         class_lines
                             .entry(type_name.clone())
                             .and_modify(|(_, end)| *end = (*end).max(end_line))
@@ -998,7 +1005,14 @@ impl CallGraphLanguageSupport for SwiftHandler {
         for (name, (line, end_line)) in class_lines {
             let methods = methods_by_type.remove(&name).unwrap_or_default();
             let bases = class_bases.remove(&name).unwrap_or_default();
-            classes.push(ClassDef::new(name, line, end_line, methods, bases));
+            let kind = if protocol_names.contains(&name) {
+                ClassKind::Protocol
+            } else {
+                ClassKind::Class
+            };
+            classes.push(
+                ClassDef::new(name, line, end_line, methods, bases).with_kind(kind),
+            );
         }
 
         Ok((funcs, classes))
