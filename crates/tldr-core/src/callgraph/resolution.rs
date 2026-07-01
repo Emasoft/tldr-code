@@ -331,6 +331,26 @@ pub fn apply_type_resolution(file_ir: &mut FileIR, source: &str, language: Langu
                 .as_deref()
                 .and_then(|class_name| first_base_for_class(classes, class_name));
 
+            // FEATURE-1 d.5 (Part A): an AST-derived declared-return type
+            // (`x = f()` where `f` returns T) is the most reliable signal for a
+            // plain-call assignment, so it takes precedence over the text-heuristic
+            // `SourceTypeIndex` (which mis-reads a PascalCase factory call such as
+            // `var x = MakeWidget()` as a constructor of type `MakeWidget`). Only
+            // fires when the WINNING (latest-assignment) VarType for the receiver
+            // is itself `"return"`-sourced, so last-assignment-wins semantics and
+            // higher-confidence constructor/annotation rows are never overridden.
+            if !var_types.is_empty() {
+                let vartype_key = receiver_key.strip_prefix('$').unwrap_or(receiver_key);
+                if let Some(vt) =
+                    find_best_vartype_ref(var_types, vartype_key, caller_name, line)
+                {
+                    if vt.source == "return" {
+                        call_site.receiver_type = Some(vt.type_name.clone());
+                        continue;
+                    }
+                }
+            }
+
             if let Some(ref type_index) = type_index {
                 let (resolved, confidence) = resolve_receiver_type_indexed(
                     type_index,
@@ -388,6 +408,20 @@ pub fn apply_type_resolution(file_ir: &mut FileIR, source: &str, language: Langu
 /// - Scoped matches (same function) take priority over module-level (None scope)
 /// - Among matches in the same priority tier, "last assignment wins" (highest line <= call_line)
 ///
+/// FEATURE-1 d.5 (Part B): colon-qualified self scope reconciliation. The Lua/Luau
+/// `self` VarType supplied by d.4 (`collect_lua_self_receiver`) is scoped by the
+/// QUALIFIED method name (`"T:m"`), but the luau call graph keys every caller by the
+/// SIMPLE method name (`"m"`), so the exact `scope == caller_name` test never matched
+/// and the self typing was inert. This adds an intermediate tier: a `"Table:method"`
+/// scope whose method component equals `caller_name` is treated as an in-scope match
+/// — but ONLY when it is UNAMBIGUOUS (exactly one distinct table type across all such
+/// candidates). If two different tables share the same method name the candidate is
+/// dropped (returns to the module tier / None), preserving the pre-d.5 behavior and
+/// deferring to the d.2 cardinality gate. This makes the change strictly additive:
+/// it can only FILL a receiver type that was previously `None`, never rebind an
+/// existing exact-scope or module match. Colon (`:`) is the Lua/Luau method separator,
+/// so this tier never fires for `"Class.method"` scopes used by other languages.
+///
 /// Returns the `type_name` of the best match, or None.
 fn find_best_vartype(
     var_types: &[VarType],
@@ -395,8 +429,26 @@ fn find_best_vartype(
     caller_name: &str,
     call_line: u32,
 ) -> Option<String> {
+    find_best_vartype_ref(var_types, receiver_name, caller_name, call_line)
+        .map(|vt| vt.type_name.clone())
+}
+
+/// The `&VarType` backing [`find_best_vartype`]. Exposed within the module so the
+/// resolution pass can inspect the winning match's `source` (FEATURE-1 d.5 gives
+/// an AST-derived `"return"` winner precedence over the text-heuristic
+/// `SourceTypeIndex`).
+fn find_best_vartype_ref<'a>(
+    var_types: &'a [VarType],
+    receiver_name: &str,
+    caller_name: &str,
+    call_line: u32,
+) -> Option<&'a VarType> {
     let mut best_scoped: Option<&VarType> = None;
     let mut best_module: Option<&VarType> = None;
+    // FEATURE-1 d.5: candidates whose colon-qualified scope's method component
+    // equals `caller_name` (e.g. scope "T:m" for caller "m").
+    let mut best_method_scoped: Option<&VarType> = None;
+    let mut method_scoped_types: HashSet<&str> = HashSet::new();
 
     for vt in var_types {
         if vt.var_name != receiver_name {
@@ -419,14 +471,34 @@ fn find_best_vartype(
                     best_module = Some(vt);
                 }
             }
-            _ => {
-                // Different scope, skip
+            Some(scope) => {
+                // FEATURE-1 d.5: colon-qualified method-component match.
+                if let Some((_table, method)) = scope.split_once(':') {
+                    if method == caller_name {
+                        method_scoped_types.insert(vt.type_name.as_str());
+                        if best_method_scoped.is_none_or(|prev| vt.line > prev.line) {
+                            best_method_scoped = Some(vt);
+                        }
+                    }
+                }
             }
         }
     }
 
-    // Scoped matches take priority over module-level
-    best_scoped.or(best_module).map(|vt| vt.type_name.clone())
+    // Exact-scoped match wins first (unchanged priority).
+    if let Some(vt) = best_scoped {
+        return Some(vt);
+    }
+    // FEATURE-1 d.5: unambiguous colon-qualified method-component match. Only a
+    // single distinct table type is trusted; anything ambiguous is dropped so the
+    // d.2 cardinality gate remains the backstop.
+    if method_scoped_types.len() == 1 {
+        if let Some(vt) = best_method_scoped {
+            return Some(vt);
+        }
+    }
+    // Module-level match is the final fallback.
+    best_module
 }
 
 /// Resolve the best caller name for a call site, qualifying methods with class names when possible.

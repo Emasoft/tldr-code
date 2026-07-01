@@ -869,6 +869,10 @@ impl VarType {
             "literal",
             "constructor",
             "assertion",
+            // FEATURE-1 d.5 (Part A): a variable whose type was inferred from the
+            // declared RETURN type of the function/method on its assignment RHS
+            // (`x = f()` where `f` returns T). Medium confidence (TypeSource::Return).
+            "return",
         ];
         if !valid_sources.contains(&self.source.as_str()) {
             return false;

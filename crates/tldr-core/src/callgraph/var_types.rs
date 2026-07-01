@@ -15,6 +15,44 @@ use super::languages::base::{get_node_text, walk_tree};
 use super::types::parse_source;
 
 // =============================================================================
+// FEATURE-1 d.5 (Part A): declared-return-type propagation helpers
+// =============================================================================
+//
+// For statically-typed languages (go, rust, java, typescript, kotlin, csharp,
+// swift) an assignment whose RHS is a plain call — `x = f()` — makes `x` carry
+// the DECLARED RETURN TYPE of `f` (Medium confidence, `source = "return"`). This
+// generalises the pre-existing luau `fn_return` pass (see
+// `extract_lua_like_var_types`) to the other declared-return languages so that
+// `x = make(); x.method()` resolves `x.method` type-scoped instead of leaving the
+// receiver untyped. Propagation is single-hop and per-file (no whole-program
+// dataflow): the callee's return type is only known when the callee is declared
+// in the same file, matching the luau precedent.
+
+/// Record a function's declared return type into a `simple name -> Option<type>`
+/// map. A simple name that maps to two DIFFERENT return types is marked ambiguous
+/// (`None`) and is never applied downstream. Mirrors the luau `fn_return` logic.
+fn record_fn_return(map: &mut HashMap<String, Option<String>>, name: String, rtype: String) {
+    map.entry(name)
+        .and_modify(|e| {
+            if e.as_deref() != Some(rtype.as_str()) {
+                *e = None;
+            }
+        })
+        .or_insert(Some(rtype));
+}
+
+/// Resolve a callee simple name to its unambiguous declared return type, if any.
+fn lookup_fn_return<'a>(
+    map: &'a HashMap<String, Option<String>>,
+    callee: &str,
+) -> Option<&'a str> {
+    match map.get(callee) {
+        Some(Some(rt)) => Some(rt.as_str()),
+        _ => None,
+    }
+}
+
+// =============================================================================
 // FileParseResult
 // =============================================================================
 
@@ -767,6 +805,58 @@ pub(crate) fn enclosing_go_function_scope(
 ///
 /// Builtin types (map, slice, array, chan, string, int, etc.) produce "literal" source to
 /// enable the FP defense layers (blocklist + ambiguity gate) for Go.
+/// FEATURE-1 d.5 (Part A): normalise a Go result/type node to a bare type name.
+/// Handles `T`, `*T`, `pkg.T`, `Generic[...]`; returns `None` for composite
+/// result kinds (tuples/slices/maps/func types) which do not denote a single
+/// nominal type.
+fn go_type_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => Some(get_node_text(node, source).to_string()),
+        "pointer_type" => node.named_child(0).and_then(|n| go_type_name(&n, source)),
+        "qualified_type" => node
+            .child_by_field_name("name")
+            .map(|n| get_node_text(&n, source).to_string())
+            .or_else(|| {
+                let text = get_node_text(node, source).to_string();
+                text.rsplit('.').next().map(|s| s.to_string())
+            }),
+        "generic_type" => node
+            .child_by_field_name("type")
+            .or_else(|| node.named_child(0))
+            .and_then(|n| go_type_name(&n, source)),
+        _ => None,
+    }
+}
+
+/// FEATURE-1 d.5 (Part A): build the per-file `func/method simple name -> declared
+/// return type` map for Go.
+fn go_fn_return_map(
+    root: tree_sitter::Node,
+    source: &[u8],
+    builtins: &[&str],
+) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if node.kind() != "function_declaration" && node.kind() != "method_declaration" {
+            continue;
+        }
+        let name = match node.child_by_field_name("name") {
+            Some(n) => get_node_text(&n, source).to_string(),
+            None => continue,
+        };
+        let result = match node.child_by_field_name("result") {
+            Some(r) => r,
+            None => continue,
+        };
+        if let Some(rt) = go_type_name(&result, source) {
+            if !rt.is_empty() && !builtins.contains(&rt.as_str()) {
+                record_fn_return(&mut map, name, rt);
+            }
+        }
+    }
+    map
+}
+
 pub(crate) fn extract_go_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
     let root = tree.root_node();
@@ -795,6 +885,9 @@ pub(crate) fn extract_go_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> V
         "error",
         "any",
     ];
+
+    // FEATURE-1 d.5 (Part A): declared return types for same-file funcs/methods.
+    let fn_return = go_fn_return_map(root, source, &go_builtin_types);
 
     for node in walk_tree(root) {
         match node.kind() {
@@ -997,6 +1090,16 @@ pub(crate) fn extract_go_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> V
                                     var_name,
                                     base_name.to_string(),
                                     "assignment",
+                                    line,
+                                    scope,
+                                ));
+                            } else if let Some(rt) = lookup_fn_return(&fn_return, base_name) {
+                                // FEATURE-1 d.5 (Part A): x := makeWidget() where
+                                // makeWidget() returns a declared nominal type.
+                                var_types.push(VarType::new_with_scope(
+                                    var_name,
+                                    rt.to_string(),
+                                    "return",
                                     line,
                                     scope,
                                 ));
@@ -1232,6 +1335,52 @@ pub(crate) fn enclosing_ts_function_scope(
 }
 
 /// Extract VarType entries from a TypeScript/JavaScript source tree.
+/// FEATURE-1 d.5 (Part A): normalise a TS type node to a bare nominal name.
+fn ts_type_name(type_node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match type_node.kind() {
+        "type_identifier" => Some(get_node_text(type_node, source).to_string()),
+        "generic_type" => type_node
+            .child_by_field_name("name")
+            .map(|n| get_node_text(&n, source).to_string()),
+        _ => None,
+    }
+}
+
+/// FEATURE-1 d.5 (Part A): build the per-file `fn/method simple name -> declared
+/// return type` map for TypeScript (`function f(): T` / `method(): T`).
+fn ts_fn_return_map(
+    root: tree_sitter::Node,
+    source: &[u8],
+    builtins: &[&str],
+) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if !matches!(
+            node.kind(),
+            "function_declaration" | "method_definition" | "function_signature"
+        ) {
+            continue;
+        }
+        let name = match node.child_by_field_name("name") {
+            Some(n) => get_node_text(&n, source).to_string(),
+            None => continue,
+        };
+        let ret_ann = match node.child_by_field_name("return_type") {
+            Some(r) => r,
+            None => continue,
+        };
+        // return_type is a `type_annotation` node; its first named child is the type.
+        if let Some(type_node) = ret_ann.named_child(0) {
+            if let Some(rt) = ts_type_name(&type_node, source) {
+                if !rt.is_empty() && !builtins.contains(&rt.as_str()) {
+                    record_fn_return(&mut map, name, rt);
+                }
+            }
+        }
+    }
+    map
+}
+
 pub(crate) fn extract_ts_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
     let root = tree.root_node();
@@ -1264,6 +1413,9 @@ pub(crate) fn extract_ts_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> V
         "Error",
         "Symbol",
     ];
+
+    // FEATURE-1 d.5 (Part A): declared return types for same-file fns/methods.
+    let fn_return = ts_fn_return_map(root, source, &ts_builtin_types);
 
     for node in walk_tree(root) {
         match node.kind() {
@@ -1386,6 +1538,27 @@ pub(crate) fn extract_ts_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> V
                                 line,
                                 scope.clone(),
                             ));
+                        }
+                        // FEATURE-1 d.5 (Part A): const x = make() where make(): T has
+                        // a declared return type. Only when there is no explicit type
+                        // annotation (which would be High-confidence and win).
+                        "call_expression" => {
+                            if node.child_by_field_name("type").is_none() {
+                                if let Some(callee) = value.child_by_field_name("function") {
+                                    if callee.kind() == "identifier" {
+                                        let callee_name = get_node_text(&callee, source);
+                                        if let Some(rt) = lookup_fn_return(&fn_return, callee_name) {
+                                            var_types.push(VarType::new_with_scope(
+                                                var_name.clone(),
+                                                rt.to_string(),
+                                                "return",
+                                                line,
+                                                scope.clone(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -1513,6 +1686,47 @@ pub(crate) fn enclosing_java_function_scope(
     None
 }
 
+/// FEATURE-1 d.5 (Part A): normalise a Java type node to a bare nominal name
+/// (`ArrayList<String>` -> `ArrayList`).
+fn java_type_name(type_node: &tree_sitter::Node, source: &[u8]) -> String {
+    if type_node.kind() == "generic_type" {
+        type_node
+            .named_child(0)
+            .map(|n| get_node_text(&n, source).to_string())
+            .unwrap_or_else(|| get_node_text(type_node, source).to_string())
+    } else {
+        get_node_text(type_node, source).to_string()
+    }
+}
+
+/// FEATURE-1 d.5 (Part A): build the per-file `method simple name -> declared
+/// return type` map for Java (`T method(..)`).
+fn java_fn_return_map(
+    root: tree_sitter::Node,
+    source: &[u8],
+    builtins: &[&str],
+) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if node.kind() != "method_declaration" {
+            continue;
+        }
+        let name = match node.child_by_field_name("name") {
+            Some(n) => get_node_text(&n, source).to_string(),
+            None => continue,
+        };
+        let type_node = match node.child_by_field_name("type") {
+            Some(t) => t,
+            None => continue,
+        };
+        let rt = java_type_name(&type_node, source);
+        if !rt.is_empty() && !builtins.contains(&rt.as_str()) {
+            record_fn_return(&mut map, name, rt);
+        }
+    }
+    map
+}
+
 /// Extract VarType entries from a Java source tree.
 pub(crate) fn extract_java_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
@@ -1551,6 +1765,9 @@ pub(crate) fn extract_java_var_types(tree: &tree_sitter::Tree, source: &[u8]) ->
         "Error",
         "var",
     ];
+
+    // FEATURE-1 d.5 (Part A): declared return types for same-file methods.
+    let fn_return = java_fn_return_map(root, source, &java_builtin_types);
 
     for node in walk_tree(root) {
         match node.kind() {
@@ -1611,6 +1828,21 @@ pub(crate) fn extract_java_var_types(tree: &tree_sitter::Tree, source: &[u8]) ->
                                             var_name,
                                             ctor_type_name,
                                             "constructor",
+                                            line,
+                                            scope,
+                                        ));
+                                    }
+                                }
+                            } else if value.kind() == "method_invocation" {
+                                // FEATURE-1 d.5 (Part A): var x = make() where make() has
+                                // a declared return type T.
+                                if let Some(callee) = value.child_by_field_name("name") {
+                                    let callee_name = get_node_text(&callee, source);
+                                    if let Some(rt) = lookup_fn_return(&fn_return, callee_name) {
+                                        var_types.push(VarType::new_with_scope(
+                                            var_name,
+                                            rt.to_string(),
+                                            "return",
                                             line,
                                             scope,
                                         ));
@@ -1896,6 +2128,35 @@ pub(crate) fn enclosing_rust_function_scope(
 }
 
 /// Extract VarType entries from a Rust source tree.
+/// FEATURE-1 d.5 (Part A): build the per-file `fn simple name -> declared return
+/// type` map for Rust (`fn f(..) -> T`).
+fn rust_fn_return_map(
+    root: tree_sitter::Node,
+    source: &[u8],
+    builtins: &[&str],
+) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if node.kind() != "function_item" {
+            continue;
+        }
+        let name = match node.child_by_field_name("name") {
+            Some(n) => get_node_text(&n, source).to_string(),
+            None => continue,
+        };
+        let ret = match node.child_by_field_name("return_type") {
+            Some(r) => r,
+            None => continue,
+        };
+        if let Some(rt) = extract_rust_type_name(&ret, source) {
+            if !rt.is_empty() && !builtins.contains(&rt.as_str()) {
+                record_fn_return(&mut map, name, rt);
+            }
+        }
+    }
+    map
+}
+
 pub(crate) fn extract_rust_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
     let root = tree.root_node();
@@ -1906,6 +2167,9 @@ pub(crate) fn extract_rust_var_types(tree: &tree_sitter::Tree, source: &[u8]) ->
         "BTreeSet", "Option", "Result", "Box", "Rc", "Arc", "Cow", "Cell", "RefCell", "Mutex",
         "RwLock", "Pin", "Waker", "Context",
     ];
+
+    // FEATURE-1 d.5 (Part A): declared return types for same-file fns.
+    let fn_return = rust_fn_return_map(root, source, &rust_builtin_types);
 
     // Track vars already assigned via constructor (prefer constructor over annotation)
     let mut constructor_vars: HashSet<(String, Option<String>)> = HashSet::new();
@@ -1949,6 +2213,27 @@ pub(crate) fn extract_rust_var_types(tree: &tree_sitter::Tree, source: &[u8]) ->
                                                 ));
                                                 continue;
                                             }
+                                        }
+                                    }
+                                } else if func_node.kind() == "identifier"
+                                    && pattern_node.kind() == "identifier"
+                                    && node.child_by_field_name("type").is_none()
+                                {
+                                    // FEATURE-1 d.5 (Part A): let x = make() where the free
+                                    // function `make` has a declared `-> T` return type.
+                                    let callee = get_node_text(&func_node, source);
+                                    let var_name =
+                                        get_node_text(&pattern_node, source).to_string();
+                                    if !var_name.starts_with('_') {
+                                        if let Some(rt) = lookup_fn_return(&fn_return, callee) {
+                                            var_types.push(VarType::new_with_scope(
+                                                var_name,
+                                                rt.to_string(),
+                                                "return",
+                                                line,
+                                                scope,
+                                            ));
+                                            continue;
                                         }
                                     }
                                 }
@@ -2196,6 +2481,49 @@ pub(crate) fn extract_kotlin_type_name(
     }
 }
 
+/// FEATURE-1 d.5 (Part A): build the per-file `fun simple name -> declared return
+/// type` map for Kotlin (`fun f(): T`). The return type is the first `user_type`/
+/// `nullable_type`/`type_reference` child appearing AFTER the value parameters.
+fn kotlin_fn_return_map(
+    root: tree_sitter::Node,
+    source: &[u8],
+    builtins: &[&str],
+) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if node.kind() != "function_declaration" {
+            continue;
+        }
+        let mut name: Option<String> = None;
+        let mut seen_params = false;
+        let mut rtype: Option<String> = None;
+        for i in 0..node.child_count() {
+            let child = match node.child(i) {
+                Some(c) => c,
+                None => continue,
+            };
+            match child.kind() {
+                "simple_identifier" | "identifier" if name.is_none() => {
+                    name = Some(get_node_text(&child, source).to_string());
+                }
+                "function_value_parameters" => seen_params = true,
+                "user_type" | "nullable_type" | "type_reference" if seen_params => {
+                    if rtype.is_none() {
+                        rtype = extract_kotlin_type_name(&child, source);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let (Some(n), Some(rt)) = (name, rtype) {
+            if !rt.is_empty() && !builtins.contains(&rt.as_str()) {
+                record_fn_return(&mut map, n, rt);
+            }
+        }
+    }
+    map
+}
+
 /// Extract VarType entries from a Kotlin source tree.
 pub(crate) fn extract_kotlin_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
@@ -2251,6 +2579,9 @@ pub(crate) fn extract_kotlin_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
         "Lazy",
     ];
 
+    // FEATURE-1 d.5 (Part A): declared return types for same-file funs.
+    let fn_return = kotlin_fn_return_map(root, source, &kotlin_builtin_types);
+
     for node in walk_tree(root) {
         match node.kind() {
             "property_declaration" => {
@@ -2261,6 +2592,7 @@ pub(crate) fn extract_kotlin_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                 let mut type_name: Option<String> = None;
                 let mut has_constructor_rhs = false;
                 let mut constructor_type: Option<String> = None;
+                let mut return_type_rhs: Option<String> = None;
 
                 for i in 0..node.child_count() {
                     let child = match node.child(i) {
@@ -2304,10 +2636,16 @@ pub(crate) fn extract_kotlin_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                         }
                         "call_expression" => {
                             if let Some(func_child) = child.child(0) {
-                                let call_name = get_node_text(&func_child, source).to_string();
+                                let call_text = get_node_text(&func_child, source).to_string();
+                                // Simple callee name (last component of `Mod.make`).
+                                let call_name =
+                                    call_text.rsplit('.').next().unwrap_or(&call_text).to_string();
                                 if call_name.chars().next().is_some_and(|c| c.is_uppercase()) {
                                     has_constructor_rhs = true;
                                     constructor_type = Some(call_name);
+                                } else if let Some(rt) = lookup_fn_return(&fn_return, &call_name) {
+                                    // FEATURE-1 d.5 (Part A): val x = make() where make(): T.
+                                    return_type_rhs = Some(rt.to_string());
                                 }
                             }
                         }
@@ -2345,6 +2683,14 @@ pub(crate) fn extract_kotlin_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                             ));
                         }
                     }
+                } else if let Some(rt) = return_type_rhs {
+                    var_types.push(VarType::new_with_scope(
+                        var_name,
+                        rt,
+                        "return",
+                        line,
+                        scope,
+                    ));
                 }
             }
 
@@ -2716,6 +3062,300 @@ pub(crate) fn extract_php_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> 
         }
     }
 
+    var_types
+}
+
+// =============================================================================
+// C# VarType extraction (FEATURE-1 d.5 Part A: declared-return propagation)
+// =============================================================================
+//
+// C# has no var_types extractor before d.5. This one is intentionally scoped to
+// the d.5 deliverable: it emits ONLY return-derived rows for `var x = Make();`
+// where `Make()` has a declared (non-`void`, non-predefined) return type, so
+// `x.Method()` resolves type-scoped. It never emits any other kind of row, so it
+// can only FILL a previously-`None` receiver type (never-worse).
+
+/// Determine the enclosing `Class.Method` (or bare method) scope for a C# node so
+/// the emitted VarType scope matches the caller key produced by the call handler.
+fn enclosing_csharp_function_scope(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        if p.kind() == "method_declaration" || p.kind() == "local_function_statement" {
+            let method = p
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source).to_string())?;
+            // Find the enclosing type declaration for qualification.
+            let mut c2 = p.parent();
+            while let Some(pp) = c2 {
+                if matches!(
+                    pp.kind(),
+                    "class_declaration" | "struct_declaration" | "record_declaration"
+                ) {
+                    if let Some(cn) = pp.child_by_field_name("name") {
+                        return Some(format!(
+                            "{}.{}",
+                            get_node_text(&cn, source),
+                            method
+                        ));
+                    }
+                }
+                c2 = pp.parent();
+            }
+            return Some(method);
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// FEATURE-1 d.5 (Part A): build the per-file `method simple name -> declared
+/// return type` map for C# (`T Method(..)`, via the `returns` field).
+fn csharp_fn_return_map(root: tree_sitter::Node, source: &[u8]) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if node.kind() != "method_declaration" {
+            continue;
+        }
+        let name = match node.child_by_field_name("name") {
+            Some(n) => get_node_text(&n, source).to_string(),
+            None => continue,
+        };
+        let returns = match node.child_by_field_name("returns") {
+            Some(r) => r,
+            None => continue,
+        };
+        // Only nominal identifier / generic_name returns denote a project type;
+        // `predefined_type` (void/int/string/...) is skipped.
+        let rt = match returns.kind() {
+            "identifier" => Some(get_node_text(&returns, source).to_string()),
+            "generic_name" => returns
+                .child_by_field_name("name")
+                .map(|n| get_node_text(&n, source).to_string())
+                .or_else(|| {
+                    let t = get_node_text(&returns, source).to_string();
+                    t.split('<').next().map(|s| s.to_string())
+                }),
+            "qualified_name" => {
+                let t = get_node_text(&returns, source).to_string();
+                t.rsplit('.').next().map(|s| s.to_string())
+            }
+            _ => None,
+        };
+        if let Some(rt) = rt {
+            if !rt.is_empty() {
+                record_fn_return(&mut map, name, rt);
+            }
+        }
+    }
+    map
+}
+
+/// Extract VarType entries from a C# source tree (d.5 return propagation only).
+pub(crate) fn extract_csharp_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
+    let mut var_types = Vec::new();
+    let root = tree.root_node();
+    let fn_return = csharp_fn_return_map(root, source);
+
+    for node in walk_tree(root) {
+        if node.kind() != "variable_declaration" {
+            continue;
+        }
+        // Only implicitly typed locals (`var x = ...`) need inference; an explicit
+        // declared type already fixes the receiver type elsewhere.
+        let is_var = node
+            .child_by_field_name("type")
+            .map(|t| t.kind() == "implicit_type")
+            .unwrap_or(false);
+        if !is_var {
+            continue;
+        }
+        for i in 0..node.named_child_count() {
+            let decl = match node.named_child(i) {
+                Some(c) if c.kind() == "variable_declarator" => c,
+                _ => continue,
+            };
+            let var_name = match decl.child_by_field_name("name") {
+                Some(n) => get_node_text(&n, source).to_string(),
+                None => continue,
+            };
+            // RHS invocation among the declarator's children.
+            let mut callee: Option<String> = None;
+            for j in 0..decl.child_count() {
+                if let Some(c) = decl.child(j) {
+                    if c.kind() == "invocation_expression" {
+                        if let Some(func) = c.child_by_field_name("function") {
+                            if func.kind() == "identifier" {
+                                callee = Some(get_node_text(&func, source).to_string());
+                            } else if func.kind() == "member_access_expression" {
+                                callee = func
+                                    .child_by_field_name("name")
+                                    .map(|n| get_node_text(&n, source).to_string());
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(callee) = callee {
+                if let Some(rt) = lookup_fn_return(&fn_return, &callee) {
+                    let line = decl.start_position().row as u32 + 1;
+                    let scope = enclosing_csharp_function_scope(&node, source);
+                    var_types.push(VarType::new_with_scope(
+                        var_name, rt.to_string(), "return", line, scope,
+                    ));
+                }
+            }
+        }
+    }
+    var_types
+}
+
+// =============================================================================
+// Swift VarType extraction (FEATURE-1 d.5 Part A: declared-return propagation)
+// =============================================================================
+//
+// As with C#, this extractor is scoped to the d.5 deliverable: `let x = make()`
+// where `make() -> T` propagates T (source="return") so `x.method()` resolves
+// type-scoped. Return-derived rows only; never-worse holds.
+
+/// Determine the enclosing function scope for a Swift node. Top-level functions
+/// are keyed by their simple name (matching the call handler), methods by
+/// `Type.method`.
+fn enclosing_swift_function_scope(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        if p.kind() == "function_declaration" {
+            // The function name is the first `simple_identifier` child (the return
+            // type is a separate `user_type` also carried under field "name").
+            let mut fname: Option<String> = None;
+            for i in 0..p.child_count() {
+                if let Some(c) = p.child(i) {
+                    if c.kind() == "simple_identifier" {
+                        fname = Some(get_node_text(&c, source).to_string());
+                        break;
+                    }
+                }
+            }
+            let fname = fname?;
+            let mut c2 = p.parent();
+            while let Some(pp) = c2 {
+                if matches!(
+                    pp.kind(),
+                    "class_declaration" | "struct_declaration" | "enum_declaration"
+                ) {
+                    if let Some(cn) = pp.child_by_field_name("name") {
+                        return Some(format!("{}.{}", get_node_text(&cn, source), fname));
+                    }
+                }
+                c2 = pp.parent();
+            }
+            return Some(fname);
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// FEATURE-1 d.5 (Part A): build the per-file `func simple name -> declared return
+/// type` map for Swift (`func f(..) -> T`). tree-sitter-swift carries the return
+/// type as a second `name:`-fielded `user_type`/`optional_type` child.
+fn swift_fn_return_map(root: tree_sitter::Node, source: &[u8]) -> HashMap<String, Option<String>> {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    for node in walk_tree(root) {
+        if node.kind() != "function_declaration" {
+            continue;
+        }
+        let mut fname: Option<String> = None;
+        let mut rtype: Option<String> = None;
+        for i in 0..node.child_count() {
+            let child = match node.child(i) {
+                Some(c) => c,
+                None => continue,
+            };
+            match child.kind() {
+                "simple_identifier" if fname.is_none() => {
+                    fname = Some(get_node_text(&child, source).to_string());
+                }
+                "user_type" | "optional_type" if rtype.is_none() => {
+                    rtype = swift_type_name(&child, source);
+                }
+                _ => {}
+            }
+        }
+        if let (Some(n), Some(rt)) = (fname, rtype) {
+            if !rt.is_empty() {
+                record_fn_return(&mut map, n, rt);
+            }
+        }
+    }
+    map
+}
+
+/// Normalise a Swift type node to a bare nominal name.
+fn swift_type_name(type_node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match type_node.kind() {
+        "type_identifier" | "simple_identifier" => {
+            Some(get_node_text(type_node, source).to_string())
+        }
+        "user_type" | "optional_type" => {
+            for i in 0..type_node.named_child_count() {
+                if let Some(c) = type_node.named_child(i) {
+                    if let Some(r) = swift_type_name(&c, source) {
+                        return Some(r);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Extract VarType entries from a Swift source tree (d.5 return propagation only).
+pub(crate) fn extract_swift_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
+    let mut var_types = Vec::new();
+    let root = tree.root_node();
+    let fn_return = swift_fn_return_map(root, source);
+
+    for node in walk_tree(root) {
+        if node.kind() != "property_declaration" {
+            continue;
+        }
+        // Variable name: `name` field is a `pattern` with a `bound_identifier`.
+        let var_name = match node.child_by_field_name("name") {
+            Some(pat) => pat
+                .child_by_field_name("bound_identifier")
+                .or_else(|| {
+                    (0..pat.named_child_count())
+                        .filter_map(|i| pat.named_child(i))
+                        .find(|c| c.kind() == "simple_identifier")
+                })
+                .map(|n| get_node_text(&n, source).to_string()),
+            None => None,
+        };
+        let var_name = match var_name {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        // RHS: `value` field is a `call_expression`; its first child is the callee.
+        let value = match node.child_by_field_name("value") {
+            Some(v) if v.kind() == "call_expression" => v,
+            _ => continue,
+        };
+        let callee = value
+            .named_child(0)
+            .filter(|c| c.kind() == "simple_identifier")
+            .map(|n| get_node_text(&n, source).to_string());
+        if let Some(callee) = callee {
+            if let Some(rt) = lookup_fn_return(&fn_return, &callee) {
+                let line = node.start_position().row as u32 + 1;
+                let scope = enclosing_swift_function_scope(&node, source);
+                var_types.push(VarType::new_with_scope(
+                    var_name, rt.to_string(), "return", line, scope,
+                ));
+            }
+        }
+    }
     var_types
 }
 
@@ -4553,6 +5193,422 @@ end
             set_state.receiver_type.as_deref(),
             Some("Component"),
             "inst:setState receiver must be typed Component (d.4 supplies it)"
+        );
+    }
+
+    // =====================================================================
+    // FEATURE-1 d.5 (Part A): declared-return-type propagation.
+    //
+    // Pattern under test: `x = make(); x.method()` where `make()` has a declared
+    // return type `T` and `method` is NOT defined in the same file (so the call
+    // graph keeps `x.method()` as a Method/Attr call whose receiver can be typed
+    // — the same shape the d.4 luau `setState` test uses). We assert:
+    //   1. the return-derived VarType for `x` has `source == "return"` (Medium),
+    //   2. after `apply_type_resolution` the `x.method()` receiver is typed `T`.
+    // =====================================================================
+
+    /// Shared assertion: `x`'s VarType is return-derived (Medium) and the
+    /// `x.method()` call site is typed `expected`.
+    fn assert_return_prop(
+        lang: crate::types::Language,
+        var_types: Vec<VarType>,
+        calls: HashMap<String, Vec<CallSite>>,
+        funcs: Vec<FuncDef>,
+        classes: Vec<ClassDef>,
+        path: &std::path::Path,
+        source: &str,
+        expected: &str,
+    ) {
+        use crate::callgraph::resolution::apply_type_resolution;
+
+        let x_vt = var_types
+            .iter()
+            .find(|v| v.var_name == "x")
+            .unwrap_or_else(|| panic!("[{:?}] expected a VarType for x", lang));
+        assert_eq!(
+            x_vt.type_name, expected,
+            "[{:?}] x should be typed {} from the return type",
+            lang, expected
+        );
+        assert_eq!(
+            x_vt.source, "return",
+            "[{:?}] return-derived VarType must carry source=\"return\" (Medium)",
+            lang
+        );
+
+        let mut file_ir = crate::callgraph::cross_file_types::FileIR::new(path.to_path_buf());
+        file_ir.funcs = funcs;
+        file_ir.classes = classes;
+        file_ir.var_types = var_types;
+        file_ir.calls = calls;
+        apply_type_resolution(&mut file_ir, source, lang);
+
+        // Locate the `x.method()` call by receiver (target spelling varies per
+        // language: Go keeps "x.Render", Kotlin stores method="render" + receiver).
+        // Some handlers store the caller under BOTH a simple and a qualified key
+        // (e.g. C# "Run" and "Factory.Run"); the return-derived scope matches the
+        // qualified caller, so assert that AT LEAST ONE receiver-x call is typed.
+        let x_calls: Vec<Option<String>> = file_ir
+            .calls
+            .values()
+            .flat_map(|cs| cs.iter())
+            .filter(|c| c.receiver.as_deref() == Some("x"))
+            .map(|c| c.receiver_type.clone())
+            .collect();
+        assert!(
+            !x_calls.is_empty(),
+            "[{:?}] no call with receiver x found",
+            lang
+        );
+        assert!(
+            x_calls.iter().any(|t| t.as_deref() == Some(expected)),
+            "[{:?}] x.method receiver must be typed {} via return-prop (were {:?})",
+            lang,
+            expected,
+            x_calls
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_go() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+package main
+
+type Widget struct{}
+
+func makeWidget() *Widget {
+    return &Widget{}
+}
+
+func run() {
+    x := makeWidget()
+    x.Render()
+}
+"#;
+        let handler = crate::callgraph::languages::GoHandler::new();
+        let path = std::path::Path::new("m.go");
+        let tree = parse_source(source, "go").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_go_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::Go,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+
+            "Widget",
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_rust() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+struct Widget;
+
+fn make_widget() -> Widget {
+    Widget
+}
+
+fn run() {
+    let x = make_widget();
+    x.render();
+}
+"#;
+        let handler = crate::callgraph::languages::RustLangHandler::new();
+        let path = std::path::Path::new("m.rs");
+        let tree = parse_source(source, "rust").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_rust_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::Rust,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+
+            "Widget",
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_typescript() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+function makeWidget(): Widget {
+    return new Widget();
+}
+
+function run() {
+    const x = makeWidget();
+    x.render();
+}
+"#;
+        let handler = crate::callgraph::languages::TypeScriptHandler::new();
+        let path = std::path::Path::new("m.ts");
+        let tree = parse_source(source, "typescript").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_ts_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::TypeScript,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+
+            "Widget",
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_java() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+class Factory {
+    Widget makeWidget() {
+        return null;
+    }
+
+    void run() {
+        var x = makeWidget();
+        x.render();
+    }
+}
+"#;
+        let handler = crate::callgraph::languages::JavaHandler::new();
+        let path = std::path::Path::new("M.java");
+        let tree = parse_source(source, "java").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_java_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::Java,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+
+            "Widget",
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_kotlin() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+fun makeWidget(): Widget {
+    return Widget()
+}
+
+fun run() {
+    val x = makeWidget()
+    x.render()
+}
+"#;
+        let handler = crate::callgraph::languages::KotlinHandler::new();
+        let path = std::path::Path::new("m.kt");
+        let tree = parse_source(source, "kotlin").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_kotlin_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::Kotlin,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+
+            "Widget",
+        );
+    }
+
+    /// Dynamic-language ceiling: Python has no declared return types, so
+    /// `x = make(); x.render()` leaves `x` untyped. This is CORRECT (ceiling),
+    /// not a gap: no return-derived VarType is produced.
+    #[test]
+    fn test_d5_return_prop_python_ceiling_untyped() {
+        let source = r#"
+def make_widget():
+    return Widget()
+
+def run():
+    x = make_widget()
+    x.render()
+"#;
+        let tree = parse_source(source, "python").unwrap();
+        let vts = extract_python_var_types(&tree, source.as_bytes());
+        assert!(
+            vts.iter().all(|v| !(v.var_name == "x" && v.source == "return")),
+            "python has no declared return types; x must stay untyped (ceiling)"
+        );
+    }
+
+    // =====================================================================
+    // FEATURE-1 d.5 (Part B): Lua/Luau self-chain scope-key reconciliation.
+    //
+    // `function T:m() self:other() end` — the d.4 self VarType is scoped by the
+    // qualified method name ("T:m") while the (luau) caller key is the simple
+    // method name ("m"). The find_best_vartype method-component fallback now
+    // consumes it so `self` resolves to the enclosing table `T`. `other` is left
+    // undefined here so the call keeps its Method classification (a locally
+    // defined colon-method collapses to Intra in luau and drops the receiver).
+    // =====================================================================
+
+    #[test]
+    fn test_d5_self_chain_luau() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        use crate::callgraph::resolution::apply_type_resolution;
+
+        let source = r#"
+function T:m()
+  self:other()
+end
+"#;
+        let handler = crate::callgraph::languages::LuauHandler::new();
+        let path = std::path::Path::new("m.luau");
+        let tree = parse_source(source, "luau").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let var_types = extract_luau_var_types(&tree, source.as_bytes());
+
+        // d.4 supplies the self VarType scoped by the qualified method name.
+        let self_vt = var_types
+            .iter()
+            .find(|v| v.var_name == "self")
+            .expect("luau self VarType supplied by collect_lua_self_receiver");
+        assert_eq!(self_vt.type_name, "T");
+        assert_eq!(self_vt.scope.as_deref(), Some("T:m"));
+
+        let mut file_ir = crate::callgraph::cross_file_types::FileIR::new(path.to_path_buf());
+        file_ir.funcs = funcs;
+        file_ir.classes = classes;
+        file_ir.var_types = var_types;
+        file_ir.calls = calls;
+        apply_type_resolution(&mut file_ir, source, crate::types::Language::Luau);
+
+        let m_calls = file_ir.calls.get("m").expect("caller m present");
+        let self_other = m_calls
+            .iter()
+            .find(|c| c.target == "self:other")
+            .expect("self:other kept as a Method call");
+        assert_eq!(
+            self_other.receiver_type.as_deref(),
+            Some("T"),
+            "d.5 must reconcile the scope key so self resolves to enclosing table T"
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_csharp() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+class Factory {
+    Widget MakeWidget() { return null; }
+    void Run() {
+        var x = MakeWidget();
+        x.Render();
+    }
+}
+"#;
+        let handler = crate::callgraph::languages::CsharpHandler::new();
+        let path = std::path::Path::new("m.cs");
+        let tree = parse_source(source, "csharp").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_csharp_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::CSharp,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+            "Widget",
+        );
+    }
+
+    #[test]
+    fn test_d5_return_prop_swift() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        let source = r#"
+func makeWidget() -> Widget {
+    return Widget()
+}
+func run() {
+    let x = makeWidget()
+    x.render()
+}
+"#;
+        let handler = crate::callgraph::languages::SwiftHandler::new();
+        let path = std::path::Path::new("m.swift");
+        let tree = parse_source(source, "swift").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let vts = extract_swift_var_types(&tree, source.as_bytes());
+        assert_return_prop(
+            crate::types::Language::Swift,
+            vts,
+            calls,
+            funcs,
+            classes,
+            path,
+            source,
+            "Widget",
+        );
+    }
+
+    #[test]
+    fn test_d5_self_chain_lua() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        use crate::callgraph::resolution::apply_type_resolution;
+
+        let source = r#"
+function T:m()
+  self:other()
+end
+"#;
+        let handler = crate::callgraph::languages::LuaHandler::new();
+        let path = std::path::Path::new("m.lua");
+        let tree = parse_source(source, "lua").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+        let var_types = extract_lua_var_types(&tree, source.as_bytes());
+
+        let mut file_ir = crate::callgraph::cross_file_types::FileIR::new(path.to_path_buf());
+        file_ir.funcs = funcs;
+        file_ir.classes = classes;
+        file_ir.var_types = var_types;
+        file_ir.calls = calls;
+        apply_type_resolution(&mut file_ir, source, crate::types::Language::Lua);
+
+        // Lua stores the caller under BOTH the qualified ("T:m") and simple ("m")
+        // keys. After d.5 the simple-key entry resolves self->T too (the qualified
+        // key already matched via exact scope). Both must be consistent.
+        let m_calls = file_ir.calls.get("m").expect("simple caller key m present");
+        let self_other = m_calls
+            .iter()
+            .find(|c| c.target == "self:other")
+            .expect("self:other kept as a Method call under simple key");
+        assert_eq!(
+            self_other.receiver_type.as_deref(),
+            Some("T"),
+            "d.5 method-component fallback must type self as T under the simple caller key"
         );
     }
 }
