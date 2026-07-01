@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use super::languages::LanguageRegistry;
 use super::types::parse_source;
 use super::var_types::{
-    extract_go_var_types, extract_java_var_types, extract_kotlin_var_types, extract_php_var_types,
-    extract_python_definitions, extract_rust_var_types, extract_ts_var_types, FileParseResult,
+    extract_go_var_types, extract_java_var_types, extract_kotlin_var_types, extract_lua_var_types,
+    extract_luau_var_types, extract_php_var_types, extract_python_definitions,
+    extract_rust_var_types, extract_ts_var_types, FileParseResult,
 };
 
 /// Extract functions, classes, imports, and calls from a source file based on language.
@@ -69,6 +70,8 @@ pub(crate) fn extract_definitions(
             "rust" => extract_rust_var_types(&tree, source.as_bytes()),
             "kotlin" => extract_kotlin_var_types(&tree, source.as_bytes()),
             "php" => extract_php_var_types(&tree, source.as_bytes()),
+            "lua" => extract_lua_var_types(&tree, source.as_bytes()),
+            "luau" => extract_luau_var_types(&tree, source.as_bytes()),
             _ => Vec::new(),
         };
 

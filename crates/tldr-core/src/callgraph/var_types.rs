@@ -2720,6 +2720,545 @@ pub(crate) fn extract_php_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> 
 }
 
 // =============================================================================
+// Lua / Luau VarType extraction
+// =============================================================================
+//
+// FEATURE-1 stage d.4: give Lua and Luau a var_types extractor so the receiver
+// type of `obj:method()` / `obj.method()` calls can be inferred. Everything here
+// is tree-sitter AST-driven (node kinds + fields only) — no text/regex heuristics.
+//
+// Recognised, AST-driven signals (identical node kinds across the lua and luau
+// grammars, plus luau-only type annotations):
+//   * `local x = Mod.new()` / `Mod.create()` (factory call on a table/module
+//     name)                                                     -> x : Mod
+//   * `local x = setmetatable({}, {__index = Mod})`             -> x : Mod
+//   * `local x = setmetatable({}, Mod)`                         -> x : Mod
+//   * `local x = {}` then `setmetatable(x, {__index = Mod})`    -> x : Mod
+//   * Luau `local x: T = ...`                                   -> x : T (annotation, High)
+//   * Luau typed parameter `function f(x: T)`                   -> x : T (parameter, High)
+//   * Luau return annotation `local function f(): T` consumed so `local y = f()`
+//     inherits the declared return type                         -> y : T
+//   * `function T:m(...)` — the implicit `self` receiver has type T (the
+//     enclosing table), scoped to the method so `self:other()` binds to T.
+//
+// NEVER-WORSE: this stage only ADDS `VarType` rows. `apply_type_resolution` fills
+// `receiver_type` ONLY when it was `None` (guarded), so an unresolved receiver
+// stays exactly as today; a newly-typed receiver resolves type-scoped instead of
+// name-conflated. No existing edge can be dropped by adding a row.
+
+/// Lua/Luau builtin (primitive/type-checker) names that must NOT be treated as
+/// project table/class types for receiver-type resolution.
+const LUA_BUILTIN_TYPES: &[&str] = &[
+    // Runtime value types.
+    "nil",
+    "boolean",
+    "number",
+    "string",
+    "function",
+    "table",
+    "thread",
+    "userdata",
+    // Luau type-checker builtins / common scalar annotations.
+    "any",
+    "unknown",
+    "never",
+    "void",
+    "bool",
+    "int",
+    "float",
+    "true",
+    "false",
+];
+
+/// Find the first direct child of `node` whose kind is `kind`.
+fn lua_child_of_kind<'a>(node: &tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+    for i in 0..node.child_count() {
+        if let Some(c) = node.child(i) {
+            if c.kind() == kind {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// Extract a base named-type from a Lua/Luau type-annotation AST node.
+///
+/// Named type references appear as a plain `identifier` in both grammars
+/// (`local x: Component`, `c: Component`, `: Component`). Structural/complex
+/// types (tables, unions, generics) are deliberately skipped — emitting no type
+/// is strictly safe (identical to today), whereas guessing a wrong base could
+/// mis-route a call.
+fn lua_type_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if node.kind() == "identifier" {
+        let t = get_node_text(node, source).to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    } else {
+        None
+    }
+}
+
+/// The qualified name of a `function_declaration` name node, matching how the
+/// Lua/Luau call handler keys `calls_by_func` (`foo`, `M.foo`, `T:m`).
+fn lua_declaration_name(decl: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let name_node = decl.child_by_field_name("name")?;
+    match name_node.kind() {
+        "identifier" | "dot_index_expression" | "method_index_expression" => {
+            Some(get_node_text(&name_node, source).to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The SIMPLE (unqualified) name of a `function_declaration` — the last
+/// identifier of its name node (`g`, `f` from `M.f`, `m` from `T:m`).
+fn lua_simple_declaration_name(decl: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let name_node = decl.child_by_field_name("name")?;
+    match name_node.kind() {
+        "identifier" => Some(get_node_text(&name_node, source).to_string()),
+        "dot_index_expression" => name_node
+            .child_by_field_name("field")
+            .map(|f| get_node_text(&f, source).to_string()),
+        "method_index_expression" => name_node
+            .child_by_field_name("method")
+            .map(|m| get_node_text(&m, source).to_string()),
+        _ => None,
+    }
+}
+
+/// Recover the name a `function_definition` (anonymous function expression) is
+/// bound to: `local foo = function() end` / `foo = function() end` -> `foo`,
+/// or a table-constructor field `name = function() end` -> `name`.
+fn lua_anonymous_function_name(func_def: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut cur = func_def.parent();
+    while let Some(p) = cur {
+        match p.kind() {
+            "assignment_statement" => {
+                if let Some(vlist) = lua_child_of_kind(&p, "variable_list") {
+                    if let Some(first) = vlist.named_child(0) {
+                        return Some(get_node_text(&first, source).to_string());
+                    }
+                }
+                return None;
+            }
+            "field" => {
+                return p
+                    .child_by_field_name("name")
+                    .map(|n| get_node_text(&n, source).to_string());
+            }
+            "function_declaration" => return lua_declaration_name(&p, source),
+            _ => {}
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// Determine the enclosing function scope for a Lua/Luau AST node.
+///
+/// Returns the *qualified* function name exactly as the Lua/Luau call handler
+/// keys `calls_by_func`, so `find_best_vartype`'s scoped matches line up.
+/// `None` at module (chunk) scope.
+pub(crate) fn enclosing_lua_function_scope(
+    node: &tree_sitter::Node,
+    source: &[u8],
+) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        match p.kind() {
+            "function_declaration" => {
+                if let Some(name) = lua_declaration_name(&p, source) {
+                    return Some(name);
+                }
+            }
+            "function_definition" => {
+                if let Some(name) = lua_anonymous_function_name(&p, source) {
+                    return Some(name);
+                }
+            }
+            _ => {}
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// Parse a `variable_list` into `(name, optional_luau_type_annotation, line)`
+/// tuples. Handles plain `x`, luau-typed `x: T`, and multi-var `a, b` lists.
+fn parse_lua_variable_list(
+    vlist: &tree_sitter::Node,
+    source: &[u8],
+) -> Vec<(String, Option<String>, u32)> {
+    let mut result = Vec::new();
+    let count = vlist.child_count();
+    let mut i = 0;
+    while i < count {
+        if let Some(child) = vlist.child(i) {
+            if child.kind() == "identifier" {
+                let name = get_node_text(&child, source).to_string();
+                let line = child.start_position().row as u32 + 1;
+                let mut annotation = None;
+                // Luau inline annotation: `<name> : <type>`.
+                if let Some(colon) = vlist.child(i + 1) {
+                    if colon.kind() == ":" {
+                        if let Some(type_node) = vlist.child(i + 2) {
+                            annotation = lua_type_name(&type_node, source);
+                            i += 2;
+                        }
+                    }
+                }
+                result.push((name, annotation, line));
+            }
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Extract the metatable type from a `setmetatable(_, meta)` call's `meta`
+/// argument: either a bare `Mod` identifier or a `{__index = Mod}` table.
+fn lua_meta_type(meta: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match meta.kind() {
+        "identifier" => {
+            let t = get_node_text(meta, source).to_string();
+            if t.is_empty() || LUA_BUILTIN_TYPES.contains(&t.as_str()) {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        "table_constructor" => {
+            for i in 0..meta.named_child_count() {
+                if let Some(field) = meta.named_child(i) {
+                    if field.kind() != "field" {
+                        continue;
+                    }
+                    let is_index = field
+                        .child_by_field_name("name")
+                        .map(|k| get_node_text(&k, source) == "__index")
+                        .unwrap_or(false);
+                    if !is_index {
+                        continue;
+                    }
+                    if let Some(val) = field.child_by_field_name("value") {
+                        if val.kind() == "identifier" {
+                            let t = get_node_text(&val, source).to_string();
+                            if !t.is_empty() && !LUA_BUILTIN_TYPES.contains(&t.as_str()) {
+                                return Some(t);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Classify the RHS `value` of a `local x = <value>` into `(type_name, source)`.
+///
+/// Recognises factory calls (`Mod.new()`/`Mod.create()`), `setmetatable(...)`,
+/// and (luau) calls to functions with a known return annotation.
+fn classify_lua_value(
+    value: &tree_sitter::Node,
+    source: &[u8],
+    fn_return: &HashMap<String, Option<String>>,
+) -> Option<(String, &'static str)> {
+    if value.kind() != "function_call" {
+        return None;
+    }
+    let name = value.child_by_field_name("name")?;
+    match name.kind() {
+        "identifier" => {
+            let callee = get_node_text(&name, source);
+            if callee == "setmetatable" {
+                if let Some(args) = value.child_by_field_name("arguments") {
+                    if let Some(meta) = args.named_child(1) {
+                        return lua_meta_type(&meta, source).map(|t| (t, "assignment"));
+                    }
+                }
+                return None;
+            }
+            // Luau: `local x = f()` where f has a known, unambiguous return type.
+            if let Some(Some(rt)) = fn_return.get(callee) {
+                return Some((rt.clone(), "assignment"));
+            }
+            None
+        }
+        "dot_index_expression" => {
+            let table = name.child_by_field_name("table")?;
+            let field = name.child_by_field_name("field")?;
+            let field_txt = get_node_text(&field, source).to_string();
+            // Factory / constructor call on a table/module name: `Mod.new()`.
+            if table.kind() == "identifier" && (field_txt == "new" || field_txt == "create") {
+                let ttext = get_node_text(&table, source).to_string();
+                if !ttext.is_empty() && !LUA_BUILTIN_TYPES.contains(&ttext.as_str()) {
+                    return Some((ttext, "constructor"));
+                }
+            }
+            // Luau: `local x = Mod.f()` where Mod.f has a known return type.
+            if let Some(Some(rt)) = fn_return.get(&field_txt) {
+                return Some((rt.clone(), "assignment"));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Handle `local x [: T] = <value>` declarations.
+fn collect_lua_variable_declaration(
+    decl: &tree_sitter::Node,
+    source: &[u8],
+    is_luau: bool,
+    fn_return: &HashMap<String, Option<String>>,
+    out: &mut Vec<VarType>,
+) {
+    let assign = match lua_child_of_kind(decl, "assignment_statement") {
+        Some(a) => a,
+        None => return,
+    };
+    let vlist = match lua_child_of_kind(&assign, "variable_list") {
+        Some(v) => v,
+        None => return,
+    };
+    let names = parse_lua_variable_list(&vlist, source);
+    let values: Vec<tree_sitter::Node> = lua_child_of_kind(&assign, "expression_list")
+        .map(|el| {
+            (0..el.named_child_count())
+                .filter_map(|i| el.named_child(i))
+                .collect()
+        })
+        .unwrap_or_default();
+    let scope = enclosing_lua_function_scope(decl, source);
+
+    for (idx, (name, annotation, line)) in names.iter().enumerate() {
+        // Luau declared annotation is authoritative (High confidence).
+        if is_luau {
+            if let Some(ann) = annotation {
+                if !LUA_BUILTIN_TYPES.contains(&ann.as_str()) {
+                    out.push(VarType::new_with_scope(
+                        name.clone(),
+                        ann.clone(),
+                        "annotation",
+                        *line,
+                        scope.clone(),
+                    ));
+                }
+                // A declared type (table or builtin) settles this var.
+                continue;
+            }
+        }
+        // Value-based inference.
+        if let Some(value) = values.get(idx) {
+            if let Some((type_name, source_kind)) = classify_lua_value(value, source, fn_return) {
+                out.push(VarType::new_with_scope(
+                    name.clone(),
+                    type_name,
+                    source_kind,
+                    *line,
+                    scope.clone(),
+                ));
+            }
+        }
+    }
+}
+
+/// Handle a standalone `setmetatable(existing_var, meta)` statement, typing the
+/// already-declared `existing_var`.
+fn collect_lua_standalone_setmetatable(
+    call: &tree_sitter::Node,
+    source: &[u8],
+    out: &mut Vec<VarType>,
+) {
+    let name = match call.child_by_field_name("name") {
+        Some(n) => n,
+        None => return,
+    };
+    if !(name.kind() == "identifier" && get_node_text(&name, source) == "setmetatable") {
+        return;
+    }
+    let args = match call.child_by_field_name("arguments") {
+        Some(a) => a,
+        None => return,
+    };
+    let first = match args.named_child(0) {
+        Some(f) => f,
+        None => return,
+    };
+    // Only the `setmetatable(var, meta)` form types an EXISTING variable; the
+    // `setmetatable({}, meta)` form is handled at the enclosing assignment.
+    if first.kind() != "identifier" {
+        return;
+    }
+    let var_name = get_node_text(&first, source).to_string();
+    let meta = match args.named_child(1) {
+        Some(m) => m,
+        None => return,
+    };
+    if let Some(type_name) = lua_meta_type(&meta, source) {
+        let line = call.start_position().row as u32 + 1;
+        let scope = enclosing_lua_function_scope(call, source);
+        out.push(VarType::new_with_scope(
+            var_name, type_name, "assignment", line, scope,
+        ));
+    }
+}
+
+/// Handle `function T:m(...)`: the implicit `self` receiver has type `T`, scoped
+/// to the method's qualified name so `self:other()` inside it binds to `T`.
+fn collect_lua_self_receiver(decl: &tree_sitter::Node, source: &[u8], out: &mut Vec<VarType>) {
+    let name_node = match decl.child_by_field_name("name") {
+        Some(n) if n.kind() == "method_index_expression" => n,
+        _ => return,
+    };
+    let table = match name_node.child_by_field_name("table") {
+        Some(t) if t.kind() == "identifier" => t,
+        _ => return,
+    };
+    let type_name = get_node_text(&table, source).to_string();
+    if type_name.is_empty() || LUA_BUILTIN_TYPES.contains(&type_name.as_str()) {
+        return;
+    }
+    let scope = get_node_text(&name_node, source).to_string();
+    let line = decl.start_position().row as u32 + 1;
+    out.push(VarType::new_with_scope(
+        "self",
+        type_name,
+        "parameter",
+        line,
+        Some(scope),
+    ));
+}
+
+/// Handle a luau typed parameter `parameter` node (`x: T`).
+fn collect_luau_typed_parameter(param: &tree_sitter::Node, source: &[u8], out: &mut Vec<VarType>) {
+    let mut name: Option<(String, u32)> = None;
+    let count = param.child_count();
+    let mut i = 0;
+    while i < count {
+        if let Some(child) = param.child(i) {
+            match child.kind() {
+                "identifier" if name.is_none() => {
+                    name = Some((
+                        get_node_text(&child, source).to_string(),
+                        child.start_position().row as u32 + 1,
+                    ));
+                }
+                ":" => {
+                    if let (Some((n, line)), Some(type_node)) = (name.clone(), param.child(i + 1)) {
+                        if let Some(t) = lua_type_name(&type_node, source) {
+                            if !LUA_BUILTIN_TYPES.contains(&t.as_str()) {
+                                let scope = enclosing_lua_function_scope(param, source);
+                                out.push(VarType::new_with_scope(n, t, "parameter", line, scope));
+                            }
+                        }
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+}
+
+/// The luau return-type annotation of a `function_declaration` (`function f(): T`).
+fn luau_return_type(decl: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut saw_params = false;
+    let count = decl.child_count();
+    let mut i = 0;
+    while i < count {
+        if let Some(child) = decl.child(i) {
+            match child.kind() {
+                "parameters" => saw_params = true,
+                ":" if saw_params => {
+                    if let Some(type_node) = decl.child(i + 1) {
+                        return lua_type_name(&type_node, source);
+                    }
+                }
+                "block" => break,
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Shared Lua/Luau VarType walker. `is_luau` enables luau-only type-annotation
+/// signals (declared locals, typed parameters, return-type inference).
+fn extract_lua_like_var_types(
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+    is_luau: bool,
+) -> Vec<VarType> {
+    let root = tree.root_node();
+    let mut var_types = Vec::new();
+
+    // Pass 1 (luau only): collect function -> declared return type so that
+    // `local x = f()` can inherit it. A simple name mapping to two *different*
+    // return types is marked ambiguous (`None`) and never applied.
+    let mut fn_return: HashMap<String, Option<String>> = HashMap::new();
+    if is_luau {
+        for node in walk_tree(root) {
+            if node.kind() == "function_declaration" {
+                if let (Some(fname), Some(rtype)) = (
+                    lua_simple_declaration_name(&node, source),
+                    luau_return_type(&node, source),
+                ) {
+                    if !LUA_BUILTIN_TYPES.contains(&rtype.as_str()) {
+                        fn_return
+                            .entry(fname)
+                            .and_modify(|e| {
+                                if e.as_deref() != Some(rtype.as_str()) {
+                                    *e = None;
+                                }
+                            })
+                            .or_insert(Some(rtype));
+                    }
+                }
+            }
+        }
+    }
+
+    for node in walk_tree(root) {
+        match node.kind() {
+            "variable_declaration" => {
+                collect_lua_variable_declaration(&node, source, is_luau, &fn_return, &mut var_types);
+            }
+            "function_call" => {
+                collect_lua_standalone_setmetatable(&node, source, &mut var_types);
+            }
+            "function_declaration" => {
+                collect_lua_self_receiver(&node, source, &mut var_types);
+            }
+            "parameter" if is_luau => {
+                collect_luau_typed_parameter(&node, source, &mut var_types);
+            }
+            _ => {}
+        }
+    }
+
+    var_types
+}
+
+/// Extract VarType entries from a Lua source tree.
+pub(crate) fn extract_lua_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
+    extract_lua_like_var_types(tree, source, false)
+}
+
+/// Extract VarType entries from a Luau source tree (adds type annotations).
+pub(crate) fn extract_luau_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
+    extract_lua_like_var_types(tree, source, true)
+}
+
+// =============================================================================
 // Tests (moved from builder_v2.rs during Phase 3 modularization)
 // =============================================================================
 
@@ -3729,5 +4268,291 @@ $top = new TopLevel();
         assert_eq!(config_vt.type_name, "Config");
         assert_eq!(config_vt.source, "parameter");
         assert_eq!(config_vt.scope, Some("standalone".to_string()));
+    }
+
+    // ==========================================================================
+    // Lua / Luau VarType extraction tests (FEATURE-1 stage d.4)
+    // ==========================================================================
+
+    /// `local x = Mod.new()` / `Mod.create()` -> x : Mod (RTA factory).
+    #[test]
+    fn test_extract_lua_var_types_factory_new() {
+        let source = r#"
+local Process = require('process')
+local proc = Process.new()
+local other = Process.create()
+"#;
+        let tree = parse_source(source, "lua").unwrap();
+        let var_types = extract_lua_var_types(&tree, source.as_bytes());
+
+        // `Process = require(...)` must NOT be typed (require is not a factory).
+        assert!(
+            var_types.iter().all(|v| v.var_name != "Process"),
+            "require() result must not be typed, got {:?}",
+            var_types
+        );
+
+        let proc = var_types.iter().find(|v| v.var_name == "proc").unwrap();
+        assert_eq!(proc.type_name, "Process");
+        assert_eq!(proc.source, "constructor");
+        assert_eq!(proc.scope, None);
+
+        let other = var_types.iter().find(|v| v.var_name == "other").unwrap();
+        assert_eq!(other.type_name, "Process");
+        assert_eq!(other.source, "constructor");
+    }
+
+    /// `local x = setmetatable({}, {__index = Mod})` and
+    /// `local x = setmetatable({}, Mod)` -> x : Mod.
+    #[test]
+    fn test_extract_lua_var_types_setmetatable_forms() {
+        let source = r#"
+local a = setmetatable({}, {__index = Widget})
+local b = setmetatable({}, Widget)
+"#;
+        let tree = parse_source(source, "lua").unwrap();
+        let var_types = extract_lua_var_types(&tree, source.as_bytes());
+
+        let a = var_types.iter().find(|v| v.var_name == "a").unwrap();
+        assert_eq!(a.type_name, "Widget");
+        assert_eq!(a.source, "assignment");
+
+        let b = var_types.iter().find(|v| v.var_name == "b").unwrap();
+        assert_eq!(b.type_name, "Widget");
+        assert_eq!(b.source, "assignment");
+    }
+
+    /// `local x = {}` then a standalone `setmetatable(x, {__index = Mod})`
+    /// -> x : Mod (types the already-declared variable).
+    #[test]
+    fn test_extract_lua_var_types_standalone_setmetatable() {
+        let source = r#"
+local c = {}
+setmetatable(c, {__index = Gadget})
+"#;
+        let tree = parse_source(source, "lua").unwrap();
+        let var_types = extract_lua_var_types(&tree, source.as_bytes());
+
+        let c = var_types.iter().find(|v| v.var_name == "c").unwrap();
+        assert_eq!(c.type_name, "Gadget");
+        assert_eq!(c.source, "assignment");
+        // Recorded at the setmetatable statement (line 3, 1-indexed).
+        assert_eq!(c.line, 3);
+    }
+
+    /// Inside `function T:m(...)` the implicit `self` receiver has type `T`,
+    /// scoped to the method's qualified name (`T:m`).
+    #[test]
+    fn test_extract_lua_var_types_self_receiver() {
+        let source = r#"
+function Process:initialize()
+  self:setup()
+end
+"#;
+        let tree = parse_source(source, "lua").unwrap();
+        let var_types = extract_lua_var_types(&tree, source.as_bytes());
+
+        let self_vt = var_types
+            .iter()
+            .find(|v| v.var_name == "self")
+            .expect("self should be typed inside a colon method");
+        assert_eq!(self_vt.type_name, "Process");
+        assert_eq!(self_vt.source, "parameter");
+        assert_eq!(self_vt.scope, Some("Process:initialize".to_string()));
+    }
+
+    /// Luau `local x: T = ...` -> x : T (annotation, High); builtin scalar
+    /// annotations (`number`) are skipped.
+    #[test]
+    fn test_extract_luau_var_types_annotation() {
+        let source = r#"
+local x: Component = nil
+local n: number = 0
+"#;
+        let tree = parse_source(source, "luau").unwrap();
+        let var_types = extract_luau_var_types(&tree, source.as_bytes());
+
+        let x = var_types.iter().find(|v| v.var_name == "x").unwrap();
+        assert_eq!(x.type_name, "Component");
+        assert_eq!(x.source, "annotation");
+
+        assert!(
+            var_types.iter().all(|v| v.var_name != "n"),
+            "builtin `number` annotation must be skipped, got {:?}",
+            var_types
+        );
+    }
+
+    /// Luau typed parameter `function f(x: T)` -> x : T (parameter, scoped to f).
+    #[test]
+    fn test_extract_luau_var_types_typed_parameter() {
+        let source = r#"
+function f(c: Component)
+  c:setState()
+end
+"#;
+        let tree = parse_source(source, "luau").unwrap();
+        let var_types = extract_luau_var_types(&tree, source.as_bytes());
+
+        let c = var_types.iter().find(|v| v.var_name == "c").unwrap();
+        assert_eq!(c.type_name, "Component");
+        assert_eq!(c.source, "parameter");
+        assert_eq!(c.scope, Some("f".to_string()));
+    }
+
+    /// Luau `local function g(): T` return annotation lets `local y = g()`
+    /// inherit the declared return type.
+    #[test]
+    fn test_extract_luau_var_types_return_annotation_inferred() {
+        let source = r#"
+local function makeThing(): Thing
+  return nil
+end
+local w = makeThing()
+"#;
+        let tree = parse_source(source, "luau").unwrap();
+        let var_types = extract_luau_var_types(&tree, source.as_bytes());
+
+        let w = var_types.iter().find(|v| v.var_name == "w").unwrap();
+        assert_eq!(w.type_name, "Thing");
+        assert_eq!(w.source, "assignment");
+    }
+
+    /// Lua is NOT affected by luau-only annotation signals: a plain
+    /// `local x = Mod.new()` still types, but no annotation/return inference.
+    #[test]
+    fn test_extract_lua_var_types_ignores_luau_only_signals() {
+        // Return annotation must not be consumed for plain Lua.
+        let source = r#"
+local proc = Factory.new()
+"#;
+        let tree = parse_source(source, "lua").unwrap();
+        let var_types = extract_lua_var_types(&tree, source.as_bytes());
+        let proc = var_types.iter().find(|v| v.var_name == "proc").unwrap();
+        assert_eq!(proc.type_name, "Factory");
+        assert_eq!(proc.source, "constructor");
+    }
+
+    /// End-to-end (Lua): a colon-method call `proc:initialize()` resolves to the
+    /// enclosing table's type via the shared `apply_type_resolution` path, and
+    /// two same-named methods on different tables are NOT conflated.
+    #[test]
+    fn test_lua_colon_method_receiver_type_not_conflated() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        use crate::callgraph::resolution::apply_type_resolution;
+
+        let source = r#"
+function Process:initialize()
+  return true
+end
+
+function Widget:initialize()
+  return true
+end
+
+local proc = Process.new()
+local widget = Widget.new()
+
+local function run()
+  proc:initialize()
+  widget:initialize()
+end
+"#;
+        let handler = crate::callgraph::languages::LuaHandler::new();
+        let path = std::path::Path::new("m.lua");
+        let tree = parse_source(source, "lua").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+
+        let mut file_ir = crate::callgraph::cross_file_types::FileIR::new(path.to_path_buf());
+        file_ir.funcs = funcs;
+        file_ir.classes = classes;
+        file_ir.var_types = extract_lua_var_types(&tree, source.as_bytes());
+        file_ir.calls = calls;
+
+        apply_type_resolution(&mut file_ir, source, crate::types::Language::Lua);
+
+        let run_calls = file_ir.calls.get("run").expect("run caller present");
+        let proc_call = run_calls
+            .iter()
+            .find(|c| c.target == "proc:initialize")
+            .expect("proc:initialize call present");
+        let widget_call = run_calls
+            .iter()
+            .find(|c| c.target == "widget:initialize")
+            .expect("widget:initialize call present");
+
+        assert_eq!(
+            proc_call.receiver_type.as_deref(),
+            Some("Process"),
+            "proc:initialize receiver must be typed Process (d.4 supplies it)"
+        );
+        assert_eq!(
+            widget_call.receiver_type.as_deref(),
+            Some("Widget"),
+            "widget:initialize receiver must be typed Widget"
+        );
+        assert_ne!(
+            proc_call.receiver_type, widget_call.receiver_type,
+            "same-named colon methods on different tables must NOT be conflated"
+        );
+    }
+
+    /// End-to-end (Luau): a cross-module `inst:setState()` where
+    /// `inst = Component.new()` (setState defined in the required Component
+    /// module, NOT locally) keeps its `Method` classification and has its
+    /// receiver typed to `Component` through the shared resolution path.
+    ///
+    /// NOTE: when the colon-method name IS defined in the same file, the luau
+    /// CALL handler collapses `obj:method()` to `CallType::Intra` and drops the
+    /// receiver (luau.rs) — a d.2/d.3 call-extraction concern, orthogonal to the
+    /// d.4 receiver-type SUPPLY exercised here.
+    #[test]
+    fn test_luau_colon_method_receiver_type_filled() {
+        use crate::callgraph::languages::CallGraphLanguageSupport;
+        use crate::callgraph::resolution::apply_type_resolution;
+
+        let source = r#"
+local Component = require(script.Component)
+
+local function build()
+  local inst = Component.new()
+  inst:setState()
+end
+"#;
+        let handler = crate::callgraph::languages::LuauHandler::new();
+        let path = std::path::Path::new("c.luau");
+        let tree = parse_source(source, "luau").unwrap();
+        let calls = handler.extract_calls(path, source, &tree).unwrap();
+        let (funcs, classes) = handler.extract_definitions(source, path, &tree).unwrap();
+
+        // The luau var_types extractor supplies `inst : Component` (RTA factory).
+        let var_types = extract_luau_var_types(&tree, source.as_bytes());
+        let inst_vt = var_types
+            .iter()
+            .find(|v| v.var_name == "inst")
+            .expect("inst should be typed by Component.new()");
+        assert_eq!(inst_vt.type_name, "Component");
+        assert_eq!(inst_vt.source, "constructor");
+        assert_eq!(inst_vt.scope, Some("build".to_string()));
+
+        let mut file_ir = crate::callgraph::cross_file_types::FileIR::new(path.to_path_buf());
+        file_ir.funcs = funcs;
+        file_ir.classes = classes;
+        file_ir.var_types = var_types;
+        file_ir.calls = calls;
+
+        apply_type_resolution(&mut file_ir, source, crate::types::Language::Luau);
+
+        let build_calls = file_ir.calls.get("build").expect("build caller present");
+        let set_state = build_calls
+            .iter()
+            .find(|c| c.target == "inst:setState")
+            .expect("inst:setState call present as a Method");
+        assert_eq!(
+            set_state.receiver_type.as_deref(),
+            Some("Component"),
+            "inst:setState receiver must be typed Component (d.4 supplies it)"
+        );
     }
 }
