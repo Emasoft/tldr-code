@@ -806,13 +806,43 @@ pub fn enrich_impact_with_references(
     // (cardinality 1) keeps the never-worse relaxation: its sole owner means an
     // untyped caller name-match would have kept is never dropped.
     let is_ambiguous = report.targets.len() >= 2;
-    // Resolve receivers to their declared TYPE only for a genuine collision the
-    // call graph DECLINED. When the graph already resolved an edge
-    // (`any_resolved`) the historic name-based receiver is kept so a resolved
-    // call is never sprayed onto a same-named sibling class in another file
-    // (the f69904c python class-collision guard); for a unique target
-    // type-resolution is unnecessary and could only risk dropping a correct edge.
-    let resolve_receiver_types = !any_resolved && is_ambiguous;
+    // FEATURE-1 d.7-1: the set of type qualifiers that appear on >= 2 DISTINCT
+    // targets — a genuine same-named-class collision (`Service` defined in two
+    // files). Type-based receiver resolution CANNOT disambiguate such a qualifier:
+    // the receiver's type name ("Service") matches every same-named sibling, so a
+    // caller the call graph already resolved (file-aware) would be SPRAYED onto the
+    // siblings (the f69904c guard). Both the Defect-1 var-type upgrade and the
+    // Defect-2 SelfRef inheritance relaxation consult this ONE set to stay
+    // collision-safe. The qualifier key is `qualifier_of` — the same innermost
+    // segment the downstream `receiver_compatible` text compare uses — so the set
+    // catches exactly the collisions that compare would conflate.
+    let mut qual_counts: HashMap<String, usize> = HashMap::new();
+    for t in report.targets.values() {
+        if let Some(q) = qualifier_of(&t.function) {
+            *qual_counts.entry(q).or_insert(0) += 1;
+        }
+    }
+    let colliding_quals: HashSet<String> = qual_counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2)
+        .map(|(q, _)| q)
+        .collect();
+    // Resolve receivers to their declared TYPE for a genuine multi-definer
+    // collision (`is_ambiguous`). FEATURE-1 d.7-1: the former `!any_resolved` gate
+    // suppressed per-type resolution for the remaining unresolved edges the moment
+    // ANY edge resolved, collapsing correct callers of the sibling definitions. The
+    // upgrade now runs whenever the collision is ambiguous; the collision-safety
+    // decision is deferred PER-RESOLVED-TYPE to `extract_call_receiver`, which (via
+    // `colliding_quals` + `any_resolved`) DECLINES an upgrade whose resolved type
+    // is a colliding qualifier under an already-resolved graph — so a
+    // distinct-qualifier target still gains recall while a same-named sibling is
+    // never sprayed. Strictly additive: an upgrade only fires on a PROVEN declared
+    // type (a miss keeps the variable name), and additions dedup against already-
+    // resolved callers (`already_present`), so no already-correct edge is
+    // re-pointed. For a unique target it is unnecessary (the
+    // `never_worse_unique_keep` relaxation covers it), so it stays gated on
+    // `is_ambiguous`.
+    let resolve_receiver_types = is_ambiguous;
 
     let mut options = ReferencesOptions::new();
     options.kinds = Some(vec![ReferenceKind::Call]);
@@ -949,6 +979,8 @@ pub fn enrich_impact_with_references(
             bare_target,
             language,
             resolve_receiver_types,
+            any_resolved,
+            &colliding_quals,
         );
 
         let key_pair = (enclosing.clone(), caller_file.clone());
@@ -988,6 +1020,8 @@ pub fn enrich_impact_with_references(
                     bare_target,
                     language,
                     resolve_receiver_types,
+                    any_resolved,
+                    &colliding_quals,
                 );
                 // Only accept AST-confirmed receiver-qualified call sites; a
                 // bare/unknown/shadowed receiver is not a method invocation we
@@ -1080,6 +1114,35 @@ pub fn enrich_impact_with_references(
         return;
     }
 
+    // FEATURE-1 d.7-1: pre-collect each call file's class -> base-class-names map
+    // so `receiver_compatible` can recognize a `this->method()` self-call whose
+    // ENCLOSING class INHERITS the target's type qualifier (a method defined on a
+    // BASE class). Only files carrying a resolved `self`/`this` receiver are
+    // parsed (bounded), reusing the canonical `ClassInfo.bases` the AST extractors
+    // already produce — no parallel inheritance model.
+    let mut class_bases_by_file: HashMap<PathBuf, HashMap<String, Vec<String>>> = HashMap::new();
+    for (_, file, _, receiver, _) in &additions {
+        if !matches!(receiver, CallReceiver::SelfRef(Some(_))) {
+            continue;
+        }
+        if class_bases_by_file.contains_key(file) {
+            continue;
+        }
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        if let Ok(module) = extract_file(file, None) {
+            for class in &module.classes {
+                if !class.name.is_empty() && !class.bases.is_empty() {
+                    // Keep-first on a duplicate short name in the same file so a
+                    // later same-named class cannot silently overwrite the bases of
+                    // an earlier one (never-worse: no spurious widening).
+                    map.entry(class.name.clone())
+                        .or_insert_with(|| class.bases.clone());
+                }
+            }
+        }
+        class_bases_by_file.insert(file.clone(), map);
+    }
+
     for tree in report.targets.values_mut() {
         // CL-2 / GH #40: derive the receiver-qualifier this target's
         // definition is scoped under, so each candidate caller's call-site
@@ -1107,8 +1170,14 @@ pub fn enrich_impact_with_references(
             // (never-worse). Module-qualified targets (lowercase qualifier like
             // lua `rpc`) and type-named receivers (uppercase like `Mutex`) stay
             // strict, preserving the CL-2 / f69904c discriminations.
-            let strict_ok =
-                receiver_compatible(receiver, target_qualifier.as_deref(), &tree.file, file);
+            let strict_ok = receiver_compatible(
+                receiver,
+                target_qualifier.as_deref(),
+                &tree.file,
+                file,
+                &class_bases_by_file,
+                &colliding_quals,
+            );
             // FEATURE-1 d.3: the instance-variable relaxation is retired for
             // AMBIGUOUS (>= 2 definer) collisions — those now require the
             // receiver's declared TYPE to match this target (the receiver was
@@ -1340,7 +1409,10 @@ fn qualifier_of(qualified: &str) -> Option<String> {
 ///         receiver means the call is a method on some object — a different
 ///         symbol — so reject.
 ///   - `SelfRef(Some(ty))` -> compatible iff the enclosing type equals the
-///     target qualifier (this is the `impl Parser` vs `impl Codec` split);
+///     target qualifier (the `impl Parser` vs `impl Codec` split) OR `ty`
+///     INHERITS from the target qualifier — a `this->method()` self-call in a
+///     DERIVED class binding a method defined on a BASE class (FEATURE-1 d.7-1,
+///     inheritance proven from the call file's AST-extracted `ClassInfo.bases`);
 ///     if the target has no qualifier, a `self`-method call is a different
 ///     symbol -> reject.
 ///   - `SelfRef(None)` -> compatible (could not resolve the enclosing type;
@@ -1349,7 +1421,9 @@ fn receiver_compatible(
     receiver: &CallReceiver,
     target_qualifier: Option<&str>,
     _target_file: &Path,
-    _call_file: &Path,
+    call_file: &Path,
+    class_bases_by_file: &HashMap<PathBuf, HashMap<String, Vec<String>>>,
+    colliding_quals: &HashSet<String>,
 ) -> bool {
     match (receiver, target_qualifier) {
         // explain-r8-bare-name-resolution-inherited: a bare name proven to bind
@@ -1362,10 +1436,79 @@ fn receiver_compatible(
         // Named receiver but the target is a bare free function: the call is
         // a method on an object, a different symbol.
         (CallReceiver::Named(_), None) => false,
-        (CallReceiver::SelfRef(Some(ty)), Some(q)) => names_equal_ignore_generics(ty, q),
+        // FEATURE-1 d.7-1: a `self`/`this` call whose enclosing type is `ty` is
+        // compatible with the target's type qualifier `q` when `ty == q` (the
+        // `impl Parser` vs `impl Codec` split) OR when `ty` INHERITS from `q` — a
+        // `this->method()` self-call in a DERIVED class binding a method defined on
+        // a BASE class. Inheritance is proven only from the AST-extracted
+        // `ClassInfo.bases` of the call file (pre-collected into
+        // `class_bases_by_file`); an unproven relationship stays incompatible, so
+        // an unrelated same-named sibling type is never wrongly attributed.
+        //
+        // critic FIX 1: the inheritance relaxation is DISABLED when `q` is a
+        // COLLIDING qualifier (same class name on >= 2 targets). Proving `ty`
+        // inherits *a* class named `q` cannot prove WHICH file's `q` — so on a
+        // collision it would spray the self-call onto every same-named sibling.
+        // We then fall back to the exact-match half only, which is BYTE-UNCHANGED
+        // baseline behaviour (no wider than pre-existing on collisions).
+        (CallReceiver::SelfRef(Some(ty)), Some(q)) => {
+            names_equal_ignore_generics(ty, q)
+                || (!colliding_quals.contains(q)
+                    && class_bases_by_file
+                        .get(call_file)
+                        .is_some_and(|cb| selfref_type_inherits_qualifier(ty, q, cb)))
+        }
         (CallReceiver::SelfRef(Some(_)), None) => false,
         (CallReceiver::SelfRef(None), _) => true,
     }
+}
+
+/// FEATURE-1 d.7-1: whether the `self`/`this` enclosing type `ty` inherits —
+/// directly or transitively — from the target's type `qualifier`, using only the
+/// AST-extracted `ClassInfo.bases` of the call file (`class_bases`, mapping a
+/// class name to its declared base names). A `this->method()` self-call in a
+/// DERIVED class whose method is defined on a BASE class is thereby recognized as
+/// a genuine caller of that base method, instead of being dropped by the
+/// exact-name receiver check.
+///
+/// Additive / never-worse: returns `true` ONLY when inheritance is PROVEN from
+/// the extracted base lists (matched on the full base name or its last
+/// `::`/`.`-separated segment, generics-tolerant); an unproven or absent
+/// relationship returns `false`, so an unrelated same-named sibling type is never
+/// wrongly attributed. Traversal is a depth-first walk over a LIFO `stack`
+/// (`stack.pop()`), bounded by a visited set against cyclic base declarations.
+fn selfref_type_inherits_qualifier(
+    ty: &str,
+    qualifier: &str,
+    class_bases: &HashMap<String, Vec<String>>,
+) -> bool {
+    let mut stack: Vec<String> = match class_bases.get(ty) {
+        Some(bases) => bases.clone(),
+        None => return false,
+    };
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert(ty.to_string());
+    while let Some(base) = stack.pop() {
+        if !seen.insert(base.clone()) {
+            continue;
+        }
+        let base_leaf = last_segment(&base);
+        if names_equal_ignore_generics(&base, qualifier)
+            || names_equal_ignore_generics(base_leaf, qualifier)
+        {
+            return true;
+        }
+        // Follow transitive bases whose intermediate class is defined in this
+        // file too (keyed by full name or last segment).
+        if let Some(next) = class_bases.get(&base).or_else(|| class_bases.get(base_leaf)) {
+            for b in next {
+                if !seen.contains(b) {
+                    stack.push(b.clone());
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Compare two type/receiver names, tolerant of a trailing generic argument
@@ -1435,6 +1578,8 @@ fn extract_call_receiver(
     bare_target: &str,
     language: Language,
     resolve_var_types: bool,
+    any_resolved: bool,
+    colliding_quals: &HashSet<String>,
 ) -> CallReceiver {
     use tree_sitter::Point;
 
@@ -1503,14 +1648,33 @@ fn extract_call_receiver(
         // the call is attributed only to the matching definition. A miss keeps
         // the variable name unchanged so the never-worse invariant holds.
         //
-        // Gated by `resolve_var_types` (set only for a genuine multi-definer
-        // collision the call graph DECLINED, `!any_resolved && is_ambiguous`): for
-        // a unique target or a call graph that already resolved the edge, the
-        // historic name-based receiver is preserved verbatim, so no resolved edge
-        // is ever sprayed onto a same-named sibling class in another file.
+        // Gated by `resolve_var_types` (set for a genuine multi-definer collision,
+        // `is_ambiguous`). FEATURE-1 d.7-1 (critic FIX 2): the upgrade is DECLINED
+        // when the resolved type is a COLLIDING qualifier (same class name on >= 2
+        // targets) AND the call graph already resolved some edge (`any_resolved`) —
+        // a type-name match then cannot pick WHICH file's `ty.method` owns the call,
+        // so keeping it would spray onto every same-named sibling; the call graph's
+        // file-aware resolution is authoritative there. For a DISTINCT (non-
+        // colliding) qualifier the upgrade proceeds even after some edges resolved,
+        // restoring recall; and when nothing resolved (`!any_resolved`) the upgrade
+        // always proceeds (the b5 collision-keep behaviour). A miss keeps the
+        // variable name unchanged so the never-worse invariant holds.
+        //
+        // critic v3 FIX: the collision-membership test is GENERICS-TOLERANT
+        // (`names_equal_ignore_generics`), symmetric with the downstream
+        // `(Named(r), Some(q))` compat compare — otherwise a resolved type carrying
+        // a generic suffix (`Service<Foo>`) would miss the bare colliding qualifier
+        // (`Service`) here yet still match BOTH targets downstream (which strips
+        // generics), re-opening the spray in the very `any_resolved` branch this
+        // guard protects.
         if resolve_var_types {
             if let Some(ty) = resolve_receiver_declared_type(&source, language, line as u32, var) {
-                return CallReceiver::Named(ty);
+                let ty_collides = colliding_quals
+                    .iter()
+                    .any(|q| names_equal_ignore_generics(q, &ty));
+                if !(any_resolved && ty_collides) {
+                    return CallReceiver::Named(ty);
+                }
             }
         }
     }
@@ -3276,8 +3440,9 @@ mod tests {
         // FEATURE-1 d.3: these tests assert the raw receiver CLASSIFICATION
         // (Named/Bare/SelfRef/ShadowedLocal), independent of the collision
         // cardinality gate, so the declared-type upgrade is enabled to exercise
-        // the full extraction path.
-        let r = extract_call_receiver(&path, line, col, name, lang, true);
+        // the full extraction path. `any_resolved = false` + an empty collision
+        // set leaves the d.7-1 upgrade guard inert (raw classification unchanged).
+        let r = extract_call_receiver(&path, line, col, name, lang, true, false, &HashSet::new());
         let _ = std::fs::remove_dir_all(&dir);
         r
     }
@@ -3750,6 +3915,58 @@ mod tests {
         assert_eq!(
             total, 1,
             "B5: exactly one resolved caller expected across both Service.handle defs; targets: {:?}",
+            targets
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn d7_cpp_selfref_inheritance_not_sprayed_onto_same_named_sibling() {
+        // FEATURE-1 d.7-1 CRITIC FIX-1 GUARD: two UNRELATED same-named `Service`
+        // classes in two files each define `run()` (a genuine same-named-class
+        // collision -> the qualifier `Service` is COLLIDING). File `a.cpp` also has
+        // `class Derived : public Service` whose `trigger()` makes a `this->run()`
+        // self-call. `Derived` inherits ONE of the two `Service`s, but the SelfRef
+        // inheritance relaxation only proves "Derived inherits a class named
+        // Service" — it cannot prove WHICH file's Service. So on a COLLIDING
+        // qualifier that relaxation must be DISABLED (fall back to exact match),
+        // otherwise `Derived::trigger` sprays onto BOTH `Service.run` defs,
+        // including the unrelated `b.cpp` sibling. This asserts the self-call is
+        // attributed to AT MOST ONE target (never both same-named siblings).
+        let root = std::env::temp_dir().join("tldr_d7_cpp_selfref_collision");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("a.cpp"),
+            "class Service {\npublic:\n    void run() {}\n};\n\nclass Derived : public Service {\npublic:\n    void trigger() { this->run(); }\n};\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.cpp"),
+            "class Service {\npublic:\n    void run() {}\n};\n",
+        )
+        .unwrap();
+
+        let targets = b5_resolve(&root, "run", crate::Language::Cpp);
+        // Two same-named `Service.run` definitions => a genuine ambiguous collision.
+        assert!(
+            targets.len() >= 2,
+            "d7 FIX-1: expected the two colliding Service.run targets; targets: {:?}",
+            targets
+        );
+        // The `this->run()` self-call in Derived must NOT be sprayed onto BOTH
+        // same-named Service.run defs. Before the collision gate it lands on both
+        // (the unrelated b.cpp sibling included); after the gate it is attributed
+        // to at most one.
+        let sprayed = targets
+            .iter()
+            .filter(|(_, _, callers)| callers.iter().any(|c| c.contains("trigger")))
+            .count();
+        assert!(
+            sprayed <= 1,
+            "d7 FIX-1: Derived::trigger self-call (this->run()) sprayed onto {} same-named Service.run defs (must be <= 1); targets: {:?}",
+            sprayed,
             targets
         );
 
