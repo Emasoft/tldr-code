@@ -112,6 +112,12 @@ mod fix_cl1_callgraph_line_v1;
 #[cfg(test)]
 mod fix_cl3b_callgraph_v1;
 
+// fix-cl-8-v1 (BUG-5, LUA colon-receiver): a Lua `self:m()` colon dispatch must
+// not bind an unrelated same-file sibling class's method; the guard reads the
+// `resolve_caller_name`-invisible `colon_receiver` field to decline it.
+#[cfg(test)]
+mod fix_cl8_lua_colon_receiver_v1;
+
 pub use builder::build_project_call_graph;
 pub use cross_file_types::{
     // Phase 3: Container types

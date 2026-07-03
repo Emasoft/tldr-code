@@ -203,6 +203,34 @@ pub(crate) fn compute_via_import(
 }
 
 pub(crate) fn enclosing_class_for_call(funcs: &[FuncDef], call_site: &CallSite) -> Option<String> {
+    // Colon-aware: for a Lua colon method the best enclosing `FuncDef` carries no
+    // `class_name` (setting it would relabel every colon edge `m` -> `T.m`) but
+    // does carry `colon_receiver`, so the BUG-5 self-dispatch guard can learn the
+    // class the call is written inside. Used by every builder-side consumer;
+    // proven no-op for Lua everywhere except the guard (see the callers).
+    enclosing_class_for_call_impl(funcs, call_site, true)
+}
+
+/// fix-cl-8-v1 (BUG-5, LUA): the CLASS-NAME-ONLY enclosing class (the exact
+/// pre-`colon_receiver` behaviour of [`enclosing_class_for_call`]). Used ONLY by
+/// `apply_type_resolution`'s `self` -> `receiver_type` inference, which must NOT
+/// see the Lua `colon_receiver`: routing a colon receiver into `receiver_type`
+/// would flip the fuzzy matchers' `type_filter` from `None` to `Some(T)` and drop
+/// legitimate cross-file colon-method edges (broad churn). Keeping this path
+/// class-name-only makes the `colon_receiver` change invisible to receiver-type
+/// inference — the guard remains the sole consumer of the colon receiver.
+pub(crate) fn enclosing_class_name_only_for_call(
+    funcs: &[FuncDef],
+    call_site: &CallSite,
+) -> Option<String> {
+    enclosing_class_for_call_impl(funcs, call_site, false)
+}
+
+fn enclosing_class_for_call_impl(
+    funcs: &[FuncDef],
+    call_site: &CallSite,
+    consult_colon_receiver: bool,
+) -> Option<String> {
     let line = call_site.line?;
     let mut best: Option<&FuncDef> = None;
     let mut best_span: u32 = u32::MAX;
@@ -219,8 +247,19 @@ pub(crate) fn enclosing_class_for_call(funcs: &[FuncDef], call_site: &CallSite) 
     }
 
     if let Some(func) = best {
-        if let Some(class_name) = &func.class_name {
-            return Some(class_name.clone());
+        // Prefer the AST-derived owning `class_name`; fall back to the Lua colon
+        // method's `colon_receiver` ONLY when explicitly requested (the guard
+        // path). For every non-Lua definition `colon_receiver` is `None`, so this
+        // is byte-for-byte identical to the class-name-only derivation.
+        let owner = if consult_colon_receiver {
+            func.class_name
+                .clone()
+                .or_else(|| func.colon_receiver.clone())
+        } else {
+            func.class_name.clone()
+        };
+        if let Some(class_name) = owner {
+            return Some(class_name);
         }
     }
 
@@ -326,7 +365,13 @@ pub fn apply_type_resolution(file_ir: &mut FileIR, source: &str, language: Langu
                 receiver_key
             };
 
-            let enclosing_class = enclosing_class_for_call(funcs, call_site);
+            // fix-cl-8-v1 (BUG-5, LUA): receiver-type inference must use the
+            // CLASS-NAME-ONLY enclosing class. Feeding a Lua `colon_receiver` into
+            // `receiver_type` (below, for a `self`/`cls` receiver) would flip the
+            // fuzzy matchers' `type_filter` from `None` to `Some(T)` and silently
+            // drop legitimate cross-file colon-method edges. The colon receiver is
+            // consumed ONLY by the guard (via `enclosing_class_for_call`), never here.
+            let enclosing_class = enclosing_class_name_only_for_call(funcs, call_site);
             let base_class = enclosing_class
                 .as_deref()
                 .and_then(|class_name| first_base_for_class(classes, class_name));
@@ -449,6 +494,13 @@ fn find_best_vartype_ref<'a>(
     // equals `caller_name` (e.g. scope "T:m" for caller "m").
     let mut best_method_scoped: Option<&VarType> = None;
     let mut method_scoped_types: HashSet<&str> = HashSet::new();
+    // BUG-3 (cpp member fields): candidates scoped to the CLASS that owns the
+    // caller method — a member-field vartype scoped to "TestInfo" applies to a
+    // call inside caller "TestInfo::Run". Only used when the receiver has no
+    // exact-scope local of the same name (locals shadow members), and only when
+    // a single distinct type is implied (ambiguity is dropped).
+    let mut best_class_scoped: Option<&VarType> = None;
+    let mut class_scoped_types: HashSet<&str> = HashSet::new();
 
     for vt in var_types {
         if vt.var_name != receiver_name {
@@ -481,6 +533,13 @@ fn find_best_vartype_ref<'a>(
                         }
                     }
                 }
+                // BUG-3: class-qualified (`Class::method`) member-field match.
+                if caller_is_method_of_class(caller_name, scope) {
+                    class_scoped_types.insert(vt.type_name.as_str());
+                    if best_class_scoped.is_none_or(|prev| vt.line > prev.line) {
+                        best_class_scoped = Some(vt);
+                    }
+                }
             }
         }
     }
@@ -497,8 +556,34 @@ fn find_best_vartype_ref<'a>(
             return Some(vt);
         }
     }
+    // BUG-3: unambiguous class-owned member-field match (member receiver typed
+    // from a field declared in the caller's own class). Same single-type guard as
+    // the colon tier: anything ambiguous falls through to the cardinality gate.
+    if class_scoped_types.len() == 1 {
+        if let Some(vt) = best_class_scoped {
+            return Some(vt);
+        }
+    }
     // Module-level match is the final fallback.
     best_module
+}
+
+/// BUG-3 (cpp member fields): true when `caller_name` is a method of the class
+/// named `class_scope` — i.e. `caller_name == "{class}::{method}"` where the
+/// class component is (or ends in) `class_scope`. This lets a member-field
+/// vartype scoped to a bare class name (`enclosing_cpp_class_name`, e.g.
+/// "TestInfo") type a member receiver in that class's methods (caller
+/// "TestInfo::Run"), including a nested-class method (caller "A::B::m", scope
+/// "B" or "A::B"). The `::` method separator is C++/Rust-family only, so this
+/// never fires for the `.`-qualified caller keys used by other languages.
+fn caller_is_method_of_class(caller_name: &str, class_scope: &str) -> bool {
+    match caller_name.rsplit_once("::") {
+        Some((class_path, _method)) => {
+            class_path == class_scope
+                || class_path.rsplit("::").next() == Some(class_scope)
+        }
+        None => false,
+    }
 }
 
 /// Resolve the best caller name for a call site, qualifying methods with class names when possible.
@@ -1407,6 +1492,65 @@ fn method_definer_cardinality(
     representatives.len()
 }
 
+/// fix-cl-8-v1 (BUG-5, LUA): the definer cardinality used by the colon/self
+/// dispatch guard. Identical to [`method_definer_cardinality`] for every non-Lua
+/// definition (a Luau colon method carries `class_name` + `is_method`, so it is
+/// already counted there), but ADDITIONALLY counts pure-Lua colon methods, which
+/// carry NO `class_name`/`is_method` and instead record their owning class in
+/// `colon_receiver`. Without this, the two Lua colon definers of a shared method
+/// name (the same-file sibling + the cross-file ancestor) would count as 0 and
+/// the guard's `>= 2` never-worse gate could never fire for Lua.
+///
+/// Dedup/collapse is identical: bare owning-class name (FIX C) plus inheritance
+/// collapse. Free functions (`colon_receiver == None && !is_method`) are still
+/// excluded — only real colon/method dispatch targets are counted.
+fn colon_definer_cardinality(
+    method_name: &str,
+    func_index: &FuncIndex,
+    class_index: &ClassIndex,
+) -> usize {
+    let mut definer_bare_names: HashSet<String> = HashSet::new();
+
+    // Classes that DECLARE the method (AST class members). Skip declaration-only
+    // kinds (mirrors `method_definer_cardinality` FIX B).
+    for (name, entry) in class_index.iter() {
+        if entry.kind.is_declaration_only() {
+            continue;
+        }
+        if entry.methods.iter().any(|m| m == method_name) {
+            definer_bare_names.insert(bare_class_name(name).to_string());
+        }
+    }
+    // Concrete definitions in the function index. Count an entry when it is a
+    // real class method (`is_method` + `class_name`, e.g. Luau) OR a Lua colon
+    // method (`colon_receiver` set); a plain free function (neither) is excluded.
+    for entry in func_index.find_by_name(method_name) {
+        if let Some(class) = entry
+            .class_name
+            .as_deref()
+            .or(entry.colon_receiver.as_deref())
+        {
+            if entry.is_method || entry.colon_receiver.is_some() {
+                definer_bare_names.insert(bare_class_name(class).to_string());
+            }
+        }
+    }
+
+    // Collapse inheritance-linked classes into a single representative (mirrors
+    // `method_definer_cardinality`).
+    let mut representatives: Vec<&str> = Vec::new();
+    for class in &definer_bare_names {
+        let linked = representatives
+            .iter()
+            .any(|&rep| is_in_inheritance_chain(class, rep, class_index));
+        if !linked {
+            representatives.push(class.as_str());
+        }
+    }
+
+    representatives.len()
+}
+
 /// The bare (unqualified) class name: the final component after any module /
 /// scope qualifier (`::`, `.`, `/`, `\`). Used by
 /// [`method_definer_cardinality`] so N pre-built copies of the same class under
@@ -1516,6 +1660,38 @@ pub fn resolve_call_with_receiver(
     target: &str,
     receiver: &str,
     receiver_type: Option<&str>,
+    call_type: &CallType,
+    context: &mut ResolutionContext<'_, '_>,
+) -> Option<ResolvedTarget> {
+    // Back-compat entry point: no enclosing-class context (all pre-existing
+    // callers, including the Static-call redirect and the whole test suite,
+    // keep their exact behaviour because `enclosing_class = None` disables the
+    // BUG-5 self-colon sibling guard below — see
+    // [`resolve_call_with_receiver_enclosing`]).
+    resolve_call_with_receiver_enclosing(target, receiver, receiver_type, None, call_type, context)
+}
+
+/// [`resolve_call_with_receiver`] plus the caller's ENCLOSING class, threaded so
+/// a Lua/Luau `self:method()` colon dispatch can be checked against the class it
+/// is written inside.
+///
+/// fix-cl-8-v1 (BUG-5, LUA + LUAU `self:` sibling mis-bind): a colon `self:m()`
+/// call dispatches to the ENCLOSING class's own method or to an INHERITED
+/// ancestor method (up the `:extend` / `setmetatable(__index)` base chain) — it
+/// must NEVER bind an unrelated SAME-FILE SIBLING class's method that merely
+/// shares the bare name `m` (the `luvit` `deps/http.lua` shape: `ClientRequest`
+/// — a `Writable:extend()` subclass that does not define `_end` — calling
+/// `self:_end`, where the same file also defines the unrelated `ServerResponse:
+/// _end`). The guard is gated on a self-like colon receiver WITH a known
+/// enclosing class AND a same-file candidate that carries an AST-derived owning
+/// `class_name`; classless models (Lua's flat function table, where every
+/// method is a bare `FuncDef` with `class_name = None`) and unknown enclosing
+/// classes are left byte-for-byte unchanged.
+pub fn resolve_call_with_receiver_enclosing(
+    target: &str,
+    receiver: &str,
+    receiver_type: Option<&str>,
+    enclosing_class: Option<&str>,
     _call_type: &CallType,
     context: &mut ResolutionContext<'_, '_>,
 ) -> Option<ResolvedTarget> {
@@ -1528,6 +1704,14 @@ pub fn resolve_call_with_receiver(
 
     let current_module = path_to_module(current_file, language);
     let bare_target = normalize_receiver_target(target, receiver);
+
+    // fix-cl-7-v1 (LUA + LUAU): was the receiver stripped via the Lua/Luau
+    // single-colon method syntax (`self:m` / `obj:m`)? A colon call dispatches
+    // to a METHOD, so the fuzzy fallbacks below must never bind a same-file
+    // `local m = function ... end` LEXICAL LOCAL closure (they fall through to
+    // the real cross-file method). Gated to lua+luau colon spellings; every
+    // other call keeps its exact prior path.
+    let colon_call = is_colon_receiver(target, receiver, bare_target, language);
 
     if let Some(resolved) = resolve_with_receiver_type(
         receiver_type,
@@ -1576,12 +1760,71 @@ pub fn resolve_call_with_receiver(
         }
     }
 
+    // fix-cl-8-v1 (BUG-5, LUA + LUAU): guard a `self:m()` colon dispatch against
+    // binding an unrelated same-file SIBLING class's method. Runs BEFORE
+    // `resolve_self_receiver_in_current_file` (which otherwise greedily binds the
+    // first same-file `(current_module, m)` entry) but only when we actually know
+    // the enclosing class AND the same-file candidate carries an AST-derived
+    // owning class. When those hold and the candidate belongs to a class that is
+    // NEITHER the enclosing class NOR one of its ancestors:
+    //   * POSITIVE: climb the enclosing class's base chain and bind the ancestor
+    //     (or the enclosing class's own) method that truly owns `m` — usually the
+    //     cross-file `:extend` parent. This is preferred over the sibling.
+    //   * FALLBACK: if no ancestor/own definition exists AND `m` has >= 2 distinct
+    //     definers (so declining does not drop a UNIQUE name-match — the
+    //     never-worse invariant), DECLINE (return `None`) rather than emit the
+    //     WRONG sibling edge; the call returns to baseline-unresolved.
+    // A candidate that IS the enclosing class's own or an inherited ancestor
+    // method, a classless candidate (`class_name == None`), an unknown enclosing
+    // class, or a non-colon / non-self receiver all fall through unchanged.
+    if colon_call && matches!(receiver, "self" | "cls" | "this" | "Self") {
+        if let Some(enclosing) = enclosing_class {
+            if let Some(entry) = func_index.get(&current_module, bare_target) {
+                // fix-cl-8-v1 (BUG-5, LUA): derive the same-file candidate's owning
+                // class from `class_name` when present (Luau and every other model)
+                // and ELSE from `colon_receiver` (pure-Lua colon methods, which
+                // carry no `class_name`). This is what lets the guard see that a
+                // Lua `self:m()` would bind an UNRELATED same-file sibling class.
+                if let Some(candidate_class) = entry
+                    .class_name
+                    .as_deref()
+                    .or(entry.colon_receiver.as_deref())
+                {
+                    let related = bare_class_name(candidate_class) == bare_class_name(enclosing)
+                        || is_in_inheritance_chain(enclosing, candidate_class, class_index);
+                    if !related {
+                        if let Some(resolved) = resolve_method_in_class_or_bases(
+                            enclosing,
+                            bare_target,
+                            class_index,
+                            func_index,
+                            language,
+                        ) {
+                            return Some(resolved);
+                        }
+                        // Decline ONLY when `m` has >= 2 distinct definers, so a
+                        // UNIQUE name-match is never dropped (never-worse). Lua
+                        // carries no class index, so the colon-aware cardinality
+                        // also counts `colon_receiver`-tagged definers — otherwise
+                        // the two pure-Lua colon definers (the sibling + the
+                        // cross-file ancestor) would count as 0 and the guard could
+                        // never fire for Lua.
+                        if colon_definer_cardinality(bare_target, func_index, class_index) >= 2 {
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(resolved) = resolve_self_receiver_in_current_file(
         receiver,
         bare_target,
         &current_module,
         func_index,
         class_index,
+        colon_call,
     ) {
         return Some(resolved);
     }
@@ -1702,6 +1945,7 @@ pub fn resolve_call_with_receiver(
         func_index,
         class_index,
         current_file,
+        colon_call,
     ) {
         return Some(resolved);
     }
@@ -1712,10 +1956,19 @@ pub fn resolve_call_with_receiver(
         is_value_receiver,
         func_index,
         class_index,
+        colon_call,
     ) {
         return Some(resolved);
     }
 
+    // NOTE: a former "typed-miss fallback" (drop the receiver type and re-run the
+    // fuzzy matchers when a typed receiver's method is not found) was REMOVED — on
+    // real C/C++ corpora it rebound a typed-miss to a unique same-name definition
+    // that is frequently a TEST FIXTURE or unrelated free function (e.g. a
+    // production `ub.build()` binding to `CFGFixture::build`, `normalizer.normalize`
+    // to `NormalizeFixture::normalize`, `std::vector::emplace_back` to
+    // `SmallVector::emplace_back`). A typed receiver whose declared type lacks the
+    // method must DECLINE, not name-match to an arbitrary unrelated definition.
     resolve_type_aware_fallback(receiver_type, bare_target, func_index, class_index)
 }
 
@@ -1763,7 +2016,55 @@ fn normalize_receiver_target<'a>(target: &'a str, receiver: &str) -> &'a str {
         .strip_prefix(&format!("{}.", receiver))
         .or_else(|| target.strip_prefix(&format!("{}::", receiver)))
         .or_else(|| target.strip_prefix(&format!("{}->", receiver)))
+        // FEATURE-1 d.6: Lua/Luau colon-method syntax (`obj:method`). Stripping
+        // the `receiver:` prefix yields the bare method name so a typed receiver
+        // (`self` -> subclass) resolves `self:setState` against the class and its
+        // bases. The single-colon form appears only in Lua/Luau call targets, so
+        // other languages (which use `.`/`::`/`->`) are unaffected.
+        .or_else(|| target.strip_prefix(&format!("{}:", receiver)))
         .unwrap_or(target)
+}
+
+/// fix-cl-7-v1 (LUA + LUAU): true when `target` reached `bare_target` through the
+/// Lua/Luau single-colon method syntax (`self:m` / `obj:m`) — i.e. the receiver
+/// arrived via the colon path stripped by [`normalize_receiver_target`].
+///
+/// Gated to `"lua"` and `"luau"` — the only languages that spell method dispatch
+/// with a single colon (`receiver:method`). Every other language uses `.`, `::`
+/// or `->`, and the gate additionally requires the EXACT
+/// `"{receiver}:{bare_target}"` spelling, so those forms — and every non-Lua
+/// language — are never classified as colon calls. This is the sole gate for the
+/// colon-call method-preference below: when it is false the resolver behaves
+/// byte-for-byte as before.
+///
+/// Both lua and luau are admitted because the method/closure discriminator
+/// ([`colon_target_is_lexical_local`]) is now a precise per-definition flag
+/// ([`FuncEntry::is_lexical_local`], set by the Lua extractor only for
+/// `local m = function ... end`), NOT the old ClassDef-membership test. A
+/// genuine `function T:m` colon method carries `is_lexical_local == false`, so it
+/// is preserved on both languages (never-worse); only the wrong same-file lexical
+/// closure is declined.
+fn is_colon_receiver(target: &str, receiver: &str, bare_target: &str, language: &str) -> bool {
+    matches!(language, "luau" | "lua")
+        && bare_target != target
+        && target == format!("{}:{}", receiver, bare_target)
+}
+
+/// fix-cl-7-v1 (LUA + LUAU): a colon call `self:m()` / `obj:m()` dispatches to a
+/// METHOD — never to a `local m = function ... end` LEXICAL LOCAL closure. The
+/// Lua grammar records such a closure as a `variable_declaration`; the extractor
+/// tags it [`FuncDef::is_lexical_local`] `= true` (propagated to
+/// [`FuncEntry::is_lexical_local`]). Colon methods (`function T:m`), plain
+/// functions and table-field assignments (`x = function ... end`) all stay
+/// `false`.
+///
+/// This is a MONOTONE-NEGATIVE filter: it only ever PRUNES the wrong lexical-local
+/// candidate. A real colon method — even one carried as `class_name == None` in
+/// the index — has `is_lexical_local == false` and is preserved, so a unique
+/// non-lexical name still name-matches unchanged (never-worse invariant). Used
+/// as a conjunction with the colon-call gate at every call site.
+fn colon_target_is_lexical_local(entry: &FuncEntry) -> bool {
+    entry.is_lexical_local
 }
 
 fn resolve_with_receiver_type(
@@ -1783,18 +2084,26 @@ fn resolve_self_receiver_in_current_file(
     current_module: &str,
     func_index: &FuncIndex,
     class_index: &ClassIndex,
+    colon_call: bool,
 ) -> Option<ResolvedTarget> {
     if !matches!(receiver, "self" | "cls" | "this" | "Self") {
         return None;
     }
     if let Some(entry) = func_index.get(current_module, bare_target) {
-        return Some(ResolvedTarget {
-            file: entry.file_path.clone(),
-            name: bare_target.to_string(),
-            line: Some(entry.line),
-            is_method: true,
-            class_name: entry.class_name.clone(),
-        });
+        // fix-cl-7-v1 (LUA + LUAU): a colon call never dispatches to a same-file
+        // `local m = function ... end` lexical-local closure. Fall through (to the
+        // class lookup / decline) rather than bind such a target. Only lexical
+        // locals are pruned; a real colon method (is_lexical_local == false) binds
+        // here exactly as before (never-worse).
+        if !(colon_call && colon_target_is_lexical_local(entry)) {
+            return Some(ResolvedTarget {
+                file: entry.file_path.clone(),
+                name: bare_target.to_string(),
+                line: Some(entry.line),
+                is_method: true,
+                class_name: entry.class_name.clone(),
+            });
+        }
     }
     let class_entry = class_index.get(bare_target)?;
     Some(ResolvedTarget {
@@ -2236,6 +2545,7 @@ fn resolve_local_fuzzy_match(
     func_index: &FuncIndex,
     class_index: &ClassIndex,
     current_file: &Path,
+    colon_call: bool,
 ) -> Option<ResolvedTarget> {
     // FEATURE-1 d.2 (C2): a VALUE receiver (ordinary lowercase variable /
     // expression — not self/this/cls/Self, not a capitalized type spelling) of
@@ -2281,6 +2591,13 @@ fn resolve_local_fuzzy_match(
         .iter_by_name(bare_target)
         .filter(|((_module, _func_name), entry)| {
             if entry.file_path != current_file {
+                return false;
+            }
+            // fix-cl-7-v1 (LUA + LUAU): a colon call `self:m()` / `obj:m()`
+            // dispatches to a METHOD; drop a same-file `local m = function ... end`
+            // LEXICAL LOCAL closure candidate so it is never bound. A real colon
+            // method (is_lexical_local == false) is retained (never-worse).
+            if colon_call && colon_target_is_lexical_local(entry) {
                 return false;
             }
             // fix-cl-3b-v1 (IT3-rust-07): when the call's receiver is a
@@ -2377,6 +2694,7 @@ fn resolve_global_fuzzy_match(
     is_value_receiver: bool,
     func_index: &FuncIndex,
     class_index: &ClassIndex,
+    colon_call: bool,
 ) -> Option<ResolvedTarget> {
     // FEATURE-1 d.2 (C2): mirror the value-receiver ambiguity gate in
     // `resolve_local_fuzzy_match`. A value receiver of UNKNOWN type calling a
@@ -2455,6 +2773,10 @@ fn resolve_global_fuzzy_match(
         let func_candidates: Vec<_> = func_index
             .find_by_name(bare_target)
             .filter(|e| !e.is_method)
+            // fix-cl-7-v1 (LUA + LUAU): a colon call must not fall back to a
+            // `local m = function ... end` lexical-local closure — it dispatches
+            // to a method or declines. Only lexical locals are pruned here.
+            .filter(|e| !(colon_call && colon_target_is_lexical_local(e)))
             .collect();
         if func_candidates.len() == 1 {
             let entry = func_candidates[0];
@@ -2599,6 +2921,426 @@ mod tests {
                 &mut context,
             )
         }};
+    }
+
+    /// fix-cl-8-v1 (BUG-5): [`resolve_call_with_receiver`] with an explicit
+    /// enclosing class threaded in (the self-colon sibling guard entry point).
+    macro_rules! resolve_call_with_receiver_enclosing {
+        (
+            $target:expr,
+            $receiver:expr,
+            $receiver_type:expr,
+            $enclosing:expr,
+            $call_type:expr,
+            $import_map:expr,
+            $module_imports:expr,
+            $func_index:expr,
+            $class_index:expr,
+            $reexport_tracer:expr,
+            $current_file:expr,
+            $root:expr,
+            $language:expr $(,)?
+        ) => {{
+            let mut context = ResolutionContext {
+                import_map: $import_map,
+                module_imports: $module_imports,
+                func_index: $func_index,
+                class_index: $class_index,
+                reexport_tracer: $reexport_tracer,
+                current_file: $current_file,
+                root: $root,
+                language: $language,
+            };
+            super::resolve_call_with_receiver_enclosing(
+                $target,
+                $receiver,
+                $receiver_type,
+                $enclosing,
+                $call_type,
+                &mut context,
+            )
+        }};
+    }
+
+    // =====================================================================
+    // fix-cl-8-v1 (BUG-5): LUA/LUAU `self:method()` colon dispatch must never
+    // bind an unrelated SAME-FILE SIBLING class's method. Models the `luvit`
+    // `deps/http.lua` shape at the resolver level: `ClientRequest` (a
+    // `Writable:extend()` subclass that does NOT define `_end`) calling
+    // `self:_end`, where the SAME file defines the unrelated `ServerResponse
+    // :_end` and the CROSS-FILE ancestor `Writable:_end` is the correct target.
+    // =====================================================================
+
+    /// Build the shared `class_index` for the BUG-5 scenario:
+    ///   * `ClientRequest : Writable` — defines `_write` only (NO `_end`)
+    ///   * `ServerResponse : Writable` — defines `_end` (the same-file SIBLING)
+    ///   * `Writable` — defines `_end` (the cross-file ANCESTOR)
+    fn bug5_class_index() -> ClassIndex {
+        let mut ci = ClassIndex::new();
+        ci.insert(
+            "ClientRequest",
+            ClassEntry::new(
+                PathBuf::from("deps/http.lua"),
+                301,
+                460,
+                vec!["_write".to_string()],
+                vec!["Writable".to_string()],
+            ),
+        );
+        ci.insert(
+            "ServerResponse",
+            ClassEntry::new(
+                PathBuf::from("deps/http.lua"),
+                67,
+                200,
+                vec!["_end".to_string()],
+                vec!["Writable".to_string()],
+            ),
+        );
+        ci.insert(
+            "Writable",
+            ClassEntry::new(
+                PathBuf::from("deps/stream/stream_writable.lua"),
+                1,
+                600,
+                vec!["_end".to_string()],
+                vec![],
+            ),
+        );
+        ci
+    }
+
+    /// Build the shared `func_index`. Each method is registered under BOTH its
+    /// qualified `Class.method` key (how `resolve_method_in_class` looks it up)
+    /// AND its BARE `method` key under the owning file's module (how the greedy
+    /// `resolve_self_receiver_in_current_file` same-file lookup finds it — the
+    /// mis-bind path this fix guards).
+    fn bug5_func_index() -> FuncIndex {
+        let http = PathBuf::from("deps/http.lua");
+        let writable = PathBuf::from("deps/stream/stream_writable.lua");
+        let http_mod = path_to_module(&http, "lua");
+        let writable_mod = path_to_module(&writable, "lua");
+
+        let mut fi = FuncIndex::new();
+        // ServerResponse:_end at http.lua:174 (the wrong same-file sibling).
+        let sr_end = FuncEntry::method(http.clone(), 174, 176, "ServerResponse".to_string());
+        fi.insert(&http_mod, "ServerResponse._end", sr_end.clone());
+        fi.insert(&http_mod, "_end", sr_end);
+        // ClientRequest:_write at http.lua:454 (the enclosing class's OWN method).
+        let cr_write = FuncEntry::method(http.clone(), 454, 456, "ClientRequest".to_string());
+        fi.insert(&http_mod, "ClientRequest._write", cr_write.clone());
+        fi.insert(&http_mod, "_write", cr_write);
+        // Writable:_end at stream_writable.lua:476 (the correct cross-file ancestor).
+        let w_end = FuncEntry::method(writable.clone(), 476, 480, "Writable".to_string());
+        fi.insert(&writable_mod, "Writable._end", w_end.clone());
+        fi.insert(&writable_mod, "_end", w_end);
+        fi
+    }
+
+    /// THE FIX (POSITIVE base-climb): `self:_end` inside `ClientRequest:_done`
+    /// (enclosing class `ClientRequest`, which does NOT own `_end`) must climb
+    /// the `Writable:extend()` base chain to the cross-file `Writable:_end` —
+    /// NEVER the unrelated same-file sibling `ServerResponse:_end`.
+    #[test]
+    fn bug5_self_colon_climbs_to_ancestor_not_sibling() {
+        let func_index = bug5_func_index();
+        let class_index = bug5_class_index();
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver_enclosing!(
+            "self:_end",
+            "self",
+            None,                 // self is UNtyped (the Lua reality: no self VarType)
+            Some("ClientRequest"), // ... but the enclosing class IS known
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("deps/http.lua"),
+            Path::new("/project"),
+            "lua",
+        );
+
+        let target = resolved.expect("self:_end must resolve to the ancestor Writable:_end");
+        assert_eq!(
+            target.class_name.as_deref(),
+            Some("Writable"),
+            "must bind the cross-file ANCESTOR Writable:_end, got {target:?}"
+        );
+        assert_eq!(
+            target.file,
+            PathBuf::from("deps/stream/stream_writable.lua"),
+            "must resolve to the cross-file ancestor's file, got {target:?}"
+        );
+        assert_ne!(
+            target.class_name.as_deref(),
+            Some("ServerResponse"),
+            "must NEVER bind the unrelated same-file sibling ServerResponse:_end"
+        );
+        assert_ne!(
+            target.file,
+            PathBuf::from("deps/http.lua"),
+            "must NEVER bind the same-file sibling definition"
+        );
+    }
+
+    /// CONTROL (reproduces the pre-fix mis-bind): with NO enclosing class the
+    /// guard cannot fire, so the greedy same-file lookup still binds
+    /// `ServerResponse:_end`. This proves the assertion above is non-vacuous —
+    /// the enclosing class is exactly what flips the wrong bind to the right one.
+    #[test]
+    fn bug5_without_enclosing_class_reproduces_sibling_misbind() {
+        let func_index = bug5_func_index();
+        let class_index = bug5_class_index();
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver_enclosing!(
+            "self:_end",
+            "self",
+            None,
+            None, // no enclosing class -> guard disabled -> baseline behaviour
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("deps/http.lua"),
+            Path::new("/project"),
+            "lua",
+        );
+
+        let target = resolved.expect("baseline still binds SOMETHING (the same-file sibling)");
+        assert_eq!(
+            target.class_name.as_deref(),
+            Some("ServerResponse"),
+            "baseline (no enclosing class) reproduces the same-file sibling mis-bind"
+        );
+    }
+
+    /// NEVER-WORSE (enclosing class's OWN method): `self:_write` inside
+    /// `ClientRequest` — where `ClientRequest` DEFINES `_write` in the same file
+    /// — must STILL resolve to `ClientRequest:_write`. The guard must not touch
+    /// an own-method dispatch.
+    #[test]
+    fn bug5_self_colon_own_method_still_resolves() {
+        let func_index = bug5_func_index();
+        let class_index = bug5_class_index();
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver_enclosing!(
+            "self:_write",
+            "self",
+            None,
+            Some("ClientRequest"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("deps/http.lua"),
+            Path::new("/project"),
+            "lua",
+        );
+
+        let target = resolved.expect("self:_write must still resolve to the OWN method");
+        assert_eq!(target.class_name.as_deref(), Some("ClientRequest"));
+        assert_eq!(target.name, "_write");
+        assert_eq!(target.file, PathBuf::from("deps/http.lua"));
+    }
+
+    /// NEVER-WORSE (INHERITED ancestor method, SAME file): `self:_end` inside
+    /// `ServerResponse` — which does own `_end` here — resolves to its own; and
+    /// the ANCESTOR case is exercised by a class `AdminResponse : ServerResponse`
+    /// that does NOT define `_end`: the same-file `ServerResponse:_end` IS an
+    /// ancestor method and must be KEPT (not declined as a "sibling").
+    #[test]
+    fn bug5_self_colon_ancestor_same_file_still_resolves() {
+        let mut class_index = bug5_class_index();
+        // AdminResponse : ServerResponse (ServerResponse defines `_end`, so it is
+        // an ANCESTOR method reachable in the SAME file).
+        class_index.insert(
+            "AdminResponse",
+            ClassEntry::new(
+                PathBuf::from("deps/http.lua"),
+                210,
+                260,
+                vec![],
+                vec!["ServerResponse".to_string()],
+            ),
+        );
+        let func_index = bug5_func_index();
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver_enclosing!(
+            "self:_end",
+            "self",
+            None,
+            Some("AdminResponse"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("deps/http.lua"),
+            Path::new("/project"),
+            "lua",
+        );
+
+        let target = resolved.expect("self:_end must resolve to the inherited ServerResponse:_end");
+        assert_eq!(
+            target.class_name.as_deref(),
+            Some("ServerResponse"),
+            "the same-file candidate IS an ancestor of the enclosing class and must be kept"
+        );
+    }
+
+    /// NEVER-WORSE (UNIQUE name): a `self:m` whose only definer in the whole
+    /// project is a same-file sibling (cardinality 1, no ancestor definition)
+    /// must STILL resolve — the guard's decline is gated on `>= 2` definers so a
+    /// name unique to one definer is never dropped.
+    #[test]
+    fn bug5_unique_sibling_name_still_resolves() {
+        let http = PathBuf::from("deps/http.lua");
+        let http_mod = path_to_module(&http, "lua");
+        let mut func_index = FuncIndex::new();
+        // The ONLY `_solo` in the project: ServerResponse:_solo (same file).
+        let solo = FuncEntry::method(http.clone(), 180, 182, "ServerResponse".to_string());
+        func_index.insert(&http_mod, "ServerResponse._solo", solo.clone());
+        func_index.insert(&http_mod, "_solo", solo);
+
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "ClientRequest",
+            ClassEntry::new(http.clone(), 301, 460, vec![], vec!["Writable".to_string()]),
+        );
+        class_index.insert(
+            "ServerResponse",
+            ClassEntry::new(http.clone(), 67, 200, vec!["_solo".to_string()], vec!["Writable".to_string()]),
+        );
+        class_index.insert(
+            "Writable",
+            ClassEntry::new(
+                PathBuf::from("deps/stream/stream_writable.lua"),
+                1,
+                600,
+                vec![],
+                vec![],
+            ),
+        );
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver_enclosing!(
+            "self:_solo",
+            "self",
+            None,
+            Some("ClientRequest"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("deps/http.lua"),
+            Path::new("/project"),
+            "lua",
+        );
+
+        assert!(
+            resolved.is_some(),
+            "a name UNIQUE to one definer must still resolve (never-worse), even a sibling"
+        );
+        assert_eq!(resolved.unwrap().class_name.as_deref(), Some("ServerResponse"));
+    }
+
+    /// FALLBACK decline: `self:_ghost` inside `ClientRequest` where `_ghost` is
+    /// NOT on any ancestor of `ClientRequest` but IS defined by TWO unrelated
+    /// classes (the same-file sibling `ServerResponse` + a cross-file `Logger`)
+    /// — cardinality 2, no ancestor owner. The guard DECLINES (returns `None`)
+    /// rather than emit the WRONG sibling edge.
+    #[test]
+    fn bug5_no_ancestor_multi_definer_declines() {
+        let http = PathBuf::from("deps/http.lua");
+        let other = PathBuf::from("deps/logger.lua");
+        let http_mod = path_to_module(&http, "lua");
+        let other_mod = path_to_module(&other, "lua");
+        let mut func_index = FuncIndex::new();
+        let sr_ghost = FuncEntry::method(http.clone(), 190, 192, "ServerResponse".to_string());
+        func_index.insert(&http_mod, "ServerResponse._ghost", sr_ghost.clone());
+        func_index.insert(&http_mod, "_ghost", sr_ghost);
+        let lg_ghost = FuncEntry::method(other.clone(), 10, 12, "Logger".to_string());
+        func_index.insert(&other_mod, "Logger._ghost", lg_ghost);
+
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "ClientRequest",
+            ClassEntry::new(http.clone(), 301, 460, vec![], vec!["Writable".to_string()]),
+        );
+        class_index.insert(
+            "ServerResponse",
+            ClassEntry::new(http.clone(), 67, 200, vec!["_ghost".to_string()], vec!["Writable".to_string()]),
+        );
+        class_index.insert(
+            "Writable",
+            ClassEntry::new(
+                PathBuf::from("deps/stream/stream_writable.lua"),
+                1,
+                600,
+                vec![],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Logger",
+            ClassEntry::new(other.clone(), 1, 40, vec!["_ghost".to_string()], vec![]),
+        );
+
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let resolved = resolve_call_with_receiver_enclosing!(
+            "self:_ghost",
+            "self",
+            None,
+            Some("ClientRequest"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("deps/http.lua"),
+            Path::new("/project"),
+            "lua",
+        );
+
+        assert!(
+            resolved.is_none(),
+            "no ancestor owns `_ghost` and it has >=2 definers: DECLINE rather than \
+             bind the wrong same-file sibling; got {resolved:?}"
+        );
     }
 
     /// Test: ResolvedTarget::function creates a function target
@@ -5079,6 +5821,641 @@ mod tests {
             resolved.file,
             PathBuf::from("src/app.ml"),
             "same-file nested-module call must bind to the caller's file"
+        );
+    }
+
+    /// FEATURE-1 d.6: with luau `extend()` ClassDefs in place, a subclass method's
+    /// `self:setState()` climbs Consumer -> Component and binds Component.setState
+    /// (the luau-setstate-component-absent cluster). Component owns `setState`
+    /// only via its AST-extracted `methods` list — exactly what the luau
+    /// extractor now supplies — so the base climb resolves through it.
+    #[test]
+    fn test_d6_luau_extend_inheritance_climbs_to_base() {
+        let func_index = FuncIndex::new();
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Component",
+            ClassEntry::new(
+                PathBuf::from("src/Component.lua"),
+                33,
+                200,
+                vec!["setState".to_string()],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Consumer",
+            ClassEntry::new(
+                PathBuf::from("src/createContext.lua"),
+                59,
+                120,
+                vec!["render".to_string()],
+                vec!["Component".to_string()],
+            ),
+        );
+
+        let resolved =
+            resolve_method_in_bases("Consumer", "setState", &class_index, &func_index, "luau");
+        let target = resolved.expect("self:setState must climb Consumer -> Component");
+        assert!(
+            target.file.to_string_lossy().contains("Component.lua"),
+            "resolved to the base class file, got {:?}",
+            target.file
+        );
+    }
+
+    /// FEATURE-1 d.6: colon-target normalization. `self:setState` with a typed
+    /// receiver must normalize to the bare `setState` so the receiver-type
+    /// resolver keys the method correctly (the `.`/`::`/`->` strips never covered
+    /// the Lua/Luau single-colon form).
+    #[test]
+    fn test_d6_normalize_receiver_strips_luau_colon() {
+        assert_eq!(normalize_receiver_target("self:setState", "self"), "setState");
+        assert_eq!(normalize_receiver_target("obj:method", "obj"), "method");
+        // Non-matching receiver is untouched.
+        assert_eq!(normalize_receiver_target("other:m", "self"), "other:m");
+    }
+
+    // =================================================================
+    // fix-cl-7-v1 (LUA + LUAU): a COLON call `self:m()` / `obj:m()` dispatches to
+    // a METHOD and must never bind a same-file `local m = function ... end`
+    // LEXICAL LOCAL closure. The Lua extractor records the closure as a
+    // `variable_declaration` and tags it `FuncDef::is_lexical_local = true`
+    // (propagated to `FuncEntry::is_lexical_local`); colon methods
+    // (`function T:m`), plain functions and table-field assignments
+    // (`x = function ... end`) all stay `false`. The method/closure split is thus
+    // a PRECISE per-definition flag — a MONOTONE-NEGATIVE filter that only prunes
+    // the wrong lexical-local candidate.
+    //
+    // Regression (luau-roact, detected as `lua`): `self:setState()` bound the
+    // same-file spy `local setState = function ... end` instead of the inherited
+    // Component:setState — 5 wrong colon->closure edges. The flag declines those
+    // 5 while KEEPING every genuine same-file colon method (is_lexical_local ==
+    // false), so both lua AND luau colon methods still resolve (never-worse), and
+    // luau `class Point ... function magnitude(self)` block methods — never
+    // lexical locals — resolve again (asserttriple -> magnitude).
+    // =================================================================
+
+    /// FAIL-FIRST: a colon call `self:setState()` whose ONLY same-file candidate
+    /// is a `local setState = function ... end` LEXICAL LOCAL closure
+    /// (is_lexical_local == true, `self` untyped, no reachable method) must NOT
+    /// bind the closure. A colon call never dispatches to a lexical local, so the
+    /// correct outcome is a DECLINE (fall through to cross-file resolution).
+    #[test]
+    fn test_cl7_luau_colon_declines_shadowing_free_function() {
+        let language = "luau";
+        let caller = format!("didUpdate.spec.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        // `local setState = function() ... end` — a lexical-local closure.
+        func_index.insert(
+            &module,
+            "setState",
+            FuncEntry::function(PathBuf::from(&caller), 60, 62).with_lexical_local(true),
+        );
+
+        // No class in `caller` owns `setState` (the real owner, Component,
+        // lives in another file); class_index is empty for this file.
+        let class_index = ClassIndex::new();
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "self:setState",
+            "self",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let bound_free_closure = result
+            .as_ref()
+            .map_or(false, |r| r.file == PathBuf::from(&caller) && r.class_name.is_none());
+        assert!(
+            !bound_free_closure,
+            "[luau] colon `self:setState()` must not bind the same-file free `setState` \
+             closure (a colon call dispatches to a method); got {result:?}"
+        );
+    }
+
+    /// FAIL-FIRST (luau, the roact defect): `self:setState()` in a spec file
+    /// that carries a same-file shadowing `local setState = function ... end`
+    /// closure, where `self` is typed to a subclass (`Sub = Base:extend(...)`)
+    /// and `Base` owns `setState` in its ClassDef `methods` list, must bind the
+    /// INHERITED `Base.setState` reachable through the `extend()` base chain —
+    /// NOT the shadowing local closure. Pre-fix the closure wins the same-file
+    /// fuzzy race; the fix prefers the method reachable via the ClassDef chain.
+    #[test]
+    fn test_cl7_luau_colon_prefers_inherited_base_over_shadowing_closure() {
+        let language = "luau";
+        let caller = format!("didUpdate.spec.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        // Same-file shadowing spy: `local setState = function() ... end`.
+        func_index.insert(
+            &module,
+            "setState",
+            FuncEntry::function(PathBuf::from(&caller), 60, 62),
+        );
+
+        // `Sub = Base:extend(...)`; `Base` owns `setState` (its ClassDef
+        // methods list). The luau extractor supplies exactly these ClassDefs.
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Base",
+            ClassEntry::new(
+                PathBuf::from("src/Base.luau"),
+                1,
+                200,
+                vec!["setState".to_string()],
+                vec![],
+            ),
+        );
+        class_index.insert(
+            "Sub",
+            ClassEntry::new(
+                PathBuf::from(&caller),
+                5,
+                90,
+                vec!["render".to_string()],
+                vec!["Base".to_string()],
+            ),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // `self` is typed to the subclass (d.5 self-chain scope type).
+        let result = resolve_call_with_receiver!(
+            "self:setState",
+            "self",
+            Some("Sub"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result.expect(
+            "[luau] `self:setState()` must climb Sub -> Base and bind the inherited method",
+        );
+        assert!(
+            target.file.to_string_lossy().contains("Base.luau"),
+            "[luau] must bind the inherited Base.setState, not the same-file shadowing \
+             closure; got {target:?}"
+        );
+        assert_eq!(target.class_name.as_deref(), Some("Base"));
+    }
+
+    /// NEVER-WORSE (luau): a colon call `self:bar()` whose same-file candidate
+    /// IS a real colon method (`function Foo:bar()` — recorded by the luau
+    /// extractor as a `class_name == None` FuncDef but registered in Foo's
+    /// `methods` list) must STILL resolve to that method. The AST
+    /// class-membership discriminator keeps the genuine same-file method while
+    /// dropping only free closures.
+    #[test]
+    fn test_cl7_luau_colon_same_file_method_still_resolves() {
+        let language = "luau";
+        let caller = format!("Board.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        // `function Foo:bar()` — luau extractor shape: class_name None.
+        func_index.insert(
+            &module,
+            "bar",
+            FuncEntry::function(PathBuf::from(&caller), 20, 25),
+        );
+
+        // Foo is a class defined in the SAME file that owns method `bar`.
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Foo",
+            ClassEntry::new(PathBuf::from(&caller), 10, 40, vec!["bar".to_string()], vec![]),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "self:bar",
+            "self",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result.unwrap_or_else(|| {
+            panic!(
+                "[luau] colon `self:bar()` to a real same-file method must STILL \
+                 resolve (never-worse); got None"
+            )
+        });
+        assert_eq!(
+            target.file,
+            PathBuf::from(&caller),
+            "[luau] must bind the same-file Foo:bar method"
+        );
+    }
+
+    /// REGRESSION GUARD (LUA): a genuine `function Board:applyMove()` colon
+    /// method is stored as a `class_name == None`, `is_lexical_local == false`
+    /// FuncDef (empty class_index). Even though the colon gate now fires for lua,
+    /// the monotone-negative filter prunes ONLY lexical locals, so a lua colon
+    /// call `self:applyMove()` must STILL resolve to that same-file method
+    /// (never-worse). This guards against the filter over-reaching to genuine
+    /// colon methods.
+    #[test]
+    fn test_cl7_lua_colon_same_file_method_still_resolves() {
+        let language = "lua";
+        let caller = format!("chess.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        // `function Board:applyMove()` — real lua shape: class_name None.
+        func_index.insert(
+            &module,
+            "applyMove",
+            FuncEntry::function(PathBuf::from(&caller), 30, 45),
+        );
+
+        // Real lua: extract_definitions returns ZERO ClassDefs.
+        let class_index = ClassIndex::new();
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "self:applyMove",
+            "self",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result.unwrap_or_else(|| {
+            panic!(
+                "[lua] colon `self:applyMove()` must STILL resolve to the same-file method \
+                 (lua has no ClassDefs -> the luau discriminator must not fire); got None"
+            )
+        });
+        assert_eq!(
+            target.file,
+            PathBuf::from(&caller),
+            "[lua] must bind the same-file Board:applyMove method (unchanged fuzzy path)"
+        );
+    }
+
+    /// SCOPE GUARD (luau): the SAME same-file free `helper` closure that a colon
+    /// call declines is still bound by a DOT call `self.helper` — the fix is
+    /// confined to the single-colon method path and leaves dot resolution
+    /// untouched.
+    #[test]
+    fn test_cl7_luau_dot_call_still_binds_free_function_scope_guard() {
+        let language = "luau";
+        let caller = format!("mod.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            &module,
+            "helper",
+            FuncEntry::function(PathBuf::from(&caller), 5, 7),
+        );
+        let class_index = ClassIndex::new();
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        // Dot form: normalize strips `self.` -> `helper`; NOT the colon path.
+        let result = resolve_call_with_receiver!(
+            "self.helper",
+            "self",
+            None,
+            &CallType::Attr,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result.unwrap_or_else(|| {
+            panic!(
+                "[luau] dot `self.helper` must still bind the same-file free function \
+                 (scope guard); got None"
+            )
+        });
+        assert_eq!(target.file, PathBuf::from(&caller));
+        assert!(
+            target.class_name.is_none(),
+            "[luau] dot call binds the free function unchanged"
+        );
+    }
+
+    /// fix-cl-7-v1 FIX 1 (LUA): the roact defect proper — a lua colon call
+    /// `self:setState()` whose same-file candidate is a `local setState =
+    /// function` LEXICAL LOCAL (is_lexical_local == true) must DECLINE binding it
+    /// (falls through to cross-file resolution). The gate now fires for lua too.
+    #[test]
+    fn test_cl7_lua_colon_declines_lexical_local() {
+        let language = "lua";
+        let caller = format!("didUpdate.spec.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            &module,
+            "setState",
+            FuncEntry::function(PathBuf::from(&caller), 60, 62).with_lexical_local(true),
+        );
+        let class_index = ClassIndex::new();
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "self:setState",
+            "self",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let bound_local = result
+            .as_ref()
+            .map_or(false, |r| r.file == PathBuf::from(&caller) && r.class_name.is_none());
+        assert!(
+            !bound_local,
+            "[lua] colon `self:setState()` must not bind the same-file lexical-local \
+             closure; got {result:?}"
+        );
+    }
+
+    /// fix-cl-7-v1 FIX 1 (NEVER-WORSE, LUA): a lua colon call to a UNIQUE
+    /// NON-lexical same-file definition (`function T:m` shape: class_name None,
+    /// is_lexical_local == false) still name-matches / resolves unchanged — the
+    /// monotone-negative filter only prunes lexical locals.
+    #[test]
+    fn test_cl7_lua_colon_unique_nonlexical_resolves() {
+        let language = "lua";
+        let caller = format!("chess.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            &module,
+            "applyMove",
+            FuncEntry::function(PathBuf::from(&caller), 30, 45),
+        );
+        let class_index = ClassIndex::new();
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "self:applyMove",
+            "self",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result.expect("[lua] unique non-lexical colon method must resolve");
+        assert_eq!(target.file, PathBuf::from(&caller));
+    }
+
+    /// fix-cl-7-v1 FIX 5 (LUAU): the asserttriple -> magnitude repair. A luau
+    /// colon call `self:magnitude()` to a real method that carries `class_name
+    /// == None` and is NOT a lexical local (a `class Point ... function
+    /// magnitude(self)` block method the extractor does not model as a ClassDef)
+    /// must RESOLVE. The old ClassDef-membership free-function decline wrongly
+    /// dropped it; the precise is_lexical_local filter does not.
+    #[test]
+    fn test_cl7_luau_colon_real_method_not_lexical_resolves() {
+        let language = "luau";
+        let caller = format!("classes.{language}");
+        let module = path_to_module(Path::new(&caller), language);
+
+        let mut func_index = FuncIndex::new();
+        // `function magnitude(self)` in a `class Point` block — class_name None,
+        // NOT a lexical local. No ClassDef models Point (block syntax unmodeled).
+        func_index.insert(
+            &module,
+            "magnitude",
+            FuncEntry::function(PathBuf::from(&caller), 23, 27),
+        );
+        let class_index = ClassIndex::new();
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "self:magnitude",
+            "self",
+            None,
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(&caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result.expect(
+            "[luau] self:magnitude() to a real (non-lexical) method must resolve \
+             (asserttriple -> magnitude repair)",
+        );
+        assert_eq!(target.file, PathBuf::from(&caller));
+    }
+
+    /// fix-cl-7-v1 (typed-miss DECLINES): a cpp value receiver with a KNOWN type
+    /// whose method is NOT on that type must DECLINE, not name-match to an
+    /// arbitrary unique bare definition. A former "typed-miss fallback" that
+    /// dropped the type and re-ran the fuzzy matchers was removed: on real C/C++
+    /// corpora it rebound such misses to a unique same-name TEST FIXTURE or
+    /// unrelated free function (e.g. `ub.build()` -> `CFGFixture::build`,
+    /// `std::vector::emplace_back` -> `SmallVector::emplace_back`). This guards
+    /// that regression: `buffer` is a known type lacking `capacity`, so even a
+    /// unique bare `capacity` elsewhere must NOT be bound.
+    #[test]
+    fn test_cpp_typed_miss_on_unique_name_declines() {
+        let language = "cpp";
+        let caller = "include/fmt/format.h";
+
+        let mut func_index = FuncIndex::new();
+        // Unique bare free function `capacity` (a bare-keyed template method).
+        func_index.insert(
+            "base",
+            "capacity",
+            FuncEntry::function(PathBuf::from("include/fmt/base.h"), 1746, 1760),
+        );
+
+        // Class `buffer` is known but does NOT own `capacity` in its methods.
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "buffer",
+            ClassEntry::new(
+                PathBuf::from("include/fmt/base.h"),
+                1746,
+                1900,
+                vec!["get_container".to_string()],
+                vec![],
+            ),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "capacity",
+            "buf",
+            Some("buffer"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(caller),
+            Path::new("."),
+            language,
+        );
+
+        assert!(
+            result.is_none(),
+            "[cpp] a typed receiver (`buffer`) that lacks `capacity` must DECLINE, \
+             not bind an arbitrary unique bare `capacity`; got {result:?}"
+        );
+    }
+
+    /// A cpp value receiver of a KNOWN type that lacks the method must decline
+    /// when the bare name is AMBIGUOUS (>= 2 concrete class definers) — the
+    /// untyped d.2 ambiguity gate declines and nothing is fabricated.
+    #[test]
+    fn test_cl7_cpp_typed_miss_ambiguous_still_declines() {
+        let language = "cpp";
+
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            "a",
+            "A.resize",
+            FuncEntry::method(PathBuf::from("a.h"), 10, 20, "A".to_string()),
+        );
+        func_index.insert(
+            "b",
+            "B.resize",
+            FuncEntry::method(PathBuf::from("b.h"), 10, 20, "B".to_string()),
+        );
+
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "A",
+            ClassEntry::new(PathBuf::from("a.h"), 1, 40, vec!["resize".to_string()], vec![])
+                .with_kind(ClassKind::Class),
+        );
+        class_index.insert(
+            "B",
+            ClassEntry::new(PathBuf::from("b.h"), 1, 40, vec!["resize".to_string()], vec![])
+                .with_kind(ClassKind::Class),
+        );
+        // The receiver's actual type — has no `resize`.
+        class_index.insert(
+            "buffer",
+            ClassEntry::new(PathBuf::from("c.h"), 1, 40, vec![], vec![])
+                .with_kind(ClassKind::Class),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "resize",
+            "buf",
+            Some("buffer"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new("main.cc"),
+            Path::new("."),
+            language,
+        );
+
+        assert!(
+            result.is_none(),
+            "[cpp] ambiguous (2 definer) typed-miss must still decline, not guess; got {result:?}"
         );
     }
 

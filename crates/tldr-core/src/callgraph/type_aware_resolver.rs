@@ -1186,6 +1186,8 @@ mod tests {
             class_name: Some("Builder".to_string()),
             return_type: Some("Builder".to_string()),
             parent_function: None,
+            is_lexical_local: false,
+            colon_receiver: None,
         });
         ir.funcs.push(FuncDef {
             name: "build".to_string(),
@@ -1195,6 +1197,8 @@ mod tests {
             class_name: Some("Builder".to_string()),
             return_type: Some("Result".to_string()),
             parent_function: None,
+            is_lexical_local: false,
+            colon_receiver: None,
         });
         resolver.add_file_ir(PathBuf::from("test.py"), ir);
 

@@ -40,7 +40,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Ruby Handler
@@ -1436,7 +1438,16 @@ impl CallGraphLanguageSupport for RubyHandler {
                         self.collect_class_methods_and_bases(&node, source_bytes);
                     let line = node.start_position().row as u32 + 1;
                     let end_line = node.end_position().row as u32 + 1;
-                    classes.push(ClassDef::new(class_name, line, end_line, methods, bases));
+                    // fix-cl-7-v1 FIX 4: tag a Ruby `class` as ClassKind::Class so
+                    // the receiver-type prune gate can tell it apart from a
+                    // `module` (left as the default kind). A module used as a
+                    // factory (`@base = Sinatra.new(Base)`) mistypes the receiver;
+                    // pruning a card-1 name-match on a module type is a never-worse
+                    // violation, so only a real Class is allowed to prune.
+                    classes.push(
+                        ClassDef::new(class_name, line, end_line, methods, bases)
+                            .with_kind(ClassKind::Class),
+                    );
                 }
                 "module" => {
                     let Some(module_name) =

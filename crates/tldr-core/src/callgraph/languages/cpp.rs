@@ -1904,4 +1904,112 @@ void setup() {
             );
         }
     }
+
+    // -------------------------------------------------------------------------
+    // FEATURE-1 d.6: chained / field receiver capture
+    // -------------------------------------------------------------------------
+
+    mod d6_chained_receiver_tests {
+        use super::*;
+
+        #[test]
+        fn test_d6_cpp_simple_member_receiver_unchanged() {
+            // Never-worse: a plain obj.method() still yields receiver "obj".
+            let source = r#"
+void f() {
+    obj.method();
+}
+"#;
+            let calls = extract_calls(source);
+            let f_calls = calls.get("f").expect("f should have calls");
+            let m = f_calls
+                .iter()
+                .find(|c| c.target == "obj.method")
+                .expect("simple member call unchanged");
+            assert_eq!(m.receiver.as_deref(), Some("obj"));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // fix-cl-7-v1 Group 2: class-scoped member-field receiver typing (no
+    // cross-class shadow) — verified end-to-end through the resolving pipeline.
+    // -------------------------------------------------------------------------
+
+    mod g2_member_field_scope_e2e_tests {
+        use super::*;
+
+        /// Two classes each own a member field of the SAME name (`result_`) but a
+        /// DIFFERENT type. A call on that member inside each class's method must
+        /// resolve to the method of THAT class's own field type — the unrelated
+        /// same-named field must not shadow it (the gtest `TestInfo::Run` vs
+        /// `ScopedFakeTestPartResultReporter` collision).
+        #[test]
+        fn test_g2_member_field_no_cross_class_shadow_e2e() {
+            use crate::callgraph::{build_project_call_graph_v2, BuildConfig};
+            use tempfile::TempDir;
+
+            let dir = TempDir::new().unwrap();
+            std::fs::write(
+                dir.path().join("gtest.cc"),
+                r#"
+class TestResult {
+ public:
+  void set_elapsed_time(int t) {}
+};
+
+class TestPartResultArray {
+ public:
+  void Append(int r) {}
+};
+
+// Declared BEFORE TestInfo: its same-named `result_` used to leak as a global
+// and shadow TestInfo's own `result_`.
+class ScopedFakeTestPartResultReporter {
+ private:
+  TestPartResultArray* const result_;
+ public:
+  void ReportTestPartResult(int r) { result_->Append(r); }
+};
+
+class TestInfo {
+ private:
+  TestResult result_;
+ public:
+  void Run() { result_.set_elapsed_time(1); }
+};
+"#,
+            )
+            .unwrap();
+
+            let mut config = BuildConfig {
+                language: "cpp".to_string(),
+                ..Default::default()
+            };
+            config.use_type_resolution = true;
+            let ir = build_project_call_graph_v2(dir.path(), config).unwrap();
+            let edges: std::collections::HashSet<String> = ir
+                .edges
+                .iter()
+                .map(|e| format!("{} -> {}", e.src_func, e.dst_func))
+                .collect();
+
+            // Each member receiver resolves to ITS OWN class's field type.
+            assert!(
+                edges.contains("TestInfo.Run -> TestResult.set_elapsed_time"),
+                "TestInfo::Run must resolve result_ to its own TestResult field: {edges:?}"
+            );
+            assert!(
+                edges
+                    .contains("ScopedFakeTestPartResultReporter.ReportTestPartResult -> TestPartResultArray.Append"),
+                "ScopedFake...::ReportTestPartResult must resolve result_ to its own \
+                 TestPartResultArray field: {edges:?}"
+            );
+
+            // The unrelated field type must NOT be reached via the shadowed name.
+            assert!(
+                !edges.contains("TestInfo.Run -> TestPartResultArray.set_elapsed_time"),
+                "TestInfo::Run.result_ must not mis-type to the sibling class's field: {edges:?}"
+            );
+        }
+    }
 }

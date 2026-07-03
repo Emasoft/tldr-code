@@ -278,6 +278,8 @@ mod roundtrip {
                 class_name: Some("MyClass".to_string()),
                 return_type: Some("str".to_string()),
                 parent_function: Some("outer".to_string()),
+                is_lexical_local: false,
+                colon_receiver: None,
             })
             .build();
         ir.add_file(file_ir);

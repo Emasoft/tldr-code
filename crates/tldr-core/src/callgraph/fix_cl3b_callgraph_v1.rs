@@ -29,6 +29,59 @@
 
 use std::path::Path;
 
+/// BUG-3 (cpp member-field typing): a member receiver whose type is a class
+/// DATA member declared in the SAME file now types type-scoped, so
+/// `member_.method()` inside a class method resolves to the member type's
+/// method. Before, member fields were not extracted at all and the untyped
+/// receiver either declined or fuzzy-mis-bound.
+#[test]
+fn cpp_member_field_receiver_resolves_type_scoped() {
+    use crate::callgraph::builder_v2::{build_project_call_graph_v2, BuildConfig};
+
+    let dir = std::env::temp_dir().join(format!("tldr_cpp_bug3_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+
+    std::fs::write(
+        dir.join("engine.h"),
+        "struct Engine {\n\
+         \x20 void ignite() { }\n\
+         };\n\
+         \n\
+         class Car {\n\
+         \x20 Engine engine_;\n\
+         \x20 void drive() {\n\
+         \x20   engine_.ignite();\n\
+         \x20 }\n\
+         };\n",
+    )
+    .unwrap();
+
+    let mut config = BuildConfig {
+        language: "cpp".to_string(),
+        ..Default::default()
+    };
+    config.use_type_resolution = true;
+    let result = build_project_call_graph_v2(&dir, config).expect("build graph");
+
+    let has_edge = result
+        .edges
+        .iter()
+        .any(|e| e.src_func.contains("drive") && e.dst_func.contains("ignite"));
+    assert!(
+        has_edge,
+        "member receiver engine_ (typed Engine via member-field extraction) must \
+         resolve engine_.ignite() to Engine::ignite; edges: {:?}",
+        result
+            .edges
+            .iter()
+            .map(|e| format!("{} -> {}", e.src_func, e.dst_func))
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// IT3-rust-07: building a project call graph for a file that calls
 /// `HashSet::new()` / `Vec::new()` AND also defines a user struct with a
 /// `new` associated function in the SAME file must NOT emit an edge from

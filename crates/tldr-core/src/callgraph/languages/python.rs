@@ -31,7 +31,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 // =============================================================================
 // Python Handler
@@ -673,7 +675,19 @@ impl CallGraphLanguageSupport for PythonHandler {
                             }
                         }
 
-                        classes.push(ClassDef::new(class_name, line, end_line, methods, bases));
+                        // FEATURE-1 d.2 Fix B completion: a class deriving from
+                        // `Protocol` / `typing.Protocol` is a structural interface,
+                        // and one deriving from `ABC` / `abc.ABC` / `metaclass=ABCMeta`
+                        // is abstract — both are declaration-only from the dispatch
+                        // gate's perspective (their method signatures resolve through
+                        // the concrete implementor), so they must not inflate the
+                        // value-receiver definer cardinality.
+                        let mut class_def =
+                            ClassDef::new(class_name, line, end_line, methods, bases);
+                        if let Some(kind) = python_class_kind(&node, source_bytes) {
+                            class_def = class_def.with_kind(kind);
+                        }
+                        classes.push(class_def);
                     }
                 }
                 _ => {}
@@ -681,6 +695,54 @@ impl CallGraphLanguageSupport for PythonHandler {
         }
 
         Ok((funcs, classes))
+    }
+}
+
+/// FEATURE-1 d.6: classify a Python `class_definition` as a `Protocol`
+/// (structural interface) or `ABC`/abstract declaration, from its base list.
+/// Returns `None` for an ordinary class so the concrete default is preserved.
+/// Recognises the bare `Protocol`/`ABC`/`ABCMeta` identifiers, the dotted
+/// `typing.Protocol` / `abc.ABC` attribute forms, and `metaclass=ABCMeta`.
+fn python_class_kind(class_node: &tree_sitter::Node, source: &[u8]) -> Option<ClassKind> {
+    let args = class_node.child_by_field_name("superclasses")?;
+    let mut is_protocol = false;
+    let mut is_abstract = false;
+    for i in 0..args.named_child_count() {
+        let arg = match args.named_child(i) {
+            Some(a) => a,
+            None => continue,
+        };
+        let text = get_node_text(&arg, source);
+        match arg.kind() {
+            "identifier" => {
+                if text == "Protocol" {
+                    is_protocol = true;
+                } else if text == "ABC" || text == "ABCMeta" {
+                    is_abstract = true;
+                }
+            }
+            "attribute" => {
+                if text.ends_with(".Protocol") {
+                    is_protocol = true;
+                } else if text.ends_with(".ABC") || text.ends_with(".ABCMeta") {
+                    is_abstract = true;
+                }
+            }
+            "keyword_argument" => {
+                // `metaclass=ABCMeta`
+                if text.contains("ABCMeta") {
+                    is_abstract = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if is_protocol {
+        Some(ClassKind::Interface)
+    } else if is_abstract {
+        Some(ClassKind::Abstract)
+    } else {
+        None
     }
 }
 
@@ -1750,6 +1812,57 @@ class B:
         assert!(
             callers.iter().any(|c| c.contains("Group.shell_complete")),
             "Should have Group.shell_complete as caller"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // FEATURE-1 d.6: Protocol / ABC class-kind marking
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_d6_python_protocol_and_abc_classkind() {
+        let source = r#"
+from abc import ABC
+import typing
+
+class Reader(typing.Protocol):
+    def read(self): ...
+
+class Base(ABC):
+    def run(self): ...
+
+class Plain:
+    def go(self): ...
+
+class MetaAbstract(metaclass=ABCMeta):
+    def m(self): ...
+"#;
+        let handler = PythonHandler::new();
+        let tree = handler.parse_source(source).unwrap();
+        let (_funcs, classes) = handler
+            .extract_definitions(source, Path::new("m.py"), &tree)
+            .unwrap();
+
+        let by = |name: &str| {
+            classes
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("class {name} missing"))
+        };
+        assert_eq!(
+            by("Reader").kind,
+            ClassKind::Interface,
+            "typing.Protocol subclass is a structural interface"
+        );
+        assert_eq!(by("Base").kind, ClassKind::Abstract, "ABC subclass is abstract");
+        assert_eq!(
+            by("MetaAbstract").kind,
+            ClassKind::Abstract,
+            "metaclass=ABCMeta is abstract"
+        );
+        assert!(
+            !by("Plain").kind.is_declaration_only(),
+            "an ordinary class stays a concrete definer"
         );
     }
 }

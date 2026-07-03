@@ -485,6 +485,32 @@ pub(crate) fn enclosing_function_scope(node: &tree_sitter::Node, source: &[u8]) 
 /// - **Parameter annotations**: `def f(x: Foo)` -> VarType { source: "parameter" }
 ///
 /// Scope is determined by the enclosing function definition, or None for module-level.
+/// FEATURE-1 d.6: extract the base nominal name of a Python local-annotation
+/// `type` node (the `x: T` case). Returns `Some(T)` for a plain identifier and
+/// the final component of a dotted `a.b.C` attribute; returns `None` for
+/// structural annotations (subscripts / unions / generics / string forwards)
+/// where a wrong base could mis-route a call. Purely AST-node-kind driven.
+fn python_annotation_base_name(type_node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    // The `type` wrapper holds the actual annotation as its first named child;
+    // fall back to the node itself if it is already the inner node.
+    let inner = type_node.named_child(0).unwrap_or(*type_node);
+    match inner.kind() {
+        "identifier" => {
+            let t = get_node_text(&inner, source).to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        "attribute" => inner
+            .child_by_field_name("attribute")
+            .map(|n| get_node_text(&n, source).to_string())
+            .filter(|s| !s.is_empty()),
+        _ => None,
+    }
+}
+
 pub(crate) fn extract_python_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
     let root = tree.root_node();
@@ -499,10 +525,6 @@ pub(crate) fn extract_python_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                     Some(n) if n.kind() == "identifier" => n,
                     _ => continue,
                 };
-                let right = match node.child_by_field_name("right") {
-                    Some(n) => n,
-                    None => continue,
-                };
 
                 let var_name = get_node_text(&left, source).to_string();
                 if var_name.is_empty() {
@@ -510,6 +532,34 @@ pub(crate) fn extract_python_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                 }
                 let line = node.start_position().row as u32 + 1;
                 let scope = enclosing_function_scope(&node, source);
+
+                // FEATURE-1 d.6: local variable annotation `x: T` / `x: T = ...`.
+                // tree-sitter-python models both as an `assignment` node carrying a
+                // `type` field (the declared annotation) alongside `left` (and an
+                // optional `right`). The declared annotation is authoritative
+                // (High confidence, `TypeSource::TypeAnnotation`) and settles the
+                // variable regardless of whether an RHS value is present, so it is
+                // emitted first and the value-based inference is skipped — mirroring
+                // the luau `local x: T = ...` precedent. Only a simple nominal base
+                // name is trusted; structural/subscript/union annotations are
+                // skipped (emitting no type is strictly safe / never-worse).
+                if let Some(type_node) = node.child_by_field_name("type") {
+                    if let Some(type_name) = python_annotation_base_name(&type_node, source) {
+                        var_types.push(VarType::new_with_scope(
+                            var_name.clone(),
+                            type_name,
+                            "annotation",
+                            line,
+                            scope.clone(),
+                        ));
+                        continue;
+                    }
+                }
+
+                let right = match node.child_by_field_name("right") {
+                    Some(n) => n,
+                    None => continue,
+                };
 
                 match right.kind() {
                     "call" => {
@@ -3150,61 +3200,163 @@ fn csharp_fn_return_map(root: tree_sitter::Node, source: &[u8]) -> HashMap<Strin
     map
 }
 
-/// Extract VarType entries from a C# source tree (d.5 return propagation only).
+/// Normalise a C# type AST node to its bare nominal name, or `None` for a
+/// primitive/`var`/structural node that does not denote a project type.
+/// `predefined_type` (void/int/string/...) and `implicit_type` (`var`) yield
+/// `None` so builtins never become spurious receiver types.
+fn csharp_type_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => {
+            let t = get_node_text(node, source).to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        "generic_name" => node
+            .child_by_field_name("name")
+            .map(|n| get_node_text(&n, source).to_string())
+            .or_else(|| {
+                get_node_text(node, source)
+                    .split('<')
+                    .next()
+                    .map(|s| s.trim().to_string())
+            })
+            .filter(|s| !s.is_empty()),
+        "qualified_name" => get_node_text(node, source)
+            .rsplit('.')
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        // `T?` / `T[]` carry the element type as their first named child.
+        "nullable_type" | "array_type" => node
+            .named_child(0)
+            .and_then(|c| csharp_type_name(&c, source)),
+        _ => None,
+    }
+}
+
+/// FEATURE-1 d.6: a `T reader` typed parameter yields a High-confidence
+/// parameter VarType scoped to the enclosing method, so `reader.Read()` resolves
+/// on `T` instead of name-conflating with every same-named `Read`.
+fn csharp_param_var_type(param: &tree_sitter::Node, source: &[u8]) -> Option<VarType> {
+    let type_node = param.child_by_field_name("type")?;
+    let ty = csharp_type_name(&type_node, source)?;
+    let name_node = param.child_by_field_name("name")?;
+    let name = get_node_text(&name_node, source).to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let line = param.start_position().row as u32 + 1;
+    let scope = enclosing_csharp_function_scope(param, source);
+    Some(VarType::new_with_scope(name, ty, "parameter", line, scope))
+}
+
+/// Extract VarType entries from a C# source tree.
+///
+/// FEATURE-1 d.6 broadens the d.5 return-only extractor to the full receiver-type
+/// surface the value-receiver gate consumes:
+///   * `var a = new T()`            -> `a : T`   (constructor, High)
+///   * `T x = ...` / `T x;`         -> `x : T`   (annotation, High; authoritative)
+///   * `var x = Make()`             -> `x : R`   (declared return of `Make`, d.5)
+///   * `void M(T reader, ...)`      -> `reader : T` (parameter, High)
+/// Every row only FILLS a receiver type that was otherwise `None`, so name-match
+/// edges are preserved (never-worse).
 pub(crate) fn extract_csharp_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
     let root = tree.root_node();
     let fn_return = csharp_fn_return_map(root, source);
 
     for node in walk_tree(root) {
-        if node.kind() != "variable_declaration" {
-            continue;
-        }
-        // Only implicitly typed locals (`var x = ...`) need inference; an explicit
-        // declared type already fixes the receiver type elsewhere.
-        let is_var = node
-            .child_by_field_name("type")
-            .map(|t| t.kind() == "implicit_type")
-            .unwrap_or(false);
-        if !is_var {
-            continue;
-        }
-        for i in 0..node.named_child_count() {
-            let decl = match node.named_child(i) {
-                Some(c) if c.kind() == "variable_declarator" => c,
-                _ => continue,
-            };
-            let var_name = match decl.child_by_field_name("name") {
-                Some(n) => get_node_text(&n, source).to_string(),
-                None => continue,
-            };
-            // RHS invocation among the declarator's children.
-            let mut callee: Option<String> = None;
-            for j in 0..decl.child_count() {
-                if let Some(c) = decl.child(j) {
-                    if c.kind() == "invocation_expression" {
-                        if let Some(func) = c.child_by_field_name("function") {
-                            if func.kind() == "identifier" {
-                                callee = Some(get_node_text(&func, source).to_string());
-                            } else if func.kind() == "member_access_expression" {
-                                callee = func
-                                    .child_by_field_name("name")
-                                    .map(|n| get_node_text(&n, source).to_string());
+        match node.kind() {
+            "parameter" => {
+                if let Some(vt) = csharp_param_var_type(&node, source) {
+                    var_types.push(vt);
+                }
+            }
+            "variable_declaration" => {
+                let type_node = node.child_by_field_name("type");
+                // An explicit declared type (`JsonReader r = ...` / `Gamma g;`) is
+                // authoritative; `var`/`implicit_type` needs RHS inference.
+                let declared = type_node.and_then(|t| csharp_type_name(&t, source));
+                let scope = enclosing_csharp_function_scope(&node, source);
+
+                for i in 0..node.named_child_count() {
+                    let decl = match node.named_child(i) {
+                        Some(c) if c.kind() == "variable_declarator" => c,
+                        _ => continue,
+                    };
+                    let var_name = match decl.child_by_field_name("name") {
+                        Some(n) => get_node_text(&n, source).to_string(),
+                        None => continue,
+                    };
+                    let line = decl.start_position().row as u32 + 1;
+
+                    // Explicit declared nominal type settles the variable.
+                    if let Some(ref ty) = declared {
+                        var_types.push(VarType::new_with_scope(
+                            var_name,
+                            ty.clone(),
+                            "annotation",
+                            line,
+                            scope.clone(),
+                        ));
+                        continue;
+                    }
+
+                    // `var`-typed local: infer from the declarator RHS.
+                    for j in 0..decl.child_count() {
+                        let c = match decl.child(j) {
+                            Some(c) => c,
+                            None => continue,
+                        };
+                        match c.kind() {
+                            "object_creation_expression" => {
+                                if let Some(ty) = c
+                                    .child_by_field_name("type")
+                                    .and_then(|t| csharp_type_name(&t, source))
+                                {
+                                    var_types.push(VarType::new_with_scope(
+                                        var_name,
+                                        ty,
+                                        "constructor",
+                                        line,
+                                        scope.clone(),
+                                    ));
+                                }
+                                break;
                             }
+                            "invocation_expression" => {
+                                let callee = c.child_by_field_name("function").and_then(|func| {
+                                    if func.kind() == "identifier" {
+                                        Some(get_node_text(&func, source).to_string())
+                                    } else if func.kind() == "member_access_expression" {
+                                        func.child_by_field_name("name")
+                                            .map(|n| get_node_text(&n, source).to_string())
+                                    } else {
+                                        None
+                                    }
+                                });
+                                if let Some(callee) = callee {
+                                    if let Some(rt) = lookup_fn_return(&fn_return, &callee) {
+                                        var_types.push(VarType::new_with_scope(
+                                            var_name,
+                                            rt.to_string(),
+                                            "return",
+                                            line,
+                                            scope.clone(),
+                                        ));
+                                    }
+                                }
+                                break;
+                            }
+                            _ => {}
                         }
-                        break;
                     }
                 }
             }
-            if let Some(callee) = callee {
-                if let Some(rt) = lookup_fn_return(&fn_return, &callee) {
-                    let line = decl.start_position().row as u32 + 1;
-                    let scope = enclosing_csharp_function_scope(&node, source);
-                    var_types.push(VarType::new_with_scope(
-                        var_name, rt.to_string(), "return", line, scope,
-                    ));
-                }
-            }
+            _ => {}
         }
     }
     var_types
@@ -3311,49 +3463,170 @@ fn swift_type_name(type_node: &tree_sitter::Node, source: &[u8]) -> Option<Strin
     }
 }
 
-/// Extract VarType entries from a Swift source tree (d.5 return propagation only).
+/// The body-visible name of a Swift `property_declaration` (`let x = ...`): the
+/// `name` field is a `pattern` whose `bound_identifier`/`simple_identifier`
+/// names the variable.
+fn swift_property_name(prop: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let pat = prop.child_by_field_name("name")?;
+    pat.child_by_field_name("bound_identifier")
+        .or_else(|| {
+            (0..pat.named_child_count())
+                .filter_map(|i| pat.named_child(i))
+                .find(|c| c.kind() == "simple_identifier")
+        })
+        .map(|n| get_node_text(&n, source).to_string())
+        .filter(|n| !n.is_empty())
+}
+
+/// The declared type of a Swift `property_declaration`/`parameter` annotation
+/// (`let x: T`, `var _values: ContiguousArray<Value>`). Scans for the
+/// `type_annotation` child and normalises its type node to a bare nominal name.
+fn swift_property_annotation_type(prop: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    for i in 0..prop.child_count() {
+        let c = match prop.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        if c.kind() == "type_annotation" {
+            for j in 0..c.named_child_count() {
+                if let Some(t) = c.named_child(j) {
+                    if let Some(name) = swift_type_name(&t, source) {
+                        if !name.is_empty() {
+                            return Some(name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Classify the `call_expression` RHS of a Swift `let x = <call>`:
+///   * `let x = make()`  where `make() -> T` -> `(T, "return")` (d.5; wins so a
+///     factory function is never mis-read as a constructor of its own name).
+///   * `let x = Foo()`   (UpperCamelCase callee)         -> `(Foo, "constructor")`.
+///   * `let x = Base.make()` / `.create()` / `.init()`   -> `(Base, "constructor")`.
+fn swift_classify_call_value(
+    value: &tree_sitter::Node,
+    source: &[u8],
+    fn_return: &HashMap<String, Option<String>>,
+) -> Option<(String, &'static str)> {
+    let callee = value.named_child(0)?;
+    match callee.kind() {
+        "simple_identifier" => {
+            let name = get_node_text(&callee, source).to_string();
+            if let Some(rt) = lookup_fn_return(fn_return, &name) {
+                return Some((rt.to_string(), "return"));
+            }
+            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                return Some((name, "constructor"));
+            }
+            None
+        }
+        "navigation_expression" => {
+            let base = callee.named_child(0)?;
+            if base.kind() != "simple_identifier" {
+                return None;
+            }
+            let base_name = get_node_text(&base, source).to_string();
+            let nav_suffix = callee.named_child(1)?;
+            let method = (0..nav_suffix.named_child_count())
+                .filter_map(|i| nav_suffix.named_child(i))
+                .find(|c| c.kind() == "simple_identifier")
+                .map(|n| get_node_text(&n, source).to_string())?;
+            if base_name.chars().next().is_some_and(|c| c.is_uppercase())
+                && matches!(method.as_str(), "make" | "create" | "init" | "shared")
+            {
+                return Some((base_name, "constructor"));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// FEATURE-1 d.6: a `reader: JsonReader` typed Swift parameter yields a
+/// High-confidence parameter VarType scoped to the enclosing function, so
+/// `reader.method()` resolves on the declared type. The body-visible name is the
+/// last `simple_identifier` before the `:` (handling the `external internal: T`
+/// two-name form); the type is the node immediately after the `:`.
+fn swift_param_var_type(param: &tree_sitter::Node, source: &[u8]) -> Option<VarType> {
+    let mut name: Option<String> = None;
+    let mut ty: Option<String> = None;
+    for i in 0..param.child_count() {
+        let c = match param.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        if c.kind() == ":" {
+            if let Some(t) = param.child(i + 1) {
+                ty = swift_type_name(&t, source);
+            }
+            break;
+        }
+        if c.kind() == "simple_identifier" || c.kind() == "identifier" {
+            name = Some(get_node_text(&c, source).to_string());
+        }
+    }
+    let name = name.filter(|n| !n.is_empty())?;
+    let ty = ty?;
+    let line = param.start_position().row as u32 + 1;
+    let scope = enclosing_swift_function_scope(param, source);
+    Some(VarType::new_with_scope(name, ty, "parameter", line, scope))
+}
+
+/// Extract VarType entries from a Swift source tree.
+///
+/// FEATURE-1 d.6 broadens the d.5 return-only extractor to the full receiver-type
+/// surface the value-receiver gate consumes:
+///   * `let x = Foo()`                    -> `x : Foo`  (constructor, High)
+///   * `let x: T` / `var _values: T<...>` -> `x : T`    (annotation, High)
+///   * `let x = Base.make()`              -> `x : Base` (factory constructor)
+///   * `let x = make()`                   -> `x : R`    (declared return, d.5)
+///   * `func f(reader: T, ...)`           -> `reader : T` (parameter, High)
+/// Every row only FILLS a receiver type that was otherwise `None` (never-worse).
 pub(crate) fn extract_swift_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     let mut var_types = Vec::new();
     let root = tree.root_node();
     let fn_return = swift_fn_return_map(root, source);
 
     for node in walk_tree(root) {
-        if node.kind() != "property_declaration" {
-            continue;
-        }
-        // Variable name: `name` field is a `pattern` with a `bound_identifier`.
-        let var_name = match node.child_by_field_name("name") {
-            Some(pat) => pat
-                .child_by_field_name("bound_identifier")
-                .or_else(|| {
-                    (0..pat.named_child_count())
-                        .filter_map(|i| pat.named_child(i))
-                        .find(|c| c.kind() == "simple_identifier")
-                })
-                .map(|n| get_node_text(&n, source).to_string()),
-            None => None,
-        };
-        let var_name = match var_name {
-            Some(n) if !n.is_empty() => n,
-            _ => continue,
-        };
-        // RHS: `value` field is a `call_expression`; its first child is the callee.
-        let value = match node.child_by_field_name("value") {
-            Some(v) if v.kind() == "call_expression" => v,
-            _ => continue,
-        };
-        let callee = value
-            .named_child(0)
-            .filter(|c| c.kind() == "simple_identifier")
-            .map(|n| get_node_text(&n, source).to_string());
-        if let Some(callee) = callee {
-            if let Some(rt) = lookup_fn_return(&fn_return, &callee) {
+        match node.kind() {
+            "parameter" => {
+                if let Some(vt) = swift_param_var_type(&node, source) {
+                    var_types.push(vt);
+                }
+            }
+            "property_declaration" => {
+                let var_name = match swift_property_name(&node, source) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 let line = node.start_position().row as u32 + 1;
                 let scope = enclosing_swift_function_scope(&node, source);
-                var_types.push(VarType::new_with_scope(
-                    var_name, rt.to_string(), "return", line, scope,
-                ));
+
+                // Declared annotation is authoritative.
+                if let Some(ty) = swift_property_annotation_type(&node, source) {
+                    var_types.push(VarType::new_with_scope(
+                        var_name, ty, "annotation", line, scope,
+                    ));
+                    continue;
+                }
+                // Value-based inference.
+                if let Some(value) = node.child_by_field_name("value") {
+                    if value.kind() == "call_expression" {
+                        if let Some((ty, src_kind)) =
+                            swift_classify_call_value(&value, source, &fn_return)
+                        {
+                            var_types.push(VarType::new_with_scope(
+                                var_name, ty, src_kind, line, scope,
+                            ));
+                        }
+                    }
+                }
             }
+            _ => {}
         }
     }
     var_types
@@ -3896,6 +4169,388 @@ pub(crate) fn extract_lua_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> 
 /// Extract VarType entries from a Luau source tree (adds type annotations).
 pub(crate) fn extract_luau_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
     extract_lua_like_var_types(tree, source, true)
+}
+
+// =============================================================================
+// C++ VarType extraction (FEATURE-1 d.6)
+// =============================================================================
+//
+// Supplies receiver types so the value-receiver gate can disambiguate the
+// broadcast `.size()` / `GetFileSize` families in cpp-fmt:
+//   * `auto x = Foo()`   -> `x : Foo`  (constructor; UpperCamelCase callee only,
+//                           so `auto n = compute()` is never mis-typed)
+//   * `Bar y;` / `Baz z = Baz()` -> `y : Bar` / `z : Baz` (declared type, High)
+// Every row only FILLS a receiver type that was otherwise `None` (never-worse).
+
+/// Normalise a C++ type AST node to a bare nominal name; `None` for
+/// primitive/`auto`/structural nodes (they never denote a project class type).
+fn cpp_type_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => {
+            let t = get_node_text(node, source).to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        "qualified_identifier" => get_node_text(node, source)
+            .rsplit("::")
+            .next()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        // `Foo<T>` — the template's base name.
+        "template_type" => node
+            .child_by_field_name("name")
+            .and_then(|n| cpp_type_name(&n, source))
+            .or_else(|| {
+                (0..node.named_child_count())
+                    .filter_map(|i| node.named_child(i))
+                    .find(|c| c.kind() == "type_identifier" || c.kind() == "qualified_identifier")
+                    .and_then(|c| cpp_type_name(&c, source))
+            }),
+        _ => None,
+    }
+}
+
+/// The innermost declared identifier of a C++ declarator subtree
+/// (`Foo* p` / `Foo& r` / `Foo a[]` all name a single variable).
+fn cpp_innermost_ident(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" => {
+            let t = get_node_text(node, source).to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        _ => {
+            if let Some(d) = node.child_by_field_name("declarator") {
+                if let Some(n) = cpp_innermost_ident(&d, source) {
+                    return Some(n);
+                }
+            }
+            for i in 0..node.child_count() {
+                if let Some(c) = node.child(i) {
+                    if let Some(n) = cpp_innermost_ident(&c, source) {
+                        return Some(n);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// The qualified name of the C++ `function_definition` enclosing `node`, matching
+/// how the C++ call handler keys `calls_by_func` (`func`, `Class::method`). The
+/// class prefix is added for an in-class method whose declarator is not already
+/// `::`-qualified.
+fn enclosing_cpp_function_scope(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut cur = node.parent();
+    let mut func_name: Option<String> = None;
+    while let Some(p) = cur {
+        if p.kind() == "function_definition" && func_name.is_none() {
+            for i in 0..p.child_count() {
+                if let Some(c) = p.child(i) {
+                    if matches!(
+                        c.kind(),
+                        "function_declarator" | "pointer_declarator" | "reference_declarator"
+                    ) {
+                        func_name = cpp_function_declarator_name(&c, source);
+                        break;
+                    }
+                }
+            }
+        }
+        if matches!(p.kind(), "class_specifier" | "struct_specifier") {
+            if let Some(ref fname) = func_name {
+                if !fname.contains("::") {
+                    let class = (0..p.child_count())
+                        .filter_map(|i| p.child(i))
+                        .find(|c| c.kind() == "type_identifier")
+                        .map(|c| get_node_text(&c, source).to_string());
+                    if let Some(cn) = class {
+                        return Some(format!("{}::{}", cn, fname));
+                    }
+                }
+            }
+        }
+        cur = p.parent();
+    }
+    func_name
+}
+
+/// The (possibly qualified) name from a C++ function declarator subtree.
+fn cpp_function_declarator_name(decl: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    for i in 0..decl.child_count() {
+        if let Some(c) = decl.child(i) {
+            match c.kind() {
+                "identifier" | "field_identifier" | "qualified_identifier" | "destructor_name" => {
+                    return Some(get_node_text(&c, source).to_string());
+                }
+                "function_declarator" | "pointer_declarator" | "reference_declarator" => {
+                    if let Some(n) = cpp_function_declarator_name(&c, source) {
+                        return Some(n);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// fix-cl-7-v1 FIX 3: true when a C++ declaration node is a CLASS MEMBER FIELD
+/// (its nearest structural ancestor is a `field_declaration_list` / class body)
+/// rather than a function-local or file-scope declaration. Such a field must NOT
+/// be emitted as a (global-scope) vartype: e.g. `TestPartResultArray* const
+/// result_;` inside class `ScopedFakeTestPartResultReporter` would otherwise
+/// shadow the correctly-typed member receiver `result_` (a `TestResult`) in an
+/// unrelated method, dropping `TestInfo::Run -> TestResult.set_elapsed_time`.
+/// A function body (`compound_statement` under `function_definition`) is reached
+/// first for locals, so those keep flowing; a `translation_unit` child (file
+/// global) never hits a `field_declaration_list` ancestor. Purely structural
+/// (tree-sitter node kinds), no name heuristics.
+fn cpp_decl_is_class_member(node: &tree_sitter::Node) -> bool {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        match p.kind() {
+            "function_definition" | "compound_statement" | "lambda_expression" => return false,
+            "field_declaration_list" => return true,
+            _ => {}
+        }
+        cur = p.parent();
+    }
+    false
+}
+
+/// The name of the C++ class/struct that directly encloses a member
+/// `field_declaration` — the `type_identifier` of the nearest enclosing
+/// `class_specifier`/`struct_specifier`. Returns `None` when the field is not
+/// inside a named class body (e.g. an anonymous struct). Purely structural
+/// (tree-sitter node kinds/`type_identifier` child), no name heuristics.
+///
+/// Used to SCOPE a member-field vartype to its owning class so it can only ever
+/// type a member receiver inside that class's own methods — never leak as a
+/// module-global that would shadow a same-named field of an unrelated class (the
+/// `TestPartResultArray result_` vs `TestResult result_` collision that
+/// `cpp_decl_is_class_member` documents).
+fn enclosing_cpp_class_name(node: &tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(p) = cur {
+        if matches!(p.kind(), "class_specifier" | "struct_specifier") {
+            let name = (0..p.child_count())
+                .filter_map(|i| p.child(i))
+                .find(|c| c.kind() == "type_identifier")
+                .map(|c| get_node_text(&c, source).to_string())
+                .filter(|s| !s.is_empty());
+            if name.is_some() {
+                return name;
+            }
+        }
+        cur = p.parent();
+    }
+    None
+}
+
+/// BUG-3 (cpp member-field typing): extract a single class DATA member
+/// (`field_declaration` such as `TestResult result_;` or `Foo* const bar_;`)
+/// into a vartype SCOPED to its enclosing class.
+///
+/// Only emits when BOTH a nominal member type (`cpp_type_name`: skips
+/// primitives/`auto`/structural nodes) AND a bare member name are recovered, and
+/// only for DATA members — a member `function_declarator` (method prototype) is
+/// skipped so a method signature is never mistaken for a field. A pointer/array
+/// member still carries its base nominal type, which is exactly what the method
+/// resolver keys on; the `.`/`->` distinction does not affect method lookup.
+///
+/// The scope is the enclosing class name so the row can only type a member
+/// receiver inside that class's own methods (see `enclosing_cpp_class_name`); a
+/// field outside any named class body is skipped (never global — never-worse).
+/// Purely structural (tree-sitter node kinds/fields), no name heuristics.
+fn extract_cpp_member_field(
+    node: &tree_sitter::Node,
+    source: &[u8],
+    var_types: &mut Vec<VarType>,
+) {
+    let class = match enclosing_cpp_class_name(node, source) {
+        Some(c) => c,
+        None => return,
+    };
+    let declared = match node.named_child(0).and_then(|c| cpp_type_name(&c, source)) {
+        Some(t) => t,
+        None => return,
+    };
+    // Member DATA declarators only: skip a `function_declarator` child (a method
+    // prototype declared in the class body is not a data field).
+    for i in 1..node.named_child_count() {
+        let decl = match node.named_child(i) {
+            Some(c) => c,
+            None => continue,
+        };
+        match decl.kind() {
+            "function_declarator" => continue,
+            "field_identifier" | "identifier" => {
+                let name = get_node_text(&decl, source).to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let line = decl.start_position().row as u32 + 1;
+                var_types.push(VarType::new_with_scope(
+                    name,
+                    declared.clone(),
+                    "annotation",
+                    line,
+                    Some(class.clone()),
+                ));
+            }
+            "pointer_declarator" | "reference_declarator" | "array_declarator" => {
+                // A pointer/reference/array member may still nest a
+                // `function_declarator` (a member function pointer) — skip those;
+                // a bare inner identifier is a real data member.
+                if cpp_declarator_is_function(&decl) {
+                    continue;
+                }
+                if let Some(name) = cpp_innermost_ident(&decl, source) {
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let line = decl.start_position().row as u32 + 1;
+                    var_types.push(VarType::new_with_scope(
+                        name,
+                        declared.clone(),
+                        "annotation",
+                        line,
+                        Some(class.clone()),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// True when a C++ declarator subtree ultimately wraps a `function_declarator`
+/// (a member function / function-pointer declaration) rather than a plain data
+/// declarator. Used to keep [`extract_cpp_member_field`] from typing a member
+/// function as if it were a data field. Purely structural.
+fn cpp_declarator_is_function(node: &tree_sitter::Node) -> bool {
+    if node.kind() == "function_declarator" {
+        return true;
+    }
+    if let Some(d) = node.child_by_field_name("declarator") {
+        return cpp_declarator_is_function(&d);
+    }
+    false
+}
+
+/// Extract VarType entries from a C++ source tree.
+pub(crate) fn extract_cpp_var_types(tree: &tree_sitter::Tree, source: &[u8]) -> Vec<VarType> {
+    let mut var_types = Vec::new();
+    let root = tree.root_node();
+
+    for node in walk_tree(root) {
+        // BUG-3 (cpp member-field typing): a class DATA member `T field_;`
+        // declared inside a class/struct body is a `field_declaration`, not a
+        // `declaration`, so it never flowed through the local-variable path
+        // below. Extract it as a vartype SCOPED to its enclosing class (High,
+        // `annotation`) so a member receiver inside that class's own methods —
+        // e.g. `result_.set_elapsed_time()` in `TestInfo::Run` — resolves
+        // type-scoped. Scoping (rather than the former module-global leak that
+        // `cpp_decl_is_class_member` removed) is what keeps a same-named field of
+        // an unrelated class from shadowing it (never-worse).
+        if node.kind() == "field_declaration" {
+            extract_cpp_member_field(&node, source, &mut var_types);
+            continue;
+        }
+        if node.kind() != "declaration" {
+            continue;
+        }
+        // fix-cl-7-v1 FIX 3: skip class member-field declarations that tree-sitter
+        // parsed as a `declaration` (rather than `field_declaration`) — they leak
+        // as global vartypes and shadow correctly-typed member receivers.
+        if cpp_decl_is_class_member(&node) {
+            continue;
+        }
+        let first = node.named_child(0);
+        let is_auto = first
+            .map(|c| c.kind() == "placeholder_type_specifier")
+            .unwrap_or(false);
+        let declared = first
+            .filter(|_| !is_auto)
+            .and_then(|c| cpp_type_name(&c, source));
+        // No usable type information: neither an explicit nominal type nor `auto`.
+        if declared.is_none() && !is_auto {
+            continue;
+        }
+        let scope = enclosing_cpp_function_scope(&node, source);
+
+        for i in 1..node.named_child_count() {
+            let decl = match node.named_child(i) {
+                Some(c) => c,
+                None => continue,
+            };
+            let (var_name, init_value): (String, Option<tree_sitter::Node>) = match decl.kind() {
+                "identifier" | "field_identifier" => {
+                    (get_node_text(&decl, source).to_string(), None)
+                }
+                "init_declarator" => {
+                    let name = decl
+                        .child_by_field_name("declarator")
+                        .and_then(|d| cpp_innermost_ident(&d, source));
+                    match name {
+                        Some(n) => (n, decl.child_by_field_name("value")),
+                        None => continue,
+                    }
+                }
+                "pointer_declarator" | "reference_declarator" | "array_declarator" => {
+                    match cpp_innermost_ident(&decl, source) {
+                        Some(n) => (n, None),
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            if var_name.is_empty() {
+                continue;
+            }
+            let line = decl.start_position().row as u32 + 1;
+
+            // Explicit declared type is authoritative.
+            if let Some(ref ty) = declared {
+                var_types.push(VarType::new_with_scope(
+                    var_name,
+                    ty.clone(),
+                    "annotation",
+                    line,
+                    scope.clone(),
+                ));
+                continue;
+            }
+            // `auto x = Foo()` -> constructor, gated to an UpperCamelCase callee.
+            if let Some(value) = init_value {
+                if value.kind() == "call_expression" {
+                    if let Some(callee) = value.named_child(0) {
+                        if callee.kind() == "identifier" {
+                            let name = get_node_text(&callee, source).to_string();
+                            if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                                var_types.push(VarType::new_with_scope(
+                                    var_name,
+                                    name,
+                                    "constructor",
+                                    line,
+                                    scope.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    var_types
 }
 
 // =============================================================================
@@ -5609,6 +6264,305 @@ end
             self_other.receiver_type.as_deref(),
             Some("T"),
             "d.5 method-component fallback must type self as T under the simple caller key"
+        );
+    }
+
+    // =========================================================================
+    // FEATURE-1 d.6: Swift / C# / C++ var_types + Python local annotation
+    // =========================================================================
+
+    #[test]
+    fn test_extract_swift_var_types_constructor_and_factory() {
+        let source = r#"
+class C {
+    let x = Foo()
+    let z = Baz.make()
+}
+"#;
+        let tree = parse_source(source, "swift").unwrap();
+        let vts = extract_swift_var_types(&tree, source.as_bytes());
+
+        let x = vts.iter().find(|v| v.var_name == "x").expect("x typed");
+        assert_eq!(x.type_name, "Foo");
+        assert_eq!(x.source, "constructor");
+
+        let z = vts.iter().find(|v| v.var_name == "z").expect("z typed");
+        assert_eq!(z.type_name, "Baz", "Base.make() factory -> Base");
+        assert_eq!(z.source, "constructor");
+    }
+
+    #[test]
+    fn test_extract_swift_var_types_annotation() {
+        let source = r#"
+class C {
+    var y: Bar = q
+    var _values: ContiguousArray<Value> = z
+}
+"#;
+        let tree = parse_source(source, "swift").unwrap();
+        let vts = extract_swift_var_types(&tree, source.as_bytes());
+
+        let y = vts.iter().find(|v| v.var_name == "y").expect("y typed");
+        assert_eq!(y.type_name, "Bar");
+        assert_eq!(y.source, "annotation");
+
+        // The swift-finalizekeying cluster: `_values` must carry its declared
+        // `ContiguousArray` (a stdlib type) so `_values.append()` resolves external.
+        let vals = vts
+            .iter()
+            .find(|v| v.var_name == "_values")
+            .expect("_values typed");
+        assert_eq!(vals.type_name, "ContiguousArray");
+        assert_eq!(vals.source, "annotation");
+    }
+
+    #[test]
+    fn test_extract_swift_var_types_parameters() {
+        let source = r#"
+func f(reader: JsonReader, n: Int) {
+    reader.Read()
+}
+"#;
+        let tree = parse_source(source, "swift").unwrap();
+        let vts = extract_swift_var_types(&tree, source.as_bytes());
+
+        let reader = vts
+            .iter()
+            .find(|v| v.var_name == "reader")
+            .expect("reader param typed");
+        assert_eq!(reader.type_name, "JsonReader");
+        assert_eq!(reader.source, "parameter");
+        assert_eq!(reader.scope.as_deref(), Some("f"));
+
+        let n = vts.iter().find(|v| v.var_name == "n").expect("n param typed");
+        assert_eq!(n.type_name, "Int");
+        assert_eq!(n.source, "parameter");
+    }
+
+    #[test]
+    fn test_extract_csharp_var_types_new_and_declared() {
+        let source = r#"
+class C {
+    void M() {
+        var a = new Alpha();
+        Beta b = q;
+        Gamma g;
+    }
+}
+"#;
+        let tree = parse_source(source, "csharp").unwrap();
+        let vts = extract_csharp_var_types(&tree, source.as_bytes());
+
+        let a = vts.iter().find(|v| v.var_name == "a").expect("a typed");
+        assert_eq!(a.type_name, "Alpha");
+        assert_eq!(a.source, "constructor");
+
+        let b = vts.iter().find(|v| v.var_name == "b").expect("b typed");
+        assert_eq!(b.type_name, "Beta");
+        assert_eq!(b.source, "annotation");
+
+        let g = vts.iter().find(|v| v.var_name == "g").expect("g typed");
+        assert_eq!(g.type_name, "Gamma");
+        assert_eq!(g.source, "annotation");
+    }
+
+    #[test]
+    fn test_extract_csharp_var_types_parameters() {
+        // The csharp-read cluster: a `JsonReader reader` parameter typing lets
+        // `reader.Read()` bind to JsonReader.Read instead of broadcasting.
+        let source = r#"
+class C {
+    void M(JsonReader reader, int n) {
+        reader.Read();
+    }
+}
+"#;
+        let tree = parse_source(source, "csharp").unwrap();
+        let vts = extract_csharp_var_types(&tree, source.as_bytes());
+
+        let reader = vts
+            .iter()
+            .find(|v| v.var_name == "reader")
+            .expect("reader param typed");
+        assert_eq!(reader.type_name, "JsonReader");
+        assert_eq!(reader.source, "parameter");
+        assert_eq!(reader.scope.as_deref(), Some("C.M"));
+        // `int n` is a predefined_type -> no project type row.
+        assert!(
+            vts.iter().all(|v| v.var_name != "n"),
+            "predefined int param must not be typed"
+        );
+    }
+
+    #[test]
+    fn test_extract_cpp_var_types_auto_and_declared() {
+        let source = r#"
+void f() {
+    auto x = Foo();
+    Bar y;
+    Baz z = Baz();
+    auto n = compute();
+}
+"#;
+        let tree = parse_source(source, "cpp").unwrap();
+        let vts = extract_cpp_var_types(&tree, source.as_bytes());
+
+        let x = vts.iter().find(|v| v.var_name == "x").expect("x typed");
+        assert_eq!(x.type_name, "Foo");
+        assert_eq!(x.source, "constructor");
+
+        let y = vts.iter().find(|v| v.var_name == "y").expect("y typed");
+        assert_eq!(y.type_name, "Bar");
+        assert_eq!(y.source, "annotation");
+
+        let z = vts.iter().find(|v| v.var_name == "z").expect("z typed");
+        assert_eq!(z.type_name, "Baz");
+        assert_eq!(z.source, "annotation");
+
+        // `auto n = compute()` (lowercase callee) is NOT a constructor guess.
+        assert!(
+            vts.iter().all(|v| v.var_name != "n"),
+            "auto with a lowercase-callee value must stay untyped (never-worse)"
+        );
+    }
+
+    /// fix-cl-7-v1 FIX 3 (updated by BUG-3): a C++ CLASS MEMBER FIELD must NOT
+    /// leak as a MODULE-GLOBAL (`scope == None`) vartype — a global `result_`
+    /// would shadow a correctly-typed member receiver of the same name in an
+    /// unrelated class's method. BUG-3 now DOES emit the field, but SCOPED to its
+    /// enclosing class (`scope == Some("ScopedReporter")`), which preserves that
+    /// no-cross-class-shadow guarantee while enabling in-class member typing.
+    /// Function-local declarations and file-scope globals are still emitted.
+    #[test]
+    fn test_cl7_cpp_member_field_not_leaked() {
+        let source = r#"
+class ScopedReporter {
+    TestPartResultArray* const result_;
+    void Run() {
+        TestResult local_result;
+        local_result.set_elapsed_time(1);
+    }
+};
+
+Widget g_widget;
+"#;
+        let tree = parse_source(source, "cpp").unwrap();
+        let vts = extract_cpp_var_types(&tree, source.as_bytes());
+
+        // The member field `result_` must NOT leak as a MODULE-GLOBAL vartype; it
+        // may only appear class-scoped (never `scope == None`).
+        assert!(
+            vts.iter()
+                .filter(|v| v.var_name == "result_")
+                .all(|v| v.scope.as_deref() == Some("ScopedReporter")),
+            "member field `result_` must be class-scoped, never module-global: {vts:?}"
+        );
+
+        // The function-local `local_result` IS still emitted.
+        let local = vts
+            .iter()
+            .find(|v| v.var_name == "local_result")
+            .expect("function-local declaration must still be typed");
+        assert_eq!(local.type_name, "TestResult");
+
+        // A file-scope global is still emitted (member-field handling is surgical).
+        let global = vts
+            .iter()
+            .find(|v| v.var_name == "g_widget")
+            .expect("file-scope global declaration must still be typed");
+        assert_eq!(global.type_name, "Widget");
+    }
+
+    /// BUG-3 (cpp member-field typing): a class DATA member (`field_declaration`)
+    /// is now extracted as a vartype SCOPED TO ITS ENCLOSING CLASS (never a
+    /// module-global), so a member receiver inside that class's methods can be
+    /// typed. Two same-named members of unrelated classes must stay
+    /// class-scoped (no global leak / cross-class shadow — never-worse).
+    #[test]
+    fn test_cpp_member_field_scoped_to_class() {
+        let source = r#"
+class TestInfo {
+    TestResult result_;
+    Timer* timer_;
+    void member_prototype();
+    void Run() {
+        result_.set_elapsed_time(1);
+    }
+};
+
+class ScopedReporter {
+    TestPartResultArray* const result_;
+};
+"#;
+        let tree = parse_source(source, "cpp").unwrap();
+        let vts = extract_cpp_var_types(&tree, source.as_bytes());
+
+        // `TestInfo::result_` (value member) is typed to TestResult, scoped to
+        // its class — NOT module-global.
+        let ti_result = vts
+            .iter()
+            .find(|v| v.var_name == "result_" && v.type_name == "TestResult")
+            .expect("TestInfo::result_ must be typed to TestResult");
+        assert_eq!(ti_result.scope.as_deref(), Some("TestInfo"));
+        assert_eq!(ti_result.source, "annotation");
+
+        // `TestInfo::timer_` (pointer member) still carries its base nominal type.
+        let timer = vts
+            .iter()
+            .find(|v| v.var_name == "timer_")
+            .expect("pointer member timer_ must be typed");
+        assert_eq!(timer.type_name, "Timer");
+        assert_eq!(timer.scope.as_deref(), Some("TestInfo"));
+
+        // The other class's same-named `result_` is scoped to ITS class, so the
+        // two never collide as a global that would shadow one another.
+        let sr_result = vts
+            .iter()
+            .find(|v| v.var_name == "result_" && v.type_name == "TestPartResultArray")
+            .expect("ScopedReporter::result_ must be typed to TestPartResultArray");
+        assert_eq!(sr_result.scope.as_deref(), Some("ScopedReporter"));
+
+        // No member field ever leaks as a module-global (scope == None).
+        assert!(
+            vts.iter()
+                .filter(|v| v.var_name == "result_" || v.var_name == "timer_")
+                .all(|v| v.scope.is_some()),
+            "member fields must never be emitted module-global: {vts:?}"
+        );
+
+        // A member function prototype (`void member_prototype();`) is NOT a data
+        // field and must not be typed.
+        assert!(
+            vts.iter().all(|v| v.var_name != "member_prototype"),
+            "member function prototype must not be typed as a field: {vts:?}"
+        );
+    }
+
+    #[test]
+    fn test_extract_python_var_types_local_annotation() {
+        let source = r#"
+def f():
+    x: Foo = bar()
+    y: Baz
+    items: List[int]
+"#;
+        let tree = parse_source(source, "python").unwrap();
+        let vts = extract_python_var_types(&tree, source.as_bytes());
+
+        let x = vts.iter().find(|v| v.var_name == "x").expect("x typed");
+        assert_eq!(x.type_name, "Foo", "annotation is authoritative over RHS");
+        assert_eq!(x.source, "annotation");
+        assert_eq!(x.scope.as_deref(), Some("f"));
+
+        let y = vts.iter().find(|v| v.var_name == "y").expect("y typed");
+        assert_eq!(y.type_name, "Baz");
+        assert_eq!(y.source, "annotation");
+
+        // A subscripted/structural annotation with no typeable RHS is not resolved
+        // (emitting no base is strictly safe / never-worse).
+        assert!(
+            vts.iter().all(|v| v.var_name != "items"),
+            "structural List[int] annotation is skipped (never-worse)"
         );
     }
 }

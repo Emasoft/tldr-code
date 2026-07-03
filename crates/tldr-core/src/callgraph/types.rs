@@ -378,6 +378,23 @@ pub struct FuncEntry {
     /// share an arity. Pure AST text (`user_type` / `type_identifier`), never an
     /// inferred type. `None` means "unknown / not captured".
     pub first_param_type: Option<String>,
+
+    /// fix-cl-7-v1: mirrors [`FuncDef::is_lexical_local`] — `true` for a Lua
+    /// `local name = function ... end` lexical closure. A colon/self dispatch
+    /// (`self:m()` / `obj:m()`) must never bind to such a same-file closure; it
+    /// falls through to the real cross-file method instead. Additive and
+    /// never-worse: defaults to `false`.
+    pub is_lexical_local: bool,
+
+    /// fix-cl-8-v1 (BUG-5, LUA): mirrors [`FuncDef::colon_receiver`] — the
+    /// bare-identifier receiver `T` of a Lua colon method `function T:m`. Set
+    /// ONLY for Lua colon methods; `None` for every other definition and every
+    /// non-Lua language. Consulted ONLY by the colon/self dispatch guard (to
+    /// derive the enclosing class, the same-file candidate's class, and the
+    /// colon-aware definer cardinality). Deliberately INVISIBLE to
+    /// `resolve_caller_name` and to func-index key generation. Additive and
+    /// never-worse: defaults to `None`.
+    pub colon_receiver: Option<String>,
 }
 
 impl FuncEntry {
@@ -395,6 +412,8 @@ impl FuncEntry {
             class_name: None,
             arity: 0,
             first_param_type: None,
+            is_lexical_local: false,
+            colon_receiver: None,
         }
     }
 
@@ -410,7 +429,26 @@ impl FuncEntry {
             class_name: Some(class_name),
             arity: 0,
             first_param_type: None,
+            is_lexical_local: false,
+            colon_receiver: None,
         }
+    }
+
+    /// fix-cl-8-v1 (BUG-5, LUA): sets the [`colon_receiver`](Self::colon_receiver)
+    /// bare-identifier receiver of a Lua colon method, returning `self` for
+    /// builder-style chaining. Kept separate so the existing `function`/`method`
+    /// construction sites stay source-compatible and default the field to `None`.
+    pub fn with_colon_receiver(mut self, colon_receiver: Option<String>) -> Self {
+        self.colon_receiver = colon_receiver;
+        self
+    }
+
+    /// fix-cl-7-v1: sets the [`is_lexical_local`](Self::is_lexical_local) flag,
+    /// returning `self` for builder-style chaining. Kept separate so the
+    /// existing `function`/`method` construction sites stay source-compatible.
+    pub fn with_lexical_local(mut self, is_lexical_local: bool) -> Self {
+        self.is_lexical_local = is_lexical_local;
+        self
     }
 
     /// Attaches the AST-derived overload signature (parameter `arity` and the

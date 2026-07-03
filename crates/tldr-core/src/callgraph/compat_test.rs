@@ -43,6 +43,8 @@ fn create_test_funcdef() -> FuncDef {
         class_name: Some("MyClass".to_string()),
         return_type: Some("str".to_string()),
         parent_function: None,
+        is_lexical_local: false,
+        colon_receiver: None,
     }
 }
 

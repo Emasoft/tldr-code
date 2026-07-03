@@ -325,6 +325,38 @@ pub struct FuncDef {
     /// Enclosing function name for nested functions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_function: Option<String>,
+
+    /// fix-cl-7-v1: `true` when this definition is a *lexical local closure*
+    /// bound by a `local name = function ... end` (Lua `variable_declaration`)
+    /// rather than a method (`function T:m`), a plain function, or a table-field
+    /// assignment (`x = function ... end`). Used ONLY as a monotone-negative
+    /// filter in colon/self dispatch: a `self:m()` / `obj:m()` colon call never
+    /// resolves to such a same-file closure (it must fall through to the real
+    /// cross-file method). Additive and never-worse: defaults to `false`, so
+    /// every existing definition — and every non-Lua language — is unaffected.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_lexical_local: bool,
+
+    /// fix-cl-8-v1 (BUG-5, LUA): the bare-identifier receiver `T` of a Lua colon
+    /// method `function T:m`. Set ONLY by the Lua extractor and ONLY for a colon
+    /// method whose object is a bare identifier — never `class_name`/`is_method`,
+    /// because setting those forces `resolve_caller_name` to relabel every
+    /// colon-method-sourced edge `m` -> `T.m` (a catastrophic flip reverted
+    /// twice). This field is deliberately INVISIBLE to `resolve_caller_name` and
+    /// to func-index key generation; it is consulted ONLY by the colon/self
+    /// dispatch guard (and its enclosing-class derivation) to decline a `self:m()`
+    /// bind onto an UNRELATED same-file sibling class. Additive and never-worse:
+    /// defaults to `None`, so every existing definition — and every non-Lua
+    /// language — is unaffected. Mirrors [`is_lexical_local`](Self::is_lexical_local).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colon_receiver: Option<String>,
+}
+
+/// Serde helper: skip serializing the additive `is_lexical_local` flag when it
+/// holds its default (`false`) so cached IR / JSON output stays byte-for-byte
+/// identical for every pre-existing definition.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl FuncDef {
@@ -350,6 +382,8 @@ impl FuncDef {
             class_name,
             return_type,
             parent_function,
+            is_lexical_local: false,
+            colon_receiver: None,
         };
         assert!(func.is_valid(), "FuncDef invariants violated: {:?}", func);
         func
@@ -358,6 +392,40 @@ impl FuncDef {
     /// Creates a simple standalone function.
     pub fn function(name: impl Into<String>, line: u32, end_line: u32) -> Self {
         Self::new(name.into(), line, end_line, false, None, None, None)
+    }
+
+    /// fix-cl-7-v1: Creates a *lexical local closure* definition (`local name =
+    /// function ... end`). Identical to [`function`](Self::function) except the
+    /// [`is_lexical_local`](Self::is_lexical_local) flag is set, marking it as a
+    /// non-method closure that a colon/self dispatch must never bind to. Kept as
+    /// a separate constructor so the ~50 existing `function`/`method` call sites
+    /// stay untouched and default the flag to `false`.
+    pub fn lexical_local(name: impl Into<String>, line: u32, end_line: u32) -> Self {
+        let func = Self {
+            name: name.into(),
+            line,
+            end_line,
+            is_method: false,
+            class_name: None,
+            return_type: None,
+            parent_function: None,
+            is_lexical_local: true,
+            colon_receiver: None,
+        };
+        assert!(func.is_valid(), "FuncDef invariants violated: {:?}", func);
+        func
+    }
+
+    /// fix-cl-8-v1 (BUG-5, LUA): sets the [`colon_receiver`](Self::colon_receiver)
+    /// bare-identifier receiver of a Lua colon method (`function T:m` -> `Some("T")`),
+    /// returning `self` for builder-style chaining. Kept as a separate builder so
+    /// the existing `function`/`method`/`lexical_local` construction sites stay
+    /// source-compatible and default the field to `None`. Sets NOTHING else — in
+    /// particular not `class_name`/`is_method` — so `resolve_caller_name` is
+    /// unaffected.
+    pub fn with_colon_receiver(mut self, colon_receiver: Option<String>) -> Self {
+        self.colon_receiver = colon_receiver;
+        self
     }
 
     /// Creates a method belonging to a class.

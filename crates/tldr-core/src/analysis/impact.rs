@@ -39,16 +39,42 @@ fn last_segment(qualified: &str) -> &str {
     // Prefer the deepest separator that actually appears.
     let dot_idx = qualified.rfind('.');
     let coloncolon_idx = qualified.rfind("::").map(|i| i + 1); // position of last ':'
-    let cut = match (dot_idx, coloncolon_idx) {
-        (Some(d), Some(c)) => Some(d.max(c)),
-        (Some(d), None) => Some(d),
-        (None, Some(c)) => Some(c),
-        (None, None) => None,
-    };
+    // FEATURE-1 d.6 (Fix A): the Lua/luau colon-method separator is a SINGLE
+    // ':' that is NOT part of a '::'. `Component:setState` must yield the bare
+    // `setState` so a bare `setState` query matches (`find_function_in_ast`
+    // seeds the Component.lua target). The `::` pairs are already handled by
+    // `coloncolon_idx`, so we deliberately exclude them here; C++ `A::b`, `.`,
+    // and `->` are therefore unaffected.
+    let single_colon_idx = last_standalone_colon(qualified);
+    let cut = [dot_idx, coloncolon_idx, single_colon_idx]
+        .into_iter()
+        .flatten()
+        .max();
     match cut {
         Some(i) if i < qualified.len() => &qualified[i + 1..],
         _ => qualified,
     }
+}
+
+/// Byte index of the LAST standalone `:` in `qualified` — a `:` whose immediate
+/// neighbors are not `:` (so the two colons of a `::` pair are excluded). This
+/// is the Lua/luau `Table:method` separator. Returns `None` when every colon is
+/// part of a `::` (C++/Rust/Scala) or no colon exists. ASCII-safe: `:` is a
+/// single-byte codepoint that never appears inside a UTF-8 continuation byte.
+fn last_standalone_colon(qualified: &str) -> Option<usize> {
+    let bytes = qualified.as_bytes();
+    let mut found = None;
+    for i in 0..bytes.len() {
+        if bytes[i] != b':' {
+            continue;
+        }
+        let prev_is_colon = i > 0 && bytes[i - 1] == b':';
+        let next_is_colon = i + 1 < bytes.len() && bytes[i + 1] == b':';
+        if !prev_is_colon && !next_is_colon {
+            found = Some(i);
+        }
+    }
+    found
 }
 
 /// Match `candidate` against `target` allowing both directions of
@@ -2949,6 +2975,51 @@ mod tests {
         });
 
         graph
+    }
+
+    // -------------------------------------------------------------------------
+    // FEATURE-1 d.6 (Fix A): last_segment must cut at the Lua/luau single-colon
+    // method separator so a bare `method` query matches an `X:method` definition.
+    // -------------------------------------------------------------------------
+
+    /// FAIL-FIRST: the luau/lua colon-method separator is a single ':' that is
+    /// NOT part of a '::'. Before the fix `last_segment` cut only on '.' and
+    /// '::', so `Component:setState` returned the whole string.
+    #[test]
+    fn test_d6_last_segment_cuts_luau_colon_method() {
+        assert_eq!(last_segment("Component:setState"), "setState");
+        assert_eq!(last_segment("obj:method"), "method");
+        // A dotted qualifier followed by a colon method (lua `Mod.Class:m`) cuts
+        // at the DEEPEST separator (the colon).
+        assert_eq!(last_segment("Mod.Class:render"), "render");
+    }
+
+    /// The existing '.'/'::'/'->' behaviors must be UNAFFECTED by the colon fix.
+    #[test]
+    fn test_d6_last_segment_coloncolon_and_dot_unaffected() {
+        // C++/Rust '::' still resolves via the coloncolon index.
+        assert_eq!(last_segment("A::b"), "b");
+        assert_eq!(last_segment("mod::Type::method"), "method");
+        // '.' member access unchanged.
+        assert_eq!(last_segment("Class.method"), "method");
+        // '->' was never a last_segment separator; still returns whole string.
+        assert_eq!(last_segment("a->b"), "a->b");
+        // No separator -> whole string.
+        assert_eq!(last_segment("plain"), "plain");
+    }
+
+    /// FAIL-FIRST: the `find_function_in_ast` seed. A bare `setState` query must
+    /// match the AST-extracted luau candidate `Component:setState` (Direction 1
+    /// of `names_match`). Before the fix `last_segment("Component:setState")`
+    /// returned the whole string, so the match was false and the Component.lua
+    /// target was never seeded (`has_target` stuck at 0).
+    #[test]
+    fn test_d6_names_match_bare_query_finds_luau_colon_method() {
+        assert!(names_match("Component:setState", "setState"));
+        // C++ '::' candidate still matches a bare query (Direction 1 unchanged).
+        assert!(names_match("Glob::parse", "parse"));
+        // Does not over-match an unrelated method on the same table.
+        assert!(!names_match("Component:setState", "render"));
     }
 
     #[test]

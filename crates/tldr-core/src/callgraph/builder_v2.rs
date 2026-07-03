@@ -46,8 +46,8 @@ pub use super::imports::{
 };
 pub use super::module_path::path_to_module;
 pub use super::resolution::{
-    apply_type_resolution, resolve_call, resolve_call_with_receiver, ResolutionContext,
-    ResolvedTarget,
+    apply_type_resolution, resolve_call, resolve_call_with_receiver,
+    resolve_call_with_receiver_enclosing, ResolutionContext, ResolvedTarget,
 };
 pub use super::scanner::{filter_tldrignored, scan_project_files, should_skip_path, ScannedFile};
 pub use super::types::{
@@ -154,7 +154,13 @@ pub fn build_indices_parallel(
                 )
             } else {
                 FuncEntry::function(relative_path.clone(), func.line, func.end_line)
-            };
+            }
+            // fix-cl-7-v1: carry the lexical-local closure flag into the index so
+            // colon/self dispatch can decline a same-file `local m = function` bind.
+            .with_lexical_local(func.is_lexical_local)
+            // fix-cl-8-v1 (BUG-5, LUA): carry the colon-method receiver so the
+            // self-dispatch guard can decline an unrelated same-file sibling bind.
+            .with_colon_receiver(func.colon_receiver.clone());
 
             func_index.insert(&module, &func.name, entry.clone());
 
@@ -356,12 +362,14 @@ impl BuilderResolutionContext<'_, '_, '_> {
         target: &str,
         receiver: &str,
         receiver_type: Option<&str>,
+        enclosing_class: Option<&str>,
         call_type: &CallType,
     ) -> Option<ResolvedTarget> {
-        resolve_call_with_receiver(
+        resolve_call_with_receiver_enclosing(
             target,
             receiver,
             receiver_type,
+            enclosing_class,
             call_type,
             self.resolution_context,
         )
@@ -424,7 +432,7 @@ fn resolve_call_site_for_builder(
         CallType::Intra => resolve_intra_call(file_ir, call_site, context),
         CallType::Static => resolve_static_call(file_ir, call_site, context),
         CallType::Method | CallType::Attr => {
-            return resolve_method_or_attr_call(call_site, context, result);
+            return resolve_method_or_attr_call(file_ir, call_site, context, result);
         }
         _ => context.resolve_call(&call_site.target, &call_site.call_type),
     };
@@ -596,6 +604,7 @@ fn resolve_static_call(
 }
 
 fn resolve_method_or_attr_call(
+    file_ir: &FileIR,
     call_site: &CallSite,
     context: &mut BuilderResolutionContext<'_, '_, '_>,
     result: &mut ResolvedCalls,
@@ -606,6 +615,12 @@ fn resolve_method_or_attr_call(
             None => CallSiteResolution::Unresolved,
         };
     };
+
+    // fix-cl-8-v1 (BUG-5): the class this call is written inside, so a
+    // `self:m()` colon dispatch can be checked against its own / ancestor
+    // methods instead of an unrelated same-file sibling. `None` for classless
+    // models (Lua's flat function table) — the guard then no-ops (never-worse).
+    let enclosing_class = enclosing_class_for_call(&file_ir.funcs, call_site);
 
     let mut receiver_type_for_resolution = call_site.receiver_type.as_deref().map(Cow::Borrowed);
 
@@ -620,6 +635,7 @@ fn resolve_method_or_attr_call(
                             &call_site.target,
                             receiver,
                             Some(member.as_str()),
+                            enclosing_class.as_deref(),
                             &call_site.call_type,
                         ) {
                             let key = (target.file.clone(), target.qualified_name());
@@ -654,6 +670,7 @@ fn resolve_method_or_attr_call(
         &call_site.target,
         receiver,
         receiver_type_for_resolution.as_deref(),
+        enclosing_class.as_deref(),
         &call_site.call_type,
     ) {
         Some(target) => CallSiteResolution::Resolved(target),
@@ -799,7 +816,11 @@ pub fn build_project_call_graph_v2(
                 )
             } else {
                 FuncEntry::function(file_path.clone(), func.line, func.end_line)
-            };
+            }
+            .with_lexical_local(func.is_lexical_local)
+            // fix-cl-8-v1 (BUG-5, LUA): carry the colon-method receiver so the
+            // self-dispatch guard can decline an unrelated same-file sibling bind.
+            .with_colon_receiver(func.colon_receiver.clone());
             func_index.insert(&module, &func.name, entry.clone());
 
             // BUG FIX 2: Index BOTH simple AND full module name (CROSSFILE_SPEC.md Section 2.2)

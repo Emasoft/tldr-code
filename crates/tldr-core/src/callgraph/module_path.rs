@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use super::languages::LanguageRegistry;
 use super::types::parse_source;
 use super::var_types::{
-    extract_csharp_var_types, extract_go_var_types, extract_java_var_types,
+    extract_cpp_var_types, extract_csharp_var_types, extract_go_var_types, extract_java_var_types,
     extract_kotlin_var_types, extract_lua_var_types, extract_luau_var_types, extract_php_var_types,
     extract_python_definitions, extract_rust_var_types, extract_swift_var_types,
     extract_ts_var_types, FileParseResult,
@@ -75,6 +75,7 @@ pub(crate) fn extract_definitions(
             "php" => extract_php_var_types(&tree, source.as_bytes()),
             "lua" => extract_lua_var_types(&tree, source.as_bytes()),
             "luau" => extract_luau_var_types(&tree, source.as_bytes()),
+            "cpp" | "c++" => extract_cpp_var_types(&tree, source.as_bytes()),
             _ => Vec::new(),
         };
 

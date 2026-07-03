@@ -38,6 +38,61 @@ use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
+/// FEATURE-1 d.6: record a luau class table's presence and widen its line span,
+/// preserving first-seen order for deterministic ClassDef emission.
+fn register_luau_class(
+    order: &mut Vec<String>,
+    span: &mut HashMap<String, (u32, u32)>,
+    name: &str,
+    line: u32,
+    end_line: u32,
+) {
+    if name.is_empty() {
+        return;
+    }
+    match span.get_mut(name) {
+        Some(e) => {
+            e.0 = e.0.min(line);
+            e.1 = e.1.max(end_line);
+        }
+        None => {
+            order.push(name.to_string());
+            span.insert(name.to_string(), (line, end_line));
+        }
+    }
+}
+
+/// FEATURE-1 d.6: if `value` is the class-extension idiom `Y:extend(...)` or
+/// `Y.extend(Y, ...)` (a `function_call` whose callee is a method/dot index
+/// expression named `extend` on a bare base identifier `Y`), return the base
+/// table name `Y`. Purely AST-node-kind/field driven.
+fn luau_extend_base(value: &Node, source: &[u8]) -> Option<String> {
+    if value.kind() != "function_call" {
+        return None;
+    }
+    let name = value.child_by_field_name("name")?;
+    let (table, member) = match name.kind() {
+        "method_index_expression" => (
+            name.child_by_field_name("table")?,
+            name.child_by_field_name("method")?,
+        ),
+        "dot_index_expression" => (
+            name.child_by_field_name("table")?,
+            name.child_by_field_name("field")?,
+        ),
+        _ => return None,
+    };
+    if get_node_text(&member, source) != "extend" || table.kind() != "identifier" {
+        return None;
+    }
+    let base = get_node_text(&table, source).to_string();
+    if base.is_empty() {
+        None
+    } else {
+        Some(base)
+    }
+}
+
 // =============================================================================
 // Luau Handler
 // =============================================================================
@@ -460,10 +515,19 @@ impl LuauHandler {
                                             call_target =
                                                 Some(format!("{}:{}", obj_name, method_name));
                                         }
-                                    } else if defined_funcs.contains(method_name) {
+                                    } else if obj_name != "self"
+                                        && defined_funcs.contains(method_name)
+                                    {
                                         call_type = CallType::Intra;
                                         call_target = Some(method_name.to_string());
                                     } else {
+                                        // FEATURE-1 d.6: a `self:m()` colon call is
+                                        // never receiverless — keep the receiver so
+                                        // type resolution can climb `self`'s class
+                                        // (and its bases) to the defining method,
+                                        // instead of dropping to a bare same-file
+                                        // name-match. Only genuinely receiverless
+                                        // calls take the Intra branch above.
                                         call_type = CallType::Method;
                                         call_target = Some(format!("{}:{}", obj_name, method_name));
                                     }
@@ -567,13 +631,26 @@ impl LuauHandler {
         None
     }
 
-    /// Get function name from a function declaration node.
-    fn get_function_name(&self, node: &Node, source: &[u8]) -> Option<String> {
+    /// Get a function declaration's `(simple_name, qualified_name)`.
+    ///
+    /// - `function foo()`       -> `("foo", "foo")`
+    /// - `function M.foo()`     -> `("foo", "M.foo")`
+    /// - `function M:foo()`     -> `("foo", "M.foo")`   (colon normalized to dot)
+    /// - `function M.sub.foo()` -> `("foo", "M.sub.foo")`
+    ///
+    /// The qualified name keeps a colon/dot method distinct from a same-named
+    /// free `function foo()`. Keying `calls_by_func` by the qualified name is
+    /// what stops a method (e.g. `a:deep`) from colliding with a free `deep` and
+    /// clobbering its call list. Both dot and colon methods normalize to the
+    /// same `table.member` form so they key identically. Purely AST-node-kind
+    /// driven.
+    fn get_function_names(&self, node: &Node, source: &[u8]) -> Option<(String, String)> {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 match child.kind() {
                     "identifier" => {
-                        return Some(get_node_text(&child, source).to_string());
+                        let name = get_node_text(&child, source).to_string();
+                        return Some((name.clone(), name));
                     }
                     "dot_index_expression" | "method_index_expression" => {
                         let identifiers: Vec<_> = (0..child.child_count())
@@ -581,9 +658,15 @@ impl LuauHandler {
                             .filter(|c| c.kind() == "identifier")
                             .collect();
                         if identifiers.len() >= 2 {
-                            return Some(
-                                get_node_text(identifiers.last().unwrap(), source).to_string(),
-                            );
+                            let simple =
+                                get_node_text(identifiers.last().unwrap(), source).to_string();
+                            // Dot-normalize `M.foo` and `M:foo` alike to `M.foo`.
+                            let qualified = identifiers
+                                .iter()
+                                .map(|id| get_node_text(id, source))
+                                .collect::<Vec<_>>()
+                                .join(".");
+                            return Some((simple, qualified));
                         }
                     }
                     _ => {}
@@ -718,15 +801,32 @@ impl CallGraphLanguageSupport for LuauHandler {
         ) {
             match node.kind() {
                 "function_declaration" => {
-                    if let Some(func_name) = handler.get_function_name(&node, source) {
+                    if let Some((simple_name, qualified_name)) =
+                        handler.get_function_names(&node, source)
+                    {
                         let calls = handler.extract_calls_from_node(
                             &node,
                             source,
                             defined_funcs,
-                            &func_name,
+                            &qualified_name,
                         );
                         if !calls.is_empty() {
-                            calls_by_func.insert(func_name, calls);
+                            // Key by the QUALIFIED name so a colon/dot method
+                            // (`a:deep`, `a.deep`) never collides with a free
+                            // `function deep()`. MERGE (never overwrite) so that
+                            // when two definitions DO share a key, no call list
+                            // is ever clobbered — this preserves the free
+                            // functions' self-recursion calls that an
+                            // insert-overwrite would silently drop.
+                            calls_by_func
+                                .entry(qualified_name.clone())
+                                .or_default()
+                                .extend(calls.clone());
+                            // Also key by the simple name for backward-compatible
+                            // lookups (`calls.get("bar")` for `function Foo:bar`).
+                            if simple_name != qualified_name {
+                                calls_by_func.entry(simple_name).or_default().extend(calls);
+                            }
                         }
                     }
                 }
@@ -741,7 +841,8 @@ impl CallGraphLanguageSupport for LuauHandler {
                             &func_name,
                         );
                         if !calls.is_empty() {
-                            calls_by_func.insert(func_name, calls);
+                            // MERGE rather than overwrite (see above).
+                            calls_by_func.entry(func_name).or_default().extend(calls);
                         }
                     }
                 }
@@ -812,7 +913,22 @@ impl CallGraphLanguageSupport for LuauHandler {
     ) -> Result<(Vec<FuncDef>, Vec<ClassDef>), super::ParseError> {
         let source_bytes = source.as_bytes();
         let mut funcs = Vec::new();
-        // Luau has no classes
+
+        // FEATURE-1 d.6: model luau "class tables" so a subclass method's
+        // `self:call()` can climb to an inherited base method (the Roact
+        // `Component:setState` case). A table that owns colon-methods
+        // (`function T:m()`) is a class whose method set includes `m`; the
+        // `local X = Y:extend(...)` idiom makes X a class deriving from Y.
+        // Emitting these ClassDefs lets `resolve_method_in_bases` traverse
+        // X -> Y -> ... -> Component. The FuncDef emission is UNCHANGED (colon
+        // methods still register under their simple name), so bare-name / same
+        // file resolution is preserved — the class `methods` list is what the
+        // base climb consults (`class_entry.methods.contains(m)`), keeping this
+        // strictly additive. Purely AST-node-kind/field driven.
+        let mut class_order: Vec<String> = Vec::new();
+        let mut class_methods: HashMap<String, Vec<String>> = HashMap::new();
+        let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
+        let mut class_span: HashMap<String, (u32, u32)> = HashMap::new();
 
         for node in walk_tree(tree.root_node()) {
             match node.kind() {
@@ -837,6 +953,24 @@ impl CallGraphLanguageSupport for LuauHandler {
                                     if identifiers.len() >= 2 {
                                         let last = identifiers.last().unwrap();
                                         let name = get_node_text(last, source_bytes).to_string();
+                                        // A colon method `function T:m()` makes T a
+                                        // class owning method m.
+                                        if child.kind() == "method_index_expression" {
+                                            let table =
+                                                get_node_text(identifiers.first().unwrap(), source_bytes)
+                                                    .to_string();
+                                            register_luau_class(
+                                                &mut class_order,
+                                                &mut class_span,
+                                                &table,
+                                                line,
+                                                end_line,
+                                            );
+                                            class_methods
+                                                .entry(table)
+                                                .or_default()
+                                                .push(name.clone());
+                                        }
                                         funcs.push(FuncDef::function(name, line, end_line));
                                     }
                                     break;
@@ -847,10 +981,11 @@ impl CallGraphLanguageSupport for LuauHandler {
                     }
                 }
                 "variable_declaration" => {
-                    // Handle: local foo = function() end
+                    // Handle: local foo = function() end  AND  local X = Y:extend(...)
                     let line = node.start_position().row as u32 + 1;
                     let end_line = node.end_position().row as u32 + 1;
                     let mut var_names: Vec<String> = Vec::new();
+                    let mut values: Vec<Node> = Vec::new();
                     let mut has_function = false;
 
                     for i in 0..node.child_count() {
@@ -871,11 +1006,12 @@ impl CallGraphLanguageSupport for LuauHandler {
                                             }
                                         }
                                         if subchild.kind() == "expression_list" {
-                                            for k in 0..subchild.child_count() {
-                                                if let Some(expr) = subchild.child(k) {
+                                            for k in 0..subchild.named_child_count() {
+                                                if let Some(expr) = subchild.named_child(k) {
                                                     if expr.kind() == "function_definition" {
                                                         has_function = true;
                                                     }
+                                                    values.push(expr);
                                                 }
                                             }
                                         }
@@ -886,8 +1022,24 @@ impl CallGraphLanguageSupport for LuauHandler {
                     }
 
                     if has_function {
-                        for name in var_names {
-                            funcs.push(FuncDef::function(name, line, end_line));
+                        for name in &var_names {
+                            funcs.push(FuncDef::function(name.clone(), line, end_line));
+                        }
+                    }
+
+                    // `local X = Y:extend(...)` / `Y.extend(Y, ...)` -> class X : Y.
+                    for (idx, name) in var_names.iter().enumerate() {
+                        if let Some(value) = values.get(idx) {
+                            if let Some(base) = luau_extend_base(value, source_bytes) {
+                                register_luau_class(
+                                    &mut class_order,
+                                    &mut class_span,
+                                    name,
+                                    line,
+                                    end_line,
+                                );
+                                class_bases.entry(name.clone()).or_default().push(base);
+                            }
                         }
                     }
                 }
@@ -895,7 +1047,15 @@ impl CallGraphLanguageSupport for LuauHandler {
             }
         }
 
-        Ok((funcs, Vec::new()))
+        let mut classes = Vec::new();
+        for name in class_order {
+            let (line, end_line) = class_span.get(&name).copied().unwrap_or((1, 1));
+            let methods = class_methods.remove(&name).unwrap_or_default();
+            let bases = class_bases.remove(&name).unwrap_or_default();
+            classes.push(ClassDef::new(name, line, end_line, methods, bases));
+        }
+
+        Ok((funcs, classes))
     }
 }
 
@@ -1405,6 +1565,162 @@ end
                 "Expected 2 Connect calls, got: {:?}",
                 test_calls
             );
+        }
+
+        /// BUG 2: a colon method `function a:deep(n)` that shares the bare name
+        /// `deep` with two free `function deep(n)` self-recursive definitions must
+        /// NOT clobber their call lists.
+        ///
+        /// Before the fix, `get_function_name` stripped the `a:` qualifier so
+        /// `a:deep` keyed as bare `deep`, and `calls_by_func.insert` overwrote the
+        /// key: the method (processed last) clobbered both free functions' call
+        /// lists, deleting the real `deep -> deep` self-recursion and leaving only
+        /// a spurious `deep -> a.deep`.
+        ///
+        /// The fix keys the method by its QUALIFIED name (`a.deep`) AND merges
+        /// (never overwrites) same-key call lists, so:
+        ///   - both free `deep` self-recursion calls survive under key `deep`, and
+        ///   - `a:deep` is keyed distinctly under `a.deep`.
+        #[test]
+        fn test_method_name_collision_preserves_free_recursion() {
+            let source = r#"
+function deep(n)
+    return deep(n - 1)
+end
+
+function deep(n)
+    return deep(n - 1)
+end
+
+function a:deep(n)
+    return self:deep(n - 1)
+end
+"#;
+            let calls = extract_calls(source);
+
+            // (b) MERGE: the two free `function deep` self-recursion calls both
+            // survive under the bare `deep` key (an overwrite would drop one or
+            // both).
+            let deep_calls = calls
+                .get("deep")
+                .expect("expected a `deep` key for the free functions");
+            let free_recursions = deep_calls
+                .iter()
+                .filter(|c| c.target == "deep")
+                .count();
+            assert_eq!(
+                free_recursions, 2,
+                "both free `deep` self-recursion calls must survive; got {:?}",
+                deep_calls
+            );
+
+            // (a) QUALIFIED KEY: `a:deep` is keyed distinctly as `a.deep`, so it
+            // does not collide with the free `deep`.
+            let method_calls = calls
+                .get("a.deep")
+                .expect("colon method `a:deep` must be keyed distinctly as `a.deep`");
+            assert!(
+                method_calls.iter().any(|c| c.target.contains("deep")),
+                "`a.deep` must retain its own `self:deep` call; got {:?}",
+                method_calls
+            );
+            // The distinct `a.deep` bucket must not have absorbed the free
+            // functions' bare `deep` self-recursion calls.
+            assert!(
+                !method_calls.iter().any(|c| c.target == "deep"),
+                "`a.deep` bucket must be the method's own calls, not the free \
+                 functions'; got {:?}",
+                method_calls
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // FEATURE-1 d.6: extend() inheritance modeling
+    // -------------------------------------------------------------------------
+
+    mod inheritance_tests {
+        use super::*;
+
+        #[test]
+        fn test_d6_luau_extend_emits_classdef_and_methods() {
+            let handler = LuauHandler::new();
+            let source = r#"
+local Component = require(script.Parent.Component)
+
+local Consumer = Component:extend("Consumer")
+
+function Consumer:render()
+    return nil
+end
+
+function Consumer:doThing()
+    self:setState({})
+end
+"#;
+            let tree = handler.parse_source(source).unwrap();
+            let (_funcs, classes) = handler
+                .extract_definitions(source, Path::new("Consumer.luau"), &tree)
+                .unwrap();
+
+            let consumer = classes
+                .iter()
+                .find(|c| c.name == "Consumer")
+                .expect("Consumer class emitted from the extend() idiom");
+            assert_eq!(
+                consumer.bases,
+                vec!["Component".to_string()],
+                "extend() base recorded so resolve_method_in_bases can climb"
+            );
+            assert!(
+                consumer.methods.contains(&"render".to_string())
+                    && consumer.methods.contains(&"doThing".to_string()),
+                "colon methods registered on the class table: {:?}",
+                consumer.methods
+            );
+        }
+
+        #[test]
+        fn test_d6_luau_dot_extend_form() {
+            // `Y.extend(Y, name)` is the desugared colon form and must also derive.
+            let handler = LuauHandler::new();
+            let source = r#"
+local Sub = Base.extend(Base, "Sub")
+"#;
+            let tree = handler.parse_source(source).unwrap();
+            let (_funcs, classes) = handler
+                .extract_definitions(source, Path::new("Sub.luau"), &tree)
+                .unwrap();
+            let sub = classes
+                .iter()
+                .find(|c| c.name == "Sub")
+                .expect("Sub class from dot-form extend");
+            assert_eq!(sub.bases, vec!["Base".to_string()]);
+        }
+
+        #[test]
+        fn test_d6_luau_self_colon_call_keeps_receiver() {
+            // A `self:setState()` colon call must stay a receiver-bearing Method
+            // call even though `setState` is defined in the same file, so type
+            // resolution can climb self's class to the inherited base method.
+            let source = r#"
+local Base = {}
+function Base:setState(s)
+end
+
+local Sub = Base:extend("Sub")
+function Sub:doThing()
+    self:setState({})
+end
+"#;
+            let calls = extract_calls(source);
+            let do_calls = calls.get("doThing").expect("doThing calls present");
+            let ss = do_calls
+                .iter()
+                .find(|c| c.target == "self:setState")
+                .expect("self:setState kept as a receiver-bearing Method call");
+            assert_eq!(ss.receiver.as_deref(), Some("self"));
+            assert_eq!(ss.call_type, CallType::Method);
         }
     }
 }

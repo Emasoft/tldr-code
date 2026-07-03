@@ -28,7 +28,9 @@ use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
 use super::{CallGraphLanguageSupport, ParseError};
-use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
+use crate::callgraph::cross_file_types::{
+    CallSite, CallType, ClassDef, ClassKind, FuncDef, ImportDef,
+};
 
 /// Syntactic signature of a same-file Kotlin function definition.
 ///
@@ -769,7 +771,22 @@ impl CallGraphLanguageSupport for KotlinHandler {
                             }
                         }
 
-                        classes.push(ClassDef::new(name, line, end_line, methods, bases));
+                        // FEATURE-1 d.2 Fix B completion: an `interface Foo` is a
+                        // `class_declaration` carrying an `interface` keyword token
+                        // (vs `class`). Marking it `ClassKind::Interface` keeps a
+                        // bodiless interface method-signature out of the value-
+                        // receiver definer cardinality (it points at its single
+                        // concrete implementor, not an independent dispatch target).
+                        let is_interface = (0..node.child_count())
+                            .filter_map(|i| node.child(i))
+                            .any(|c| c.kind() == "interface");
+                        let class_def = ClassDef::new(name, line, end_line, methods, bases);
+                        let class_def = if is_interface {
+                            class_def.with_kind(ClassKind::Interface)
+                        } else {
+                            class_def
+                        };
+                        classes.push(class_def);
                     }
                 }
                 "object_declaration" => {
@@ -1383,6 +1400,51 @@ fun caller(j: Job, block: () -> Unit) = runInterruptible(j as CoroutineContext, 
             assert!(handler.supports_extension(".kts"));
             assert!(handler.supports_extension(".KT"));
             assert!(!handler.supports_extension(".java"));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // FEATURE-1 d.6: interface class-kind marking
+    // -------------------------------------------------------------------------
+
+    mod classkind_tests {
+        use super::*;
+
+        #[test]
+        fn test_d6_kotlin_interface_classkind() {
+            let source = r#"
+interface Shape {
+    fun area(): Double
+}
+
+class Circle : Shape {
+    override fun area(): Double { return 0.0 }
+}
+"#;
+            let handler = KotlinHandler::new();
+            let tree = handler.parse_source(source).unwrap();
+            let (_funcs, classes) = handler
+                .extract_definitions(source, Path::new("Shape.kt"), &tree)
+                .unwrap();
+
+            let shape = classes
+                .iter()
+                .find(|c| c.name == "Shape")
+                .expect("Shape interface present");
+            assert_eq!(
+                shape.kind,
+                ClassKind::Interface,
+                "an `interface` declaration must be ClassKind::Interface"
+            );
+
+            let circle = classes
+                .iter()
+                .find(|c| c.name == "Circle")
+                .expect("Circle class present");
+            assert!(
+                !circle.kind.is_declaration_only(),
+                "a concrete class stays a tallied definer"
+            );
         }
     }
 }
