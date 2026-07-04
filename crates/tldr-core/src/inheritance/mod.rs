@@ -208,7 +208,16 @@ pub fn extract_inheritance(
             Language::C => cpp::extract_classes_c(&source, file_path, &parser_pool)?,
             // inheritance-walker-per-lang-v1 (M-039)
             Language::Elixir => elixir::extract_classes(&source, file_path, &parser_pool)?,
-            Language::Lua => lua::extract_classes(&source, file_path, &parser_pool)?,
+            // tldr-additive-fixes (T6a): route `.luau` through the shared
+            // Lua/Luau walker. `lua::extract_classes` already selects the
+            // tree-sitter-luau grammar by extension (see its docs and
+            // `lua::tests::test_luau_extend_inheritance`); without this arm
+            // `.luau` files fell through to `_ => Vec::new()` and returned an
+            // empty hierarchy. Mirrors the `Language::Lua | Language::Luau`
+            // pairing used in ast/extract.rs and ast/extractor.rs.
+            Language::Lua | Language::Luau => {
+                lua::extract_classes(&source, file_path, &parser_pool)?
+            }
             // inheritance-extends-vs-implements-ocaml-v1 (T3): OCaml class /
             // class-type hierarchy (`class … inherit …`).
             Language::Ocaml => ocaml::extract_classes(&source, file_path, &parser_pool)?,
@@ -699,6 +708,68 @@ mod tests {
         assert!(report.nodes.is_empty());
         assert!(report.edges.is_empty());
         assert_eq!(report.count, 0);
+    }
+
+    /// tldr-additive-fixes (T6a): a `.luau` source using metatable-based OOP
+    /// must produce inheritance nodes/edges end-to-end through
+    /// `extract_inheritance`. Before the fix the dispatch had a
+    /// `Language::Lua` arm but NO `Language::Luau` arm, so every `.luau`
+    /// file fell through to `_ => Vec::new()` and returned an empty report
+    /// even though `lua::extract_classes` already recognizes the Luau grammar
+    /// (see `lua::tests::test_luau_extend_inheritance`). Uses the assigned
+    /// `setmetatable({}, { __index = Parent })` idiom so the fixture is
+    /// genuinely metatable-OOP (not the separate Luau `class` keyword, which
+    /// is a distinct grammar gap).
+    #[test]
+    fn test_luau_metatable_inheritance_end_to_end() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            &dir,
+            "Animal.luau",
+            "local Animal = {}\n\
+             Animal.__index = Animal\n\
+             \n\
+             function Animal.new(name: string)\n\
+             \treturn setmetatable({ name = name }, Animal)\n\
+             end\n\
+             \n\
+             local Dog = setmetatable({}, { __index = Animal })\n\
+             Dog.__index = Dog\n",
+        );
+
+        let options = InheritanceOptions::default();
+        let report =
+            extract_inheritance(dir.path(), Some(Language::Luau), &options).unwrap();
+
+        // Non-empty hierarchy: the `.luau` file must contribute nodes/edges.
+        assert!(
+            !report.nodes.is_empty(),
+            "expected non-empty nodes for .luau metatable OOP, got {:?}",
+            report.nodes
+        );
+        assert!(
+            !report.edges.is_empty(),
+            "expected non-empty edges for .luau metatable OOP, got {:?}",
+            report.edges
+        );
+
+        // The `Dog -> Animal` extends edge is present, labelled Luau.
+        assert!(
+            report.nodes.iter().any(|n| n.name == "Dog"),
+            "`Dog` class must be present; got {:?}",
+            report.nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+        );
+        assert!(
+            report.nodes.iter().all(|n| n.language == Language::Luau),
+            "all nodes should be Luau, got {:?}",
+            report.nodes.iter().map(|n| n.language).collect::<Vec<_>>()
+        );
+        let edge = report
+            .edges
+            .iter()
+            .find(|e| e.child == "Dog" && e.parent == "Animal")
+            .expect("Dog should inherit Animal via setmetatable __index");
+        assert_eq!(edge.kind, InheritanceKind::Extends);
     }
 
     /// inheritance-extends-vs-implements-ocaml-v1 (T3): on a no-`--lang`
