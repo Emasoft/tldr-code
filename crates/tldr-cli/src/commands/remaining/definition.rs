@@ -837,6 +837,20 @@ fn resolve_local_scope(
     let mut scanned_root = false;
     while let Some(node) = current {
         if is_scope_node(node.kind(), language) {
+            // T7 (AUDIT-FIX): if the cursor is ON this scope owner's own
+            // name/declarator, it is a DECLARATION site, not a usage — e.g.
+            // `def handler():` queried at `handler`, or
+            // `func (r *Router) allowed(...)` queried at `allowed`. Decline
+            // local resolution so control falls through to Pass 2, which
+            // returns the self-referential declaration location. Without
+            // this guard `scan_scope_for_binding` would walk the body below
+            // and return the FIRST same-named descendant — a local shadow of
+            // the same name — as the "definition". The check is byte-range
+            // (node identity), so it fires only at the declarator and leaves
+            // every usage query (cursor on a use) to hit Pass 1 unchanged.
+            if cursor_on_scope_declarator(node, start_node, language) {
+                return Ok(None);
+            }
             if node.parent().is_none() {
                 scanned_root = true;
             }
@@ -876,6 +890,57 @@ fn resolve_local_scope(
     }
 
     Ok(None)
+}
+
+/// T7 declaration-site guard. Returns true when `cursor` sits on
+/// `scope`'s own name/declarator — i.e. the cursor is a *declaration*
+/// site (`def handler`, `func (r *Router) allowed`), not a *usage*. In
+/// that case [`resolve_local_scope`] must decline so the file-scope pass
+/// returns the self-referential declaration rather than a same-named
+/// local shadow scanned out of the body. The match is by byte-range
+/// containment (node identity), never by text, so it fires only when the
+/// cursor is literally on the declarator.
+fn cursor_on_scope_declarator(scope: Node, cursor: Node, language: Language) -> bool {
+    match scope_name_node(scope, language) {
+        Some(name) => {
+            cursor.start_byte() >= name.start_byte() && cursor.end_byte() <= name.end_byte()
+        }
+        None => false,
+    }
+}
+
+/// The identifier node that NAMES a scope-owning declaration, used by the
+/// T7 declaration-site guard. For the vast majority of languages
+/// tree-sitter exposes this as the `name` field (Python
+/// `function_definition`; Go `function_declaration` / `method_declaration`
+/// — the Go receiver lives in a separate `receiver` field, so `name` is
+/// just the method name; Rust; the JS/TS family; Java; etc.). C / C++
+/// instead nest the name inside a `declarator` chain whose range also
+/// spans the parameter list, so we drill through the declarator to the
+/// innermost name identifier; that keeps the guard from misfiring on a
+/// parameter cursor.
+fn scope_name_node(scope: Node, language: Language) -> Option<Node> {
+    if matches!(language, Language::C | Language::Cpp) && scope.kind() == "function_definition" {
+        return c_declarator_name_node(scope.child_by_field_name("declarator")?);
+    }
+    scope.child_by_field_name("name")
+}
+
+/// Drill a C / C++ `declarator` chain (`pointer_declarator`,
+/// `reference_declarator`, `function_declarator`,
+/// `parenthesized_declarator`, …) down to the innermost identifier-like
+/// node that spells the function name. Returns `None` if no name
+/// identifier is reachable.
+fn c_declarator_name_node(mut decl: Node) -> Option<Node> {
+    loop {
+        match decl.kind() {
+            "identifier" | "field_identifier" | "qualified_identifier" | "destructor_name"
+            | "operator_name" | "operator_cast" => return Some(decl),
+            _ => {
+                decl = decl.child_by_field_name("declarator")?;
+            }
+        }
+    }
 }
 
 /// Build a [`DefinitionResult`] for a local-scope binding hit.
@@ -5796,6 +5861,67 @@ from . import types
         assert_eq!(
             def.line, 2,
             "let counter is on line 2, got {}",
+            def.line
+        );
+    }
+
+    // =========================================================================
+    // T7 (audit fix): `definition` invoked ON a declaration's own name (a
+    // binding site) must resolve to that declaration, NOT to a shadowing
+    // local variable of the same name declared inside its body.
+    //
+    // Repro: Pass 1 (local scope) walked up to the declaration itself as the
+    // first scope-owning ancestor, then scanned its body and returned the
+    // FIRST descendant identifier matching by text — the inner shadow. The
+    // declaration-site guard bails out of Pass 1 when the cursor sits on the
+    // scope owner's own name field, letting Pass 2 (file scope) return the
+    // self-referential declaration location.
+    // =========================================================================
+
+    #[test]
+    fn test_definition_on_decl_name_ignores_body_shadow_python() {
+        // A function whose body declares a local shadowing its own name.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shadow.py");
+        // Line 1: def handler():
+        // Line 2:     handler = 1
+        // Line 3:     return handler
+        fs::write(&file, "def handler():\n    handler = 1\n    return handler\n").unwrap();
+
+        // Cursor ON the declaration name `handler` — column 4 of line 1.
+        let result = find_definition_by_position(&file, 1, 4, None, "python")
+            .expect("declaration-site lookup should succeed");
+        assert_eq!(result.symbol.name, "handler");
+        let def = result.definition.expect("definition location must be Some");
+        assert_eq!(
+            def.line, 1,
+            "cursor on the `def handler` name must resolve to the declaration \
+             (line 1), not the body-local shadow (line 2); got line {}",
+            def.line
+        );
+    }
+
+    #[test]
+    fn test_definition_on_decl_name_ignores_body_shadow_go_method() {
+        // Audit repro shape (router.go:409:17): a method whose body declares a
+        // local shadowing the method's own name.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("router.go");
+        // Line 5: func (r *Router) allowed() bool {
+        // Line 6: \tallowed := false
+        // Line 7: \treturn allowed
+        let source = "package main\n\ntype Router struct{}\n\nfunc (r *Router) allowed() bool {\n\tallowed := false\n\treturn allowed\n}\n";
+        fs::write(&file, source).unwrap();
+
+        // Cursor ON the method name `allowed` — column 17 of line 5.
+        let result = find_definition_by_position(&file, 5, 17, None, "go")
+            .expect("declaration-site lookup should succeed for Go method");
+        assert_eq!(result.symbol.name, "allowed");
+        let def = result.definition.expect("definition location must be Some");
+        assert_eq!(
+            def.line, 5,
+            "cursor on the method name must resolve to the declaration \
+             (line 5), not the body-local shadow (line 6); got line {}",
             def.line
         );
     }
