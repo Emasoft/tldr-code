@@ -4538,7 +4538,14 @@ fn resolve_js_local_definition<'a>(root: Node<'a>, source: &[u8], name: &str) ->
             "function_declaration" | "generator_function_declaration" | "class_declaration"
         ) {
             if let Some(n) = child.child_by_field_name("name") {
-                if n.kind() == "identifier" && node_text(n, source) == name {
+                // Function declarations name their binding with an `identifier`,
+                // but a `class_declaration`'s name field is a `type_identifier`
+                // under the TS/JS grammar. Accept both so a bare class declared
+                // then default-exported (`class Foo {} … export default Foo;`)
+                // resolves through this reverse-binding path.
+                if matches!(n.kind(), "identifier" | "type_identifier")
+                    && node_text(n, source) == name
+                {
                     return Some(child);
                 }
             }
@@ -8440,6 +8447,57 @@ class Calc {
             mul.signature.contains("x: Int"),
             "kotlin: method `mul` signature must be non-empty, got {:?}",
             mul.signature
+        );
+    }
+
+    // --- JS/TS DEFAULT-EXPORTED BARE CLASS ------------------------------------
+    // Bug (T8): a class declared bare then default-exported on a later line
+    // (`class Axios {} … export default Axios;`) surfaced ZERO classes. The
+    // reverse-binding resolver (`resolve_js_local_definition`) guarded the
+    // declaration's `name` field with `kind == "identifier"`, but under the
+    // TS/JS grammar a `class_declaration` name is a `type_identifier` (only
+    // *function* names are `identifier`), so the class branch was dead code.
+    #[test]
+    fn js_default_exported_bare_class_surfaces() {
+        let src = "\
+class Axios {
+  request(config) { return config; }
+}
+
+export default Axios;
+";
+        let info = iface("axios.js", src, Language::JavaScript);
+        let axios = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Axios")
+            .unwrap_or_else(|| {
+                panic!(
+                    "js: default-exported bare `class Axios` must surface; classes={:?}",
+                    info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            axios.kind.as_deref(),
+            Some("class"),
+            "js: `Axios` must surface with kind=class"
+        );
+    }
+
+    #[test]
+    fn ts_default_exported_bare_class_surfaces() {
+        let src = "\
+class Service {
+  run(): void {}
+}
+
+export default Service;
+";
+        let info = iface("service.ts", src, Language::TypeScript);
+        assert!(
+            info.classes.iter().any(|c| c.name == "Service"),
+            "ts: default-exported bare `class Service` must surface; classes={:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
 
