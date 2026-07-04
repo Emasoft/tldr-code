@@ -1647,6 +1647,52 @@ def test_calls():
         );
     }
 
+    /// T9 (audit RB-1) end-to-end: an observation of a CLASS METHOD that is
+    /// genuinely declared in the analyzed FILE must be scoped IN (inferred),
+    /// not silently dropped into `skipped_undefined`. Before the T9 fix,
+    /// method-scoping languages absent from `symbols::is_method_bearing`
+    /// (here Python) never had their class methods bridged into the
+    /// declared-symbol set, so `run_invariants`'s RC4 file-scope filter found
+    /// the method "undefined" and skipped it. The pytest walker records the
+    /// bare method name for `obj.method()` calls, matching the bridged set.
+    #[test]
+    fn t9_declared_class_method_observation_is_scoped_in_not_skipped() {
+        let temp = TempDir::new().unwrap();
+        // Source declares `add` as a CLASS METHOD (not a free function).
+        let (src_path, test_path) = create_test_files(
+            &temp,
+            "class Calc:\n    def add(self, a, b):\n        return a + b\n",
+            r#"
+from src import Calc
+
+def test_add():
+    c = Calc()
+    assert c.add(1, 2) == 3
+    assert c.add(5, 10) == 15
+    assert c.add(0, 0) == 0
+"#,
+        );
+
+        let report = run_invariants(&src_path, &test_path, None, 1).unwrap();
+
+        // The declared method must NOT be scoped out.
+        assert!(
+            !report.summary.skipped_undefined.contains(&"add".to_string()),
+            "declared class method `add` must not be skipped: {:?}",
+            report.summary.skipped_undefined
+        );
+        // And it must appear as an inferred function (observation captured).
+        assert!(
+            report.functions.iter().any(|f| f.function_name == "add"),
+            "declared class method `add` must be observed/inferred: {:?}",
+            report
+                .functions
+                .iter()
+                .map(|f| f.function_name.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn test_invariants_type_inference() {
         let temp = TempDir::new().unwrap();

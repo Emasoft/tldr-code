@@ -14,9 +14,11 @@
 //! [`extract_functions`] / [`extract_methods`] (no regex, no string
 //! heuristics): free functions for every language, plus class/contract members
 //! for the method-bearing languages (C#, Java, Kotlin, Scala, Swift, Ruby,
-//! C++) and Solidity contract/interface/library members. The bridge set is
-//! kept identical to the one `verify` already used so hoisting is
-//! behaviour-preserving for the verify sweep.
+//! C++, and — since T9 / audit RB-1 — PHP, Python, TypeScript, JavaScript,
+//! Rust) and Solidity contract/interface/library members. `verify`,
+//! `invariants`, and `specs --source` all resolve a file's declared symbols
+//! through this one definition, so widening the method bridge here is additive
+//! across every contracts sub-command (see [`is_method_bearing`]).
 //!
 //! # Name-matching semantics (known limitation)
 //!
@@ -41,9 +43,22 @@ use tree_sitter::Tree;
 
 /// Languages whose callable units live (wholly or partly) inside classes /
 /// objects, so the free-function extractor must be bridged with the method
-/// extractor to see their declared members. Mirrors the bridge in the
-/// `verify` sweep and the `health` command's method-aware function count.
-/// Kept identical to the verify list so hoisting is behaviour-preserving.
+/// extractor ([`extract_methods`], `methods_only=true`) to see their declared
+/// members. Mirrors the bridge in the `verify` sweep and the `health`
+/// command's method-aware function count.
+///
+/// T9 (audit RB-1): originally this listed only the languages whose *entire*
+/// callable surface is method-shaped (C#, or convention-heavy OO like Java /
+/// Kotlin / Scala / Swift / Ruby / C++). But every language here that ALSO has
+/// free functions — PHP, Python, TypeScript, JavaScript, Rust — still declares
+/// class/impl methods that `extract_functions` (methods_only=false) skips.
+/// Omitting them left those methods out of a file's declared-symbol set, so
+/// `invariants` / `specs --source` scoped genuine, in-file methods OUT of their
+/// reports (recording them under `skipped_undefined`). Bridging them in is
+/// additive: it can only ADD declared names, never remove any, so the change
+/// only surfaces observations that were previously dropped and leaves the
+/// already-bridged languages untouched. `extract_methods` already has a
+/// working arm for each (see `tldr_core::ast::extractor::extract_methods`).
 fn is_method_bearing(language: Language) -> bool {
     matches!(
         language,
@@ -54,6 +69,11 @@ fn is_method_bearing(language: Language) -> bool {
             | Language::Swift
             | Language::Ruby
             | Language::Cpp
+            | Language::Php
+            | Language::Python
+            | Language::TypeScript
+            | Language::JavaScript
+            | Language::Rust
     )
 }
 
@@ -176,5 +196,41 @@ mod tests {
         fs::write(&p, [0xff, 0xfe, 0x00, 0x80]).unwrap();
         // Invalid UTF-8 -> unknown symbols -> None so callers fall back.
         assert!(defined_symbols_for_file(&p, Language::Python).is_none());
+    }
+
+    // T9 (audit RB-1): class METHODS — not just free/top-level functions —
+    // must enter a file's declared-symbol set for the method-scoping
+    // languages whose members are extracted via `extract_methods`
+    // (methods_only=true). Before this, `is_method_bearing` whitelisted only
+    // C#/Java/Kotlin/Scala/Swift/Ruby/C++, so PHP/Python/TS/JS/Rust class
+    // methods were dropped from the set — which `invariants`/`specs --source`
+    // then scoped OUT of every report (pushed to `skipped_undefined`) even
+    // though the method is genuinely declared in the analyzed file.
+
+    #[test]
+    fn defined_symbol_names_php_class_methods_are_bridged() {
+        // PHP wraps `exponentialDelay` in a class (a `method_declaration`), so
+        // `extract_functions` (methods_only=false) alone returns ZERO names;
+        // the method must be bridged in via `extract_methods`.
+        let src = "<?php\nclass RetryMiddleware {\n    public function exponentialDelay($retries) {\n        return $retries * 2;\n    }\n}\n";
+        let names = defined_symbol_names(src, Language::Php);
+        assert!(
+            names.contains(&"exponentialDelay".to_string()),
+            "PHP class method must be in the declared-symbol set: {names:?}"
+        );
+    }
+
+    #[test]
+    fn defined_symbol_names_python_class_methods_are_bridged() {
+        // Python free functions are already covered by
+        // `defined_symbol_names_python_free_functions`; a class method is only
+        // reached via `extract_functions(methods_only=true)`, so it needs the
+        // method bridge too.
+        let src = "class Calc:\n    def add(self, a, b):\n        return a + b\n";
+        let names = defined_symbol_names(src, Language::Python);
+        assert!(
+            names.contains(&"add".to_string()),
+            "Python class method must be in the declared-symbol set: {names:?}"
+        );
     }
 }
