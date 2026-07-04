@@ -18866,6 +18866,61 @@
     "Sources/OrderedCollections/HashTable/_HashTable+UnsafeHandle.swift"
    ],
    "note": "KNOWN-LIMIT (owner-ack d.6): swift cross-file extension/typealias merge attributes dst_file to typealias-decl file not definition file. Backlog: swift definition-file resolution."
+  },
+  {
+   "repo": "cpp-fmt",
+   "type": "added",
+   "src_file": "test/gtest/gmock-gtest-all.cc",
+   "src_func": "DefaultGlobalTestPartResultReporter::ReportTestPartResult",
+   "dst_func": "UnitTestImpl::current_test_result",
+   "dst_file": [
+    "test/gtest/gmock-gtest-all.cc"
+   ],
+   "note": "d.7-2.1 out-of-line typed-receiver resolution (additive resolver fallback, resolution.rs resolve_cpp_out_of_line_method). Owner-verified correct win: dst is an out-of-line method defined in the same file, reached via a typed receiver; colon-rendered (no relabel), same-module. flips_on_unique_name=0, removed=0."
+  },
+  {
+   "repo": "cpp-fmt",
+   "type": "added",
+   "src_file": "test/gtest/gmock-gtest-all.cc",
+   "src_func": "DefaultPerThreadTestPartResultReporter::ReportTestPartResult",
+   "dst_func": "UnitTestImpl::GetGlobalTestPartResultReporter",
+   "dst_file": [
+    "test/gtest/gmock-gtest-all.cc"
+   ],
+   "note": "d.7-2.1 out-of-line typed-receiver resolution (additive resolver fallback, resolution.rs resolve_cpp_out_of_line_method). Owner-verified correct win: dst is an out-of-line method defined in the same file, reached via a typed receiver; colon-rendered (no relabel), same-module. flips_on_unique_name=0, removed=0."
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "Analysis/src/Simplify.cpp",
+   "src_func": "intersectWithSimpleDiscriminant",
+   "dst_func": "TypeSimplifier::intersectWithSimpleDiscriminant",
+   "dst_file": [
+    "Analysis/src/Simplify.cpp"
+   ],
+   "note": "d.7-2.1 out-of-line typed-receiver resolution (additive resolver fallback, resolution.rs resolve_cpp_out_of_line_method). Owner-verified correct win: dst is an out-of-line method defined in the same file, reached via a typed receiver; colon-rendered (no relabel), same-module. flips_on_unique_name=0, removed=0."
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "Analysis/src/Simplify.cpp",
+   "src_func": "simplifyIntersection",
+   "dst_func": "TypeSimplifier::intersectFromParts",
+   "dst_file": [
+    "Analysis/src/Simplify.cpp"
+   ],
+   "note": "d.7-2.1 out-of-line typed-receiver resolution (additive resolver fallback, resolution.rs resolve_cpp_out_of_line_method). Owner-verified correct win: dst is an out-of-line method defined in the same file, reached via a typed receiver; colon-rendered (no relabel), same-module. flips_on_unique_name=0, removed=0."
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "Analysis/src/Simplify.cpp",
+   "src_func": "simplifyUnion",
+   "dst_func": "TypeSimplifier::union_",
+   "dst_file": [
+    "Analysis/src/Simplify.cpp"
+   ],
+   "note": "d.7-2.1 out-of-line typed-receiver resolution (additive resolver fallback, resolution.rs resolve_cpp_out_of_line_method). Owner-verified correct win: dst is an out-of-line method defined in the same file, reached via a typed receiver; colon-rendered (no relabel), same-module. flips_on_unique_name=0, removed=0."
   }
  ]
 }

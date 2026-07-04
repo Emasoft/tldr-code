@@ -1194,6 +1194,75 @@ pub(crate) fn resolve_method_in_class(
     None
 }
 
+/// FEATURE-1 d.7-2.1 (cpp out-of-line method fallback): resolve a TYPED-receiver
+/// call `Class c; c.method();` to an OUT-OF-LINE C++ method definition
+/// `ReturnType Class::method() { ... }`.
+///
+/// The C++ extractor records an out-of-line definition NOT as a member of its
+/// class but as a bare FREE FUNCTION whose name is the full qualified spelling
+/// `Class::method` (colon-joined — [`CppHandler::get_function_name`] returns the
+/// `qualified_identifier` text, and with no enclosing class the def is emitted as
+/// `FuncDef::function("Class::method")`). Consequently the builder keys it under
+/// `(module, "Class::method")` with `is_method == false` and NO `Class.method`
+/// dot alias, so the normal method resolver ([`resolve_method_in_class`]) — which
+/// keys on the dot form and on the class's AST-extracted `methods` list (which
+/// omits the bodyless in-class `void method();` declaration) — misses and the
+/// `c.method()` edge is dropped.
+///
+/// This is a strictly ADDITIVE, fallback-only READ of the EXISTING func_index.
+/// It is invoked by [`resolve_with_receiver_type`] ONLY AFTER
+/// [`resolve_method_in_class_or_bases`] has already DECLINED, so it can never
+/// re-point or drop an edge that already resolves — it can only turn a decline
+/// into a resolution. It adds nothing to the index, the class `methods` list, or
+/// the class_index, so the untyped fuzzy-match cardinality gates see exactly what
+/// they see today. The resolved target reuses the found free function's identity
+/// verbatim (its file/line and its `is_method`/`class_name`), so the edge renders
+/// under the same bare colon name — no relabeling, no new dot key.
+///
+/// Gated to C++: the `Class::method` bare-free-function key is a cpp extractor
+/// artifact that no other language produces. The lookup is scoped to the receiver
+/// class's OWN module; an out-of-line def in a DIFFERENT module (e.g. a header
+/// declaration in `.h` with the definition in `.cc`) simply MISSES here and the
+/// call still declines — the accepted cross-module limitation, still never-worse.
+///
+/// Same-bare-name collision safety: `class_index` is namespace/file-blind, so a
+/// short class name (`Config`, `Handle`, `Context`) defined out-of-line in two
+/// unrelated modules collapses into one bucket. Selecting the module with the
+/// caller-BLIND, order-dependent [`ClassIndex::get`] could bind the caller's
+/// `mod_a::Config::load()` to an arbitrary `mod_b::Config::load` — a WRONG added
+/// edge. Instead this disambiguates the class against the CALLER's file via the
+/// shared [`pick_disambiguated_class`] ladder (same-file > same-module/sourceset
+/// > visible), and DECLINES (returns `None`) when the bare name cannot be
+/// uniquely tied to the caller's scope. Decline-rather-than-guess is what keeps
+/// the fallback never-worse on collisions.
+fn resolve_cpp_out_of_line_method(
+    class_name: &str,
+    method_name: &str,
+    caller_file: &Path,
+    class_index: &ClassIndex,
+    func_index: &FuncIndex,
+    language: &str,
+) -> Option<ResolvedTarget> {
+    if !language.eq_ignore_ascii_case("cpp") {
+        return None;
+    }
+    // Caller-scope the class selection: pick the class the caller actually means
+    // (same-file/module), and DECLINE on genuine same-name ambiguity rather than
+    // binding an arbitrary order-dependent survivor's module (never-worse).
+    let class_entry =
+        pick_disambiguated_class(class_index.get_all(class_name), caller_file, language)?;
+    let module = path_to_module(&class_entry.file_path, language);
+    let qualified = format!("{}::{}", class_name, method_name);
+    let entry = func_index.get(&module, &qualified)?;
+    Some(ResolvedTarget {
+        file: entry.file_path.clone(),
+        name: qualified,
+        line: Some(entry.line),
+        is_method: entry.is_method,
+        class_name: entry.class_name.clone(),
+    })
+}
+
 /// Resolve a method by traversing base classes via BFS.
 pub(crate) fn resolve_method_in_bases(
     class_name: &str,
@@ -1716,6 +1785,7 @@ pub fn resolve_call_with_receiver_enclosing(
     if let Some(resolved) = resolve_with_receiver_type(
         receiver_type,
         bare_target,
+        current_file,
         class_index,
         func_index,
         language,
@@ -2070,12 +2140,29 @@ fn colon_target_is_lexical_local(entry: &FuncEntry) -> bool {
 fn resolve_with_receiver_type(
     receiver_type: Option<&str>,
     bare_target: &str,
+    caller_file: &Path,
     class_index: &ClassIndex,
     func_index: &FuncIndex,
     language: &str,
 ) -> Option<ResolvedTarget> {
     let type_name = receiver_type?;
     resolve_method_in_class_or_bases(type_name, bare_target, class_index, func_index, language)
+        // FEATURE-1 d.7-2.1: fallback-only — fires ONLY when the normal method
+        // resolution (class + bases) declined, so it can only ADD a cpp
+        // out-of-line-method edge, never re-point or drop one. The `caller_file`
+        // is threaded so the fallback can caller-scope its class selection and
+        // decline on same-bare-name collisions. See
+        // [`resolve_cpp_out_of_line_method`].
+        .or_else(|| {
+            resolve_cpp_out_of_line_method(
+                type_name,
+                bare_target,
+                caller_file,
+                class_index,
+                func_index,
+                language,
+            )
+        })
 }
 
 fn resolve_self_receiver_in_current_file(
@@ -6394,6 +6481,179 @@ mod tests {
             "[cpp] a typed receiver (`buffer`) that lacks `capacity` must DECLINE, \
              not bind an arbitrary unique bare `capacity`; got {result:?}"
         );
+    }
+
+    /// fix-cl-7-v1 d.7-2.1 (out-of-line RESOLVES): the additive fallback twin of
+    /// [`test_cpp_typed_miss_on_unique_name_declines`]. A cpp value receiver `Foo
+    /// f` whose method `bar` is DEFINED OUT-OF-LINE (`void Foo::bar() {}`) is
+    /// recorded by the extractor as a bare FREE FUNCTION keyed `Foo::bar` (colon)
+    /// in Foo's own module. The normal method resolver misses (the `Foo.bar` dot
+    /// key is absent and the AST `methods` list omits the bodyless in-class
+    /// declaration), so the typed-receiver fallback binds that real `Foo::bar`
+    /// entry — rendered under its EXISTING bare colon name, reusing the found
+    /// free-function identity (`is_method == false`, `class_name == None`), never
+    /// a `Foo.bar` dot key. Contrast the decline test: there the only `capacity`
+    /// entry is keyed `capacity` (not `buffer::capacity`), so the same fallback
+    /// misses and the call still declines — the fallback resolves ONLY when a
+    /// real `Class::method` def exists.
+    #[test]
+    fn test_cpp_typed_out_of_line_resolves() {
+        let language = "cpp";
+        let caller = "widget.cpp";
+        let module = path_to_module(Path::new(caller), language);
+
+        let mut func_index = FuncIndex::new();
+        // The out-of-line def exactly as the cpp extractor records it.
+        func_index.insert(
+            &module,
+            "Foo::bar",
+            FuncEntry::function(PathBuf::from(caller), 5, 6),
+        );
+
+        // `Foo` is known; its bodyless in-class `void bar();` is a declaration,
+        // NOT a `function_definition`, so `bar` is not in its `methods` list.
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Foo",
+            ClassEntry::new(PathBuf::from(caller), 1, 3, vec![], vec![]),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let result = resolve_call_with_receiver!(
+            "bar",
+            "f",
+            Some("Foo"),
+            &CallType::Method,
+            &import_map,
+            &module_imports,
+            &func_index,
+            &class_index,
+            &mut reexport_tracer,
+            Path::new(caller),
+            Path::new("."),
+            language,
+        );
+
+        let target = result
+            .expect("[cpp] typed `f.bar()` must resolve to the out-of-line `Foo::bar`");
+        assert_eq!(
+            target.qualified_name(),
+            "Foo::bar",
+            "must render under the existing bare colon name, not a dot key"
+        );
+        assert_eq!(target.file, PathBuf::from(caller));
+        assert!(
+            !target.is_method,
+            "reuses the found bare free-function identity (is_method == false)"
+        );
+    }
+
+    /// fix-cl-7-v1 d.7-2.1 (same-name COLLISION, caller-scoped): two UNRELATED
+    /// classes share the bare name `Config`, each with an out-of-line
+    /// `Config::load` in its OWN file/module. `class_index` is namespace-blind, so
+    /// both collapse into one `Config` bucket. The out-of-line fallback must
+    /// caller-SCOPE its class pick (via [`pick_disambiguated_class`]): a caller in
+    /// `a.cpp` (meaning a.cpp's `Config`) resolves to a.cpp's `Config::load`, and
+    /// a caller in `b.cpp` resolves to b.cpp's — NEVER the colliding other
+    /// module's def. Binding to the wrong module (what the caller-blind
+    /// `ClassIndex::get` did) is a wrong ADDED edge / never-worse violation. `b` is
+    /// inserted FIRST so the caller-blind `get` would return it, proving the a.cpp
+    /// assertion goes RED without caller scoping.
+    #[test]
+    fn test_cpp_out_of_line_same_name_collision_caller_scoped() {
+        let language = "cpp";
+        let a_file = "a.cpp";
+        let b_file = "b.cpp";
+        let a_mod = path_to_module(Path::new(a_file), language);
+        let b_mod = path_to_module(Path::new(b_file), language);
+
+        let mut func_index = FuncIndex::new();
+        // Each module's own out-of-line `Config::load`, keyed exactly as the cpp
+        // extractor records it (bare free function under the qualified colon name).
+        func_index.insert(
+            &a_mod,
+            "Config::load",
+            FuncEntry::function(PathBuf::from(a_file), 10, 11),
+        );
+        func_index.insert(
+            &b_mod,
+            "Config::load",
+            FuncEntry::function(PathBuf::from(b_file), 20, 21),
+        );
+
+        // Both `Config` classes collapse into one bucket. Insert b FIRST so the
+        // caller-blind `ClassIndex::get` (the pre-fix pick) would return b's entry.
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            "Config",
+            ClassEntry::new(PathBuf::from(b_file), 1, 3, vec![], vec![]),
+        );
+        class_index.insert(
+            "Config",
+            ClassEntry::new(PathBuf::from(a_file), 1, 3, vec![], vec![]),
+        );
+
+        let import_map: ImportMap = HashMap::new();
+        let module_imports: ModuleImports = HashMap::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), language);
+
+        // Caller scoped to a.cpp -> must resolve to a.cpp's Config::load, NEVER
+        // b.cpp's (the wrong-bind the caller-blind `get` would produce).
+        {
+            let mut reexport_tracer = ReExportTracer::new(&module_index);
+            let result = resolve_call_with_receiver!(
+                "load",
+                "c",
+                Some("Config"),
+                &CallType::Method,
+                &import_map,
+                &module_imports,
+                &func_index,
+                &class_index,
+                &mut reexport_tracer,
+                Path::new(a_file),
+                Path::new("."),
+                language,
+            );
+            let target = result
+                .expect("[cpp] a.cpp caller must resolve its OWN Config::load");
+            assert_eq!(
+                target.file,
+                PathBuf::from(a_file),
+                "must bind the CALLER's module Config::load, never the colliding b.cpp one"
+            );
+            assert_eq!(target.qualified_name(), "Config::load");
+        }
+
+        // Caller scoped to b.cpp -> symmetric: must resolve to b.cpp's Config::load.
+        {
+            let mut reexport_tracer = ReExportTracer::new(&module_index);
+            let result = resolve_call_with_receiver!(
+                "load",
+                "c",
+                Some("Config"),
+                &CallType::Method,
+                &import_map,
+                &module_imports,
+                &func_index,
+                &class_index,
+                &mut reexport_tracer,
+                Path::new(b_file),
+                Path::new("."),
+                language,
+            );
+            let target = result
+                .expect("[cpp] b.cpp caller must resolve its OWN Config::load");
+            assert_eq!(
+                target.file,
+                PathBuf::from(b_file),
+                "symmetric caller scoping: b.cpp caller binds b.cpp's Config::load"
+            );
+        }
     }
 
     /// A cpp value receiver of a KNOWN type that lacks the method must decline
