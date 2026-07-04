@@ -29,9 +29,13 @@
 //!    to run), the command previously emitted the advisory to stderr and
 //!    exited with code 60/61, leaving stdout empty. JSON consumers
 //!    choked. The fix emits a valid empty `DiagnosticsReport` (or SARIF
-//!    document) on stdout BEFORE the stderr advisory, while preserving
-//!    exit codes 60/61 so existing skip-on-no-tools test gates still
-//!    distinguish "no tools" from a real diagnostics run.
+//!    document) on stdout BEFORE the stderr advisory. T6c (VAL-T6c) later
+//!    refined the exit code: 61 (all tools failed) is unchanged, but the
+//!    former blanket 60 now splits into 60 (tools KNOWN for the language
+//!    but none installed — actionable) vs 0 (no integration exists at all,
+//!    e.g. Luau — an N/A state that must not fail `set -e` CI). Skip-on-
+//!    no-tools gates keying off 60 keep working for the known-but-absent
+//!    case.
 //!
 //! 4. **BUG-SWIFT-2 (LOW)** `tldr change-impact` writes usage error to
 //!    stdout — when given a file instead of a directory, the error
@@ -276,8 +280,18 @@ fn agg12_5_similar_cold_cache_succeeds() {
 
 /// Real-repo: `tldr diagnostics` against a Luau corpus on a host that has
 /// no Luau diagnostic tooling installed must emit a valid (empty)
-/// `DiagnosticsReport` JSON document on stdout. Exit code 60 is preserved
-/// so callers can distinguish "no tools" from a clean run.
+/// `DiagnosticsReport` JSON document on stdout.
+///
+/// T6c (VAL-T6c) refined the S6-R36 exit-code contract that BUG-AGG12-6
+/// originally left as a single `exit(60)`: the two states it conflated are
+/// now distinct. Luau has NO diagnostic integration at all
+/// (`tools_for_language(Luau)` is empty), so this is an "N/A" state — there
+/// is nothing to run, not an analysis failure — and the command exits **0**
+/// so a `set -e` CI harness does not fail on an unsupported language. Exit
+/// **60** is now reserved for the actionable case where tldr KNOWS tools for
+/// the language but none are installed. The valid empty JSON envelope on
+/// stdout + the stderr advisory (both preserved below) describe the state
+/// in-band, and an empty `tools_run` distinguishes it from a clean run.
 #[test]
 fn agg12_6_diagnostics_no_tools_emits_valid_json() {
     if !require_repo("luau-luau") {
@@ -314,7 +328,8 @@ fn agg12_6_diagnostics_no_tools_emits_valid_json() {
         "no-tools diagnostics must be empty array"
     );
 
-    // Stderr MUST carry the advisory; exit code MUST stay 60.
+    // Stderr MUST carry the advisory; exit code is 0 for a language with NO
+    // diagnostic integration (T6c: N/A, not an analysis failure).
     let stderr_str = String::from_utf8_lossy(&stderr);
     assert!(
         stderr_str.contains("No diagnostic tools available"),
@@ -323,8 +338,10 @@ fn agg12_6_diagnostics_no_tools_emits_valid_json() {
     );
     assert_eq!(
         code,
-        Some(60),
-        "exit code 60 preserved for no-tools (S6-R36 contract)"
+        Some(0),
+        "T6c (VAL-T6c): Luau has NO diagnostic integration, so this is an N/A \
+         state and must exit 0 (not 60). Exit 60 is reserved for languages \
+         whose tools tldr knows but are not installed."
     );
 }
 

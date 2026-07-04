@@ -10,9 +10,14 @@
 //! - Multiple output formats (JSON, text, SARIF, GitHub Actions)
 //!
 //! # Exit Codes (documented in --help, S6-R52 mitigation)
-//! - 0: Success (no errors, or only warnings without --strict)
+//! - 0: Success (no errors, or only warnings without --strict). Also used
+//!      when tldr has NO diagnostic integration for the language at all
+//!      (e.g. Luau): there is simply nothing to run — an "N/A" state, not
+//!      an analysis failure — so a `set -e` CI harness does not treat an
+//!      unsupported language as a hard error (T6c / VAL-T6c).
 //! - 1: Errors found (or warnings with --strict)
-//! - 60: No diagnostic tools available
+//! - 60: Diagnostic tools exist for the language but none are installed
+//!       (or none survived --tools / --no-typecheck / --no-lint filtering)
 //! - 61: All tools failed to run
 
 use anyhow::{anyhow, Result};
@@ -35,9 +40,10 @@ use crate::output::{format_diagnostics_text, OutputFormat, OutputWriter};
 ///
 /// # Exit Codes
 ///
-/// - 0: Success (no errors, or only warnings without --strict)
+/// - 0: Success (no errors, or only warnings without --strict); also the
+///      "N/A" code when tldr has no integration for the language (T6c)
 /// - 1: Errors found (or warnings with --strict)
-/// - 60: No diagnostic tools available for language
+/// - 60: Diagnostic tools exist for the language but none are installed/selected
 /// - 61: All tools failed to run
 #[derive(Debug, Args)]
 pub struct DiagnosticsArgs {
@@ -85,7 +91,14 @@ pub struct DiagnosticsArgs {
     pub max_annotations: usize,
 
     // === Execution ===
-    /// Timeout per tool in seconds
+    /// Overall timeout budget per tool in seconds.
+    ///
+    /// T10 (VAL-T10): the external tool itself is given a slightly SHORTER
+    /// budget (this value minus a small margin — see `tool_timeout_budget`
+    /// in the runner) so that a slow tool degrades to a timed-out ToolResult
+    /// and tldr can still parse, emit its report, and exit BEFORE an outer
+    /// wall (e.g. a CI `timeout 60 tldr ...` wrapper) SIGKILLs the whole
+    /// process with exit 124.
     #[arg(long, default_value = "60")]
     pub timeout: u64,
 
@@ -217,12 +230,31 @@ impl DiagnosticsArgs {
             // fix-C5-5 (v0.5.0 AUDIT-FIX): emit a complete, non-dangling
             // advisory (see `build_no_tools_advisory`).
             eprint!("{}", build_no_tools_advisory(language));
-            // Preserve exit code 60 so existing skip-on-no-tools test gates
-            // (e.g. high_bundle_progress_determinism_coverage_v1) continue to
-            // distinguish "no tools" from a real diagnostics run that found
-            // nothing. The new behavior — valid JSON on stdout — is purely
-            // additive: JSON consumers no longer choke on 0-byte stdout.
-            std::process::exit(60);
+            // T6c (VAL-T6c): the empty `tools` list conflates two distinct
+            // states that a `set -e` CI harness could not previously tell
+            // apart (both exited 60):
+            //
+            //   (A) tldr HAS diagnostic integration for this language but no
+            //       tool is installed (or none survived --tools/--no-*):
+            //       actionable — exit 60 so callers can prompt an install.
+            //       This preserves the S6-R36 contract and keeps existing
+            //       skip-on-no-tools gates (e.g.
+            //       high_bundle_progress_determinism_coverage_v1) working.
+            //
+            //   (B) tldr has NO integration for this language at all (e.g.
+            //       Luau): there is nothing to run — an "N/A" state, not an
+            //       analysis failure. Exit 0 so `set -e` harnesses do not
+            //       fail on an unsupported language. The empty (but
+            //       well-formed) report on stdout plus the stderr advisory
+            //       already describe the state in-band, and `tools_run`
+            //       being empty distinguishes it from a clean run that DID
+            //       execute tools.
+            //
+            // Emitting valid JSON on stdout remains additive in both cases.
+            match no_tools_exit_code(language) {
+                0 => return Ok(()),
+                code => std::process::exit(code),
+            }
         }
 
         writer.progress(&format!(
@@ -386,6 +418,35 @@ fn build_no_tools_advisory(language: Language) -> String {
             ));
         }
         msg
+    }
+}
+
+/// T6c (VAL-T6c): classify the terminal exit code for the "no tools to run"
+/// branch, splitting the two states that were previously conflated under a
+/// single `exit(60)`.
+///
+/// - Returns `0` when tldr has NO diagnostic integration for `language`
+///   (`tools_for_language` is empty — e.g. Luau): nothing can run, so this
+///   is an "N/A" state, not an analysis failure. Exit 0 keeps `set -e` CI
+///   harnesses from failing on an unsupported language.
+/// - Returns `60` when tldr DOES know tools for the language but none are
+///   installed (or none survived `--tools` / `--no-typecheck` / `--no-lint`
+///   filtering): actionable, so callers/CI can prompt an install. This is
+///   the state the S6-R36 exit-60 contract was designed for.
+fn no_tools_exit_code(language: Language) -> i32 {
+    if tools_for_language(language).is_empty() {
+        // Case B — tldr has NO integration for this language: nothing can
+        // run, so this is an "N/A" state, not an analysis failure. Exit 0
+        // keeps `set -e` CI harnesses from failing on an unsupported
+        // language; the empty (but well-formed) report on stdout and the
+        // stderr advisory describe the state in-band, and an empty
+        // `tools_run` distinguishes it from a clean run that DID execute.
+        0
+    } else {
+        // Case A — tldr knows tools for the language but none are installed
+        // (or none survived `--tools` / `--no-typecheck` / `--no-lint`
+        // filtering): actionable, so preserve the S6-R36 exit-60 contract.
+        60
     }
 }
 
@@ -821,18 +882,23 @@ mod tests {
     // fix-C5-5 (v0.5.0 AUDIT-FIX): the no-tools advisory must not dangle.
     // =====================================================================
 
-    /// RED→GREEN: for a language with NO tool integration (OCaml), the
+    /// RED→GREEN: for a language with NO tool integration (Luau), the
     /// advisory must be a complete sentence — it must NOT end with the
     /// dangling "Install one of:" promise followed by nothing.
+    ///
+    /// NOTE (T6b): this test used to target OCaml, but T6b adds an OCaml
+    /// diagnostics integration (`dune build @check`), so OCaml is no longer
+    /// a "no integration" language. Luau still has none, so it is the
+    /// correct fixture for the genuinely-unsupported path.
     #[test]
     fn test_no_tools_advisory_not_dangling_for_unsupported_language() {
-        // Precondition: OCaml genuinely has no tool config.
+        // Precondition: Luau genuinely has no tool config.
         assert!(
-            tools_for_language(Language::Ocaml).is_empty(),
-            "test precondition: OCaml must have no diagnostic tool config"
+            tools_for_language(Language::Luau).is_empty(),
+            "test precondition: Luau must have no diagnostic tool config"
         );
 
-        let msg = build_no_tools_advisory(Language::Ocaml);
+        let msg = build_no_tools_advisory(Language::Luau);
 
         // Contract pinned by hygiene_and_crash_fixes_v1: the leading phrase
         // must be present.
@@ -878,6 +944,41 @@ mod tests {
         assert!(
             msg.lines().filter(|l| l.trim_start().starts_with("- ")).count() >= 1,
             "Python advisory must list at least one tool: {msg:?}"
+        );
+    }
+
+    // =====================================================================
+    // T6c (VAL-T6c): the "no tools to run" branch must return DISTINCT exit
+    // codes for "no integration exists" vs "known but uninstalled".
+    // =====================================================================
+
+    /// RED→GREEN: a language with NO integration (Luau) yields the "N/A"
+    /// code 0 (not an analysis error), while a language that HAS integration
+    /// but no installed tool still yields the actionable code 60.
+    #[test]
+    fn test_no_tools_exit_code_splits_states() {
+        // Case B — no integration at all: N/A, exit 0 so `set -e` CI does
+        // not fail on an unsupported language.
+        assert!(
+            tools_for_language(Language::Luau).is_empty(),
+            "precondition: Luau must have no diagnostic tool config"
+        );
+        assert_eq!(
+            no_tools_exit_code(Language::Luau),
+            0,
+            "a language with no diagnostic integration must exit 0 (N/A)"
+        );
+
+        // Case A — integration exists (Python), tool merely absent: exit 60,
+        // reserved for the actionable install-a-tool state (S6-R36).
+        assert!(
+            !tools_for_language(Language::Python).is_empty(),
+            "precondition: Python must have diagnostic tool configs"
+        );
+        assert_eq!(
+            no_tools_exit_code(Language::Python),
+            60,
+            "a language with known-but-uninstalled tools must stay at exit 60"
         );
     }
 }

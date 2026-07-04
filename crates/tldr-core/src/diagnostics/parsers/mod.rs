@@ -55,6 +55,12 @@
 //! ## PHP
 //! - `php -l`: Syntax checker with text output
 //! - `phpstan`: Static analysis with JSON output (`--error-format=json`)
+//!
+//! ## OCaml
+//! - `dune build @check` / `ocamlc`: Compiler with multi-line block output
+//!
+//! ## Solidity
+//! - `solhint`: Linter with flattened JSON output (`-f json`)
 
 mod cargo;
 pub mod clang;
@@ -65,11 +71,13 @@ mod go;
 pub mod java;
 pub mod kotlin;
 pub mod lua;
+pub mod ocaml;
 pub mod php;
 mod pyright;
 pub mod ruby;
 mod ruff;
 pub mod scala;
+pub mod solidity;
 pub mod swift;
 mod tsc;
 
@@ -82,11 +90,13 @@ pub use go::{parse_go_vet_output, parse_golangci_lint_output};
 pub use java::{parse_checkstyle_output, parse_javac_output};
 pub use kotlin::{parse_detekt_output, parse_kotlinc_output};
 pub use lua::parse_luacheck_output;
+pub use ocaml::parse_ocaml_output;
 pub use php::{parse_php_lint_output, parse_phpstan_output};
 pub use pyright::parse_pyright_output;
 pub use ruby::parse_rubocop_output;
 pub use ruff::parse_ruff_output;
 pub use scala::parse_scalac_output;
+pub use solidity::parse_solhint_output;
 pub use swift::{parse_swiftc_output, parse_swiftlint_output};
 pub use tsc::{parse_tsc_text, tsc_output_regex};
 

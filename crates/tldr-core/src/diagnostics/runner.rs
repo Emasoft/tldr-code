@@ -286,6 +286,25 @@ pub fn tools_for_language(lang: Language) -> Vec<ToolConfig> {
                 is_linter: true,
             },
         ],
+        // T6b (VAL-T6b): `dune build @check` runs the OCaml type-checker
+        // without a full build; dune forwards the compiler's `File "…"`
+        // block diagnostics (parsed by `parse_ocaml_output`).
+        Language::Ocaml => vec![ToolConfig {
+            name: "dune build",
+            binary: "dune",
+            args: vec!["build".to_string(), "@check".to_string()],
+            is_type_checker: true,
+            is_linter: false,
+        }],
+        // T6b (VAL-T6b): solhint is the de-facto Solidity linter; `-f json`
+        // yields the flattened array parsed by `parse_solhint_output`.
+        Language::Solidity => vec![ToolConfig {
+            name: "solhint",
+            binary: "solhint",
+            args: vec!["-f".to_string(), "json".to_string()],
+            is_type_checker: false,
+            is_linter: true,
+        }],
         _ => vec![],
     }
 }
@@ -579,7 +598,7 @@ fn join_drainer(handle: Option<std::thread::JoinHandle<String>>) -> String {
 fn parse_tool_output(
     tool_name: &str,
     stdout: &str,
-    _stderr: &str,
+    stderr: &str,
 ) -> Result<Vec<Diagnostic>, TldrError> {
     match tool_name {
         "pyright" => parse_pyright_output(stdout),
@@ -605,6 +624,19 @@ fn parse_tool_output(
         "rubocop" => parse_rubocop_output(stdout),
         "php" => parse_php_lint_output(stdout),
         "phpstan" => parse_phpstan_output(stdout),
+        // T6b (VAL-T6b): OCaml/dune write compiler diagnostics to stderr,
+        // so feed the block parser both streams (whichever carries them).
+        "dune build" => {
+            let combined = if stderr.trim().is_empty() {
+                stdout.to_string()
+            } else if stdout.trim().is_empty() {
+                stderr.to_string()
+            } else {
+                format!("{stdout}\n{stderr}")
+            };
+            parse_ocaml_output(&combined)
+        }
+        "solhint" => parse_solhint_output(stdout),
         _ => Err(TldrError::ParseError {
             file: std::path::PathBuf::from(format!("<{}-output>", tool_name)),
             line: None,
@@ -613,12 +645,36 @@ fn parse_tool_output(
     }
 }
 
+/// T10 (VAL-T10): derive the per-tool timeout budget from the overall wall.
+///
+/// The diagnostics wall (`--timeout`, and commonly an outer CI
+/// `timeout N tldr …` wrapper set to the same N) has to cover BOTH the
+/// external tool AND tldr's own post-tool work (parse, dedupe, summary,
+/// emit). If the compiler is handed the full wall (zero margin), a slow run
+/// on a large repo (e.g. kotlin-coroutines, 1082 files) is still executing
+/// when the outer wall SIGKILLs the whole process → exit 124.
+///
+/// Reserving a margin under the wall means a slow tool is killed FIRST,
+/// degrades to a timed-out `ToolResult` (Partial), and tldr still has
+/// headroom to emit its report and exit cleanly. The margin is ~10% of the
+/// wall, clamped to `[1s, 15s]`; the tool budget never drops below 1s so
+/// small `--timeout` values still let a tool start. A wall of 0/1s is passed
+/// through unchanged (degenerate, nothing to reserve).
+fn tool_timeout_secs(wall_secs: u64) -> u64 {
+    if wall_secs <= 1 {
+        return wall_secs;
+    }
+    let margin = (wall_secs / 10).clamp(1, 15);
+    wall_secs.saturating_sub(margin).max(1)
+}
+
 /// Run multiple tools in parallel (or sequentially on single-core systems).
 ///
 /// # Arguments
 /// * `tools` - The tools to run
 /// * `path` - The path to analyze
-/// * `timeout_secs` - Timeout per tool in seconds
+/// * `timeout_secs` - Overall wall budget in seconds (the external tool is
+///   given a shorter budget under a margin — see [`tool_timeout_secs`])
 ///
 /// # Returns
 /// A DiagnosticsReport with results from all tools.
@@ -638,6 +694,24 @@ pub fn run_tools_parallel(
         });
     }
 
+    // T10 (VAL-T10): give the external tool a budget with a margin under the
+    // overall wall so a slow compiler degrades to a Partial result instead of
+    // the whole command being SIGKILLed by an outer wall (exit 124).
+    let tool_timeout = tool_timeout_secs(timeout_secs);
+
+    // T10 (VAL-T10): `count_diagnostic_files` used to run as a SECOND full-tree
+    // walk AFTER every tool returned — pure post-tool latency that, on a large
+    // repo, pushed the total past the outer wall. The external tools already
+    // traverse the tree, so run the `files_analyzed` count CONCURRENTLY with
+    // tool execution: it overlaps the (much longer) tool run and adds ~0 to the
+    // post-tool critical path. The computed value is byte-identical to the old
+    // serial count — only its scheduling changed.
+    let count_handle = {
+        let path = path.to_path_buf();
+        let tools = tools.to_vec();
+        thread::spawn(move || count_diagnostic_files(&path, &tools))
+    };
+
     // Check core count - run sequentially if single core
     let num_cpus = thread::available_parallelism()
         .map(|n| n.get())
@@ -649,7 +723,7 @@ pub fn run_tools_parallel(
     if num_cpus <= 1 || tools.len() == 1 {
         // Sequential execution
         for tool in tools {
-            let (result, diags) = run_tool(tool, path, timeout_secs);
+            let (result, diags) = run_tool(tool, path, tool_timeout);
             all_results.push(result);
             all_diagnostics.extend(diags);
         }
@@ -666,7 +740,7 @@ pub fn run_tools_parallel(
                 let path = path.clone();
 
                 thread::spawn(move || {
-                    let (result, diags) = run_tool(&tool, &path, timeout_secs);
+                    let (result, diags) = run_tool(&tool, &path, tool_timeout);
                     let _ = tx.send((result, diags));
                 })
             })
@@ -691,15 +765,14 @@ pub fn run_tools_parallel(
     let summary = crate::diagnostics::compute_summary(&all_diagnostics);
 
     // high-bundle-progress-determinism-coverage-v1 (N4): properly count
-    // source files in `path`. Previously this was a hard-coded `1`, so a
-    // directory of 83 Python files reported `files_analyzed: 1`, which
-    // made the field useless for downstream tooling and dashboards.
-    //
-    // Determine the language from the first tool's expected extensions —
-    // diagnostic tools are language-specific, so all `tools` here share a
-    // language. Falling back to a count of all files in the path keeps the
-    // value useful when the language list is empty.
-    let files_analyzed = count_diagnostic_files(path, tools);
+    // source files in `path` (previously a hard-coded `1`). T10 (VAL-T10)
+    // moved this walk onto the concurrent `count_handle` above so it no longer
+    // adds serial post-tool latency; join it here (it has almost always
+    // finished before the tools). If the count thread panicked, fall back to a
+    // direct count so `files_analyzed` stays accurate.
+    let files_analyzed = count_handle
+        .join()
+        .unwrap_or_else(|_| count_diagnostic_files(path, tools));
 
     Ok(DiagnosticsReport {
         diagnostics: all_diagnostics,
@@ -786,7 +859,8 @@ fn language_for_tool_binary(binary: &str) -> Option<Language> {
         "scalac" | "scalafmt" | "scalafix" => Some(Language::Scala),
         "luacheck" | "selene" => Some(Language::Lua),
         "credo" | "dialyxir" => Some(Language::Elixir),
-        "ocamlc" | "dune" => Some(Language::Ocaml),
+        "ocamlc" | "dune" | "ocamlfind" => Some(Language::Ocaml),
+        "solhint" => Some(Language::Solidity),
         _ => None,
     }
 }
@@ -815,6 +889,10 @@ pub fn get_install_suggestion(tool_name: &str) -> &'static str {
         "rubocop" => "gem install rubocop",
         "php" => "Install PHP: https://www.php.net/downloads",
         "phpstan" => "composer require --dev phpstan/phpstan",
+        // T6b (VAL-T6b): keyed by both the ToolConfig `name` ("dune build")
+        // and the bare binary so either lookup path resolves.
+        "dune" | "dune build" => "opam install dune",
+        "solhint" => "npm install -g solhint",
         _ => "Check tool documentation",
     }
 }
@@ -953,6 +1031,57 @@ mod tests {
         let tools = tools_for_language(Language::Php);
         assert!(tools.iter().any(|t| t.name == "php"));
         assert!(tools.iter().any(|t| t.name == "phpstan"));
+    }
+
+    // T6b (VAL-T6b): OCaml + Solidity now have diagnostic integrations, so
+    // `tools_for_language` must be non-empty for them. This is also what
+    // flips them out of the T6c "no integration → exit 0" branch into the
+    // "known-but-uninstalled → exit 60" branch when the tool is absent.
+    #[test]
+    fn test_tools_for_ocaml() {
+        let tools = tools_for_language(Language::Ocaml);
+        assert!(!tools.is_empty(), "OCaml must have a diagnostic tool");
+        assert!(tools.iter().any(|t| t.name == "dune build"));
+        assert!(tools.iter().any(|t| t.binary == "dune" && t.is_type_checker));
+    }
+
+    #[test]
+    fn test_tools_for_solidity() {
+        let tools = tools_for_language(Language::Solidity);
+        assert!(!tools.is_empty(), "Solidity must have a diagnostic tool");
+        assert!(tools.iter().any(|t| t.name == "solhint" && t.is_linter));
+    }
+
+    #[test]
+    fn test_install_suggestions_ocaml_solidity() {
+        assert!(get_install_suggestion("dune").contains("dune"));
+        assert!(get_install_suggestion("dune build").contains("dune"));
+        assert!(get_install_suggestion("solhint").contains("solhint"));
+    }
+
+    // T10 (VAL-T10): the external tool must get a budget strictly under the
+    // overall wall so a slow compiler is killed first (→ Partial) instead of
+    // the whole command being SIGKILLed by an outer wall (exit 124).
+    #[test]
+    fn test_tool_timeout_reserves_margin() {
+        // Typical wall: 10% margin, so the tool gets less than the full wall.
+        assert!(tool_timeout_secs(60) < 60, "60s wall must reserve a margin");
+        assert_eq!(tool_timeout_secs(60), 54); // 60 - clamp(6, 1, 15)
+        assert_eq!(tool_timeout_secs(200), 185); // 200 - clamp(20 -> 15)
+        assert_eq!(tool_timeout_secs(10), 9); // 10 - clamp(1, 1, 15)
+
+        // Small walls: margin floors at 1s; tool budget never below 1s.
+        assert_eq!(tool_timeout_secs(2), 1);
+        // Degenerate walls pass through unchanged (nothing to reserve).
+        assert_eq!(tool_timeout_secs(1), 1);
+        assert_eq!(tool_timeout_secs(0), 0);
+
+        // Invariant: budget stays within (0, wall] and never underflows.
+        for wall in [1u64, 2, 5, 10, 30, 60, 120, 600] {
+            let t = tool_timeout_secs(wall);
+            assert!(t >= 1, "budget must stay >= 1 for wall {wall}");
+            assert!(t <= wall, "budget must not exceed wall {wall}");
+        }
     }
 
     #[test]
