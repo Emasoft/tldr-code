@@ -555,17 +555,26 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
                     // above; only Internal resolution is rerouted.
                     if language == Language::CSharp {
                         // handled by csharp_symbols.resolve_file below
-                    } else if let Some(target_path) =
-                        resolve_import(&import, &root, file_path, &module_index, language)
-                    {
-                        let target_relative = make_relative_path(&target_path, &root);
+                    } else {
+                        let targets =
+                            resolve_import(&import, &root, file_path, &module_index, language);
+                        if targets.is_empty() {
+                            warnings.push(format!(
+                                "Internal import '{}' in {} resolved to no files",
+                                import.module,
+                                file_path.display()
+                            ));
+                        }
+                        for target_path in targets {
+                            let target_relative = make_relative_path(&target_path, &root);
 
-                        // Skip self-imports
-                        if target_relative != relative_path {
-                            // Deduplicate within file
-                            if !file_internal_deps.contains(&target_relative) {
-                                file_internal_deps.push(target_relative);
-                                total_internal_deps += 1;
+                            // Skip self-imports
+                            if target_relative != relative_path {
+                                // Deduplicate within file
+                                if !file_internal_deps.contains(&target_relative) {
+                                    file_internal_deps.push(target_relative);
+                                    total_internal_deps += 1;
+                                }
                             }
                         }
                     }
@@ -1273,7 +1282,13 @@ fn index_module_for_language(
         Language::C | Language::Cpp => index_c_cpp_module(index, file_path, relative),
         Language::Ruby => index_ruby_module(index, file_path, relative),
         Language::CSharp => index_csharp_module(index, file_path, relative),
-        Language::Scala => index_scala_module(index, file_path, relative),
+        Language::Scala => {
+            let package = std::fs::read_to_string(file_path).ok().and_then(|src| {
+                parse_scala_tree(&src)
+                    .and_then(|tree| parse_scala_package_name(&tree, src.as_bytes()))
+            });
+            index_scala_module(index, file_path, relative, package.as_deref());
+        }
         Language::Elixir => index_elixir_module(index, file_path, relative),
         Language::Ocaml => index_ocaml_module(index, file_path, relative),
         Language::Php => index_php_module(index, file_path, relative),
@@ -2097,7 +2112,12 @@ fn index_csharp_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, r
     }
 }
 
-fn index_scala_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, relative: &Path) {
+fn index_scala_module(
+    index: &mut HashMap<String, PathBuf>,
+    file_path: &Path,
+    relative: &Path,
+    package: Option<&str>,
+) {
     let fp = file_path.to_path_buf();
     let stem = relative.with_extension("");
     let path_str = stem.to_string_lossy();
@@ -2122,6 +2142,20 @@ fn index_scala_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, re
                 .entry(name_str.to_string())
                 .or_insert_with(|| fp.clone());
         }
+    }
+
+    // W1-11: index the parsed package clause additively so subdir package
+    // roots (`package com.example.foo` under `src/main/scala/com/example/foo/`)
+    // resolve correctly against imports like `import com.example.foo.Bar`.
+    if let Some(pkg) = package {
+        if let Some(class_name) = stem.file_name() {
+            let name_str = class_name.to_string_lossy().to_string();
+            if !name_str.is_empty() {
+                let qualified_name = format!("{}.{}", pkg, name_str);
+                index.entry(qualified_name).or_insert_with(|| fp.clone());
+            }
+        }
+        index.entry(pkg.to_string()).or_insert_with(|| fp.clone());
     }
 }
 
@@ -2233,32 +2267,60 @@ fn resolve_import(
     current_file: &Path,
     index: &HashMap<String, PathBuf>,
     language: Language,
-) -> Option<PathBuf> {
+) -> Vec<PathBuf> {
     let module = &import.module;
 
     match language {
-        Language::Python => resolve_python_import(module, root, current_file, index),
+        Language::Python => resolve_python_import(module, root, current_file, index, &import.names),
         Language::TypeScript | Language::JavaScript => {
             resolve_ts_import(module, root, current_file, index)
+                .map(|p| vec![p])
+                .unwrap_or_default()
         }
-        Language::Go => resolve_go_import(module, index),
-        Language::Rust => resolve_rust_import(module, current_file, index),
-        Language::Java => resolve_java_import(module, root, current_file, index),
-        Language::Kotlin => resolve_kotlin_import(module, index),
-        Language::C | Language::Cpp => resolve_c_cpp_import(import, root, current_file, index),
-        Language::Ruby => resolve_ruby_import(import, root, current_file, index),
-        Language::CSharp => resolve_csharp_import(import, root, current_file, index),
-        Language::Scala => resolve_scala_import(import, root, current_file, index),
-        Language::Elixir => resolve_elixir_import(import, root, current_file, index),
-        Language::Ocaml => resolve_ocaml_import(import, root, current_file, index),
-        Language::Php => resolve_php_import(import, root, current_file, index),
-        Language::Lua | Language::Luau => resolve_lua_import(import, index),
-        Language::Solidity => resolve_solidity_import(import, root, current_file, index),
+        Language::Go => resolve_go_import(module, index).map(|p| vec![p]).unwrap_or_default(),
+        Language::Rust => resolve_rust_import(module, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Java => resolve_java_import(module, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Kotlin => resolve_kotlin_import(module, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::C | Language::Cpp => resolve_c_cpp_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Ruby => resolve_ruby_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::CSharp => resolve_csharp_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Scala => resolve_scala_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Elixir => resolve_elixir_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Ocaml => resolve_ocaml_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Php => resolve_php_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Lua | Language::Luau => resolve_lua_import(import, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        Language::Solidity => resolve_solidity_import(import, root, current_file, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
         // RC2 (v0.5.0 R7 cluster[10], #236): map a bare Swift module
         // identifier (`import HeapModule`) to a representative file in the
         // module's `Sources/<Module>/` directory.
-        Language::Swift => resolve_swift_import(import, index),
-        _ => None,
+        Language::Swift => resolve_swift_import(import, index)
+            .map(|p| vec![p])
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -2444,10 +2506,11 @@ fn resolve_python_import(
     root: &Path,
     current_file: &Path,
     index: &HashMap<String, PathBuf>,
-) -> Option<PathBuf> {
+    names: &[String],
+) -> Vec<PathBuf> {
     // Handle relative imports (S7-R3)
     if module.starts_with('.') {
-        return resolve_python_relative_import(module, root, current_file, index);
+        return resolve_python_relative_import(module, root, current_file, index, names);
     }
 
     // python-decoy-resolution-v1 (v0.5.0 T1 AUDIT-FIX): an absolute import
@@ -2465,7 +2528,7 @@ fn resolve_python_import(
     // before accepting it.
     if let Some(path) = index.get(module) {
         if python_candidate_matches(path, module, root) {
-            return Some(path.clone());
+            return vec![path.clone()];
         }
     }
 
@@ -2477,13 +2540,13 @@ fn resolve_python_import(
             let prefix = parts[..i].join(".");
             if let Some(path) = index.get(&prefix) {
                 if python_candidate_matches(path, &prefix, root) {
-                    return Some(path.clone());
+                    return vec![path.clone()];
                 }
             }
         }
     }
 
-    None
+    Vec::new()
 }
 
 /// Verify a candidate file is genuinely importable under the absolute module
@@ -2532,33 +2595,55 @@ fn python_candidate_matches(path: &Path, module: &str, root: &Path) -> bool {
 /// Resolve Python relative import.
 ///
 /// Counts leading dots and walks up the directory tree accordingly.
+/// W1-11: returns a Vec so a bare `from . import X, Y` can resolve to multiple
+/// submodule files while keeping the existing `__init__.py` edge.
 fn resolve_python_relative_import(
     module: &str,
     root: &Path,
     current_file: &Path,
     index: &HashMap<String, PathBuf>,
-) -> Option<PathBuf> {
+    names: &[String],
+) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+
     // Count leading dots
     let dot_count = module.chars().take_while(|c| *c == '.').count();
     let remainder = &module[dot_count..];
 
     // Start from current file's directory
-    let current_dir = current_file.parent()?;
+    let Some(current_dir) = current_file.parent() else {
+        return results;
+    };
 
     // Walk up directories based on dot count
     // . = same directory, .. = parent, ... = grandparent, etc.
     let mut target_dir = current_dir.to_path_buf();
     for _ in 1..dot_count {
-        target_dir = target_dir.parent()?.to_path_buf();
+        if let Some(parent) = target_dir.parent() {
+            target_dir = parent.to_path_buf();
+        } else {
+            return results;
+        }
     }
 
     if remainder.is_empty() {
-        // "from . import X" - look for __init__.py in current dir
+        // "from . import X, Y" - keep the __init__.py edge and also probe each
+        // named submodule (X.py or X/__init__.py).
         let init_path = target_dir.join("__init__.py");
-        if init_path.exists() {
-            return Some(init_path);
+        if init_path.exists() && init_path.starts_with(root) {
+            results.push(init_path);
         }
-        return None;
+        for name in names {
+            let py_path = target_dir.join(format!("{}.py", name));
+            if py_path.exists() && py_path.starts_with(root) {
+                results.push(py_path);
+            }
+            let pkg_init = target_dir.join(name).join("__init__.py");
+            if pkg_init.exists() && pkg_init.starts_with(root) {
+                results.push(pkg_init);
+            }
+        }
+        return results;
     }
 
     // Convert remainder to path components
@@ -2570,19 +2655,26 @@ fn resolve_python_relative_import(
     // Try .py file
     let py_path = target_dir.with_extension("py");
     if py_path.exists() && py_path.starts_with(root) {
-        return Some(py_path);
+        results.push(py_path);
+        return results;
     }
 
     // Try __init__.py in directory
     let init_path = target_dir.join("__init__.py");
     if init_path.exists() && init_path.starts_with(root) {
-        return Some(init_path);
+        results.push(init_path);
+        return results;
     }
 
     // Try index lookup with relative path
-    let relative_target = target_dir.strip_prefix(root).ok()?;
-    let module_name = path_to_module_name(relative_target);
-    index.get(&module_name).cloned()
+    if let Ok(relative_target) = target_dir.strip_prefix(root) {
+        let module_name = path_to_module_name(relative_target);
+        if let Some(path) = index.get(&module_name) {
+            results.push(path.clone());
+        }
+    }
+
+    results
 }
 
 /// Resolve TypeScript/JavaScript import to file path.
@@ -4376,7 +4468,7 @@ pub fn classify_import(
     language: Language,
 ) -> DepKind {
     // 1. Try to resolve as internal first (using module_index)
-    if resolve_import(import, root, current_file, module_index, language).is_some() {
+    if !resolve_import(import, root, current_file, module_index, language).is_empty() {
         return DepKind::Internal;
     }
 
@@ -5121,6 +5213,37 @@ fn parse_go_package_name(tree: &tree_sitter::Tree, source: &[u8]) -> Option<Stri
             for child in node.named_children(&mut cursor) {
                 if child.kind() == "package_identifier" {
                     return Some(get_node_text(&child, source).to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse Scala source into a tree-sitter tree.
+fn parse_scala_tree(source: &str) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_scala::LANGUAGE.into())
+        .ok()?;
+    parser.parse(source, None)
+}
+
+/// Extract the declared package name from a Scala file via tree-sitter
+/// (`compilation_unit > package_clause > package_identifier`).
+fn parse_scala_package_name(tree: &tree_sitter::Tree, source: &[u8]) -> Option<String> {
+    use crate::callgraph::languages::base::get_node_text;
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        if child.kind() == "package_clause" {
+            let mut child_cursor = child.walk();
+            for package_child in child.named_children(&mut child_cursor) {
+                if package_child.kind() == "package_identifier" {
+                    let text = get_node_text(&package_child, source).to_string();
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
                 }
             }
         }
@@ -6221,6 +6344,41 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// W1-11: Scala package clause in a subdir package root must be indexed
+    /// additively so `import com.example.foo.Bar` resolves even when the
+    /// source tree layout does not mirror the package name.
+    #[test]
+    fn test_scala_package_clause_subdir_indexing() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // File lives under `src/main/scala/foo/` but declares package
+        // `com.example.foo`. Only the parsed package clause can register the
+        // importable name `com.example.foo.Bar`.
+        write_at(
+            root,
+            "src/main/scala/foo/Bar.scala",
+            "package com.example.foo\n\nclass Bar\n",
+        );
+        write_at(
+            root,
+            "src/main/scala/baz/Main.scala",
+            "package baz\n\nimport com.example.foo.Bar\n\nobject Main\n",
+        );
+
+        let report = analyze_default(root);
+        let main_deps = report
+            .internal_dependencies
+            .get(Path::new("src/main/scala/baz/Main.scala"))
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(
+            main_deps.iter().any(|p| p.ends_with("foo/Bar.scala")),
+            "Main.scala must depend on Bar.scala; deps={main_deps:?}"
+        );
+    }
+
     // =========================================================================
     // resolve_import integration tests for new languages
     // =========================================================================
@@ -6244,7 +6402,7 @@ mod tests {
             &index,
             Language::C,
         );
-        assert!(result.is_some());
+        assert!(!result.is_empty());
     }
 
     #[test]
@@ -6269,7 +6427,7 @@ mod tests {
             &index,
             Language::Cpp,
         );
-        assert!(result.is_some());
+        assert!(!result.is_empty());
     }
 
     #[test]
@@ -6291,7 +6449,7 @@ mod tests {
             &index,
             Language::Ruby,
         );
-        assert!(result.is_some());
+        assert!(!result.is_empty());
     }
 
     #[test]
@@ -6316,7 +6474,7 @@ mod tests {
             &index,
             Language::CSharp,
         );
-        assert!(result.is_some());
+        assert!(!result.is_empty());
     }
 
     #[test]
@@ -6341,7 +6499,35 @@ mod tests {
             &index,
             Language::Scala,
         );
-        assert!(result.is_some());
+        assert!(!result.is_empty());
+    }
+
+    /// W1-11: Python `from . import a, b` inside a package __init__.py must
+    /// produce internal dependency edges to BOTH `a.py` and `b.py`.
+    #[test]
+    fn test_python_bare_relative_import_multiple_submodules() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        write_at(root, "pkg/__init__.py", "from . import a, b\n");
+        write_at(root, "pkg/a.py", "x = 1\n");
+        write_at(root, "pkg/b.py", "y = 2\n");
+
+        let report = analyze_default(root);
+        let init_deps = report
+            .internal_dependencies
+            .get(Path::new("pkg/__init__.py"))
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(
+            init_deps.iter().any(|p| p.ends_with("pkg/a.py")),
+            "pkg/__init__.py must depend on pkg/a.py; deps={init_deps:?}"
+        );
+        assert!(
+            init_deps.iter().any(|p| p.ends_with("pkg/b.py")),
+            "pkg/__init__.py must depend on pkg/b.py; deps={init_deps:?}"
+        );
     }
 
     // =========================================================================
