@@ -46299,12 +46299,93 @@
     "index.d.ts"
    ],
    "_batch": "W1-3-python-builtins-nonpython-restore"
+  },
+  {
+   "repo": "cpp-fmt",
+   "type": "added",
+   "src_file": "test/gtest/gmock-gtest-all.cc",
+   "src_func": "ForkingDeathTest::Wait",
+   "dst_func": "DeathTestImpl::ReadAndInterpretStatusByte",
+   "dst_file": [
+    "test/gtest/gmock-gtest-all.cc"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
+  },
+  {
+   "repo": "cpp-fmt",
+   "type": "added",
+   "src_file": "test/gtest/gmock-gtest-all.cc",
+   "src_func": "FuchsiaDeathTest::Wait",
+   "dst_func": "DeathTestImpl::ReadAndInterpretStatusByte",
+   "dst_file": [
+    "test/gtest/gmock-gtest-all.cc"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
+  },
+  {
+   "repo": "cpp-fmt",
+   "type": "added",
+   "src_file": "test/gtest/gmock-gtest-all.cc",
+   "src_func": "WindowsDeathTest::Wait",
+   "dst_func": "DeathTestImpl::ReadAndInterpretStatusByte",
+   "dst_file": [
+    "test/gtest/gmock-gtest-all.cc"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "extern/doctest.h",
+   "src_func": "ConsoleReporter.log_contexts",
+   "dst_func": "IReporter::get_num_active_contexts",
+   "dst_file": [
+    "extern/doctest.h"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "extern/doctest.h",
+   "src_func": "ConsoleReporter.test_case_exception",
+   "dst_func": "IReporter::get_num_stringified_contexts",
+   "dst_file": [
+    "extern/doctest.h"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "extern/doctest.h",
+   "src_func": "ConsoleReporter.test_case_exception",
+   "dst_func": "IReporter::get_stringified_contexts",
+   "dst_file": [
+    "extern/doctest.h"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
+  },
+  {
+   "repo": "luau",
+   "type": "added",
+   "src_file": "extern/doctest.h",
+   "src_func": "JUnitReporter.log_contexts",
+   "dst_func": "IReporter::get_num_active_contexts",
+   "dst_file": [
+    "extern/doctest.h"
+   ],
+   "_batch": "W2-13-cpp-inherited-out-of-line"
   }
  ],
  "_batches": {
   "W1-3": {
    "note": "builder_v2.rs:319 PYTHON_BUILTINS language-guard; restores builtin-named edges wrongly dropped in non-Python. All targets verified in PYTHON_BUILTINS, 0 Python repos, iron rule 0 flips/0 removed. REMOVE at end-of-campaign baseline regen (DECISIONS.md D3).",
    "count": 2480
+  },
+  "W2-13": {
+   "note": "cpp.rs inherited implicit-this out-of-line method edges (Derived::m -> Base::helper). All qualified Base::method, 0 flips/0 removed. REMOVE at end-of-campaign baseline regen.",
+   "count": 7
   }
  }
 }

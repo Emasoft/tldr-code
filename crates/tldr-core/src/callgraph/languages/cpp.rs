@@ -165,13 +165,19 @@ impl CppHandler {
         &self,
         tree: &Tree,
         source: &[u8],
-    ) -> (HashSet<String>, HashSet<String>) {
+    ) -> (
+        HashSet<String>,
+        HashSet<String>,
+        HashMap<String, Vec<String>>,
+    ) {
         let mut functions = HashSet::new();
         let mut classes = HashSet::new();
+        let mut class_bases = HashMap::new();
 
         struct Walker<'a> {
             functions: &'a mut HashSet<String>,
             classes: &'a mut HashSet<String>,
+            class_bases: &'a mut HashMap<String, Vec<String>>,
             current_class: Option<String>,
             current_namespace: Option<String>,
         }
@@ -221,10 +227,32 @@ impl CppHandler {
                     }
 
                     if let Some(name) = class_name {
+                        let mut bases = Vec::new();
+                        for i in 0..node.child_count() {
+                            if let Some(child) = node.child(i) {
+                                if child.kind() == "base_class_clause" {
+                                    for j in 0..child.child_count() {
+                                        if let Some(base) = child.child(j) {
+                                            if base.kind() == "type_identifier" {
+                                                bases
+                                                    .push(get_node_text(&base, source).to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // Add class to index
                         walker.classes.insert(name.clone());
                         if let Some(ref ns) = walker.current_namespace {
                             walker.classes.insert(format!("{}::{}", ns, name));
+                        }
+                        walker.class_bases.insert(name.clone(), bases.clone());
+                        if let Some(ref ns) = walker.current_namespace {
+                            walker
+                                .class_bases
+                                .insert(format!("{}::{}", ns, name), bases);
                         }
 
                         let old_class = walker.current_class.clone();
@@ -274,13 +302,14 @@ impl CppHandler {
         let mut walker = Walker {
             functions: &mut functions,
             classes: &mut classes,
+            class_bases: &mut class_bases,
             current_class: None,
             current_namespace: None,
         };
 
         walk_node(&mut walker, tree.root_node(), source, self);
 
-        (functions, classes)
+        (functions, classes, class_bases)
     }
 
     /// Extract calls from a function body.
@@ -290,6 +319,7 @@ impl CppHandler {
         source: &[u8],
         defined_funcs: &HashSet<String>,
         _defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         caller: &str,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
@@ -328,20 +358,31 @@ impl CppHandler {
                             // stays bare (preserving existing behaviour). Free
                             // functions have no `::` in the caller, so the sibling
                             // path never triggers.
-                            let (target, call_type) = if defined_funcs.contains(&bare) {
-                                (bare, CallType::Intra)
-                            } else if let Some(qualified) =
-                                caller.rsplit_once("::").map(|(prefix, _)| {
-                                    format!("{}::{}", prefix, bare)
+                            let enclosing_class =
+                                caller.rsplit_once("::").map(|(prefix, _)| prefix);
+                            let inherited_target = |prefix: &str, method: &str| {
+                                class_bases.get(prefix).and_then(|bases| {
+                                    bases.iter().find_map(|base| {
+                                        let inherited = format!("{}::{}", base, method);
+                                        defined_funcs.contains(&inherited).then_some(inherited)
+                                    })
                                 })
+                            };
+                            let (target, call_type, additive_inherited_target) = if defined_funcs
+                                .contains(&bare)
                             {
+                                (bare, CallType::Intra, None)
+                            } else if let Some(prefix) = enclosing_class {
+                                let qualified = format!("{}::{}", prefix, bare);
                                 if defined_funcs.contains(&qualified) {
-                                    (qualified, CallType::Intra)
+                                    (qualified, CallType::Intra, None)
+                                } else if let Some(inherited) = inherited_target(prefix, &bare) {
+                                    (bare, CallType::Direct, Some(inherited))
                                 } else {
-                                    (bare, CallType::Direct)
+                                    (bare, CallType::Direct, None)
                                 }
                             } else {
-                                (bare, CallType::Direct)
+                                (bare, CallType::Direct, None)
                             };
 
                             calls.push(CallSite::new(
@@ -353,6 +394,17 @@ impl CppHandler {
                                 None,
                                 None,
                             ));
+                            if let Some(inherited) = additive_inherited_target {
+                                calls.push(CallSite::new(
+                                    caller.to_string(),
+                                    inherited,
+                                    CallType::Intra,
+                                    Some(line),
+                                    None,
+                                    None,
+                                    None,
+                                ));
+                            }
                         }
                         "field_expression" => {
                             // Member call: obj.method() or ptr->method()
@@ -516,7 +568,8 @@ impl CallGraphLanguageSupport for CppHandler {
         tree: &Tree,
     ) -> Result<HashMap<String, Vec<CallSite>>, ParseError> {
         let source_bytes = source.as_bytes();
-        let (defined_funcs, defined_classes) = self.collect_definitions(tree, source_bytes);
+        let (defined_funcs, defined_classes, class_bases) =
+            self.collect_definitions(tree, source_bytes);
         let mut calls_by_func: HashMap<String, Vec<CallSite>> = HashMap::new();
 
         struct FuncWalker<'a> {
@@ -524,6 +577,7 @@ impl CallGraphLanguageSupport for CppHandler {
             source: &'a [u8],
             defined_funcs: &'a HashSet<String>,
             defined_classes: &'a HashSet<String>,
+            class_bases: &'a HashMap<String, Vec<String>>,
             calls_by_func: &'a mut HashMap<String, Vec<CallSite>>,
             current_class: Option<String>,
         }
@@ -583,6 +637,7 @@ impl CallGraphLanguageSupport for CppHandler {
                                             walker.source,
                                             walker.defined_funcs,
                                             walker.defined_classes,
+                                            walker.class_bases,
                                             &full_name,
                                         );
                                         all_calls.extend(calls);
@@ -595,6 +650,7 @@ impl CallGraphLanguageSupport for CppHandler {
                                             walker.source,
                                             walker.defined_funcs,
                                             walker.defined_classes,
+                                            walker.class_bases,
                                             &full_name,
                                         );
                                         all_calls.extend(calls);
@@ -608,6 +664,7 @@ impl CallGraphLanguageSupport for CppHandler {
                                             walker.source,
                                             walker.defined_funcs,
                                             walker.defined_classes,
+                                            walker.class_bases,
                                             &full_name,
                                         );
                                         all_calls.extend(calls);
@@ -657,6 +714,7 @@ impl CallGraphLanguageSupport for CppHandler {
                                 walker.source,
                                 walker.defined_funcs,
                                 walker.defined_classes,
+                                walker.class_bases,
                                 &caller,
                             );
 
@@ -688,6 +746,7 @@ impl CallGraphLanguageSupport for CppHandler {
                                 walker.source,
                                 walker.defined_funcs,
                                 walker.defined_classes,
+                                walker.class_bases,
                                 "<module>",
                             );
                             if !calls.is_empty() {
@@ -720,6 +779,7 @@ impl CallGraphLanguageSupport for CppHandler {
             source: &[u8],
             defined_funcs: &HashSet<String>,
             defined_classes: &HashSet<String>,
+            class_bases: &HashMap<String, Vec<String>>,
             caller: &str,
         ) -> Vec<CallSite> {
             let mut calls = Vec::new();
@@ -731,6 +791,7 @@ impl CallGraphLanguageSupport for CppHandler {
                         source,
                         defined_funcs,
                         defined_classes,
+                        class_bases,
                         caller,
                     );
                     calls.extend(param_calls);
@@ -744,6 +805,7 @@ impl CallGraphLanguageSupport for CppHandler {
             source: source_bytes,
             defined_funcs: &defined_funcs,
             defined_classes: &defined_classes,
+            class_bases: &class_bases,
             calls_by_func: &mut calls_by_func,
             current_class: None,
         };
@@ -1444,6 +1506,42 @@ void main() {
                 .find(|c| c.target == "some_external_func")
                 .unwrap();
             assert_eq!(ext.call_type, CallType::Direct);
+        }
+
+        #[test]
+        fn test_inherited_implicit_this_out_of_line_method() {
+            let source = r#"
+class Base {
+public:
+    void helper();
+};
+
+class Derived : public Base {
+public:
+    void run();
+};
+
+void Base::helper() {}
+
+void Derived::run() {
+    helper();
+}
+"#;
+            let calls = extract_calls(source);
+            let run_calls = calls
+                .get("Derived::run")
+                .or_else(|| calls.get("run"))
+                .expect("Derived::run should have call sites");
+            let helper = run_calls
+                .iter()
+                .find(|c| c.target == "Base::helper")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "inherited implicit-this helper() must resolve to Base::helper. Got: {:?}",
+                        run_calls
+                    )
+                });
+            assert_eq!(helper.call_type, CallType::Intra);
         }
     }
 
