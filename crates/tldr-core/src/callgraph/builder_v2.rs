@@ -316,7 +316,9 @@ pub fn extract_and_resolve_calls(
             ) {
                 CallSiteResolution::Handled => {}
                 CallSiteResolution::Resolved(target) => {
-                    if PYTHON_BUILTINS.contains(&target.name.as_str()) {
+                    if builder_context.resolution_context.language.eq_ignore_ascii_case("python")
+                        && PYTHON_BUILTINS.contains(&target.name.as_str())
+                    {
                         continue;
                     }
                     result.resolved.push((call_site.clone(), target));
@@ -1361,6 +1363,49 @@ def main():
         assert!(
             result.warnings.iter().any(|w| w.target == "__import__"),
             "Should generate warning for dynamic import"
+        );
+    }
+
+    /// Test: PYTHON_BUILTINS denylist applies only to Python source files.
+    /// A resolved edge whose target collides with a Python builtin (e.g. `map`)
+    /// must be retained when the source language is JavaScript.
+    #[test]
+    fn test_non_python_builtin_edge_retained() {
+        // Create a FileIR for a JavaScript file with a direct call to `map`
+        let mut file_ir = FileIR::new(PathBuf::from("main.js"));
+        file_ir.add_call("main", CallSite::direct("main", "map", Some(5)));
+
+        // Setup indices with a function named `map`
+        let mut func_index = FuncIndex::new();
+        func_index.insert(
+            "./main",
+            "map",
+            FuncEntry::function(PathBuf::from("main.js"), 10, 20),
+        );
+
+        let class_index = ClassIndex::new();
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "javascript");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let mut resolution_context = ResolutionContext {
+            import_map: &import_map,
+            module_imports: &module_imports,
+            func_index: &func_index,
+            class_index: &class_index,
+            reexport_tracer: &mut reexport_tracer,
+            current_file: &file_ir.path,
+            root: Path::new("/project"),
+            language: "javascript",
+        };
+        let result = extract_and_resolve_calls(&file_ir, &mut resolution_context);
+
+        // The `map` edge must NOT be dropped for JavaScript
+        let map_resolved = result.resolved.iter().find(|(cs, _)| cs.target == "map");
+        assert!(
+            map_resolved.is_some(),
+            "map() call should be retained for JavaScript"
         );
     }
 
