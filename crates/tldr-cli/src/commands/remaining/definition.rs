@@ -4166,7 +4166,7 @@ fn match_definition(
 
     let best_func = funcs
         .iter()
-        .filter(|f| f.name == symbol)
+        .filter(|f| definition_function_name_matches(&f.name, symbol))
         .enumerate()
         .min_by_key(|(idx, f)| (rank_score(f.line, f.end_line), *idx))
         .map(|(_, f)| f);
@@ -4219,6 +4219,10 @@ fn match_definition(
     }
 
     None
+}
+
+fn definition_function_name_matches(name: &str, symbol: &str) -> bool {
+    name == symbol || name.rsplit_once("::").is_some_and(|(_, tail)| tail == symbol)
 }
 
 /// Locate the 1-indexed column of `symbol` on line `line` (1-indexed) of
@@ -4642,7 +4646,7 @@ fn resolve_cross_file_walk(
         return Ok(None);
     }
 
-    let extensions = language.extensions();
+    let extensions = language.scan_extensions();
     let current_canonical = fs::canonicalize(current_file).ok();
 
     let walker = walkdir::WalkDir::new(project_root)
@@ -5265,6 +5269,39 @@ from . import types
             def_loc.file
         );
         assert_eq!(def_loc.line, 1, "echo is defined on line 1 of utils.py");
+    }
+
+    #[test]
+    fn test_w2_15_cpp_header_out_of_line_method_resolves_cross_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let main_cpp = root.join("main.cpp");
+        let api_h = root.join("api.h");
+
+        fs::write(
+            &main_cpp,
+            "#include \"api.h\"\n\nint main() {\n    Api api;\n    return api.target();\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            &api_h,
+            "class Api {\npublic:\n    int target();\n};\n\nint Api::target() {\n    return 7;\n}\n",
+        )
+        .unwrap();
+
+        let result = find_definition_by_name("target", &main_cpp, Some(root), "cpp")
+            .expect("C++ header definition should resolve cross-file");
+        assert_eq!(result.symbol.kind, SymbolKind::Function);
+        let def = result.definition.expect("definition location must be Some");
+        assert!(
+            def.file.ends_with("api.h"),
+            "definition should resolve to api.h, got {}",
+            def.file
+        );
+        assert_eq!(
+            def.line, 6,
+            "definition should point at the out-of-line Api::target body"
+        );
     }
 
     // -------------------------------------------------------------------------
