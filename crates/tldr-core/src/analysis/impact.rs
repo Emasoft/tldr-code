@@ -77,6 +77,30 @@ fn last_standalone_colon(qualified: &str) -> Option<usize> {
     found
 }
 
+/// Full qualifier prefix of a qualified name: everything before the leaf
+/// returned by [`last_segment`]. Returns `None` for an unqualified name.
+///
+/// Examples:
+/// - `full_qualifier("Parser.parse")` -> `Some("Parser")`
+/// - `full_qualifier("mod::Type::method")` -> `Some("mod::Type")`
+/// - `full_qualifier("Type:method")` -> `Some("Type")` (Lua single colon)
+/// - `full_qualifier("method")` -> `None`
+fn full_qualifier(qualified: &str) -> Option<&str> {
+    let leaf = last_segment(qualified);
+    if leaf.len() == qualified.len() {
+        return None;
+    }
+    let end = qualified.len() - leaf.len();
+    let mut qual = &qualified[..end];
+    // Strip the trailing separator that `last_segment` cut on.
+    if qual.ends_with("::") {
+        qual = &qual[..qual.len() - 2];
+    } else if qual.ends_with(['.', ':']) {
+        qual = &qual[..qual.len() - 1];
+    }
+    Some(qual)
+}
+
 /// Match `candidate` against `target` allowing both directions of
 /// qualification (cross-command-consistency-v3 P5.BUG-N3).
 ///
@@ -127,25 +151,27 @@ pub fn names_match(candidate: &str, target: &str) -> bool {
         // the `.`-qualifier shape (Python `Class.method`, Ruby, etc.)
         // where they were originally introduced (P5.BUG-N3).
         if target.contains("::") {
-            // For `::`-qualified targets, accept ONLY an exact match
-            // (handled above) OR a candidate whose qualified form ends
-            // with the user-typed qualifier (handles
-            // `mod::Type::method` vs user-typed `Type::method`).
+            // W1-4: `::`-qualified queries (Rust/C++/Scala natural syntax)
+            // must also match dot-canonicalized graph endpoints like
+            // `Parser.parse`, while still preserving the qualifier guard.
             //
             // Concretely we require:
             //   * candidate's leaf matches target's leaf, AND
-            //   * candidate's qualifier ends with target's qualifier
-            //
-            // This is the strict "qualifier preserved" rule the audit
-            // (VAL-RUST-QUAL) calls for.
-            if let (Some((cand_qual, cand_leaf)), Some((tgt_qual, tgt_leaf))) =
-                (candidate.rsplit_once("::"), target.rsplit_once("::"))
-            {
-                if cand_leaf == tgt_leaf
-                    && (cand_qual == tgt_qual
-                        || cand_qual.ends_with(&format!("::{tgt_qual}")))
+            //   * candidate's qualifier equals target's qualifier OR ends
+            //     with it, after normalizing `::` -> `.` on both sides.
+            let cand_leaf = last_segment(candidate);
+            let tgt_leaf = last_segment(target);
+            if cand_leaf == tgt_leaf {
+                if let (Some(cand_qual), Some(tgt_qual)) =
+                    (full_qualifier(candidate), full_qualifier(target))
                 {
-                    return true;
+                    let cand_qual_norm = cand_qual.replace("::", ".");
+                    let tgt_qual_norm = tgt_qual.replace("::", ".");
+                    if cand_qual_norm == tgt_qual_norm
+                        || cand_qual_norm.ends_with(&format!(".{tgt_qual_norm}"))
+                    {
+                        return true;
+                    }
                 }
             }
             return false;
@@ -3184,6 +3210,47 @@ mod tests {
         assert!(names_match("Glob::parse", "parse"));
         // Does not over-match an unrelated method on the same table.
         assert!(!names_match("Component:setState", "render"));
+    }
+
+    /// W1-4: a `::`-qualified query must match a dot-canonicalized call-graph
+    /// endpoint (`Parser.parse`) while still rejecting a different qualifier
+    /// (`Other.parse`).
+    #[test]
+    fn test_w1_4_colon_query_matches_dot_canonicalized_endpoint() {
+        let mut graph = ProjectCallGraph::new();
+
+        // Parser.parse has three callers.
+        for caller in ["caller_a", "caller_b", "caller_c"] {
+            graph.add_edge(CallEdge {
+                src_file: "src.rs".into(),
+                src_func: caller.to_string(),
+                dst_file: "parser.rs".into(),
+                dst_func: "Parser.parse".to_string(),
+                call_line: None,
+            });
+        }
+
+        // impact Parser::parse must find the three Parser.parse callers.
+        let result = impact_analysis(&graph, "Parser::parse", 1, None)
+            .expect("Parser::parse should resolve to Parser.parse");
+        assert_eq!(result.total_targets, 1, "Expected exactly one target");
+        let tree = result.targets.values().next().unwrap();
+        assert_eq!(
+            tree.caller_count, 3,
+            "Parser::parse should match Parser.parse and return 3 callers"
+        );
+
+        // Qualifier guard: a different qualifier must not match Parser.parse.
+        assert!(
+            !names_match("Parser.parse", "Other::parse"),
+            "Other::parse should not match Parser.parse"
+        );
+
+        // impact Other::parse must NOT resolve to Parser.parse.
+        assert!(
+            impact_analysis(&graph, "Other::parse", 1, None).is_err(),
+            "Other::parse should not resolve when only Parser.parse is in the graph"
+        );
     }
 
     #[test]
