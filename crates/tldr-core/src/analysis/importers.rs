@@ -186,6 +186,15 @@ fn emit_importer(file_path: &Path, ast_line: u32) -> TldrResult<ImporterInfo> {
     })
 }
 
+/// Strip a Rust root-path prefix (`crate::`, `self::`, or `super::`) from a
+/// module path. Returns the original string unchanged when no prefix is present.
+fn strip_rust_root_prefix(path: &str) -> &str {
+    path.strip_prefix("crate::")
+        .or_else(|| path.strip_prefix("self::"))
+        .or_else(|| path.strip_prefix("super::"))
+        .unwrap_or(path)
+}
+
 /// Check if a module name matches the target
 fn module_matches(import_module: &str, target: &str, language: Language) -> bool {
     match language {
@@ -428,6 +437,29 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
         // path, bare leaf name): match on path suffix or leaf basename,
         // with leading `./`/`../` relative noise stripped from both sides.
         Language::Ruby => path_module_matches(import_module, target),
+        // W1-24: Rust module paths are `::`-separated and may carry a leading
+        // `crate::`, `self::`, or `super::` root prefix. Strip those prefixes
+        // from both sides, then apply exact, forward-prefix, and bare-last-segment
+        // rules (mirroring the Java/Scala/PHP arms).
+        Language::Rust => {
+            if import_module == target {
+                return true;
+            }
+            let import_clean = strip_rust_root_prefix(import_module);
+            let target_clean = strip_rust_root_prefix(target);
+            if import_clean == target_clean {
+                return true;
+            }
+            // Forward-prefix: a query for the parent module matches a deeper import.
+            if import_clean.starts_with(&format!("{}::", target_clean)) {
+                return true;
+            }
+            // Bare last-segment query matches any nested module ending with that name.
+            if !target.contains("::") && import_clean.ends_with(&format!("::{}", target)) {
+                return true;
+            }
+            false
+        }
         // elixir-importers-kind-gate-v1 (#52): Elixir modules are dotted
         // PascalCase atoms and the extractor captures the full `Plug.Conn`, so
         // exact equality is correct today. This explicit arm replaces the
@@ -741,6 +773,34 @@ mod tests {
         assert!(module_matches("./utils", "./utils", Language::TypeScript));
         assert!(module_matches("./utils", "utils", Language::TypeScript));
         assert!(module_matches("utils", "./utils", Language::TypeScript));
+    }
+
+    /// W1-24: Rust imports use `::` separators and root prefixes
+    /// (`crate::`, `self::`, `super::`). A bare `mod counter;` declaration
+    /// must reconcile with `use crate::counter::Foo`, and all three root
+    /// prefixes must be stripped before comparing.
+    #[test]
+    fn test_module_matches_rust() {
+        // `use crate::counter::Foo` (captured as module="crate::counter")
+        // must match a query for the bare module `counter`.
+        assert!(module_matches("crate::counter", "counter", Language::Rust));
+
+        // Reverse: querying `crate::counter` must match a bare `mod counter;`
+        // (captured as module="counter").
+        assert!(module_matches("counter", "crate::counter", Language::Rust));
+
+        // self:: and super:: prefixes must also be normalized away.
+        assert!(module_matches("self::counter", "counter", Language::Rust));
+        assert!(module_matches("super::counter", "counter", Language::Rust));
+
+        // Forward-prefix: a query for the parent module matches a deeper import.
+        assert!(module_matches("crate::counter::foo", "counter", Language::Rust));
+
+        // Bare last-segment query matches a nested module.
+        assert!(module_matches("crate::foo::counter", "counter", Language::Rust));
+
+        // Guard: an unrelated module must not match.
+        assert!(!module_matches("crate::other", "counter", Language::Rust));
     }
 
     #[test]
