@@ -4635,6 +4635,13 @@ fn resolve_cross_file_walk(
     project_root: &Path,
     language: Language,
 ) -> RemainingResult<Option<DefinitionResult>> {
+    // W1-5: defend against an empty or non-existent project root. WalkDir on
+    // an empty path returns ENOENT, and `.flatten()` silently swallows it so
+    // zero files are visited. Bail out cleanly instead.
+    if project_root.as_os_str().is_empty() || !project_root.exists() {
+        return Ok(None);
+    }
+
     let extensions = language.extensions();
     let current_canonical = fs::canonicalize(current_file).ok();
 
@@ -4752,10 +4759,18 @@ pub(crate) fn find_workspace_root(file: &Path) -> Option<PathBuf> {
     ];
 
     // Start from the file's directory (or the file itself if it's a dir).
+    // W1-5: a bare/relative file like `main.js` has an empty parent (`""`),
+    // which makes the marker walk and subsequent WalkDir fail. Normalize the
+    // empty parent to the current working directory (`.`).
     let start = if file.is_dir() {
         file.to_path_buf()
     } else {
-        file.parent()?.to_path_buf()
+        let parent = file.parent()?.to_path_buf();
+        if parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            parent
+        }
     };
 
     let mut current: Option<&Path> = Some(start.as_path());
@@ -5517,6 +5532,67 @@ from . import types
             Some(marked.path().to_path_buf()),
             "a detected workspace marker must win over the package-dir fallback"
         );
+    }
+
+    /// W1-5: a bare/relative `--file` path must still resolve cross-file
+    /// definitions. Without the fix `find_workspace_root("main.js")` derives an
+    /// empty parent, the marker walk returns `Some("")`, and the subsequent
+    /// WalkDir on an empty root visits zero files -> "symbol not found".
+    #[test]
+    fn test_w1_5_bare_relative_file_resolves_cross_file() {
+        // Guard that restores the original working directory even on panic.
+        struct ChdirGuard(PathBuf);
+        impl Drop for ChdirGuard {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // A marker so workspace detection has something to find.
+        fs::create_dir_all(root.join(".git")).unwrap();
+
+        // helper.js defines the symbol.
+        fs::write(
+            root.join("helper.js"),
+            "function helper() {\n    return 42;\n}\n",
+        )
+        .unwrap();
+
+        // main.js uses it.
+        fs::write(
+            root.join("main.js"),
+            "function main() {\n    return helper();\n}\n",
+        )
+        .unwrap();
+
+        // Exercise the resolver exactly as the CLI does: from inside the project
+        // root, with a bare relative file path.
+        let guard = ChdirGuard(std::env::current_dir().unwrap());
+        std::env::set_current_dir(root).unwrap();
+
+        let resolved_root =
+            resolve_definition_root(None, true, Path::new("main.js"), Some(Language::JavaScript))
+                .expect("workspace root must resolve for a bare relative file");
+        assert!(
+            !resolved_root.as_os_str().is_empty(),
+            "resolved workspace root must not be empty"
+        );
+
+        let result = find_definition_by_name("helper", Path::new("main.js"), Some(&resolved_root), "javascript")
+            .expect("helper must resolve cross-file from a bare relative --file");
+        assert_eq!(result.symbol.kind, SymbolKind::Function);
+        let def = result.definition.expect("definition location must be Some");
+        assert!(
+            def.file.ends_with("helper.js"),
+            "helper must resolve into helper.js, got {}",
+            def.file
+        );
+        assert_eq!(def.line, 1, "helper is defined on line 1 of helper.js");
+
+        drop(guard);
     }
 
     // -------------------------------------------------------------------------
