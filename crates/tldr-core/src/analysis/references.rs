@@ -4207,6 +4207,13 @@ pub fn find_references(
         definitions.push(Definition::new(r.file.clone(), r.line, r.column, kind));
     }
 
+    // W2-16: exclude Elixir references whose MODULE QUALIFIER names a different
+    // module than the queried definition. A bare `references underscore` query
+    // for `Phoenix.Naming.underscore/1` previously reported unrelated
+    // `Macro.underscore(...)` call sites as confidence=1.0 references because
+    // the Elixir `dot` arm matched only the leaf identifier.
+    filter_elixir_foreign_qualified_refs(&mut references, &definitions, &mut file_parse_cache);
+
     // RC7 (v0.5.0 R3): exclude OCaml references whose MODULE QUALIFIER names a
     // DIFFERENT module than the queried definition. A bare-name `references
     // lock` query over `ocaml-lwt` previously reported six stdlib `Mutex.lock`
@@ -4626,6 +4633,128 @@ fn ocaml_module_name_from_path(file: &Path) -> Option<String> {
     let mut chars = stem.chars();
     let first = chars.next()?;
     Some(first.to_uppercase().collect::<String>() + chars.as_str())
+}
+
+fn elixir_alias_text(node: &Node, source: &[u8]) -> Option<String> {
+    if node.kind() != "alias" {
+        return None;
+    }
+    let text = node.utf8_text(source).ok()?.trim();
+    if text.chars().next().is_some_and(|c| c.is_uppercase()) {
+        Some(text.to_string())
+    } else {
+        None
+    }
+}
+
+fn elixir_reference_qualifier_head(leaf_node: &Node, source: &[u8]) -> Option<String> {
+    let dot = leaf_node.parent()?;
+    if dot.kind() != "dot" {
+        return None;
+    }
+    let mut cursor = dot.walk();
+    let mut named = dot.named_children(&mut cursor);
+    let left = named.next()?;
+    let right = named.next()?;
+    if right.id() != leaf_node.id() {
+        return None;
+    }
+    elixir_alias_text(&left, source)
+}
+
+fn elixir_defmodule_name_from_call(call: &Node, source: &[u8]) -> Option<String> {
+    if call.kind() != "call" {
+        return None;
+    }
+    let target = call
+        .child_by_field_name("target")
+        .and_then(|t| t.utf8_text(source).ok())?;
+    if target != "defmodule" {
+        return None;
+    }
+    let mut cursor = call.walk();
+    let args = call.children(&mut cursor).find(|c| c.kind() == "arguments")?;
+    let mut acursor = args.walk();
+    for child in args.named_children(&mut acursor) {
+        return elixir_alias_text(&child, source);
+    }
+    None
+}
+
+fn elixir_definition_enclosing_module(
+    definition: &Definition,
+    cache: &mut HashMap<PathBuf, (tree_sitter::Tree, String, Language)>,
+) -> Option<String> {
+    if !cache.contains_key(&definition.file) {
+        let parsed = parse_file(&definition.file).ok()?;
+        cache.insert(definition.file.clone(), parsed);
+    }
+    let (tree, source, language) = cache.get(&definition.file)?;
+    if *language != Language::Elixir {
+        return None;
+    }
+    let row = definition.line.saturating_sub(1);
+    let col = definition.column.saturating_sub(1);
+    let pt = tree_sitter::Point { row, column: col };
+    let mut current = tree
+        .root_node()
+        .named_descendant_for_point_range(pt, pt);
+    while let Some(node) = current {
+        if let Some(module) = elixir_defmodule_name_from_call(&node, source.as_bytes()) {
+            return Some(module);
+        }
+        current = node.parent();
+    }
+    None
+}
+
+fn filter_elixir_foreign_qualified_refs(
+    references: &mut Vec<Reference>,
+    definitions: &[Definition],
+    cache: &mut HashMap<PathBuf, (tree_sitter::Tree, String, Language)>,
+) {
+    let def_modules: std::collections::HashSet<String> = definitions
+        .iter()
+        .filter_map(|d| elixir_definition_enclosing_module(d, cache))
+        .collect();
+    if def_modules.is_empty() {
+        return;
+    }
+
+    references.retain(|r| {
+        if r.kind == ReferenceKind::Definition {
+            return true;
+        }
+        if !cache.contains_key(&r.file) {
+            match parse_file(&r.file) {
+                Ok(parsed) => {
+                    cache.insert(r.file.clone(), parsed);
+                }
+                Err(_) => return true,
+            }
+        }
+        let (tree, source, language) = match cache.get(&r.file) {
+            Some(p) => p,
+            None => return true,
+        };
+        if *language != Language::Elixir {
+            return true;
+        }
+        let row = r.line.saturating_sub(1);
+        let col = r.column.saturating_sub(1);
+        let pt = tree_sitter::Point { row, column: col };
+        let leaf = match tree
+            .root_node()
+            .named_descendant_for_point_range(pt, pt)
+        {
+            Some(n) => n,
+            None => return true,
+        };
+        match elixir_reference_qualifier_head(&leaf, source.as_bytes()) {
+            Some(head) => def_modules.contains(&head),
+            None => true,
+        }
+    });
 }
 
 /// RC7 (v0.5.0 R3): drop OCaml references whose qualifier names a module other
@@ -5555,6 +5684,50 @@ let _ = print_string (greet "Alice")
         assert!(
             contexts.iter().any(|c| c.trim_start().starts_with("let _ = lock")),
             "bare `lock` should be kept, got refs: {contexts:?}"
+        );
+    }
+
+    #[test]
+    fn test_elixir_references_excludes_foreign_qualified_module_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("naming.ex"),
+            "defmodule Phoenix.Naming do\n  def underscore(value) do\n    value\n  end\n\n  def same_module(value) do\n    Phoenix.Naming.underscore(value)\n  end\nend\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("other.ex"),
+            "defmodule MyApp.Other do\n  def run(value) do\n    Macro.underscore(value)\n  end\nend\n",
+        )
+        .unwrap();
+
+        let opts = ReferencesOptions::new()
+            .with_language("elixir".to_string())
+            .with_scope(SearchScope::Workspace);
+        let report = find_references("underscore", root, &opts).unwrap();
+        let contexts: Vec<&str> = report
+            .references
+            .iter()
+            .map(|r| r.context.as_str())
+            .collect();
+
+        assert!(
+            !contexts.iter().any(|c| c.contains("Macro.underscore")),
+            "foreign Macro.underscore must not be reported for Phoenix.Naming.underscore: {contexts:?}"
+        );
+        assert!(
+            contexts.iter().any(|c| c.contains("Phoenix.Naming.underscore")),
+            "same-module Phoenix.Naming.underscore must be kept: {contexts:?}"
+        );
+        assert!(
+            report
+                .definitions
+                .iter()
+                .any(|d| d.file.ends_with("naming.ex") && d.line == 2),
+            "Phoenix.Naming.underscore definition should still be found: {:?}",
+            report.definitions
         );
     }
 
