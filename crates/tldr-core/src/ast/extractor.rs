@@ -2918,6 +2918,12 @@ fn collect_definitions(
                     "modifier_definition" => "modifier",
                     "event_definition" => "event",
                     "error_declaration" => "error",
+                    // W1-1: Go package-level `var` is a variable, not a
+                    // function. Surfacing it here (additive: output only
+                    // grows) lets `structure`'s `definitions[]` agree with
+                    // the AST instead of silently dropping package-level
+                    // vars that parse with zero errors.
+                    "var_spec" => "variable",
                     "constructor_definition" | "fallback_receive_definition" => "method",
                     _ => {
                         // Check if inside a class/impl => method
@@ -3494,6 +3500,11 @@ fn try_field_definition(
         Language::Java => matches!(kind, "field_declaration"),
         Language::Kotlin => matches!(kind, "property_declaration"),
         Language::Swift => matches!(kind, "property_declaration"),
+        // W1-1: C# auto-properties (`public string Name { get; set; }`)
+        // parse as `property_declaration` inside a `declaration_list`
+        // (the class body). Without this gate every C# property was
+        // silently dropped from `structure`'s `definitions[]`.
+        Language::CSharp => matches!(kind, "property_declaration"),
         Language::TypeScript | Language::JavaScript => {
             matches!(kind, "public_field_definition" | "field_definition")
         }
@@ -3525,6 +3536,10 @@ fn try_field_definition(
             | "protocol_body"  // Swift
             | "struct_body" // (reserved)
             | "contract_body" // v0.5.0 SOL-004 (Solidity)
+            // W1-1: C# class/struct/interface bodies are `declaration_list`
+            // (tree-sitter-c-sharp). Required so `property_declaration`
+            // members pass the parent gate.
+            | "declaration_list" // C#
     );
     if !parent_is_class_body {
         return None;
@@ -3679,6 +3694,36 @@ fn try_field_definition(
                 }
             }
         }
+        // W1-1: C# `property_declaration` (`public string Name { get; set; }`)
+        // exposes the property name via the `name` field (an `identifier`
+        // child per tree-sitter-c-sharp grammar).
+        Language::CSharp => {
+            let name_opt = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string()))
+                .or_else(|| {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.kind() == "identifier" {
+                            return child
+                                .utf8_text(source.as_bytes())
+                                .ok()
+                                .map(|s| s.to_string());
+                        }
+                    }
+                    None
+                });
+            if let Some(name) = name_opt {
+                defs.push(DefinitionInfo {
+                    name,
+                    kind: "field".to_string(),
+                    line_start,
+                    line_end,
+                    signature,
+                    is_test: false,
+                });
+            }
+        }
         _ => {}
     }
 
@@ -3820,6 +3865,7 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
         kind,
         "function_definition"
             | "function_declaration"
+            | "function_signature" // TS: ambient .d.ts function declarations (W1-1)
             | "function_item"     // Rust
             | "method_definition"
             | "method_signature"           // TS: interface methods & abstract class signature (VAL-001)
@@ -3832,6 +3878,7 @@ fn classify_definition_node(kind: &str, language: Language) -> (bool, bool) {
             | "function"           // JS/TS
             | "func_literal"       // Go
             | "function_type"
+            | "var_spec"          // Go: package-level var (W1-1)
             | "value_definition"   // OCaml top-level let binding (functions and values)
             | "init_declaration"   // Swift init constructor (VAL-002)
             | "constructor_declaration" // Java / C# constructor (VAL-003)
@@ -6529,6 +6576,103 @@ final class DataRequest {
         assert!(
             names.contains(&"init"),
             "`init` must remain, got {:?}",
+            names
+        );
+    }
+
+    // ── W1-1: structure node-kind gap fixes (TS / C# / Go) ───────────────
+
+    /// Helper: collect all definition names for a source + language.
+    fn def_names(source: &str, lang: Language) -> Vec<String> {
+        let tree = parse(source, lang).expect("parsing should succeed");
+        let defs = extract_definitions(&tree, source, lang);
+        defs.into_iter().map(|d| d.name).collect()
+    }
+
+    /// W1-1: TypeScript ambient `function_signature` (`.d.ts` exported
+    /// declared functions) must appear in `definitions[]`. Before the fix
+    /// `function_signature` was absent from the `is_func` allowlist so
+    /// `structure` silently dropped every ambient function declaration.
+    #[test]
+    fn test_ts_ambient_function_signature_in_definitions() {
+        let source = r#"
+export declare function initialize(config: Config): void;
+declare function teardown(): void;
+"#;
+        let names = def_names(source, Language::TypeScript);
+        assert!(
+            names.iter().any(|n| n == "initialize"),
+            "ambient `function_signature` `initialize` must appear in definitions[], got {:?}",
+            names
+        );
+        assert!(
+            names.iter().any(|n| n == "teardown"),
+            "ambient `function_signature` `teardown` must appear in definitions[], got {:?}",
+            names
+        );
+    }
+
+    /// W1-1: C# auto-properties (`property_declaration`) inside a class
+    /// body (`declaration_list`) must appear in `definitions[]` with
+    /// `kind:"field"`. Before the fix neither `property_declaration` nor
+    /// `declaration_list` were in the allowlists, so every C# property was
+    /// silently dropped.
+    #[test]
+    fn test_csharp_property_declaration_in_definitions() {
+        let source = r#"
+public class Person
+{
+    public string Name { get; set; }
+    public int Age { get; }
+}
+"#;
+        let tree = parse(source, Language::CSharp).expect("parsing should succeed");
+        let defs = extract_definitions(&tree, source, Language::CSharp);
+        let name_prop = defs.iter().find(|d| d.name == "Name");
+        assert!(
+            name_prop.is_some(),
+            "C# auto-property `Name` must appear in definitions[], got {:?}",
+            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+        );
+        let name_prop = name_prop.unwrap();
+        assert_eq!(
+            name_prop.kind, "field",
+            "C# property must be kind=\"field\", got {:?}",
+            name_prop.kind
+        );
+        // Second property also present.
+        assert!(
+            defs.iter().any(|d| d.name == "Age"),
+            "C# auto-property `Age` must appear in definitions[], got {:?}",
+            defs.iter().map(|d| &d.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// W1-1: Go package-level non-const `var_spec` must appear in
+    /// `definitions[]`. Before the fix only `const_spec` was handled (as
+    /// a constant); `var_spec` was absent from every allowlist so every
+    /// package-level `var` was silently dropped.
+    #[test]
+    fn test_go_var_spec_in_definitions() {
+        let source = r#"
+package main
+
+var Config = map[string]int{}
+
+var (
+    Host    = "localhost"
+    Enabled = true
+)
+"#;
+        let names = def_names(source, Language::Go);
+        assert!(
+            names.iter().any(|n| n == "Config"),
+            "Go package-level `var Config` must appear in definitions[], got {:?}",
+            names
+        );
+        assert!(
+            names.iter().any(|n| n == "Host"),
+            "Go `var Host` must appear in definitions[], got {:?}",
             names
         );
     }
