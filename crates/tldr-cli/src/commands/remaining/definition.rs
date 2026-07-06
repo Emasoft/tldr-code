@@ -854,7 +854,9 @@ fn resolve_local_scope(
             if node.parent().is_none() {
                 scanned_root = true;
             }
-            if let Some(loc) = scan_scope_for_binding(node, source, symbol, language, file) {
+            if let Some(loc) =
+                scan_scope_for_binding(node, source, symbol, language, file, start_node)
+            {
                 return Ok(Some(make_local_result(symbol, loc)));
             }
         }
@@ -884,7 +886,9 @@ fn resolve_local_scope(
     // scanner only returns property/field bindings, never re-derives an
     // inner-scope local that the ancestor walk already rejected.
     if !scanned_root && language_has_class_fields(language) {
-        if let Some(loc) = scan_scope_for_binding(root, source, symbol, language, file) {
+        if let Some(loc) =
+            scan_scope_for_binding(root, source, symbol, language, file, start_node)
+        {
             return Ok(Some(make_local_result(symbol, loc)));
         }
     }
@@ -1163,6 +1167,7 @@ fn scan_scope_for_binding(
     symbol: &str,
     language: Language,
     file: &Path,
+    cursor: Node,
 ) -> Option<(SymbolKind, Location)> {
     // Search only the scope's immediate body, but recurse into binding
     // forms. We delegate to a language-specific recursive helper.
@@ -1181,7 +1186,7 @@ fn scan_scope_for_binding(
         Language::Php => scan_php_scope(node, bytes, symbol, file),
         Language::Lua | Language::Luau => scan_lua_scope(node, bytes, symbol, file),
         Language::Elixir => scan_elixir_scope(node, bytes, symbol, file),
-        Language::Ocaml => scan_ocaml_scope(node, bytes, symbol, file),
+        Language::Ocaml => scan_ocaml_scope(node, bytes, symbol, file, cursor),
         Language::CSharp => scan_csharp_scope(node, bytes, symbol, file),
         // v0.5.0 C2 AUDIT-FIX: Solidity scope-binding scanner resolves
         // contract state variables and function/constructor parameters.
@@ -2761,6 +2766,7 @@ fn scan_ocaml_scope(
     src: &[u8],
     symbol: &str,
     file: &Path,
+    cursor_node: Node,
 ) -> Option<(SymbolKind, Location)> {
     // `value_definition` wraps one or more `let_binding` children — recurse
     // into them.
@@ -2792,7 +2798,7 @@ fn scan_ocaml_scope(
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Some(loc) = ocaml_walk_for_binding(child, src, symbol, file) {
+        if let Some(loc) = ocaml_walk_for_binding(child, src, symbol, file, cursor_node) {
             return Some(loc);
         }
     }
@@ -2839,19 +2845,36 @@ fn ocaml_walk_for_binding(
     src: &[u8],
     symbol: &str,
     file: &Path,
+    cursor_node: Node,
 ) -> Option<(SymbolKind, Location)> {
     match node.kind() {
         "fun_expression" | "function_expression" => None,
         "let_binding" | "value_definition" => {
             // Match the bound name (first value_name / value_pattern that is a plain identifier).
+            if ocaml_decline_nonrec_rhs_self_match(node, src, symbol, cursor_node) {
+                return None;
+            }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if matches!(child.kind(), "value_name" | "value_pattern") {
                     if let Some(name) = ocaml_find_first_ident(child, src, symbol) {
+                        if name.start_byte() > cursor_node.start_byte() {
+                            return None;
+                        }
                         return Some(make_var_location(name, file));
                     }
                     // Stop after first — subsequent names are parameters.
                     break;
+                }
+            }
+            if node.kind() == "value_definition" {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(loc) =
+                        ocaml_walk_for_binding(child, src, symbol, file, cursor_node)
+                    {
+                        return Some(loc);
+                    }
                 }
             }
             None
@@ -2859,13 +2882,104 @@ fn ocaml_walk_for_binding(
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if let Some(loc) = ocaml_walk_for_binding(child, src, symbol, file) {
+                if let Some(loc) =
+                    ocaml_walk_for_binding(child, src, symbol, file, cursor_node)
+                {
                     return Some(loc);
                 }
             }
             None
         }
     }
+}
+
+fn ocaml_decline_nonrec_rhs_self_match(
+    node: Node,
+    src: &[u8],
+    symbol: &str,
+    cursor_node: Node,
+) -> bool {
+    let Some(binding) = ocaml_binding_containing_cursor(node, cursor_node) else {
+        return false;
+    };
+    if ocaml_binding_has_rec_token(binding, src) {
+        return false;
+    }
+    let Some(bound_name) = ocaml_bound_name_node(binding, src, symbol) else {
+        return false;
+    };
+    !node_contains(bound_name, cursor_node)
+        && ocaml_binding_rhs_contains_cursor(binding, src, cursor_node)
+}
+
+fn ocaml_binding_containing_cursor<'a>(
+    node: Node<'a>,
+    cursor_node: Node<'a>,
+) -> Option<Node<'a>> {
+    if node.kind() == "let_binding" && node_contains(node, cursor_node) {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "let_binding" && node_contains(child, cursor_node) {
+            return Some(child);
+        }
+    }
+    if node.kind() == "value_definition" && node_contains(node, cursor_node) {
+        return Some(node);
+    }
+    None
+}
+
+fn ocaml_binding_has_rec_token(binding: Node, src: &[u8]) -> bool {
+    if ocaml_node_has_rec_token(binding, src) {
+        return true;
+    }
+    match binding.parent() {
+        Some(parent) => {
+            parent.kind() == "value_definition" && ocaml_node_has_rec_token(parent, src)
+        }
+        None => false,
+    }
+}
+
+fn ocaml_node_has_rec_token(node: Node, src: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "rec" || matches!(child.utf8_text(src), Ok("rec")) {
+            return true;
+        }
+    }
+    false
+}
+
+fn ocaml_bound_name_node<'a>(binding: Node<'a>, src: &[u8], symbol: &str) -> Option<Node<'a>> {
+    let mut cursor = binding.walk();
+    for child in binding.children(&mut cursor) {
+        if matches!(child.kind(), "value_name" | "value_pattern") {
+            return ocaml_find_first_ident(child, src, symbol);
+        }
+    }
+    None
+}
+
+fn ocaml_binding_rhs_contains_cursor(binding: Node, src: &[u8], cursor_node: Node) -> bool {
+    let mut seen_equals = false;
+    let mut cursor = binding.walk();
+    for child in binding.children(&mut cursor) {
+        if child.kind() == "=" || matches!(child.utf8_text(src), Ok("=")) {
+            seen_equals = true;
+            continue;
+        }
+        if seen_equals && node_contains(child, cursor_node) {
+            return true;
+        }
+    }
+    false
+}
+
+fn node_contains(outer: Node, inner: Node) -> bool {
+    inner.start_byte() >= outer.start_byte() && inner.end_byte() <= outer.end_byte()
 }
 
 /// C# scope binding scanner. Handles parameters and local variable
@@ -6413,6 +6527,36 @@ from . import types
         fs::write(&file, "let add a b = a + b\n").unwrap();
         // Cursor on `a` in `a + b` — column 14 of line 1.
         assert_resolves_param(&file, 1, 14, "ocaml", "a", 1);
+    }
+
+    #[test]
+    fn test_definition_ocaml_nonrec_let_rhs_uses_prior_binding_but_rec_self_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shadow.ml");
+        fs::write(
+            &file,
+            "let x = 1\n\nlet x =\n  x + 1\n\nlet rec y =\n  y + 1\n",
+        )
+        .unwrap();
+
+        let nonrec = find_definition_by_position(&file, 4, 2, None, "ocaml")
+            .expect("non-recursive rhs use should resolve");
+        assert_eq!(nonrec.symbol.name, "x");
+        let nonrec_def = nonrec.definition.expect("non-recursive definition");
+        assert_eq!(
+            nonrec_def.line, 1,
+            "non-recursive let RHS should resolve to prior x, not line {}",
+            nonrec_def.line
+        );
+
+        let recursive = find_definition_by_position(&file, 7, 2, None, "ocaml")
+            .expect("recursive rhs use should resolve");
+        assert_eq!(recursive.symbol.name, "y");
+        let recursive_def = recursive.definition.expect("recursive definition");
+        assert_eq!(
+            recursive_def.line, 6,
+            "let rec RHS should keep resolving to the recursive binding"
+        );
     }
 
     #[test]
