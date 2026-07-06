@@ -877,7 +877,10 @@ pub fn enrich_impact_with_references(
 
     let refs_report = match find_references(target_func, project_root, &options) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(_) => {
+            recurse_reference_enrichment_for_report(report, project_root, language);
+            return;
+        }
     };
 
     let mut file_funcs_cache: HashMap<PathBuf, Vec<(String, u32, u32)>> = HashMap::new();
@@ -1137,6 +1140,7 @@ pub fn enrich_impact_with_references(
     }
 
     if additions.is_empty() {
+        recurse_reference_enrichment_for_report(report, project_root, language);
         return;
     }
 
@@ -1304,6 +1308,420 @@ pub fn enrich_impact_with_references(
                 .then_with(|| a.function.cmp(&b.function))
         });
     }
+
+    recurse_reference_enrichment_for_report(report, project_root, language);
+}
+
+#[derive(Clone)]
+struct ReferenceDefinerSignals {
+    is_ambiguous: bool,
+    colliding_quals: HashSet<String>,
+}
+
+fn recurse_reference_enrichment_for_report(
+    report: &mut ImpactReport,
+    project_root: &Path,
+    language: Language,
+) {
+    let mut file_funcs_cache: HashMap<PathBuf, Vec<(String, u32, u32)>> = HashMap::new();
+    let mut definer_cache: HashMap<String, ReferenceDefinerSignals> = HashMap::new();
+    for tree in report.targets.values_mut() {
+        let mut seen: HashSet<FunctionKey> = HashSet::new();
+        seen.insert((tree.file.clone(), tree.function.clone()));
+        recurse_reference_enrichment_for_children(
+            tree,
+            project_root,
+            language,
+            &mut file_funcs_cache,
+            &mut definer_cache,
+            &mut seen,
+        );
+    }
+}
+
+fn recurse_reference_enrichment_for_children(
+    tree: &mut CallerTree,
+    project_root: &Path,
+    language: Language,
+    file_funcs_cache: &mut HashMap<PathBuf, Vec<(String, u32, u32)>>,
+    definer_cache: &mut HashMap<String, ReferenceDefinerSignals>,
+    seen: &mut HashSet<FunctionKey>,
+) {
+    let mut idx = 0;
+    while idx < tree.callers.len() {
+        recurse_reference_enrichment_for_node(
+            &mut tree.callers[idx],
+            project_root,
+            language,
+            file_funcs_cache,
+            definer_cache,
+            seen,
+        );
+        idx += 1;
+    }
+}
+
+fn recurse_reference_enrichment_for_node(
+    tree: &mut CallerTree,
+    project_root: &Path,
+    language: Language,
+    file_funcs_cache: &mut HashMap<PathBuf, Vec<(String, u32, u32)>>,
+    definer_cache: &mut HashMap<String, ReferenceDefinerSignals>,
+    seen: &mut HashSet<FunctionKey>,
+) {
+    let key = (tree.file.clone(), tree.function.clone());
+    if !seen.insert(key.clone()) {
+        return;
+    }
+
+    enrich_single_caller_tree_node_with_references(
+        tree,
+        project_root,
+        language,
+        file_funcs_cache,
+        definer_cache,
+    );
+    recurse_reference_enrichment_for_children(
+        tree,
+        project_root,
+        language,
+        file_funcs_cache,
+        definer_cache,
+        seen,
+    );
+
+    seen.remove(&key);
+}
+
+fn nested_reference_definer_signals(
+    tree: &CallerTree,
+    project_root: &Path,
+    language: Language,
+    bare_target: &str,
+    definer_cache: &mut HashMap<String, ReferenceDefinerSignals>,
+) -> ReferenceDefinerSignals {
+    if let Some(signals) = definer_cache.get(bare_target) {
+        return signals.clone();
+    }
+
+    let mut definitions: HashSet<(PathBuf, String)> = HashSet::new();
+    if let Some(locations) = find_function_in_ast(project_root, bare_target, None, language) {
+        for (func_name, func_file) in locations {
+            let qualified = qualify_ast_method_name(&func_file, &func_name);
+            if last_segment(&qualified) == bare_target {
+                definitions.insert((func_file, qualified));
+            }
+        }
+    }
+    if definitions.is_empty() {
+        definitions.insert((tree.file.clone(), tree.function.clone()));
+    }
+
+    let mut qual_counts: HashMap<String, usize> = HashMap::new();
+    for (_, func) in &definitions {
+        if let Some(q) = qualifier_of(func) {
+            *qual_counts.entry(q).or_insert(0) += 1;
+        }
+    }
+    let signals = ReferenceDefinerSignals {
+        is_ambiguous: definitions.len() >= 2,
+        colliding_quals: qual_counts
+            .into_iter()
+            .filter(|(_, n)| *n >= 2)
+            .map(|(q, _)| q)
+            .collect(),
+    };
+    definer_cache.insert(bare_target.to_string(), signals.clone());
+    signals
+}
+
+fn enrich_single_caller_tree_node_with_references(
+    tree: &mut CallerTree,
+    project_root: &Path,
+    language: Language,
+    file_funcs_cache: &mut HashMap<PathBuf, Vec<(String, u32, u32)>>,
+    definer_cache: &mut HashMap<String, ReferenceDefinerSignals>,
+) {
+    use crate::analysis::references::{find_references, ReferenceKind, ReferencesOptions};
+    use crate::extract_file;
+
+    if tree.truncated {
+        return;
+    }
+
+    let target_func = last_segment(&tree.function).to_string();
+    if target_func.is_empty() || target_func.starts_with('<') {
+        return;
+    }
+
+    let any_resolved = !tree.callers.is_empty();
+    let definer_signals =
+        nested_reference_definer_signals(tree, project_root, language, &target_func, definer_cache);
+    let is_ambiguous = definer_signals.is_ambiguous;
+    let colliding_quals = definer_signals.colliding_quals;
+    let resolve_receiver_types = is_ambiguous;
+
+    let mut options = ReferencesOptions::new();
+    options.kinds = Some(vec![ReferenceKind::Call]);
+    options.language = Some(language.as_str().to_string());
+    options.limit = Some(500);
+
+    let refs_report = match find_references(&target_func, project_root, &options) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let target_file = tree.file.clone();
+    let mut additions: Vec<(String, PathBuf, u32, CallReceiver, Option<String>)> = Vec::new();
+
+    for r in &refs_report.references {
+        let caller_file = r.file.clone();
+        let funcs = file_funcs_cache
+            .entry(caller_file.clone())
+            .or_insert_with(|| {
+                let module = match extract_file(&caller_file, None) {
+                    Ok(m) => m,
+                    Err(_) => return Vec::new(),
+                };
+                let mut out: Vec<(String, u32, u32)> = Vec::new();
+                for f in &module.functions {
+                    out.push((f.name.clone(), f.line_number, f.line_end));
+                }
+                for class in &module.classes {
+                    for m in &class.methods {
+                        out.push((m.name.clone(), m.line_number, m.line_end));
+                        out.push((
+                            format!("{}.{}", class.name, m.name),
+                            m.line_number,
+                            m.line_end,
+                        ));
+                    }
+                }
+                out
+            });
+        let enclosing = funcs
+            .iter()
+            .find(|(_, start, end)| {
+                let line = r.line as u32;
+                line >= *start && (*end == 0 || line <= *end)
+            })
+            .map(|(name, _, _)| name.clone())
+            .unwrap_or_else(|| "<module>".to_string());
+        let ast_inner =
+            innermost_named_enclosing_function(&caller_file, r.line, r.column, language);
+
+        let is_self = paths_equivalent_root(&target_file, project_root, &caller_file)
+            && (enclosing == target_func
+                || last_segment_eq_pub(&enclosing, &target_func)
+                || ast_inner.as_deref().is_some_and(|inner| {
+                    inner == target_func || last_segment_eq_pub(inner, &target_func)
+                }));
+        if is_self {
+            continue;
+        }
+
+        let receiver = extract_call_receiver(
+            &caller_file,
+            r.line,
+            r.column,
+            &target_func,
+            language,
+            resolve_receiver_types,
+            any_resolved,
+            &colliding_quals,
+        );
+
+        let key_pair = (enclosing.clone(), caller_file.clone());
+        if additions
+            .iter()
+            .any(|(n, f, _, _, _)| n == &key_pair.0 && f == &key_pair.1)
+        {
+            continue;
+        }
+        additions.push((enclosing, caller_file, r.line as u32, receiver, ast_inner));
+    }
+
+    if !any_resolved && additions.is_empty() {
+        let mut read_opts = ReferencesOptions::new();
+        read_opts.kinds = Some(vec![ReferenceKind::Read]);
+        read_opts.language = Some(language.as_str().to_string());
+        read_opts.limit = Some(500);
+        if let Ok(read_refs) = find_references(&target_func, project_root, &read_opts) {
+            for r in &read_refs.references {
+                let caller_file = r.file.clone();
+                let receiver = extract_call_receiver(
+                    &caller_file,
+                    r.line,
+                    r.column,
+                    &target_func,
+                    language,
+                    resolve_receiver_types,
+                    any_resolved,
+                    &colliding_quals,
+                );
+                if !matches!(receiver, CallReceiver::Named(_) | CallReceiver::SelfRef(_)) {
+                    continue;
+                }
+                let funcs = file_funcs_cache
+                    .entry(caller_file.clone())
+                    .or_insert_with(|| {
+                        let module = match extract_file(&caller_file, None) {
+                            Ok(m) => m,
+                            Err(_) => return Vec::new(),
+                        };
+                        let mut out: Vec<(String, u32, u32)> = Vec::new();
+                        for f in &module.functions {
+                            out.push((f.name.clone(), f.line_number, f.line_end));
+                        }
+                        for class in &module.classes {
+                            for m in &class.methods {
+                                out.push((m.name.clone(), m.line_number, m.line_end));
+                                out.push((
+                                    format!("{}.{}", class.name, m.name),
+                                    m.line_number,
+                                    m.line_end,
+                                ));
+                            }
+                        }
+                        out
+                    });
+                let enclosing = funcs
+                    .iter()
+                    .find(|(_, start, end)| {
+                        let line = r.line as u32;
+                        line >= *start && (*end == 0 || line <= *end)
+                    })
+                    .map(|(name, _, _)| name.clone())
+                    .unwrap_or_else(|| "<module>".to_string());
+                let ast_inner =
+                    innermost_named_enclosing_function(&caller_file, r.line, r.column, language);
+
+                let is_self = paths_equivalent_root(&target_file, project_root, &caller_file)
+                    && (enclosing == target_func
+                        || last_segment_eq_pub(&enclosing, &target_func)
+                        || ast_inner.as_deref().is_some_and(|inner| {
+                            inner == target_func || last_segment_eq_pub(inner, &target_func)
+                        }));
+                if is_self {
+                    continue;
+                }
+
+                let key_pair = (enclosing.clone(), caller_file.clone());
+                if additions
+                    .iter()
+                    .any(|(n, f, _, _, _)| n == &key_pair.0 && f == &key_pair.1)
+                {
+                    continue;
+                }
+                additions.push((enclosing, caller_file, r.line as u32, receiver, ast_inner));
+            }
+        }
+    }
+
+    if matches!(language, Language::Elixir) {
+        let before = tree.callers.len();
+        tree.callers
+            .retain(|c| !is_elixir_synthetic_module_atom_caller(&c.function));
+        if tree.callers.len() != before {
+            tree.caller_count = tree.callers.len();
+        }
+    }
+
+    if additions.is_empty() {
+        return;
+    }
+
+    let mut class_bases_by_file: HashMap<PathBuf, HashMap<String, Vec<String>>> = HashMap::new();
+    for (_, file, _, receiver, _) in &additions {
+        if !matches!(receiver, CallReceiver::SelfRef(Some(_))) {
+            continue;
+        }
+        if class_bases_by_file.contains_key(file) {
+            continue;
+        }
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        if let Ok(module) = extract_file(file, None) {
+            for class in &module.classes {
+                if !class.name.is_empty() && !class.bases.is_empty() {
+                    map.entry(class.name.clone())
+                        .or_insert_with(|| class.bases.clone());
+                }
+            }
+        }
+        class_bases_by_file.insert(file.clone(), map);
+    }
+
+    let target_qualifier = qualifier_of(&tree.function);
+    for (name, file, line, receiver, ast_inner) in &additions {
+        let strict_ok = receiver_compatible(
+            receiver,
+            target_qualifier.as_deref(),
+            &tree.file,
+            file,
+            &class_bases_by_file,
+            &colliding_quals,
+        );
+        let keep = strict_ok
+            || (!any_resolved
+                && !is_ambiguous
+                && never_worse_unique_keep(receiver, target_qualifier.as_deref()));
+        if !keep {
+            continue;
+        }
+
+        let already_present = tree.callers.iter().any(|c| {
+            let names_match = &c.function == name
+                || last_segment_eq_pub(&c.function, name)
+                || last_segment_eq_pub(name, &c.function);
+            let inner_match = ast_inner.as_deref().is_some_and(|inner| {
+                &c.function == inner
+                    || last_segment_eq_pub(&c.function, inner)
+                    || last_segment_eq_pub(inner, &c.function)
+            });
+            (names_match || inner_match) && paths_equivalent_root(&c.file, project_root, file)
+        });
+        if already_present {
+            continue;
+        }
+
+        let cross_file = !paths_equivalent_root(&tree.file, project_root, file);
+        let note = if cross_file {
+            format!(
+                "Discovered via references at line {} (call graph did not resolve this cross-file edge)",
+                line
+            )
+        } else {
+            format!(
+                "Discovered via references at line {} (call graph did not resolve this same-file edge)",
+                line
+            )
+        };
+        tree.callers.push(CallerTree {
+            function: name.clone(),
+            file: file.clone(),
+            caller_count: 0,
+            callers: vec![],
+            truncated: false,
+            note: Some(note),
+            confidence: None,
+            receiver_type: receiver.qualifier_label(),
+        });
+        tree.caller_count = tree.callers.len();
+        if let Some(n) = &tree.note {
+            if n.contains("Entry point") || n.contains("no callers") {
+                tree.note = Some(
+                    "caller_count derived from references enrichment (call graph missing cross-file edges)"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    tree.callers.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.function.cmp(&b.function))
+    });
 }
 
 /// Path equality with project-root anchoring used by the references
@@ -3826,6 +4244,94 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn w2_14_cpp_nested_caller_tree_is_reference_enriched_with_local_gates() {
+        let root = std::env::temp_dir().join("tldr_w2_14_cpp_nested_enrich");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("app.cpp");
+        std::fs::write(
+            &file,
+            "class A {\npublic:\n    void leaf() {}\n};\n\n\
+             class B {\npublic:\n    void leaf() {}\n};\n\n\
+             class Worker {\npublic:\n    void step() {\n        A a;\n        a.leaf();\n    }\n};\n\n\
+             void entry(DynamicWorker w) {\n    w.step();\n}\n",
+        )
+        .unwrap();
+
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            format!("{}:A.leaf", file.display()),
+            CallerTree {
+                function: "A.leaf".to_string(),
+                file: file.clone(),
+                caller_count: 1,
+                callers: vec![CallerTree {
+                    function: "Worker.step".to_string(),
+                    file: file.clone(),
+                    caller_count: 0,
+                    callers: vec![],
+                    truncated: false,
+                    note: Some("Entry point - no callers found".to_string()),
+                    confidence: None,
+                    receiver_type: None,
+                }],
+                truncated: false,
+                note: None,
+                confidence: None,
+                receiver_type: None,
+            },
+        );
+        targets.insert(
+            format!("{}:B.leaf", file.display()),
+            CallerTree {
+                function: "B.leaf".to_string(),
+                file: file.clone(),
+                caller_count: 0,
+                callers: vec![],
+                truncated: false,
+                note: Some("Entry point - no callers found".to_string()),
+                confidence: None,
+                receiver_type: None,
+            },
+        );
+        let mut report = ImpactReport {
+            targets,
+            total_targets: 2,
+            type_resolution: None,
+        };
+
+        enrich_impact_with_references(&mut report, &root, "leaf", crate::Language::Cpp);
+
+        fn find_node<'a>(tree: &'a CallerTree, name: &str) -> Option<&'a CallerTree> {
+            if tree.function == name {
+                return Some(tree);
+            }
+            tree.callers
+                .iter()
+                .find_map(|caller| find_node(caller, name))
+        }
+
+        let worker = report
+            .targets
+            .values()
+            .find_map(|tree| find_node(tree, "Worker.step"))
+            .expect("nested Worker.step caller should remain present");
+        assert!(
+            worker.callers.iter().any(|caller| caller.function == "entry"),
+            "nested Worker.step should be enriched with its statically provable entry caller; report: {:?}",
+            report
+        );
+        let note = worker.note.as_deref().unwrap_or_default();
+        assert!(
+            !note.contains("Entry point") && !note.contains("no callers"),
+            "nested Worker.step must not keep an entry-point/no-callers note after enrichment; node: {:?}",
+            worker
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
