@@ -395,7 +395,20 @@ fn identifier_text(node: &Node, source: &str) -> Option<String> {
         _ => {
             // Some grammar versions wrap identifiers inside `prefix`
             // or `expression` nodes — descend to the first named
-            // child.
+            // child. But NEVER descend through a function literal or
+            // its parameter list: a function-valued `__index` is a
+            // dynamic accessor, not a static parent, and descending
+            // would fabricate a `<param> extends` edge. (W1-20)
+            if matches!(
+                node.kind(),
+                "function_definition"
+                    | "function"
+                    | "function_declaration"
+                    | "local_function"
+                    | "parameters"
+            ) {
+                return None;
+            }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.is_named() {
@@ -416,6 +429,17 @@ fn identifier_text(node: &Node, source: &str) -> Option<String> {
             }
         }
     }
+}
+
+/// Return true if `node` is a function literal (anonymous function or
+/// function definition) — a dynamic accessor, not a static base. Used to
+/// guard `__index` value extraction so a function-valued `__index` never
+/// fabricates an `extends` edge. (W1-20)
+fn is_function_literal(node: &Node) -> bool {
+    matches!(
+        node.kind(),
+        "function_definition" | "function" | "function_declaration" | "local_function"
+    )
 }
 
 /// Inside a table constructor, find the value of the `__index` field.
@@ -442,6 +466,15 @@ fn find_index_field_value(table: &Node, source: &str) -> Option<String> {
                 .child_by_field_name("value")
                 .or_else(|| field_last_expression(&field, source));
             if let Some(v) = value {
+                // A function-valued `__index` is a dynamic accessor
+                // (custom lookup), not a static parent. Guard on the
+                // node kind BEFORE calling `identifier_text` so the
+                // function literal is never walked into its parameter
+                // list (which would fabricate a `<param> extends`
+                // edge, e.g. `t extends obj`). (W1-20)
+                if is_function_literal(&v) {
+                    return None;
+                }
                 return identifier_text(&v, source);
             }
         }
@@ -657,6 +690,56 @@ end
         assert!(
             extends_base(&classes, "Button", "Component"),
             "expected Button -> Component in .luau, got {:?}",
+            classes
+        );
+    }
+
+    /// W1-20: a FUNCTION-valued `__index` (a custom accessor) is a
+    /// dynamic dispatch helper, not a static parent. The walker must NOT
+    /// descend into the function literal's parameter list and emit a
+    /// bogus `t extends <param>` (e.g. `t extends _self`) edge. (RED
+    /// before fix: the `identifier_text` fallback walked the first named
+    /// child of the function literal — its first parameter — and that
+    /// name became a fabricated base.)
+    #[test]
+    fn test_function_valued_index_emits_no_extends_edge() {
+        // NOTE: the parameter name `obj` is deliberately NOT a filtered
+        // name (unlike `_`/`self`), so it would slip through
+        // `is_valid_parent_name` and become a fabricated base if the
+        // function literal were walked into its parameter list.
+        let source = r#"
+local t = {}
+setmetatable(t, { __index = function(obj, key) return nil end })
+"#;
+        let classes = parse_and_extract(source);
+        assert!(
+            !classes.iter().any(|c| c.name == "t"),
+            "function-valued __index must not emit an extends edge for `t`: {:?}",
+            classes
+        );
+        // No fabricated base from the parameter list (`obj`, `key`,
+        // `_self`, ...).
+        assert!(
+            classes.is_empty(),
+            "expected no inheritance edges from a function-valued __index, got {:?}",
+            classes
+        );
+    }
+
+    /// W1-20 regression: a NORMAL `__index = Base` table still yields the
+    /// correct `extends Base` edge after the function-literal guard is
+    /// added (additive: output only shrinks a wrong edge).
+    #[test]
+    fn test_normal_index_base_still_extends_after_function_guard() {
+        let source = r#"
+local Base = {}
+local t = {}
+setmetatable(t, { __index = Base })
+"#;
+        let classes = parse_and_extract(source);
+        assert!(
+            extends_base(&classes, "t", "Base"),
+            "expected t -> Base via normal __index = Base, got {:?}",
             classes
         );
     }
