@@ -553,7 +553,19 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
             )
         };
 
-        let edge = base_edge.with_kind(edge_info.kind);
+        let kind =
+            if resolution == BaseResolution::Project
+                && edge_info.kind == InheritanceKind::Extends
+                && matches!(
+                    parent_node,
+                    Some(node) if node.protocol == Some(true) || node.interface == Some(true)
+                )
+            {
+                InheritanceKind::Implements
+            } else {
+                edge_info.kind
+            };
+        let edge = base_edge.with_kind(kind);
 
         // Edge identity: (child, parent, child_file, parent_file). The
         // child_file distinguishes cross-file same-named edges; the
@@ -770,6 +782,48 @@ mod tests {
             .find(|e| e.child == "Dog" && e.parent == "Animal")
             .expect("Dog should inherit Animal via setmetatable __index");
         assert_eq!(edge.kind, InheritanceKind::Extends);
+    }
+
+    #[test]
+    fn test_swift_protocol_conformance_edge_kind() {
+        let dir = TempDir::new().unwrap();
+        create_test_file(
+            &dir,
+            "test.swift",
+            r#"
+protocol Runnable {}
+
+class BaseJob {}
+
+class ProtocolJob: Runnable {}
+
+class SubJob: BaseJob {}
+"#,
+        );
+
+        let options = InheritanceOptions::default();
+        let report = extract_inheritance(dir.path(), Some(Language::Swift), &options).unwrap();
+
+        assert_eq!(
+            report.edges.len(),
+            2,
+            "Swift fixture should emit exactly two inheritance edges: {:?}",
+            report.edges
+        );
+
+        let protocol_edge = report
+            .edges
+            .iter()
+            .find(|e| e.child == "ProtocolJob" && e.parent == "Runnable")
+            .expect("ProtocolJob should conform to Runnable");
+        assert_eq!(protocol_edge.kind, InheritanceKind::Implements);
+
+        let subclass_edge = report
+            .edges
+            .iter()
+            .find(|e| e.child == "SubJob" && e.parent == "BaseJob")
+            .expect("SubJob should extend BaseJob");
+        assert_eq!(subclass_edge.kind, InheritanceKind::Extends);
     }
 
     /// inheritance-extends-vs-implements-ocaml-v1 (T3): on a no-`--lang`
