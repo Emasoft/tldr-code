@@ -12,14 +12,8 @@ use tldr_core::callgraph::builder_v2::{
 use tldr_core::callgraph::{
     build_project_call_graph_v2, BuildConfig, ImportResolver, ModuleIndex, ReExportTracer,
 };
-use tldr_core::language_policy::{policy_for, AliasStyle};
+use tldr_core::language_policy::module_uses_dotted_alias;
 use tldr_core::types::Language;
-
-fn module_uses_dotted_alias(language: &str) -> bool {
-    Language::from_str(language)
-        .map(|lang| policy_for(lang).module_alias_style == AliasStyle::DottedSuffix)
-        .unwrap_or(false)
-}
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);

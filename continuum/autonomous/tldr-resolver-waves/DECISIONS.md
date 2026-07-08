@@ -51,3 +51,21 @@ no clean additive fix to make.** The investigation is the finding:
   This D5 entry is the guard-of-record against a naive re-attempt of the reverted subtractive approach.
   (Re-adding the green regression test as a permanent guard is an optional follow-up for m1/m4.)
 - **Net for m0:** campaign closes at **13 fixes committed + 1 documented-deferred (W2-29)**, not 14 shipped edits.
+
+## D6 — m1 shape-heuristic audit: DOCUMENTED-SAFE deferrals (precision-program-v1 VAL-013) — 2026-07-08
+The VAL-013 audit (report: `precision-program-v1/reports/VAL-013-audit.md`, 26 findings) found 8 BUG-CLASS
+instances; 7 mechanical ones were policy-gated in VAL-013-FIX. The remaining 4 are DEFERRED with rationale —
+they are not the is_python_style bug class and "fixing" them now would be subtractive or unmeasured:
+- **#6 `resolve_capitalized_receiver` (resolution.rs:2357)** — capitalizes a lowercase receiver into a class
+  guess, all languages. This is a *designed fuzzy heuristic* (a recall tier), not an accidental leak: gating
+  it off would REMOVE real edges (subtractive; violates never-worse). Correct disposition: **m3 honesty
+  layer** labels its edges T2 so decline-mode commands ignore them and consumers can filter. Not before.
+- **#9 `is_builtin_method_name` (resolution.rs:1410)** / **#10 `is_stdlib_type` (resolution.rs:1361)** —
+  global name blocklists (Python+Go+Ruby-flavored) consulted by all languages. These are FALSE-POSITIVE
+  DEFENSES: per-language splitting changes fuzzy-resolution behavior in unmeasured ways (could ADD noisy
+  edges in languages that lose the block). Disposition: migrate the lists to per-language LanguagePolicy
+  data **in m3/m5 when the truth harness (m2) can measure the effect**. Until then the conservative global
+  block stands.
+- **#11 import_resolver.rs:229 extension stripping before the language branch** — plausible mechanical
+  migration, low measured risk today (extractors don't emit cross-language extension-bearing module specs on
+  the current corpora); folded into the same m3/m5 policy-data pass rather than churning the gate now.

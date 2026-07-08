@@ -947,6 +947,18 @@
    ],
    "_batch": "VAL-012",
    "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "typescript-axios",
+   "type": "flipped",
+   "src_file": "tests/unit/prototypePollution.test.js",
+   "src_func": "request",
+   "dst_func": "request",
+   "dst_file": [
+    "tests/unit/prototypePollution.test.js"
+   ],
+   "_batch": "VAL-013-FIX",
+   "_review": "correct re-point: call is stdlib http.request (import http from 'http'); baseline bound project lib/adapters/http.js via the ModuleIndex generic simple alias 'http' (the audited bug class, now policy-gated); spurious cross-file candidate removed. Residual self-bind is the designed fuzzy tier -> m3 T2 label. Non-unique name; flips_on_unique_name=0."
   }
  ]
 }

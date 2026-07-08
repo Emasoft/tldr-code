@@ -64,7 +64,7 @@ use super::resolution::{
 };
 use super::scanner::{is_supported_language, normalize_language_string};
 use super::var_types::FileParseResult;
-use crate::language_policy::{policy_for, AliasStyle};
+use crate::language_policy::{module_uses_dotted_alias, policy_for};
 
 // =============================================================================
 // Parallel Index Building (Spec Section 14.5)
@@ -96,6 +96,7 @@ pub fn build_indices_parallel(
 ) -> (FuncIndex, ClassIndex, Vec<FileIR>) {
     // P1: Canonicalize root for consistent path operations (parity-fix-plan.yaml)
     let canonical_root = root.canonicalize().ok();
+    let dotted_alias = module_uses_dotted_alias(language);
 
     // Process files in parallel using rayon
     // Per M1.8: Use flat par_iter, no nested parallelism
@@ -175,8 +176,13 @@ pub fn build_indices_parallel(
             // closing the only path by which the losing file's definition could be looked
             // up via PYTHONPATH-style `from <simple> import <name>`. Suppress the alias
             // insert when collision detected (first-writer-wins, deterministic).
-            let simple_module = module.split('.').next_back().unwrap_or(&module);
-            if simple_module != module
+            let simple_module = if dotted_alias {
+                module.split('.').next_back().unwrap_or(&module)
+            } else {
+                &module
+            };
+            if dotted_alias
+                && simple_module != module
                 && func_index
                     .get(simple_module, &func.name)
                     .map(|e| e.file_path == relative_path)
@@ -196,7 +202,8 @@ pub fn build_indices_parallel(
                 );
                 func_index.insert(&module, &qualified, method_entry.clone());
                 // v031-issue-7: same first-writer-wins guard for the qualified alias.
-                if simple_module != module
+                if dotted_alias
+                    && simple_module != module
                     && func_index
                         .get(simple_module, &qualified)
                         .map(|e| e.file_path == relative_path)
@@ -348,12 +355,6 @@ fn language_policy_builtins(language: &str) -> &'static [&'static str] {
     Language::from_str(language)
         .map(|lang| policy_for(lang).builtins)
         .unwrap_or(&[])
-}
-
-fn module_uses_dotted_alias(language: &str) -> bool {
-    Language::from_str(language)
-        .map(|lang| policy_for(lang).module_alias_style == AliasStyle::DottedSuffix)
-        .unwrap_or(false)
 }
 
 enum CallSiteResolution {
@@ -1373,6 +1374,42 @@ def main():
         assert!(
             result.warnings.iter().any(|w| w.target == "__import__"),
             "Should generate warning for dynamic import"
+        );
+    }
+
+    #[test]
+    fn test_extract_and_resolve_calls_python_importlib_warning() {
+        let mut file_ir = FileIR::new(PathBuf::from("plugin.py"));
+        file_ir.add_call(
+            "load_plugin",
+            CallSite::direct("load_plugin", "importlib.import_module", Some(10)),
+        );
+
+        let func_index = FuncIndex::new();
+        let class_index = ClassIndex::new();
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut reexport_tracer = ReExportTracer::new(&module_index);
+
+        let mut resolution_context = ResolutionContext {
+            import_map: &import_map,
+            module_imports: &module_imports,
+            func_index: &func_index,
+            class_index: &class_index,
+            reexport_tracer: &mut reexport_tracer,
+            current_file: &file_ir.path,
+            root: Path::new("/project"),
+            language: "python",
+        };
+        let result = extract_and_resolve_calls(&file_ir, &mut resolution_context);
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.target == "importlib.import_module"),
+            "Python importlib dynamic import warning should be preserved"
         );
     }
 

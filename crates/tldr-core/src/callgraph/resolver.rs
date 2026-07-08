@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::language_policy::module_uses_dotted_alias;
 use crate::types::{ImportInfo, Language};
 
 /// Module resolver for import tracking
@@ -58,8 +59,16 @@ impl ModuleResolver {
             .insert(module_name.clone(), file_path.to_path_buf());
 
         // Also index under the simple (last component) name for fallback resolution
-        let simple_name = module_name.split('.').next_back().unwrap_or(&module_name);
-        if simple_name != module_name {
+        let use_dotted_alias = self
+            .language
+            .map(|language| module_uses_dotted_alias(language.as_str()))
+            .unwrap_or(false);
+        let simple_name = if use_dotted_alias {
+            module_name.split('.').next_back().unwrap_or(&module_name)
+        } else {
+            &module_name
+        };
+        if use_dotted_alias && simple_name != module_name {
             // Only insert if there isn't already a direct match for the simple name
             // (avoid overwriting a direct module with a nested one)
             self.module_index
@@ -201,12 +210,20 @@ impl ModuleResolver {
                         return Some(module_path.clone());
                     }
                     // Fallback: try simple module name (last component)
-                    let simple = import
-                        .module
-                        .split('.')
-                        .next_back()
-                        .unwrap_or(&import.module);
-                    if simple != import.module {
+                    let use_dotted_alias = self
+                        .language
+                        .map(|language| module_uses_dotted_alias(language.as_str()))
+                        .unwrap_or(false);
+                    let simple = if use_dotted_alias {
+                        import
+                            .module
+                            .split('.')
+                            .next_back()
+                            .unwrap_or(&import.module)
+                    } else {
+                        &import.module
+                    };
+                    if use_dotted_alias && simple != import.module {
                         if let Some(module_path) = self.module_index.get(simple) {
                             return Some(module_path.clone());
                         }
@@ -996,6 +1013,69 @@ mod tests {
             result,
             Some(helper_path),
             "Import from 'helper' should match module indexed as 'pkg.helper'"
+        );
+    }
+
+    #[test]
+    fn test_legacy_simple_module_alias_is_policy_gated() {
+        let mut ts_resolver =
+            ModuleResolver::new(PathBuf::from("/project")).with_language(Language::TypeScript);
+        let ts_helper_path = PathBuf::from("/project/pkg.helper.ts");
+        ts_resolver.index_file(&ts_helper_path);
+        ts_resolver.index_function(&ts_helper_path, "do_work");
+        let ts_other_path = PathBuf::from("/project/other.ts");
+        ts_resolver.index_file(&ts_other_path);
+        ts_resolver.index_function(&ts_other_path, "do_work");
+
+        assert_eq!(
+            ts_resolver.resolve_module("./pkg.helper"),
+            Some(ts_helper_path.clone())
+        );
+        assert!(
+            ts_resolver.resolve_module("helper").is_none(),
+            "TypeScript must not index the bare dotted suffix"
+        );
+
+        let ts_imports = vec![ImportInfo {
+            module: "pkg.helper".to_string(),
+            names: vec!["do_work".to_string()],
+            is_from: Some(true),
+            alias: None,
+            line: 0,
+        }];
+        assert!(
+            ts_resolver
+                .resolve_function("do_work", &ts_imports)
+                .is_none(),
+            "TypeScript must not resolve through the bare dotted suffix fallback"
+        );
+
+        let mut py_resolver =
+            ModuleResolver::new(PathBuf::from("/project")).with_language(Language::Python);
+        let py_helper_path = PathBuf::from("/project/pkg/helper.py");
+        py_resolver.index_file(&py_helper_path);
+        py_resolver.index_function(&py_helper_path, "do_work");
+        let py_other_path = PathBuf::from("/project/pkg/other.py");
+        py_resolver.index_file(&py_other_path);
+        py_resolver.index_function(&py_other_path, "do_work");
+
+        assert_eq!(
+            py_resolver.resolve_module("helper"),
+            Some(py_helper_path.clone()),
+            "Python keeps the bare dotted suffix index alias"
+        );
+
+        let py_imports = vec![ImportInfo {
+            module: "other.helper".to_string(),
+            names: vec!["do_work".to_string()],
+            is_from: Some(true),
+            alias: None,
+            line: 0,
+        }];
+        assert_eq!(
+            py_resolver.resolve_function("do_work", &py_imports),
+            Some(py_helper_path),
+            "Python keeps the bare dotted suffix resolve fallback"
         );
     }
 }

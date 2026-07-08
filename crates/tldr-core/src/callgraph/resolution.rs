@@ -19,6 +19,7 @@ use super::module_path::path_to_module;
 use super::types::{
     capitalize_first, sourceset_of_path, ClassEntry, ClassIndex, FuncEntry, FuncIndex,
 };
+use crate::language_policy::module_uses_dotted_alias;
 
 // =============================================================================
 // Phase 14e: Call Extraction and Resolution (Spec Section 14.6)
@@ -754,7 +755,7 @@ pub fn resolve_call(
     let language = context.language;
 
     // M2.4: Check for dynamic import patterns - these cannot be resolved
-    if target.contains("__import__") || target.contains("importlib") {
+    if language == "python" && (target.contains("__import__") || target.contains("importlib")) {
         // Dynamic import detected - log warning and return None
         return None;
     }
@@ -823,7 +824,12 @@ pub fn resolve_call(
                 // BUG FIX 3: Try simple module name first, fallback to full path (CROSSFILE_SPEC.md Section 3.2.1)
                 // When resolving `process()` with import_map["process"] = ("pkg.helper", "process"),
                 // we need to check both ("helper", "process") and ("pkg.helper", "process").
-                let simple_module = module_path.split('.').next_back().unwrap_or(module_path);
+                let dotted_alias = module_uses_dotted_alias(language);
+                let simple_module = if dotted_alias {
+                    module_path.split('.').next_back().unwrap_or(module_path)
+                } else {
+                    module_path
+                };
 
                 // Normalize JS/TS module paths: strip .js/.ts extensions from import paths
                 // Import strings often include .js extension (TS ESM convention)
@@ -882,14 +888,16 @@ pub fn resolve_call(
                 }
 
                 // Try simple module name (last dot component)
-                if let Some(resolved) = resolve_disambiguated(
-                    func_index,
-                    simple_module,
-                    original_name,
-                    original_name,
-                    current_file,
-                ) {
-                    return Some(resolved);
+                if dotted_alias {
+                    if let Some(resolved) = resolve_disambiguated(
+                        func_index,
+                        simple_module,
+                        original_name,
+                        original_name,
+                        current_file,
+                    ) {
+                        return Some(resolved);
+                    }
                 }
                 // Fallback to full module path
                 if let Some(resolved) = resolve_disambiguated(
@@ -2221,7 +2229,12 @@ fn resolve_module_import_receiver(
     context: &mut ReceiverLookupContext<'_, '_>,
 ) -> Option<ResolvedTarget> {
     let module_path = module_imports.get(receiver)?;
-    let simple_module = module_path.split('.').next_back().unwrap_or(module_path);
+    let dotted_alias = module_uses_dotted_alias(context.language);
+    let simple_module = if dotted_alias {
+        module_path.split('.').next_back().unwrap_or(module_path)
+    } else {
+        module_path
+    };
 
     // fix-R7 (R5): disambiguate the module-keyed lookups so the `simple_module`
     // fallback can no longer bind an arbitrary `Vec::first()` when several files
@@ -2235,7 +2248,7 @@ fn resolve_module_import_receiver(
     ) {
         return Some(resolved);
     }
-    if simple_module != module_path.as_str() {
+    if dotted_alias && simple_module != module_path.as_str() {
         if let Some(resolved) = resolve_disambiguated(
             context.func_index,
             simple_module,
@@ -3788,6 +3801,61 @@ mod tests {
         );
 
         assert!(resolved.is_none(), "Dynamic imports should return None");
+    }
+
+    #[test]
+    fn test_importlib_substring_dynamic_import_filter_is_python_only() {
+        let mut ts_func_index = FuncIndex::new();
+        ts_func_index.insert(
+            "./main",
+            "importlib_shim",
+            FuncEntry::function(PathBuf::from("main.ts"), 12, 12),
+        );
+        let import_map = ImportMap::new();
+        let module_imports = ModuleImports::new();
+        let class_index = ClassIndex::new();
+        let ts_module_index = ModuleIndex::new(PathBuf::from("."), "typescript");
+        let mut ts_reexport_tracer = ReExportTracer::new(&ts_module_index);
+
+        let ts_resolved = resolve_call!(
+            "importlib_shim",
+            &CallType::Direct,
+            &import_map,
+            &module_imports,
+            &ts_func_index,
+            &class_index,
+            &mut ts_reexport_tracer,
+            Path::new("main.ts"),
+            Path::new("/project"),
+            "typescript",
+        );
+
+        assert!(
+            ts_resolved.is_some(),
+            "Non-Python project symbols containing importlib must still resolve"
+        );
+
+        let python_func_index = FuncIndex::new();
+        let py_module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut py_reexport_tracer = ReExportTracer::new(&py_module_index);
+
+        let py_resolved = resolve_call!(
+            "importlib.import_module",
+            &CallType::Direct,
+            &import_map,
+            &module_imports,
+            &python_func_index,
+            &class_index,
+            &mut py_reexport_tracer,
+            Path::new("main.py"),
+            Path::new("/project"),
+            "python",
+        );
+
+        assert!(
+            py_resolved.is_none(),
+            "Python importlib dynamic import calls remain unresolved"
+        );
     }
 
     /// Test: resolve_call_with_receiver for module.func pattern

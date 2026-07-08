@@ -48,6 +48,8 @@ use regex::Regex;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
+use crate::language_policy::module_uses_dotted_alias;
+
 /// Errors that can occur during module indexing.
 #[derive(Debug, Error)]
 pub enum ModuleIndexError {
@@ -383,7 +385,7 @@ impl ModuleIndex {
 
         // Generic "simple name" alias (last segment)
         let simple = simple_module_name(module);
-        if simple != module {
+        if module_uses_dotted_alias(&self.language) && simple != module {
             aliases.push(simple.to_string());
         }
 
@@ -2053,6 +2055,32 @@ mod tests {
         let index = ModuleIndex::build(dir.path(), "typescript").unwrap();
 
         assert!(index.lookup("./utils").is_some());
+    }
+
+    #[test]
+    fn test_generic_simple_alias_is_policy_gated() {
+        let ts_dir = tempdir().unwrap();
+        fs::create_dir_all(ts_dir.path().join("pkg")).unwrap();
+        fs::write(ts_dir.path().join("pkg/helper.ts"), "").unwrap();
+
+        let ts_index = ModuleIndex::build(ts_dir.path(), "typescript").unwrap();
+        assert!(ts_index.lookup("./pkg/helper").is_some());
+        assert!(
+            ts_index.lookup("helper").is_none(),
+            "TypeScript must not receive the generic bare simple-module alias"
+        );
+
+        let py_dir = tempdir().unwrap();
+        fs::create_dir_all(py_dir.path().join("pkg")).unwrap();
+        fs::write(py_dir.path().join("pkg/__init__.py"), "").unwrap();
+        fs::write(py_dir.path().join("pkg/helper.py"), "").unwrap();
+
+        let py_index = ModuleIndex::build(py_dir.path(), "python").unwrap();
+        assert!(py_index.lookup("pkg.helper").is_some());
+        assert!(
+            py_index.lookup("helper").is_some(),
+            "Python keeps the bare simple-module alias"
+        );
     }
 
     // =============================================================================

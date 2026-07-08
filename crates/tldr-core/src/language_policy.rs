@@ -4,6 +4,7 @@
 //! code paths until later policy-wiring work migrates them here.
 
 use crate::types::Language;
+use std::str::FromStr;
 
 /// How a language's module string yields a bare-suffix alias in the func index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,9 +156,16 @@ pub fn policy_for(language: Language) -> LanguagePolicy {
     }
 }
 
+/// Returns true when the configured language exposes bare dotted module suffix aliases.
+pub fn module_uses_dotted_alias(lang_str: &str) -> bool {
+    Language::from_str(lang_str)
+        .map(|lang| policy_for(lang).module_alias_style == AliasStyle::DottedSuffix)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{policy_for, AliasStyle};
+    use super::{module_uses_dotted_alias, policy_for, AliasStyle};
     use crate::types::Language;
 
     #[test]
@@ -233,5 +241,12 @@ mod tests {
         let typescript = policy_for(Language::TypeScript);
         assert_eq!(typescript.module_alias_style, AliasStyle::None);
         assert!(typescript.builtins.is_empty());
+    }
+
+    #[test]
+    fn module_uses_dotted_alias_routes_unknown_to_false() {
+        assert!(module_uses_dotted_alias("python"));
+        assert!(!module_uses_dotted_alias("typescript"));
+        assert!(!module_uses_dotted_alias("unknown-language"));
     }
 }
