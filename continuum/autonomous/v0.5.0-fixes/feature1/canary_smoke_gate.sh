@@ -21,7 +21,9 @@ set -o pipefail
 cd /Users/cosimo/Desktop/PatchWork/tldr-code || exit 99
 F1=continuum/autonomous/v0.5.0-fixes/feature1
 TARGETS="${1:?usage: canary_smoke_gate.sh \"<target-repo csv>\"}"
-CANARIES="rust-clap,kotlin-coroutines,cpp-fmt,python-flask"
+# cpp-tinyxml2 + c-sds added after VAL-012: ROOT-LAYOUT repos (files at repo root -> extension-bearing
+# module strings) diverge from nested-layout repos on module-shape logic; cpp-fmt alone missed that.
+CANARIES="rust-clap,kotlin-coroutines,cpp-fmt,python-flask,cpp-tinyxml2,c-sds"
 
 REPOS="$TARGETS,$CANARIES"
 echo "=== CANARY SMOKE-GATE ==="

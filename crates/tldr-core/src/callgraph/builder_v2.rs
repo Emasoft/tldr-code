@@ -64,7 +64,7 @@ use super::resolution::{
 };
 use super::scanner::{is_supported_language, normalize_language_string};
 use super::var_types::FileParseResult;
-use crate::language_policy::policy_for;
+use crate::language_policy::{policy_for, AliasStyle};
 
 // =============================================================================
 // Parallel Index Building (Spec Section 14.5)
@@ -348,6 +348,12 @@ fn language_policy_builtins(language: &str) -> &'static [&'static str] {
     Language::from_str(language)
         .map(|lang| policy_for(lang).builtins)
         .unwrap_or(&[])
+}
+
+fn module_uses_dotted_alias(language: &str) -> bool {
+    Language::from_str(language)
+        .map(|lang| policy_for(lang).module_alias_style == AliasStyle::DottedSuffix)
+        .unwrap_or(false)
 }
 
 enum CallSiteResolution {
@@ -807,6 +813,7 @@ pub fn build_project_call_graph_v2(
         v.sort_by(|a, b| a.0.cmp(b.0));
         v
     };
+    let dotted_alias = module_uses_dotted_alias(&config.language);
 
     // Populate indices from IR
     for (file_path, file_ir) in &sorted_files {
@@ -832,21 +839,18 @@ pub fn build_project_call_graph_v2(
             func_index.insert(&module, &func.name, entry.clone());
 
             // BUG FIX 2: Index BOTH simple AND full module name (CROSSFILE_SPEC.md Section 2.2)
-            // Only for Python-style dot-separated modules (e.g., "pkg.helper" -> also index as "helper")
-            // TS/JS use ./ prefix (not dot-separated), Go uses /, Rust uses ::
+            // Only for policy-enabled dotted modules (e.g., "pkg.helper" -> also index as "helper")
+            // TS/JS use ./ prefix, Go uses /, Rust uses ::, and policy disables their alias.
             //
             // v031-issue-7: see build_indices_parallel above — first-writer-wins on the
             // simple_module alias slot prevents silent overwrite when two distinct
             // modules share the same suffix (`pkg1.foo` vs `pkg2.foo`).
-            let is_python_style = !module.starts_with("./")
-                && !module.starts_with("crate::")
-                && !module.contains('/');
-            let simple_module = if is_python_style {
+            let simple_module = if dotted_alias {
                 module.split('.').next_back().unwrap_or(&module)
             } else {
-                &module // No simple alias for non-Python languages
+                &module // No simple alias for policy-disabled languages
             };
-            if is_python_style
+            if dotted_alias
                 && simple_module != module.as_str()
                 && func_index
                     .get(simple_module, &func.name)
@@ -867,7 +871,7 @@ pub fn build_project_call_graph_v2(
                 );
                 func_index.insert(&module, &qualified, method_entry.clone());
                 // v031-issue-7: same first-writer-wins guard for the qualified alias.
-                if is_python_style
+                if dotted_alias
                     && simple_module != module.as_str()
                     && func_index
                         .get(simple_module, &qualified)
@@ -1452,6 +1456,86 @@ def main():
                 .iter()
                 .any(|(cs, target)| cs.target == "dict" && target.name == "dict"),
             "dict() project function should be retained for Lua"
+        );
+    }
+
+    /// Test: module alias policy keeps Python dotted suffix aliases while
+    /// TypeScript/Rust-style module keys stay bare-suffix-alias-free.
+    #[test]
+    fn test_policy_alias_style_preserves_python_bare_alias_and_blocks_ts_rust_alias() {
+        assert!(module_uses_dotted_alias("python"));
+        assert!(!module_uses_dotted_alias("typescript"));
+        assert!(!module_uses_dotted_alias("rust"));
+        assert!(!module_uses_dotted_alias("unknown-language"));
+
+        let python_dir = TempDir::new().unwrap();
+        std::fs::create_dir(python_dir.path().join("pkg")).unwrap();
+        std::fs::write(python_dir.path().join("pkg").join("__init__.py"), "").unwrap();
+        std::fs::write(
+            python_dir.path().join("pkg").join("helper.py"),
+            r#"
+def fn():
+    return 1
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            python_dir.path().join("main.py"),
+            r#"
+from pkg import helper
+
+def main():
+    return helper.fn()
+"#,
+        )
+        .unwrap();
+
+        let python_ir = build_project_call_graph_v2(
+            python_dir.path(),
+            BuildConfig {
+                language: "python".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let python_edge = python_ir.edges().iter().find(|edge| {
+            edge.src_file == PathBuf::from("main.py")
+                && edge.src_func == "main"
+                && edge.dst_file == PathBuf::from("pkg/helper.py")
+                && edge.dst_func == "fn"
+        });
+        assert!(
+            python_edge.is_some(),
+            "Python helper.fn() should resolve through the helper bare alias: {:?}",
+            python_ir.edges()
+        );
+
+        let ts_module = path_to_module(Path::new("pkg/utils.ts"), "typescript");
+        let ts_simple_module = if module_uses_dotted_alias("typescript") {
+            ts_module.split('.').next_back().unwrap_or(ts_module.as_str())
+        } else {
+            ts_module.as_str()
+        };
+        assert_eq!(ts_module, "./pkg/utils");
+        assert_eq!(
+            ts_simple_module, ts_module,
+            "TypeScript ./pkg/utils must not produce a bare utils alias"
+        );
+
+        let rust_module = path_to_module(Path::new("src/utils/helpers.rs"), "rust");
+        let rust_simple_module = if module_uses_dotted_alias("rust") {
+            rust_module
+                .split('.')
+                .next_back()
+                .unwrap_or(rust_module.as_str())
+        } else {
+            rust_module.as_str()
+        };
+        assert_eq!(rust_module, "crate::utils::helpers");
+        assert_eq!(
+            rust_simple_module, rust_module,
+            "Rust crate::utils::helpers must not produce a bare helpers alias"
         );
     }
 

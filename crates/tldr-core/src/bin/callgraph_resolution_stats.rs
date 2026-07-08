@@ -12,7 +12,14 @@ use tldr_core::callgraph::builder_v2::{
 use tldr_core::callgraph::{
     build_project_call_graph_v2, BuildConfig, ImportResolver, ModuleIndex, ReExportTracer,
 };
+use tldr_core::language_policy::{policy_for, AliasStyle};
 use tldr_core::types::Language;
+
+fn module_uses_dotted_alias(language: &str) -> bool {
+    Language::from_str(language)
+        .map(|lang| policy_for(lang).module_alias_style == AliasStyle::DottedSuffix)
+        .unwrap_or(false)
+}
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -54,6 +61,7 @@ fn main() -> Result<()> {
 
     let mut func_index = FuncIndex::with_capacity(ir.function_count());
     let mut class_index = ClassIndex::with_capacity(ir.class_count());
+    let dotted_alias = module_uses_dotted_alias(&language);
 
     for (file_path, file_ir) in &ir.files {
         let module = path_to_module(file_path, &language);
@@ -71,15 +79,12 @@ fn main() -> Result<()> {
             };
             func_index.insert(&module, &func.name, entry.clone());
 
-            let is_python_style = !module.starts_with("./")
-                && !module.starts_with("crate::")
-                && !module.contains('/');
-            let simple_module = if is_python_style {
+            let simple_module = if dotted_alias {
                 module.split('.').next_back().unwrap_or(&module)
             } else {
                 &module
             };
-            if is_python_style && simple_module != module.as_str() {
+            if dotted_alias && simple_module != module.as_str() {
                 func_index.insert(simple_module, &func.name, entry);
             }
 
@@ -92,7 +97,7 @@ fn main() -> Result<()> {
                     class_name.clone(),
                 );
                 func_index.insert(&module, &qualified, method_entry.clone());
-                if is_python_style && simple_module != module.as_str() {
+                if dotted_alias && simple_module != module.as_str() {
                     func_index.insert(simple_module, &qualified, method_entry);
                 }
             }

@@ -1,1 +1,952 @@
-{"allow": []}
+{
+ "allow": [
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "StrPair::CollapseWhitespace",
+   "dst_func": "IsWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "StrPair::CollapseWhitespace",
+   "dst_func": "SkipWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "StrPair::ParseName",
+   "dst_func": "IsNameChar",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "StrPair::ParseName",
+   "dst_func": "IsNameStartChar",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLAttribute::ParseDeep",
+   "dst_func": "SkipWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLComment::ShallowEqual",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLComment::ShallowEqual",
+   "dst_func": "XMLComment.ToComment",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDeclaration::ShallowEqual",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Clear",
+   "dst_func": "DynArray.Size",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Clear",
+   "dst_func": "MemPoolT.CurrentAllocs",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Clear",
+   "dst_func": "MemPoolT.Trace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Clear",
+   "dst_func": "MemPoolT.Untracked",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Identify",
+   "dst_func": "SkipWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Identify",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Identify",
+   "dst_func": "XMLText.SetCData",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::MarkInUse",
+   "dst_func": "DynArray.Size",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::MarkInUse",
+   "dst_func": "DynArray.SwapRemove",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::NewElement",
+   "dst_func": "SetName",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLDocument::Parse",
+   "dst_func": "SkipWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::Attribute",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::DeleteAttribute",
+   "dst_func": "MemPoolT.Free",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::FindAttribute",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::FindOrCreateAttribute",
+   "dst_func": "SetName",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::FindOrCreateAttribute",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::GetText",
+   "dst_func": "XMLComment.ToComment",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::ParseAttributes",
+   "dst_func": "IsNameStartChar",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::ParseAttributes",
+   "dst_func": "SkipWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::ParseAttributes",
+   "dst_func": "XMLDocument.ProcessEntities",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::ParseDeep",
+   "dst_func": "SkipWhiteSpace",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::ShallowClone",
+   "dst_func": "XMLAttribute.Next",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLElement::ShallowEqual",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLNode::DeepClone",
+   "dst_func": "XMLDocument.ShallowClone",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLNode::DeleteNode",
+   "dst_func": "MemPoolT.Free",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLNode::ParseDeep",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLNode::ParseDeep",
+   "dst_func": "XMLDocument.Error",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLNode::SetValue",
+   "dst_func": "StrPair.SetInternedStr",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLNode::ToElementWithName",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLPrinter::CloseElement",
+   "dst_func": "DynArray.Pop",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLPrinter::Print",
+   "dst_func": "DynArray.PushArr",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLPrinter::Print",
+   "dst_func": "DynArray.Size",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLPrinter::Putc",
+   "dst_func": "DynArray.PushArr",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLPrinter::VisitEnter",
+   "dst_func": "XMLAttribute.Next",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLPrinter::Write",
+   "dst_func": "DynArray.PushArr",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLText::ParseDeep",
+   "dst_func": "XMLDocument.ProcessEntities",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLText::ParseDeep",
+   "dst_func": "XMLDocument.WhitespaceMode",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLText::ParseDeep",
+   "dst_func": "XMLText.CData",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLText::ShallowClone",
+   "dst_func": "XMLText.CData",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLText::ShallowClone",
+   "dst_func": "XMLText.SetCData",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLText::ShallowEqual",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.cpp",
+   "src_func": "XMLUnknown::ShallowEqual",
+   "dst_func": "StringEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.h",
+   "src_func": "MemPoolT.Clear",
+   "dst_func": "DynArray.Pop",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "tinyxml2.h",
+   "src_func": "MemPoolT.Trace",
+   "dst_func": "DynArray.Size",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "TestUtil.Visit",
+   "dst_func": "XMLAttribute.GetLineNum",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "TestUtil.VisitEnter",
+   "dst_func": "XMLAttribute.GetLineNum",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "TestUtil.VisitEnter",
+   "dst_func": "XMLAttribute.Next",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "example_4",
+   "dst_func": "QueryIntAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "FirstAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "GetDocument",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryBoolAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryDoubleAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryFloatAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryInt64Attribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryIntAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryStringAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryUnsigned64Attribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "QueryUnsignedAttribute",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "TestUtil.TestFileLines",
+   "dst_file": [
+    "xmltest.cpp"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "TestUtil.TestParseError",
+   "dst_file": [
+    "xmltest.cpp"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "TestUtil.TestStringLines",
+   "dst_file": [
+    "xmltest.cpp"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.BoolValue",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.DoubleValue",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.Int64Value",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.IntValue",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.Next",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.Unsigned64Value",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLAttribute.UnsignedValue",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLComment.ToComment",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLDocument.ShallowClone",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  },
+  {
+   "repo": "cpp-tinyxml2",
+   "type": "added",
+   "src_file": "xmltest.cpp",
+   "src_func": "main",
+   "dst_func": "XMLDocument.ShallowEqual",
+   "dst_file": [
+    "tinyxml2.h"
+   ],
+   "_batch": "VAL-012",
+   "_review": "correct restoration: old is_python_style registered root-level cpp files under garbage alias modules ('h'/'cpp'), phantom duplicates made unique names ambiguous and suppressed these edges; callees verified present in tinyxml2.h"
+  }
+ ]
+}
