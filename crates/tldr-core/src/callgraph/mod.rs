@@ -63,6 +63,8 @@ mod scanner;
 mod types;
 mod var_types; // call resolution logic (strategies 0-9)
 
+pub(crate) use types::PYTHON_BUILTINS;
+
 // Phase 14: Builder V2 with parallel processing (canonical)
 pub mod builder_v2;
 

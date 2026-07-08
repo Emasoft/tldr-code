@@ -37,6 +37,7 @@
 
 pub mod error;
 pub mod git;
+pub mod language_policy;
 pub mod types;
 pub mod validation;
 pub mod walker;
