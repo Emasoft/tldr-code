@@ -22,7 +22,7 @@ use crate::ast::extractor::{
     extract_functions, extract_methods, extract_rust_impl_methods_qualified,
 };
 use crate::ast::parser::parse_file;
-use crate::callgraph::{confidence_tier, ConfidenceTier};
+use crate::callgraph::{confidence_tier, ConfidenceTier, ResolutionRung};
 use crate::error::TldrError;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{
@@ -653,19 +653,25 @@ pub fn impact_analysis_with_ast_fallback_options(
 /// Remove callers from the main caller tree when the same caller is already
 /// represented as a lower-confidence approximate caller on that target node.
 pub fn exclude_approximate_callers_from_report(report: &mut ImpactReport) {
-    let approximate_by_target: Vec<(String, ApproximateCaller)> = report
-        .targets
-        .values()
-        .flat_map(|tree| {
-            tree.approximate_callers
-                .iter()
-                .cloned()
-                .map(|approx| (tree.function.clone(), approx))
-        })
-        .collect();
+    let mut approximate_by_target: Vec<(String, ApproximateCaller)> = Vec::new();
+    for tree in report.targets.values() {
+        collect_approximate_callers_from_tree(tree, &mut approximate_by_target);
+    }
 
     for tree in report.targets.values_mut() {
         exclude_approximate_callers_from_tree(tree, &approximate_by_target);
+    }
+}
+
+fn collect_approximate_callers_from_tree(
+    tree: &CallerTree,
+    out: &mut Vec<(String, ApproximateCaller)>,
+) {
+    for approx in &tree.approximate_callers {
+        out.push((tree.function.clone(), approx.clone()));
+    }
+    for child in &tree.callers {
+        collect_approximate_callers_from_tree(child, out);
     }
 }
 
@@ -703,6 +709,48 @@ fn exclude_approximate_callers_from_tree(
 
 fn paths_match(a: &Path, b: &Path) -> bool {
     a == b || a.ends_with(b) || b.ends_with(a)
+}
+
+fn reference_enrichment_approximate_caller(name: &str, file: &Path) -> ApproximateCaller {
+    let rung = ResolutionRung::ReferenceEnrichment;
+    ApproximateCaller {
+        function: name.to_string(),
+        file: file.to_path_buf(),
+        confidence: confidence_tier(rung).as_str().to_string(),
+        rung: rung.id().to_string(),
+        mechanism: rung.mechanism().to_string(),
+    }
+}
+
+fn add_approximate_caller_once(tree: &mut CallerTree, caller: ApproximateCaller) {
+    if !tree
+        .approximate_callers
+        .iter()
+        .any(|existing| existing == &caller)
+    {
+        tree.approximate_callers.push(caller);
+        tree.approximate_callers.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.function.cmp(&b.function))
+                .then_with(|| a.rung.cmp(&b.rung))
+        });
+    }
+}
+
+fn has_matching_approximate_caller(
+    approximate_by_target: &[(String, ApproximateCaller)],
+    target_function: &str,
+    caller_function: &str,
+    caller_file: &Path,
+) -> bool {
+    approximate_by_target.iter().any(|(target, approx)| {
+        names_match(target, target_function)
+            && paths_match(&approx.file, caller_file)
+            && (approx.function == caller_function
+                || last_segment_eq_pub(&approx.function, caller_function)
+                || last_segment_eq_pub(caller_function, &approx.function))
+    })
 }
 
 /// Enrich `report.targets` with cross-file callers discovered via
@@ -1270,6 +1318,11 @@ pub fn enrich_impact_with_references(
         class_bases_by_file.insert(file.clone(), map);
     }
 
+    let mut approximate_evidence: Vec<(String, ApproximateCaller)> = Vec::new();
+    for tree in report.targets.values() {
+        collect_approximate_callers_from_tree(tree, &mut approximate_evidence);
+    }
+
     for tree in report.targets.values_mut() {
         // CL-2 / GH #40: derive the receiver-qualifier this target's
         // definition is scoped under, so each candidate caller's call-site
@@ -1379,6 +1432,11 @@ pub fn enrich_impact_with_references(
                 confidence: None,
                 receiver_type: receiver.qualifier_label(),
             });
+            if !has_matching_approximate_caller(&approximate_evidence, &tree.function, name, file) {
+                let approximate = reference_enrichment_approximate_caller(name, file);
+                add_approximate_caller_once(tree, approximate.clone());
+                approximate_evidence.push((tree.function.clone(), approximate));
+            }
             tree.caller_count = tree.callers.len();
             if let Some(n) = &tree.note {
                 if n.contains("Entry point") || n.contains("no callers") {
@@ -1728,6 +1786,9 @@ fn enrich_single_caller_tree_node_with_references(
         return;
     }
 
+    let mut approximate_evidence: Vec<(String, ApproximateCaller)> = Vec::new();
+    collect_approximate_callers_from_tree(tree, &mut approximate_evidence);
+
     let mut class_bases_by_file: HashMap<PathBuf, HashMap<String, Vec<String>>> = HashMap::new();
     for (_, file, _, receiver, _) in &additions {
         if !matches!(receiver, CallReceiver::SelfRef(Some(_))) {
@@ -1804,6 +1865,11 @@ fn enrich_single_caller_tree_node_with_references(
             confidence: None,
             receiver_type: receiver.qualifier_label(),
         });
+        if !has_matching_approximate_caller(&approximate_evidence, &tree.function, name, file) {
+            let approximate = reference_enrichment_approximate_caller(name, file);
+            add_approximate_caller_once(tree, approximate.clone());
+            approximate_evidence.push((tree.function.clone(), approximate));
+        }
         tree.caller_count = tree.callers.len();
         if let Some(n) = &tree.note {
             if n.contains("Entry point") || n.contains("no callers") {

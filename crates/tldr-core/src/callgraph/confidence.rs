@@ -76,6 +76,8 @@ pub enum ResolutionRung {
     TypeAwareFallback,
     /// Super/parent/base constructor or method dispatch.
     SuperDispatch,
+    /// Impact fallback caller discovered by references enrichment.
+    ReferenceEnrichment,
 }
 
 impl ResolutionRung {
@@ -108,6 +110,7 @@ impl ResolutionRung {
             Self::GlobalFuzzyMatch => "global_fuzzy_match",
             Self::TypeAwareFallback => "type_aware_fallback",
             Self::SuperDispatch => "super_dispatch",
+            Self::ReferenceEnrichment => "reference_enrichment",
         }
     }
 
@@ -140,6 +143,7 @@ impl ResolutionRung {
             Self::GlobalFuzzyMatch => "global fuzzy match",
             Self::TypeAwareFallback => "type-aware fallback",
             Self::SuperDispatch => "super dispatch",
+            Self::ReferenceEnrichment => "references enrichment",
         }
     }
 }
@@ -174,5 +178,11 @@ pub fn confidence_tier(rung: ResolutionRung) -> ConfidenceTier {
         | ResolutionRung::LocalFuzzyMatch
         | ResolutionRung::GlobalFuzzyMatch
         | ResolutionRung::TypeAwareFallback => ConfidenceTier::T2,
+
+        ResolutionRung::ReferenceEnrichment => {
+            // VAL-032c: previously missing-rung impact references enrichment
+            // measured about 1 TP / 63 FP, precision 0.016 on 64 samples.
+            ConfidenceTier::T2
+        }
     }
 }

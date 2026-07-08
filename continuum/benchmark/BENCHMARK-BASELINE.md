@@ -1,6 +1,6 @@
 # Benchmark Baseline
 
-Measured on 2026-07-08, this is the corpus-backed replacement for the earlier audit shorthand that `tldr calls` was roughly 80% correct. The full `harness.v2` run produced combined command-result P/R/F1 = 0.757/0.273/0.402 across 739 command results, but the meaningful baseline is command-scoped: calls covers the full corpus, while definition/impact/dead cover micro-suites only.
+Measured on 2026-07-08, this is the corpus-backed replacement for the earlier audit shorthand that `tldr calls` was roughly 80% correct. The full `harness.v2` run produced combined command-result P/R/F1 = 0.844/0.273/0.412 across 739 command results, but the meaningful baseline is command-scoped: calls covers the full corpus, while definition/impact/dead cover micro-suites only.
 
 ## Provenance
 
@@ -8,10 +8,10 @@ Measured on 2026-07-08, this is the corpus-backed replacement for the earlier au
 - Scored checkout: `ab141a2`.
 - Binary: `target/release/tldr`.
 - Binary version: `tldr 0.4.1`.
-- Binary SHA-256: `ef9b3f98bdaf2cce97c04b87c0c62c5f1ee9b0ad4a86fadbebbf8f0fd1507908`.
+- Binary SHA-256: `32693b30879d9b24acaed59a0a1cde6665df9f3f083e74ca8433e184af4cf506`.
 - Command: `python3 continuum/benchmark/run_truth.py --binary target/release/tldr --out continuum/benchmark/report.json`.
 - Report: `continuum/benchmark/report.json` (`harness.v2`).
-- Runtime: 22.049 seconds wall time.
+- Runtime: 20.248 seconds wall time.
 - Case scope: 193 discovered cases; 182 micro-cases receive definition/impact/dead scoring.
 - Result scope: 739 command result rows.
 - Skips: none.
@@ -22,7 +22,7 @@ The flagged `suites/python/class_method/inherited_method` fixture was corrected 
 
 The remaining hand-written inheritance, promotion, and override cases were swept for the same receiver-class-vs-definer issue. One case was fixed in the corpus history, and no other hand-written case needed a definer-convention change: TypeScript, Java, and Go inherited/promoted fixtures already point at the defining type, while override fixtures intentionally point at the overriding method and use negative edges where the base method would be wrong.
 
-## VAL-032b Rung Attribution And Re-bin
+## VAL-032b/032c Rung Attribution
 
 `run_truth.py` now preserves `calls.v2` `provenance.rung` on matched and false-positive call edges, joins impact callers back to a per-case `calls.v2` edge map, and writes `aggregates.by_rung` globally, by command, and by command/language. The global re-bin rule was applied only when a currently T1 rung had measured precision below 0.750 on at least 5 scored samples.
 
@@ -37,20 +37,23 @@ Before the re-bin, the top global rung offenders across scored calls and impact 
 | `local_function` | 154 | 137 | 17 | 0.890 | Go, Python, Rust, TypeScript |
 | `constructor_method` | 13 | 10 | 3 | 0.769 | Java, Python, TypeScript |
 
-The authorized rule re-binned `receiver_type` and `ref_local` from T1 to T2. `constructor_method` and `local_function` had impact-only or language-specific weak spots, but their global precision stayed above the rule threshold, so they were not re-binned.
+The authorized VAL-032b rule re-binned `receiver_type` and `ref_local` from T1 to T2. `constructor_method` and `local_function` had impact-only or language-specific weak spots, but their global precision stayed above the rule threshold, so they were not re-binned.
 
-After the re-bin, the top global rung offenders are:
+VAL-032c located the remaining `<missing>` Python impact source in `enrich_impact_with_references`: both the top-level and recursive reference-enrichment paths appended `CallerTree` entries directly instead of carrying VAL-031 provenance through the tiered call-edge path. Those entries are now tagged as `reference_enrichment` and treated as T2 based on the measured missing-rung bucket: 1 TP / 63 FP, precision 0.016 on 64 samples. Default impact excludes them into `approximate_callers`; `--approximate` still merges them back into the caller tree.
+
+After the VAL-032c tagging and default filtering, the top global rung offenders are:
 
 | Rung | Samples | TP | FP | Precision | Languages |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `<missing>` | 64 | 1 | 63 | 0.016 | Python |
 | `receiver_type` | 47 | 17 | 30 | 0.362 | Go, Java, Python, Rust |
 | `global_fuzzy_match` | 31 | 2 | 29 | 0.065 | Go, Java, Rust, TypeScript |
-| `local_function` | 145 | 136 | 9 | 0.938 | Go, Python, Rust, TypeScript |
-| `self_receiver` | 17 | 10 | 7 | 0.588 | Java, TypeScript |
+| `local_function` | 147 | 136 | 11 | 0.925 | Go, Python, Rust, TypeScript |
+| `self_receiver` | 15 | 10 | 5 | 0.667 | Java, TypeScript |
 | `constructor_method` | 13 | 10 | 3 | 0.769 | Java, Python, TypeScript |
+| `ref_local` | 1 | 0 | 1 | 0.000 | Python |
+| `capitalized_receiver_guess` | 1 | 0 | 1 | 0.000 | Python |
 
-Strong skews remain policy findings rather than global tier changes: before re-bin, `local_function` was 0.588 on Python impact and 0.100 on TypeScript calls but 0.890 globally, while `constructor_method` was 0.625 on impact but 0.769 globally. The residual default-impact false positives after re-bin are Python `<missing>` 63, Python `local_function` 4, and one `constructor_method` false positive each in Java, Python, and TypeScript; the `<missing>` group is a call-to-impact attribution or resolver-quality gap for m4, while the others would require a per-command or per-language threshold that VAL-032b explicitly did not apply.
+Strong skews remain policy findings rather than global tier changes: before re-bin, `local_function` was 0.588 on Python impact and 0.100 on TypeScript calls but 0.890 globally, while `constructor_method` was 0.625 on impact but 0.769 globally. The final VAL-032c run also surfaces `self_receiver` as a global calls offender at 0.667 precision, which is outside this missing-rung attribution patch and needs a separate policy pass. The residual default-impact false positives after VAL-032c are Python `local_function` 4, Python `constructor_method` 1, TypeScript `constructor_method` 1, and Java `constructor_method` 1; these would require a per-command or per-language threshold that VAL-032b explicitly did not apply, so they are m4 resolution-quality/policy-follow-up work rather than another global re-bin.
 
 ## Calls: Hand-Written Micro-Suites
 
@@ -94,7 +97,7 @@ Definition queries are derived by locating the destination identifier in the sou
 
 | Language | Cases | TP | FN | FP | Precision | Recall | F1 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Python | 134 | 20 | 261 | 68 | 0.227 | 0.071 | 0.108 |
+| Python | 134 | 19 | 262 | 5 | 0.792 | 0.068 | 0.125 |
 | TypeScript | 12 | 10 | 2 | 1 | 0.909 | 0.833 | 0.870 |
 | Go | 12 | 7 | 8 | 0 | 1.000 | 0.467 | 0.636 |
 | Rust | 12 | 5 | 7 | 0 | 1.000 | 0.417 | 0.588 |
@@ -102,7 +105,7 @@ Definition queries are derived by locating the destination identifier in the sou
 
 Impact queries group truth by destination and run `tldr impact <dst_func> CASE_DIR --file <dst_file> --format json`. The `--file` filter is used as the same-name collision qualifier.
 
-The VAL-032b decline cost is explicit: Python impact precision improved from 0.187 to 0.227 and phantom callers fell from 135 to 68, while recall dropped from 0.110 to 0.071. Go precision improved from 0.923 to 1.000 with recall dropping from 0.800 to 0.467; Rust stayed at 1.000 precision while recall dropped from 0.583 to 0.417; Java moved from 0.875/0.636 to 0.857/0.545; TypeScript was unchanged at 0.909/0.833.
+The VAL-032b decline cost is explicit: Python impact precision improved from 0.187 to 0.227 and phantom callers fell from 135 to 68, while recall dropped from 0.110 to 0.071. VAL-032c then tagged reference-enrichment callers as T2, moving Python impact to 0.792 precision with 5 phantom callers; recall moved from 0.071 to 0.068, a one-true-positive cost. Go precision improved from 0.923 to 1.000 with recall dropping from 0.800 to 0.467; Rust stayed at 1.000 precision while recall dropped from 0.583 to 0.417; Java moved from 0.875/0.636 to 0.857/0.545; TypeScript was unchanged at 0.909/0.833.
 
 ## Dead: Micro-Suites
 
@@ -135,7 +138,7 @@ Expected-dead is derived from source definitions: a function is expected dead wh
 
 Micro-suite calls misses keep the m3 resolver work concrete: Python builtin-shadow and relative-import fixtures still miss truth edges, while TypeScript dynamic import and Java interface dispatch each produce a forbidden edge in cases where the benchmark asks the resolver to decline rather than guess. Those false positives are deliberate pressure tests for confidence gating, not fixtures to tune around.
 
-The PyCG row remains the m5/m6 motivation. Calls precision stays high on the few dynamic edges reported, but 5.3% recall and 10.0% F1 show that higher-order, decorator, builtin, and value-flow-heavy Python cases remain mostly below the current static resolver floor; after VAL-032b, impact is similarly low for Python at 0.227/0.071/0.108.
+The PyCG row remains the m5/m6 motivation. Calls precision stays high on the few dynamic edges reported, but 5.3% recall and 10.0% F1 show that higher-order, decorator, builtin, and value-flow-heavy Python cases remain mostly below the current static resolver floor; after VAL-032c, Python impact is now high precision but still low recall at 0.792/0.068/0.125.
 
 Dead-code scoring is now the sharpest decline-not-guess signal. Across micro-suites, dead recall is zero for Python, Go, Rust, TypeScript, and Java, but default dead output has zero false positives after weak evidence is kept out of `dead_functions`.
 

@@ -58,6 +58,21 @@ function caller() {\n\
     .expect("write app");
 }
 
+fn write_python_reference_enrichment_fixture(dir: &TempDir) {
+    std::fs::write(
+        dir.path().join("main.py"),
+        "def param_func():\n\
+    pass\n\
+\n\
+def func(a):\n\
+    a()\n\
+\n\
+b = param_func\n\
+func(b)\n",
+    )
+    .expect("write main");
+}
+
 #[test]
 fn impact_separates_t2_callers_by_default_and_merges_with_approximate() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -201,6 +216,78 @@ fn impact_separates_rebinned_receiver_type_callers() {
                 && caller["confidence"] == "T2"
                 && caller["rung"] == "receiver_type"),
         "approximate evidence lost receiver_type rung: {tree:#?}"
+    );
+}
+
+#[test]
+fn impact_separates_reference_enrichment_callers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_python_reference_enrichment_fixture(&dir);
+    let root = dir.path().to_str().expect("utf-8 temp path");
+
+    let value = run_tldr(&[
+        "impact", "func", root, "--lang", "python", "--format", "json",
+    ]);
+    assert_eq!(value["schema"], "impact.v2");
+
+    let targets = value["targets"].as_object().expect("targets object");
+    let approximate_found = targets.values().any(|target| {
+        target["approximate_callers"]
+            .as_array()
+            .map(|callers| {
+                callers.iter().any(|caller| {
+                    caller["function"] == "<module>"
+                        && caller["confidence"] == "T2"
+                        && caller["rung"] == "reference_enrichment"
+                })
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        approximate_found,
+        "reference-enriched caller missing from approximate_callers: {targets:#?}"
+    );
+    let definitive_found = targets.values().any(|target| {
+        target["callers"]
+            .as_array()
+            .map(|callers| {
+                callers
+                    .iter()
+                    .any(|caller| caller["function"] == "<module>")
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        !definitive_found,
+        "reference-enriched caller must be separated by default: {targets:#?}"
+    );
+
+    let approximate_value = run_tldr(&[
+        "impact",
+        "func",
+        root,
+        "--lang",
+        "python",
+        "--format",
+        "json",
+        "--approximate",
+    ]);
+    let targets = approximate_value["targets"]
+        .as_object()
+        .expect("targets object");
+    let definitive_found = targets.values().any(|target| {
+        target["callers"]
+            .as_array()
+            .map(|callers| {
+                callers
+                    .iter()
+                    .any(|caller| caller["function"] == "<module>")
+            })
+            .unwrap_or(false)
+    });
+    assert!(
+        definitive_found,
+        "--approximate should merge reference-enriched callers: {targets:#?}"
     );
 }
 
