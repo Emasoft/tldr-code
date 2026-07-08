@@ -15,13 +15,13 @@
         "tool": "human-audited-source",
         "version": "VAL-020a"
       },
-      "src_file": "child.py",
-      "src_func": "child.Child.run",
+      "src_file": "base.py",
+      "src_func": "base.Base.run",
       "src_line": null
     },
     {
-      "dst_file": "child.py",
-      "dst_func": "child.Child.run",
+      "dst_file": "base.py",
+      "dst_func": "base.Base.run",
       "dst_line": null,
       "kind": "method",
       "provenance": {
@@ -38,6 +38,6 @@
     }
   ],
   "language": "python",
-  "notes": "Inherited self.helper should bind to Base.helper, and entry should call Child.run.",
+  "notes": "Inherited Child.run should bind to Base.run, and Base.run should bind self.helper to Base.helper.",
   "schema_version": "truth.v1"
 }

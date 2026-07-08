@@ -51,6 +51,7 @@ class EdgeKey:
 class Case:
     case_id: str
     case_dir: Path
+    execution_dir: Path
     truth_path: Path
     meta_path: Path
     truth: Dict[str, Any]
@@ -242,9 +243,22 @@ def validate_truth(path: Path, truth: Dict[str, Any]) -> None:
             validate_expected_unresolved(path, item, index)
 
 
-def validate_meta(path: Path, meta: Dict[str, Any]) -> None:
+def validate_meta(path: Path, meta: Dict[str, Any], allow_harvest_fields: bool = False) -> None:
     require_keys(path, meta, ["case_id", "language", "feature", "defect_class", "description", "entrypoints", "negative_edges"])
     allowed = ["case_id", "language", "feature", "defect_class", "description", "entrypoints", "negative_edges", "expected_unresolved"]
+    if allow_harvest_fields:
+        allowed += [
+            "corpus_commit",
+            "lsp_errors",
+            "lsp_readiness",
+            "pytest_reason",
+            "pytest_returncode",
+            "sampling",
+            "skip_reason",
+            "spot_checks",
+            "truth_quality_tier",
+            "truth_source_type",
+        ]
     reject_extra_keys(path, meta, allowed, "meta")
     for key in ["case_id", "language", "feature", "description"]:
         if not isinstance(meta[key], str):
@@ -271,21 +285,35 @@ def discover_cases(root: Path, filter_text: Optional[str]) -> List[Case]:
     truth_paths: List[Path] = []
     suites_root = root / "suites"
     vendored_root = root / "vendored"
+    repos_root = root / "repos"
     if suites_root.exists():
         truth_paths.extend(sorted(suites_root.glob("*/*/*/truth.json")))
     if vendored_root.exists():
         truth_paths.extend(sorted(vendored_root.glob("*/cases/*/*/truth.json")))
+    if repos_root.exists():
+        for manifest_path in sorted(repos_root.glob("*/manifest.json")):
+            manifest = load_json(manifest_path)
+            truth_files = manifest.get("truth_files")
+            if not isinstance(truth_files, list):
+                continue
+            for item in truth_files:
+                if isinstance(item, str):
+                    truth_paths.append(manifest_path.parent / item)
 
     cases: List[Case] = []
     for truth_path in truth_paths:
         case_dir = truth_path.parent
         meta_path = case_dir / "meta.json"
+        if truth_path.name == "runtime_trace_truth.json":
+            meta_path = case_dir / "runtime_trace_meta.json"
         if not meta_path.exists():
             raise ValidationError(f"{case_dir}: missing meta.json")
         truth = load_json(truth_path)
         meta = load_json(meta_path)
         validate_truth(truth_path, truth)
-        validate_meta(meta_path, meta)
+        rel = case_dir.relative_to(root)
+        is_repo_case = rel.parts[0] == "repos"
+        validate_meta(meta_path, meta, allow_harvest_fields=is_repo_case)
         if truth["case_id"] != meta["case_id"]:
             raise ValidationError(f"{case_dir}: truth/meta case_id mismatch")
         if truth["language"] != meta["language"]:
@@ -296,15 +324,25 @@ def discover_cases(root: Path, filter_text: Optional[str]) -> List[Case]:
             or "unregistered"
         )
 
-        rel = case_dir.relative_to(root)
         if rel.parts[0] == "suites":
             suite = "suites"
             suite_group = f"{rel.parts[1]}-suite"
             suite_family = "/".join(rel.parts[:3])
+            execution_dir = case_dir
         elif rel.parts[0] == "vendored":
             suite = f"vendored/{rel.parts[1]}"
             suite_group = f"{rel.parts[1]}-vendored"
             suite_family = "/".join(rel.parts[:4])
+            execution_dir = case_dir
+        elif rel.parts[0] == "repos":
+            manifest = load_json(case_dir / "manifest.json")
+            corpus_path = manifest.get("corpus_path")
+            if not isinstance(corpus_path, str):
+                raise ValidationError(f"{case_dir}: manifest missing corpus_path")
+            execution_dir = Path(corpus_path)
+            suite = "repos"
+            suite_group = f"{truth['language']}-repo"
+            suite_family = f"repos/{rel.parts[1]}"
         else:
             raise ValidationError(f"{case_dir}: unsupported case location")
 
@@ -316,6 +354,7 @@ def discover_cases(root: Path, filter_text: Optional[str]) -> List[Case]:
             Case(
                 case_id=case_id,
                 case_dir=case_dir,
+                execution_dir=execution_dir,
                 truth_path=truth_path,
                 meta_path=meta_path,
                 truth=truth,
@@ -463,10 +502,12 @@ def run_tldr(binary: Path, case_dir: Path, timeout_seconds: float) -> Tuple[str,
 
 
 def score_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, Any]:
-    status, output, stderr, duration = run_tldr(binary, case.case_dir, timeout_seconds)
+    status, output, stderr, duration = run_tldr(binary, case.execution_dir, timeout_seconds)
     base = {
         "case_id": case.case_id,
         "path": case.case_dir.relative_to(SCRIPT_DIR).as_posix(),
+        "truth_path": case.truth_path.relative_to(SCRIPT_DIR).as_posix(),
+        "execution_path": str(case.execution_dir),
         "language": case.language,
         "suite": case.suite,
         "suite_group": case.suite_group,

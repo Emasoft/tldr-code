@@ -1,7 +1,7 @@
 {
   "case_id": "suites/python/class_method/inherited_method",
   "defect_class": null,
-  "description": "Inherited self.helper should bind to Base.helper, and entry should call Child.run.",
+  "description": "Inherited Child.run should bind to Base.run, and Base.run should bind self.helper to Base.helper.",
   "entrypoints": [
     "base.py",
     "child.py",
