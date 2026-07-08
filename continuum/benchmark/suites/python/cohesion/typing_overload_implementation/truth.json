@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/python/cohesion/typing_overload_implementation",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "main.py",
+      "dst_func": "main.Formatter.render",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.Formatter.run",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "Python overload stubs should not create phantom call targets; the implementation render is the callable method.",
+  "schema_version": "truth.v1"
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lists/nested",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lists/nested.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lists",
+  "language": "python",
+  "negative_edges": []
+}

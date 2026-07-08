@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/kwargs/call",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark kwargs/call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-kwargs",
+  "language": "python",
+  "negative_edges": []
+}

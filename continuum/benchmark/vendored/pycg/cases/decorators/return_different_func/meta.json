@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/decorators/return_different_func",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark decorators/return_different_func.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-decorators",
+  "language": "python",
+  "negative_edges": []
+}

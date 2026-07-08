@@ -1,0 +1,67 @@
+{
+  "case_id": "suites/python/higher_order/callback_expected_unresolved",
+  "defect_class": "expected-unresolved-higher-order",
+  "description": "The direct apply call is truth; apply to callee is documented as expected-unresolved HOF behavior.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "expected_unresolved": [
+    {
+      "expression": "fn()",
+      "location": {
+        "file": "main.py",
+        "line": 6
+      },
+      "missing_edge": {
+        "confidence_note": "This is the semantic runtime target of fn(), but the benchmark marks it expected-unresolved until higher-order value flow is implemented.",
+        "dst_file": "main.py",
+        "dst_func": "main.callee",
+        "dst_line": null,
+        "kind": "call",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020a"
+        },
+        "src_file": "main.py",
+        "src_func": "main.apply",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "reason": "Requires higher-order value-flow from run to apply(callee) to fn(); tracked as expected-unresolved for VAL-020a."
+    }
+  ],
+  "feature": "higher order",
+  "language": "python",
+  "negative_edges": [
+    {
+      "confidence_note": "This is the semantic runtime target of fn(), but the benchmark marks it expected-unresolved until higher-order value flow is implemented.",
+      "dst_file": "main.py",
+      "dst_func": "main.callee",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "reason": "VAL-020a intentionally excludes this higher-order callback from required recall.",
+      "src_file": "main.py",
+      "src_func": "main.apply",
+      "src_line": null
+    }
+  ]
+}

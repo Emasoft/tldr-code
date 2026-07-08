@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/functions/assigned_call_lit_param",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark functions/assigned_call_lit_param.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-functions",
+  "language": "python",
+  "negative_edges": []
+}

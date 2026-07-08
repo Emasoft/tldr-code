@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/generators/iter_param",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark generators/iter_param.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-generators",
+  "language": "python",
+  "negative_edges": []
+}

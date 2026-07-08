@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/external/cls_parent",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark external/cls_parent.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-external",
+  "language": "python",
+  "negative_edges": []
+}

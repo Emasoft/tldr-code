@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/classes/imported_call_without_init",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark classes/imported_call_without_init.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-classes",
+  "language": "python",
+  "negative_edges": []
+}

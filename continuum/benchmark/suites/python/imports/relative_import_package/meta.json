@@ -1,0 +1,14 @@
+{
+  "case_id": "suites/python/imports/relative_import_package",
+  "defect_class": "CORRECTNESS#11",
+  "description": "Python bare relative from-import should bind each imported module member.",
+  "entrypoints": [
+    "pkg/__init__.py",
+    "pkg/a.py",
+    "pkg/b.py",
+    "pkg/c.py"
+  ],
+  "feature": "imports",
+  "language": "python",
+  "negative_edges": []
+}

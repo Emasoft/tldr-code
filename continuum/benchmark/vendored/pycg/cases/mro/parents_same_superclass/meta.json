@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/mro/parents_same_superclass",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark mro/parents_same_superclass.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-mro",
+  "language": "python",
+  "negative_edges": []
+}

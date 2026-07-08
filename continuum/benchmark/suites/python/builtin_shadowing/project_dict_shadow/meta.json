@@ -1,0 +1,11 @@
+{
+  "case_id": "suites/python/builtin_shadowing/project_dict_shadow",
+  "defect_class": "CORRECTNESS#3",
+  "description": "A project function named dict shadows the Python builtin and must still be callable.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "builtin shadowing",
+  "language": "python",
+  "negative_edges": []
+}

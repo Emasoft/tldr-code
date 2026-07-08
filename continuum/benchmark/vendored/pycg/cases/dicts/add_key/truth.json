@@ -1,0 +1,28 @@
+{
+  "case_id": "vendored/pycg/dicts/add_key",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "main.py",
+      "dst_func": "main.func",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "vendored-pycg",
+        "staleness": "vendored fixture; update only on explicit upstream refresh",
+        "tier": "T0",
+        "tool": "PyCG upstream micro-benchmark callgraph.json",
+        "upstream_commit": "8d5dc40837803beef1d8d379fbf2cdad6cd94641",
+        "upstream_url": "https://github.com/vitsalis/PyCG",
+        "version": "0.0.8"
+      },
+      "src_file": "main.py",
+      "src_func": "main",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "Converted mechanically from upstream PyCG micro-benchmark callgraph.json; upstream source files copied verbatim.",
+  "schema_version": "truth.v1"
+}

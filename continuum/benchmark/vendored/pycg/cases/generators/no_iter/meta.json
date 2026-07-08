@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/generators/no_iter",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark generators/no_iter.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-generators",
+  "language": "python",
+  "negative_edges": []
+}

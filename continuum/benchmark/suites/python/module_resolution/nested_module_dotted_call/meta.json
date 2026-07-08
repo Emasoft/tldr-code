@@ -1,0 +1,14 @@
+{
+  "case_id": "suites/python/module_resolution/nested_module_dotted_call",
+  "defect_class": null,
+  "description": "A nested module dotted call should preserve the full package path.",
+  "entrypoints": [
+    "main.py",
+    "pkg/__init__.py",
+    "pkg/sub/__init__.py",
+    "pkg/sub/tool.py"
+  ],
+  "feature": "module resolution",
+  "language": "python",
+  "negative_edges": []
+}

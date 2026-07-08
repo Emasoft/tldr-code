@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/decorators/param_call",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark decorators/param_call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-decorators",
+  "language": "python",
+  "negative_edges": []
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/classes/imported_attr_access",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark classes/imported_attr_access.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-classes",
+  "language": "python",
+  "negative_edges": []
+}

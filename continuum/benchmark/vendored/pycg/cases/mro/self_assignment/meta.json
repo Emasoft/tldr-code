@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/mro/self_assignment",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark mro/self_assignment.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-mro",
+  "language": "python",
+  "negative_edges": []
+}

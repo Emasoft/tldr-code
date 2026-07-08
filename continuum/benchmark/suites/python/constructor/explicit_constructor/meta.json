@@ -1,0 +1,11 @@
+{
+  "case_id": "suites/python/constructor/explicit_constructor",
+  "defect_class": null,
+  "description": "Class construction should emit an edge to Widget.__init__.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "constructor",
+  "language": "python",
+  "negative_edges": []
+}

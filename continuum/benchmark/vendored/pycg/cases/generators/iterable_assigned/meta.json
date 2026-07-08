@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/generators/iterable_assigned",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark generators/iterable_assigned.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-generators",
+  "language": "python",
+  "negative_edges": []
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lists/comprehension_if",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lists/comprehension_if.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lists",
+  "language": "python",
+  "negative_edges": []
+}

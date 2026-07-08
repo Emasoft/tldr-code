@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/python/receiver_type/receiver_type_flow",
+  "defect_class": null,
+  "description": "Receiver type flow from a constructor assignment should bind client.connect to Client.connect.",
+  "entrypoints": [
+    "factory.py",
+    "main.py"
+  ],
+  "feature": "receiver type",
+  "language": "python",
+  "negative_edges": []
+}

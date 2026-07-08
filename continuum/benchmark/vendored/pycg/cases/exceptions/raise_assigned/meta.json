@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/exceptions/raise_assigned",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark exceptions/raise_assigned.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-exceptions",
+  "language": "python",
+  "negative_edges": []
+}

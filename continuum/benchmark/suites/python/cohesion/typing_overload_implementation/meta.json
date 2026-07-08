@@ -1,0 +1,11 @@
+{
+  "case_id": "suites/python/cohesion/typing_overload_implementation",
+  "defect_class": "CORRECTNESS#9",
+  "description": "Python overload stubs should not create phantom call targets; the implementation render is the callable method.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "cohesion",
+  "language": "python",
+  "negative_edges": []
+}

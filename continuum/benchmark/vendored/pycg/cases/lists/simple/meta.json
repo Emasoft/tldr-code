@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lists/simple",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lists/simple.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lists",
+  "language": "python",
+  "negative_edges": []
+}

@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/python/imports/import_alias",
+  "defect_class": null,
+  "description": "An import alias should resolve h.work to helpers.work.",
+  "entrypoints": [
+    "helpers.py",
+    "main.py"
+  ],
+  "feature": "imports",
+  "language": "python",
+  "negative_edges": []
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/generators/yield",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark generators/yield.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-generators",
+  "language": "python",
+  "negative_edges": []
+}

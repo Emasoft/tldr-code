@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/external/function_assigned",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark external/function_assigned.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-external",
+  "language": "python",
+  "negative_edges": []
+}

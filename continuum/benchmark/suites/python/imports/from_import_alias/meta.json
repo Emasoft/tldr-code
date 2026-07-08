@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/python/imports/from_import_alias",
+  "defect_class": null,
+  "description": "A from-import alias should resolve do() to worker.do_work.",
+  "entrypoints": [
+    "main.py",
+    "worker.py"
+  ],
+  "feature": "imports",
+  "language": "python",
+  "negative_edges": []
+}

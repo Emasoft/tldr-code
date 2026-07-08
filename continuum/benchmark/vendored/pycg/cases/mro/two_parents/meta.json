@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/mro/two_parents",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark mro/two_parents.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-mro",
+  "language": "python",
+  "negative_edges": []
+}

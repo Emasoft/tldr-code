@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/dicts/type_coercion",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark dicts/type_coercion.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-dicts",
+  "language": "python",
+  "negative_edges": []
+}

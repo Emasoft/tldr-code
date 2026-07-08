@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/imports/relative_import_with_name",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark imports/relative_import_with_name.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-imports",
+  "language": "python",
+  "negative_edges": []
+}

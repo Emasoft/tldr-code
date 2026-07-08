@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/classes/assigned_call",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark classes/assigned_call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-classes",
+  "language": "python",
+  "negative_edges": []
+}

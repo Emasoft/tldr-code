@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lambdas/chained_calls",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lambdas/chained_calls.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lambdas",
+  "language": "python",
+  "negative_edges": []
+}

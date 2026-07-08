@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lists/ext_index",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lists/ext_index.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lists",
+  "language": "python",
+  "negative_edges": []
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/classes/static_method_call",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark classes/static_method_call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-classes",
+  "language": "python",
+  "negative_edges": []
+}

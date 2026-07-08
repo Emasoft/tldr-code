@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/python/decorators/decorator_passthrough",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "main.py",
+      "dst_func": "main.action",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.run",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "A no-op decorator should not hide the decorated function from a direct call.",
+  "schema_version": "truth.v1"
+}

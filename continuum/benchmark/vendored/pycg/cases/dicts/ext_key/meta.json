@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/dicts/ext_key",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark dicts/ext_key.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-dicts",
+  "language": "python",
+  "negative_edges": []
+}

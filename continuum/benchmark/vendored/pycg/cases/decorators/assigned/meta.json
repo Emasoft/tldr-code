@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/decorators/assigned",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark decorators/assigned.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-decorators",
+  "language": "python",
+  "negative_edges": []
+}

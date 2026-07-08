@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lists/comprehension_val",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lists/comprehension_val.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lists",
+  "language": "python",
+  "negative_edges": []
+}

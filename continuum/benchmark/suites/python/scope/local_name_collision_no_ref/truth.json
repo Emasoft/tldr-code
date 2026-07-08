@@ -1,0 +1,8 @@
+{
+  "case_id": "suites/python/scope/local_name_collision_no_ref",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "python",
+  "notes": "A local variable shadowing an imported function must not create a false call edge.",
+  "schema_version": "truth.v1"
+}

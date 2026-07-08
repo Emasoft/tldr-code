@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/classes/nested_class_calls",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark classes/nested_class_calls.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-classes",
+  "language": "python",
+  "negative_edges": []
+}

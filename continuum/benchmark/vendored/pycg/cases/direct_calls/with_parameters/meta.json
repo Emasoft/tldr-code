@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/direct_calls/with_parameters",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark direct_calls/with_parameters.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-direct_calls",
+  "language": "python",
+  "negative_edges": []
+}

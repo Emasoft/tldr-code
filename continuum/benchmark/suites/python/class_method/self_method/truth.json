@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/python/class_method/self_method",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "main.py",
+      "dst_func": "main.Service.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.Service.run",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "A self receiver call should resolve to the method on the same class.",
+  "schema_version": "truth.v1"
+}

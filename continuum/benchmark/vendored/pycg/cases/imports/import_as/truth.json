@@ -1,0 +1,8 @@
+{
+  "case_id": "vendored/pycg/imports/import_as",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "python",
+  "notes": "Converted mechanically from upstream PyCG micro-benchmark callgraph.json; upstream source files copied verbatim.",
+  "schema_version": "truth.v1"
+}

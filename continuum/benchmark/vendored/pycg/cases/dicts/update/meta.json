@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/dicts/update",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark dicts/update.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-dicts",
+  "language": "python",
+  "negative_edges": []
+}

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/assignments/chained",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark assignments/chained.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-assignments",
+  "language": "python",
+  "negative_edges": []
+}

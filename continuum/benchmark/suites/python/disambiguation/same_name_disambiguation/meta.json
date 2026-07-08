@@ -1,0 +1,32 @@
+{
+  "case_id": "suites/python/disambiguation/same_name_disambiguation",
+  "defect_class": "precision-disambiguation",
+  "description": "Qualified import should bind beta.target, not same-named alpha.target.",
+  "entrypoints": [
+    "alpha.py",
+    "beta.py",
+    "main.py"
+  ],
+  "feature": "disambiguation",
+  "language": "python",
+  "negative_edges": [
+    {
+      "dst_file": "alpha.py",
+      "dst_func": "alpha.target",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "reason": "main imports beta, so alpha.target is not reachable from beta.target().",
+      "src_file": "main.py",
+      "src_func": "main.run",
+      "src_line": null
+    }
+  ]
+}

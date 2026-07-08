@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/args/param_call",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark args/param_call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-args",
+  "language": "python",
+  "negative_edges": []
+}

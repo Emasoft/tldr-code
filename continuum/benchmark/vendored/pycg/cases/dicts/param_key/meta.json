@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/dicts/param_key",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark dicts/param_key.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-dicts",
+  "language": "python",
+  "negative_edges": []
+}

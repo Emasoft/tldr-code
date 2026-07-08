@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/python/receiver_type/receiver_type_flow",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "factory.py",
+      "dst_func": "factory.Client.__init__",
+      "dst_line": null,
+      "kind": "constructor",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.build",
+      "src_line": null
+    },
+    {
+      "dst_file": "factory.py",
+      "dst_func": "factory.Client.connect",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.build",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "Receiver type flow from a constructor assignment should bind client.connect to Client.connect.",
+  "schema_version": "truth.v1"
+}

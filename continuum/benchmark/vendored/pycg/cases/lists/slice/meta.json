@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/lists/slice",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark lists/slice.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-lists",
+  "language": "python",
+  "negative_edges": []
+}

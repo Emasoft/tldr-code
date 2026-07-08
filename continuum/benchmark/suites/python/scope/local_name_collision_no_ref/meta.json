@@ -1,0 +1,31 @@
+{
+  "case_id": "suites/python/scope/local_name_collision_no_ref",
+  "defect_class": "CORRECTNESS#18/#19-latent-python",
+  "description": "A local variable shadowing an imported function must not create a false call edge.",
+  "entrypoints": [
+    "main.py",
+    "worker.py"
+  ],
+  "feature": "scope",
+  "language": "python",
+  "negative_edges": [
+    {
+      "dst_file": "worker.py",
+      "dst_func": "worker.document",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "reason": "The local variable named document is a string, not the imported function.",
+      "src_file": "main.py",
+      "src_func": "main.refresh",
+      "src_line": null
+    }
+  ]
+}

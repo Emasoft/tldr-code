@@ -1,0 +1,11 @@
+{
+  "case_id": "suites/python/direct_call/basic_direct",
+  "defect_class": null,
+  "description": "A local function call from run to helper.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "direct call",
+  "language": "python",
+  "negative_edges": []
+}

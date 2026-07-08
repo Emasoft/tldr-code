@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/builtins/functions",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark builtins/functions.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-builtins",
+  "language": "python",
+  "negative_edges": []
+}

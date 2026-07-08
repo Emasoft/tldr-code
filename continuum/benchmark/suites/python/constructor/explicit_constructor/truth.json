@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/python/constructor/explicit_constructor",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "main.py",
+      "dst_func": "main.Widget.__init__",
+      "dst_line": null,
+      "kind": "constructor",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.build",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "Class construction should emit an edge to Widget.__init__.",
+  "schema_version": "truth.v1"
+}

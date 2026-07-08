@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/python/module_resolution/nested_module_dotted_call",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "pkg/sub/tool.py",
+      "dst_func": "pkg.sub.tool.target",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.run",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "A nested module dotted call should preserve the full package path.",
+  "schema_version": "truth.v1"
+}

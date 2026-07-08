@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/python/class_method/inherited_method",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "base.py",
+      "dst_func": "base.Base.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "child.py",
+      "src_func": "child.Child.run",
+      "src_line": null
+    },
+    {
+      "dst_file": "child.py",
+      "dst_func": "child.Child.run",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020a"
+      },
+      "src_file": "main.py",
+      "src_func": "main.entry",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "Inherited self.helper should bind to Base.helper, and entry should call Child.run.",
+  "schema_version": "truth.v1"
+}

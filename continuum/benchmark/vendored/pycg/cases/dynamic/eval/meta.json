@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/dynamic/eval",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark dynamic/eval.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-dynamic",
+  "language": "python",
+  "negative_edges": []
+}

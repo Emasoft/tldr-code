@@ -1,0 +1,11 @@
+{
+  "case_id": "suites/python/class_method/self_method",
+  "defect_class": null,
+  "description": "A self receiver call should resolve to the method on the same class.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "class method",
+  "language": "python",
+  "negative_edges": []
+}

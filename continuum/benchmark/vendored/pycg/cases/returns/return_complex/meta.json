@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/returns/return_complex",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark returns/return_complex.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-returns",
+  "language": "python",
+  "negative_edges": []
+}

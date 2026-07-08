@@ -1,0 +1,2 @@
+def document():
+    return "doc"

@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/assignments/recursive_tuple",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark assignments/recursive_tuple.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-assignments",
+  "language": "python",
+  "negative_edges": []
+}

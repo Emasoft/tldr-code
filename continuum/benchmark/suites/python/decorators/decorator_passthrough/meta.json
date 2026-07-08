@@ -1,0 +1,11 @@
+{
+  "case_id": "suites/python/decorators/decorator_passthrough",
+  "defect_class": null,
+  "description": "A no-op decorator should not hide the decorated function from a direct call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "decorators",
+  "language": "python",
+  "negative_edges": []
+}

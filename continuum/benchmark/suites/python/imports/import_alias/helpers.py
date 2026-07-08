@@ -1,0 +1,2 @@
+def work():
+    return "done"

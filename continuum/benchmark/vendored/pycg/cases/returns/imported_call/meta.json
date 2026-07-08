@@ -1,0 +1,11 @@
+{
+  "case_id": "vendored/pycg/returns/imported_call",
+  "defect_class": "vendored-pycg",
+  "description": "PyCG micro-benchmark returns/imported_call.",
+  "entrypoints": [
+    "main.py"
+  ],
+  "feature": "pycg-returns",
+  "language": "python",
+  "negative_edges": []
+}

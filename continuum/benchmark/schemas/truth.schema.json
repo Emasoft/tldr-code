@@ -1,0 +1,206 @@
+{
+  "$defs": {
+    "edge": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_note": {
+          "type": "string"
+        },
+        "dst_file": {
+          "type": "string"
+        },
+        "dst_func": {
+          "type": "string"
+        },
+        "dst_line": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "call",
+            "method",
+            "constructor"
+          ],
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "src_file": {
+          "type": "string"
+        },
+        "src_func": {
+          "type": "string"
+        },
+        "src_line": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "staleness": {
+          "type": "string"
+        },
+        "tier_hint": {
+          "enum": [
+            "T0",
+            "T1",
+            "T2"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "src_file",
+        "src_func",
+        "src_line",
+        "dst_file",
+        "dst_func",
+        "dst_line",
+        "kind",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "expected_unresolved": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "type": "string"
+        },
+        "location": {
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "line": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "file",
+            "line"
+          ],
+          "type": "object"
+        },
+        "missing_edge": {
+          "$ref": "#/$defs/edge"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression",
+        "location",
+        "reason",
+        "missing_edge",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "type": "string"
+        },
+        "harvested_at": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "manual",
+            "lsp-callHierarchy",
+            "runtime-trace",
+            "vendored-pycg"
+          ],
+          "type": "string"
+        },
+        "staleness": {
+          "type": "string"
+        },
+        "tier": {
+          "enum": [
+            "T0",
+            "T1",
+            "T2"
+          ],
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "upstream_commit": {
+          "type": "string"
+        },
+        "upstream_url": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "harvested_at"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://tldr.local/continuum/benchmark/schemas/truth.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "type": "string"
+    },
+    "edge_model": {
+      "enum": [
+        "static-callgraph"
+      ],
+      "type": "string"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "type": "array"
+    },
+    "expected_unresolved": {
+      "items": {
+        "$ref": "#/$defs/expected_unresolved"
+      },
+      "type": "array"
+    },
+    "language": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "truth.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "case_id",
+    "language",
+    "edge_model",
+    "notes",
+    "edges"
+  ],
+  "title": "tldr benchmark truth edge schema",
+  "type": "object"
+}
