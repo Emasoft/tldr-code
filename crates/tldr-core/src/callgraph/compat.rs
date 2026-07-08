@@ -250,7 +250,7 @@ pub fn callgraph_ir_to_v1(ir: &CallGraphIR, root: &Path) -> crate::types::Projec
             // fix-cl-1-v1 (v0.5.0 CL-1): preserve call-site line.
             call_line: edge.call_line,
         };
-        graph.add_edge(v1_edge);
+        graph.add_edge_with_rung(v1_edge, edge.rung);
     }
 
     graph

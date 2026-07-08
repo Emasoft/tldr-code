@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Args;
+use serde::Serialize;
 use tree_sitter::Node;
 
 use super::error::{RemainingError, RemainingResult};
@@ -31,6 +32,9 @@ use crate::output::OutputWriter;
 use tldr_core::ast::parser::PARSER_POOL;
 use tldr_core::callgraph::cross_file_types::{ClassDef, FuncDef};
 use tldr_core::callgraph::languages::LanguageRegistry;
+use tldr_core::callgraph::{
+    build_project_call_graph_v2, confidence_tier, BuildConfig, ConfidenceTier,
+};
 use tldr_core::Language;
 
 // =============================================================================
@@ -402,6 +406,47 @@ pub struct DefinitionArgs {
     /// Output file (optional, stdout if not specified)
     #[arg(long, short = 'O')]
     pub output: Option<PathBuf>,
+
+    /// Allow lower-confidence approximate definition candidates as definitive
+    #[arg(long)]
+    pub approximate: bool,
+}
+
+#[derive(Clone)]
+struct DefinitionQueryContext {
+    file: PathBuf,
+    line: u32,
+    project_root: PathBuf,
+    language: Language,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ApproximateDefinition {
+    file: String,
+    function: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+    confidence: &'static str,
+    rung: &'static str,
+    mechanism: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DefinitionDecline {
+    reason: &'static str,
+    target: String,
+    approximate_definitions: Vec<ApproximateDefinition>,
+}
+
+#[derive(Serialize)]
+struct DefinitionOutput<'a> {
+    schema: &'static str,
+    #[serde(flatten)]
+    result: &'a DefinitionResult,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    declined: Vec<DefinitionDecline>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    approximate_definitions: Vec<ApproximateDefinition>,
 }
 
 impl DefinitionArgs {
@@ -430,6 +475,8 @@ impl DefinitionArgs {
             ))
         })?;
 
+        let mut query_context: Option<DefinitionQueryContext> = None;
+
         // Determine which mode we're in
         let result = if let Some(ref symbol_name) = self.symbol {
             // Name-based mode - require --file
@@ -448,12 +495,8 @@ impl DefinitionArgs {
             // root, honouring an explicit --project, --workspace=false opt-out,
             // and the Python package-dir fallback for marker-less trees.
             let root_lang = detect_language(file, &lang_hint).ok();
-            let effective_project_buf = resolve_definition_root(
-                self.project.as_deref(),
-                self.workspace,
-                file,
-                root_lang,
-            );
+            let effective_project_buf =
+                resolve_definition_root(self.project.as_deref(), self.workspace, file, root_lang);
             let effective_project = effective_project_buf.as_deref();
 
             find_definition_by_name(symbol_name, file, effective_project, &lang_hint)?
@@ -482,13 +525,19 @@ impl DefinitionArgs {
             // root, honouring an explicit --project, --workspace=false opt-out,
             // and the Python package-dir fallback for marker-less trees.
             let root_lang = detect_language(file, &lang_hint).ok();
-            let effective_project_buf = resolve_definition_root(
-                self.project.as_deref(),
-                self.workspace,
-                file,
-                root_lang,
-            );
+            let effective_project_buf =
+                resolve_definition_root(self.project.as_deref(), self.workspace, file, root_lang);
             let effective_project = effective_project_buf.as_deref();
+            if let (Some(root), Ok(language)) =
+                (effective_project, detect_language(file, &lang_hint))
+            {
+                query_context = Some(DefinitionQueryContext {
+                    file: file.clone(),
+                    line,
+                    project_root: root.to_path_buf(),
+                    language,
+                });
+            }
 
             // r7-cl11: normalize the declared-encoding INPUT column to the
             // 0-indexed UTF-8 byte column the resolver consumes internally.
@@ -566,27 +615,151 @@ impl DefinitionArgs {
         // become LSP-correct on non-ASCII lines.
         let mut result = result;
         reencode_result_columns(&mut result, encoding);
+        let (declined, approximate_definitions) =
+            apply_t2_definition_policy(&mut result, query_context.as_ref(), self.approximate);
 
         // Determine output format
         let use_text = format == crate::output::OutputFormat::Text;
+        let output = DefinitionOutput {
+            schema: "definition.v2",
+            result: &result,
+            declined,
+            approximate_definitions,
+        };
 
         // Write output
         if let Some(ref output_path) = self.output {
             if use_text {
-                let text = format_definition_text(&result);
+                let text = format_definition_text_v2(&result, &output.declined);
                 fs::write(output_path, text)?;
             } else {
-                let json = serde_json::to_string_pretty(&result)?;
+                let json = serde_json::to_string_pretty(&output)?;
                 fs::write(output_path, json)?;
             }
         } else if use_text {
-            let text = format_definition_text(&result);
+            let text = format_definition_text_v2(&result, &output.declined);
             writer.write_text(&text)?;
         } else {
-            writer.write(&result)?;
+            writer.write(&output)?;
         }
 
         Ok(())
+    }
+}
+
+fn apply_t2_definition_policy(
+    result: &mut DefinitionResult,
+    context: Option<&DefinitionQueryContext>,
+    include_approximate: bool,
+) -> (Vec<DefinitionDecline>, Vec<ApproximateDefinition>) {
+    let Some(context) = context else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(definition) = result.definition.clone() else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let config = BuildConfig {
+        language: format!("{:?}", context.language).to_lowercase(),
+        ..Default::default()
+    };
+    let Ok(ir) = build_project_call_graph_v2(&context.project_root, config) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let source_rel = context
+        .file
+        .strip_prefix(&context.project_root)
+        .unwrap_or(&context.file);
+    let source_key = definition_path_key(source_rel);
+    let symbol_leaf = last_definition_segment(&result.symbol.name);
+
+    let mut has_t1 = false;
+    let mut candidates = Vec::new();
+    for edge in &ir.edges {
+        if edge.call_line != Some(context.line) {
+            continue;
+        }
+        if definition_path_key(&edge.src_file) != source_key {
+            continue;
+        }
+        if last_definition_segment(&edge.dst_func) != symbol_leaf {
+            continue;
+        }
+        match confidence_tier(edge.rung) {
+            ConfidenceTier::T1 => has_t1 = true,
+            ConfidenceTier::T2 => candidates.push(ApproximateDefinition {
+                file: context
+                    .project_root
+                    .join(&edge.dst_file)
+                    .display()
+                    .to_string(),
+                function: edge.dst_func.clone(),
+                line: Some(definition.line),
+                confidence: ConfidenceTier::T2.as_str(),
+                rung: edge.rung.id(),
+                mechanism: edge.rung.mechanism(),
+            }),
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.function.cmp(&b.function))
+            .then_with(|| a.rung.cmp(&b.rung))
+    });
+    candidates.dedup_by(|a, b| a.file == b.file && a.function == b.function && a.rung == b.rung);
+
+    if has_t1 || candidates.is_empty() {
+        return (Vec::new(), candidates);
+    }
+
+    let declined = if include_approximate {
+        Vec::new()
+    } else {
+        result.definition = None;
+        result.type_definition = None;
+        vec![DefinitionDecline {
+            reason: "t2_only_definition_guess",
+            target: result.symbol.name.clone(),
+            approximate_definitions: candidates.clone(),
+        }]
+    };
+
+    (declined, candidates)
+}
+
+fn definition_path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn last_definition_segment(name: &str) -> &str {
+    let after_colons = name.rsplit("::").next().unwrap_or(name);
+    after_colons.rsplit('.').next().unwrap_or(after_colons)
+}
+
+fn format_definition_text_v2(result: &DefinitionResult, declined: &[DefinitionDecline]) -> String {
+    if let Some(decline) = declined.first() {
+        let mut text = format!(
+            "Definition declined: {} for {}\n",
+            decline.reason, decline.target
+        );
+        if !decline.approximate_definitions.is_empty() {
+            text.push_str("\nApproximate candidates:\n");
+            for candidate in &decline.approximate_definitions {
+                text.push_str(&format!(
+                    "  {}:{} ({}, {})\n",
+                    candidate.file,
+                    candidate.line.unwrap_or(0),
+                    candidate.confidence,
+                    candidate.rung
+                ));
+            }
+        }
+        text
+    } else {
+        format_definition_text(result)
     }
 }
 
@@ -697,8 +870,7 @@ pub fn find_definition_by_position(
     // Pass 1: try local-scope resolution from the cursor position.
     // This catches usages of parameters and locally-declared variables
     // before we fall through to the file/import scopes.
-    if let Some(result) =
-        resolve_local_scope(&source, line, column, &symbol_name, language, file)?
+    if let Some(result) = resolve_local_scope(&source, line, column, &symbol_name, language, file)?
     {
         return Ok(result);
     }
@@ -730,9 +902,7 @@ pub fn find_definition_by_position(
             // user gets a useful answer rather than "not found".
             let trailing = trailing_segment(&symbol_name);
             if trailing != symbol_name && !trailing.is_empty() {
-                if let Ok(result) =
-                    find_definition_by_name(&trailing, file, project, lang_hint)
-                {
+                if let Ok(result) = find_definition_by_name(&trailing, file, project, lang_hint) {
                     return Ok(result);
                 }
             }
@@ -886,8 +1056,7 @@ fn resolve_local_scope(
     // scanner only returns property/field bindings, never re-derives an
     // inner-scope local that the ancestor walk already rejected.
     if !scanned_root && language_has_class_fields(language) {
-        if let Some(loc) =
-            scan_scope_for_binding(root, source, symbol, language, file, start_node)
+        if let Some(loc) = scan_scope_for_binding(root, source, symbol, language, file, start_node)
         {
             return Ok(Some(make_local_result(symbol, loc)));
         }
@@ -938,8 +1107,12 @@ fn scope_name_node(scope: Node, language: Language) -> Option<Node> {
 fn c_declarator_name_node(mut decl: Node) -> Option<Node> {
     loop {
         match decl.kind() {
-            "identifier" | "field_identifier" | "qualified_identifier" | "destructor_name"
-            | "operator_name" | "operator_cast" => return Some(decl),
+            "identifier"
+            | "field_identifier"
+            | "qualified_identifier"
+            | "destructor_name"
+            | "operator_name"
+            | "operator_cast" => return Some(decl),
             _ => {
                 decl = decl.child_by_field_name("declarator")?;
             }
@@ -987,10 +1160,7 @@ fn language_has_class_fields(language: Language) -> bool {
 /// [`resolve_local_scope`] to bound the per-scope binding scan.
 fn is_scope_node(kind: &str, language: Language) -> bool {
     match language {
-        Language::Python => matches!(
-            kind,
-            "function_definition" | "lambda" | "module"
-        ),
+        Language::Python => matches!(kind, "function_definition" | "lambda" | "module"),
         Language::JavaScript | Language::TypeScript => matches!(
             kind,
             "function_declaration"
@@ -1004,10 +1174,7 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
         ),
         Language::Rust => matches!(
             kind,
-            "function_item"
-                | "closure_expression"
-                | "block"
-                | "source_file"
+            "function_item" | "closure_expression" | "block" | "source_file"
         ),
         Language::Go => matches!(
             kind,
@@ -1027,19 +1194,11 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
         ),
         Language::Cpp => matches!(
             kind,
-            "function_definition"
-                | "lambda_expression"
-                | "compound_statement"
-                | "translation_unit"
+            "function_definition" | "lambda_expression" | "compound_statement" | "translation_unit"
         ),
         Language::Ruby => matches!(
             kind,
-            "method"
-                | "singleton_method"
-                | "do_block"
-                | "block"
-                | "lambda"
-                | "program"
+            "method" | "singleton_method" | "do_block" | "block" | "lambda" | "program"
         ),
         Language::Kotlin => matches!(
             kind,
@@ -1216,9 +1375,7 @@ fn scan_python_scope(
     }
     // Walk body looking for assignments / for-targets, but don't descend
     // into nested function/class/lambda scopes.
-    let body = node
-        .child_by_field_name("body")
-        .or_else(|| Some(node));
+    let body = node.child_by_field_name("body").or_else(|| Some(node));
     if let Some(body) = body {
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {
@@ -1255,9 +1412,7 @@ fn python_scan_params(
                     None => {
                         // Fallback: first identifier child.
                         let mut c = child.walk();
-                        let found = child
-                            .children(&mut c)
-                            .find(|n| n.kind() == "identifier");
+                        let found = child.children(&mut c).find(|n| n.kind() == "identifier");
                         found
                     }
                 };
@@ -1409,15 +1564,12 @@ fn jslike_scan_params(
                     return Some(make_param_location(child, file));
                 }
             }
-            "required_parameter" | "optional_parameter" | "rest_pattern"
-            | "assignment_pattern" => {
+            "required_parameter" | "optional_parameter" | "rest_pattern" | "assignment_pattern" => {
                 let pat_node = match child.child_by_field_name("pattern") {
                     Some(n) => Some(n),
                     None => {
                         let mut c = child.walk();
-                        let found = child
-                            .children(&mut c)
-                            .find(|n| n.kind() == "identifier");
+                        let found = child.children(&mut c).find(|n| n.kind() == "identifier");
                         found
                     }
                 };
@@ -1441,17 +1593,20 @@ fn jslike_walk_for_binding(
 ) -> Option<(SymbolKind, Location)> {
     match node.kind() {
         // Don't descend into nested scopes.
-        "function_declaration" | "function" | "function_expression" | "arrow_function"
-        | "method_definition" | "method_signature" | "class_declaration" => None,
+        "function_declaration"
+        | "function"
+        | "function_expression"
+        | "arrow_function"
+        | "method_definition"
+        | "method_signature"
+        | "class_declaration" => None,
         "lexical_declaration" | "variable_declaration" => {
             // children are variable_declarators
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "variable_declarator" {
                     if let Some(name) = child.child_by_field_name("name") {
-                        if name.kind() == "identifier"
-                            && name.utf8_text(src).ok()? == symbol
-                        {
+                        if name.kind() == "identifier" && name.utf8_text(src).ok()? == symbol {
                             return Some((
                                 SymbolKind::Variable,
                                 Location::with_column(
@@ -1857,12 +2012,9 @@ fn clike_scan_param_list(
     None
 }
 
-fn clike_find_param_identifier<'a>(
-    node: Node<'a>,
-    src: &[u8],
-    symbol: &str,
-) -> Option<Node<'a>> {
-    if matches!(node.kind(), "identifier" | "field_identifier") && name_node_matches(node, src, symbol)
+fn clike_find_param_identifier<'a>(node: Node<'a>, src: &[u8], symbol: &str) -> Option<Node<'a>> {
+    if matches!(node.kind(), "identifier" | "field_identifier")
+        && name_node_matches(node, src, symbol)
     {
         return Some(node);
     }
@@ -1926,7 +2078,9 @@ fn clike_extract_decl_name<'a>(node: Node<'a>, src: &[u8], symbol: &str) -> Opti
                     return Some(child);
                 }
             }
-            "pointer_declarator" | "array_declarator" | "parenthesized_declarator"
+            "pointer_declarator"
+            | "array_declarator"
+            | "parenthesized_declarator"
             | "reference_declarator" => {
                 if let Some(n) = clike_extract_decl_name(child, src, symbol) {
                     return Some(n);
@@ -1952,7 +2106,10 @@ fn scan_ruby_scope(
     symbol: &str,
     file: &Path,
 ) -> Option<(SymbolKind, Location)> {
-    if matches!(node.kind(), "method" | "singleton_method" | "lambda" | "do_block" | "block") {
+    if matches!(
+        node.kind(),
+        "method" | "singleton_method" | "lambda" | "do_block" | "block"
+    ) {
         // Parameters: method_parameters / block_parameters / lambda_parameters
         if let Some(params) = node
             .child_by_field_name("parameters")
@@ -2053,18 +2210,13 @@ fn scan_kotlin_scope(
         "function_declaration" | "anonymous_function" | "lambda_literal"
     ) {
         // `function_value_parameters` field "parameters", or direct child
-        let params = node
-            .child_by_field_name("parameters")
-            .or_else(|| {
-                let mut c = node.walk();
-                let found = node.children(&mut c).find(|n| {
-                    matches!(
-                        n.kind(),
-                        "function_value_parameters" | "lambda_parameters"
-                    )
-                });
-                found
-            });
+        let params = node.child_by_field_name("parameters").or_else(|| {
+            let mut c = node.walk();
+            let found = node
+                .children(&mut c)
+                .find(|n| matches!(n.kind(), "function_value_parameters" | "lambda_parameters"));
+            found
+        });
         if let Some(params) = params {
             if let Some(loc) = kotlin_scan_params(params, src, symbol, file) {
                 return Some(loc);
@@ -2093,15 +2245,13 @@ fn kotlin_scan_params(
             "parameter" | "function_value_parameter" | "value_parameter"
         ) {
             // first descendant identifier — but prefer field "name" / "simple_identifier"
-            let name = child
-                .child_by_field_name("name")
-                .or_else(|| {
-                    let mut c = child.walk();
-                    let found = child
-                        .children(&mut c)
-                        .find(|n| matches!(n.kind(), "identifier" | "simple_identifier"));
-                    found
-                });
+            let name = child.child_by_field_name("name").or_else(|| {
+                let mut c = child.walk();
+                let found = child
+                    .children(&mut c)
+                    .find(|n| matches!(n.kind(), "identifier" | "simple_identifier"));
+                found
+            });
             if let Some(name) = name {
                 if name_node_matches(name, src, symbol) {
                     return Some(make_param_location(name, file));
@@ -2175,15 +2325,13 @@ fn scan_swift_scope(
                 child.kind(),
                 "parameter" | "value_parameter" | "lambda_function_type_parameters"
             ) {
-                let name = child
-                    .child_by_field_name("name")
-                    .or_else(|| {
-                        let mut c = child.walk();
-                        let found = child
-                            .children(&mut c)
-                            .find(|n| matches!(n.kind(), "identifier" | "simple_identifier"));
-                        found
-                    });
+                let name = child.child_by_field_name("name").or_else(|| {
+                    let mut c = child.walk();
+                    let found = child
+                        .children(&mut c)
+                        .find(|n| matches!(n.kind(), "identifier" | "simple_identifier"));
+                    found
+                });
                 if let Some(name) = name {
                     if name_node_matches(name, src, symbol) {
                         return Some(make_param_location(name, file));
@@ -2208,14 +2356,19 @@ fn swift_walk_for_binding(
     file: &Path,
 ) -> Option<(SymbolKind, Location)> {
     match node.kind() {
-        "function_declaration" | "init_declaration" | "class_declaration"
-        | "struct_declaration" | "enum_declaration" | "lambda_literal" => None,
+        "function_declaration"
+        | "init_declaration"
+        | "class_declaration"
+        | "struct_declaration"
+        | "enum_declaration"
+        | "lambda_literal" => None,
         "property_declaration" => {
             // pattern: `let name = expr` or `var name = expr`
             // The `name` field or first `pattern` child holds the binding.
             let name = node.child_by_field_name("name").or_else(|| {
                 let mut c = node.walk();
-                let found = node.children(&mut c)
+                let found = node
+                    .children(&mut c)
                     .find(|n| matches!(n.kind(), "identifier" | "simple_identifier" | "pattern"));
                 found
             });
@@ -2287,9 +2440,7 @@ fn scala_scan_params(
         if matches!(child.kind(), "parameter" | "class_parameter" | "binding") {
             let name = child.child_by_field_name("name").or_else(|| {
                 let mut c = child.walk();
-                let found = child
-                    .children(&mut c)
-                    .find(|n| n.kind() == "identifier");
+                let found = child.children(&mut c).find(|n| n.kind() == "identifier");
                 found
             });
             if let Some(name) = name {
@@ -2316,8 +2467,12 @@ fn scala_walk_for_binding(
     file: &Path,
 ) -> Option<(SymbolKind, Location)> {
     match node.kind() {
-        "function_definition" | "function_declaration" | "class_definition"
-        | "object_definition" | "trait_definition" | "lambda_expression" => None,
+        "function_definition"
+        | "function_declaration"
+        | "class_definition"
+        | "object_definition"
+        | "trait_definition"
+        | "lambda_expression" => None,
         "val_definition" | "var_definition" | "val_declaration" | "var_declaration" => {
             // pattern field or identifier
             let name = node.child_by_field_name("pattern").or_else(|| {
@@ -2390,23 +2545,18 @@ fn php_scan_params(
     for child in params.children(&mut cursor) {
         if matches!(
             child.kind(),
-            "simple_parameter"
-                | "variadic_parameter"
-                | "property_promotion_parameter"
+            "simple_parameter" | "variadic_parameter" | "property_promotion_parameter"
         ) {
             // The name child is `variable_name` containing `$identifier`.
-            if let Some(name) = child
-                .child_by_field_name("name")
-                .or_else(|| {
-                    let mut c = child.walk();
-                    let found = child
-                        .children(&mut c)
-                        .find(|n| n.kind() == "variable_name");
-                    found
-                })
-            {
+            if let Some(name) = child.child_by_field_name("name").or_else(|| {
+                let mut c = child.walk();
+                let found = child.children(&mut c).find(|n| n.kind() == "variable_name");
+                found
+            }) {
                 if let Ok(t) = name.utf8_text(src) {
-                    if t == target_with_dollar || t.trim_start_matches('$') == symbol.trim_start_matches('$') {
+                    if t == target_with_dollar
+                        || t.trim_start_matches('$') == symbol.trim_start_matches('$')
+                    {
                         return Some(make_param_location(name, file));
                     }
                 }
@@ -2582,10 +2732,7 @@ fn scan_elixir_scope(
     // call (the function head) and scan its arguments for identifier params.
     if node.kind() == "call" {
         if let Some(name) = elixir_call_head_name(node, src) {
-            if matches!(
-                name.as_str(),
-                "def" | "defp" | "defmacro" | "defmacrop"
-            ) {
+            if matches!(name.as_str(), "def" | "defp" | "defmacro" | "defmacrop") {
                 // Find the `arguments` child and scan
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
@@ -2870,8 +3017,7 @@ fn ocaml_walk_for_binding(
             if node.kind() == "value_definition" {
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
-                    if let Some(loc) =
-                        ocaml_walk_for_binding(child, src, symbol, file, cursor_node)
+                    if let Some(loc) = ocaml_walk_for_binding(child, src, symbol, file, cursor_node)
                     {
                         return Some(loc);
                     }
@@ -2882,9 +3028,7 @@ fn ocaml_walk_for_binding(
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if let Some(loc) =
-                    ocaml_walk_for_binding(child, src, symbol, file, cursor_node)
-                {
+                if let Some(loc) = ocaml_walk_for_binding(child, src, symbol, file, cursor_node) {
                     return Some(loc);
                 }
             }
@@ -2912,10 +3056,7 @@ fn ocaml_decline_nonrec_rhs_self_match(
         && ocaml_binding_rhs_contains_cursor(binding, src, cursor_node)
 }
 
-fn ocaml_binding_containing_cursor<'a>(
-    node: Node<'a>,
-    cursor_node: Node<'a>,
-) -> Option<Node<'a>> {
+fn ocaml_binding_containing_cursor<'a>(node: Node<'a>, cursor_node: Node<'a>) -> Option<Node<'a>> {
     if node.kind() == "let_binding" && node_contains(node, cursor_node) {
         return Some(node);
     }
@@ -3482,7 +3623,10 @@ fn java_import_line(source: &str, symbol: &str) -> Option<(u32, u32)> {
             continue;
         };
         let rest = rest.trim_end_matches(';').trim();
-        let rest = rest.strip_prefix("static ").map(|r| r.trim()).unwrap_or(rest);
+        let rest = rest
+            .strip_prefix("static ")
+            .map(|r| r.trim())
+            .unwrap_or(rest);
         if rest.ends_with('*') {
             continue;
         }
@@ -3559,11 +3703,19 @@ fn swift_import_line(source: &str, symbol: &str) -> Option<(u32, u32)> {
         };
         let rest = rest.trim();
         // Strip the optional kind keyword.
-        let rest = ["class ", "struct ", "enum ", "protocol ", "typealias ", "var ", "func "]
-            .iter()
-            .find_map(|prefix| rest.strip_prefix(prefix))
-            .unwrap_or(rest)
-            .trim();
+        let rest = [
+            "class ",
+            "struct ",
+            "enum ",
+            "protocol ",
+            "typealias ",
+            "var ",
+            "func ",
+        ]
+        .iter()
+        .find_map(|prefix| rest.strip_prefix(prefix))
+        .unwrap_or(rest)
+        .trim();
         let bound = last_dotted_segment(rest);
         if bound == symbol {
             return Some((idx as u32 + 1, leading as u32));
@@ -3823,8 +3975,7 @@ fn find_symbol_at_position(
             // non-identifier byte we hit is `(`, walk over the whole
             // balanced group first (Go-style method receivers).
             let bytes = line_text.as_bytes();
-            let is_ident =
-                |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+            let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
             let mut i = effective_column.min(bytes.len());
             while i < bytes.len() && is_ident(bytes[i]) {
                 i += 1;
@@ -4059,15 +4210,65 @@ fn is_language_keyword(word: &str, language: Language) -> bool {
     // Conservative shared set used regardless of language — these are
     // never legal identifier names anywhere in the supported corpus.
     const SHARED: &[&str] = &[
-        "fn", "func", "function", "def", "defp", "defmodule", "defmacro",
-        "defmacrop", "defstruct", "let", "var", "const", "class", "struct",
-        "trait", "interface", "module", "namespace", "package", "import",
-        "from", "use", "using", "export", "pub", "public", "private",
-        "protected", "static", "final", "abstract", "override", "async",
-        "await", "return", "if", "else", "elif", "while", "for", "do",
-        "match", "switch", "case", "break", "continue", "type", "typedef",
-        "enum", "implements", "extends", "self", "this", "super", "void",
-        "new", "delete", "object", "trait",
+        "fn",
+        "func",
+        "function",
+        "def",
+        "defp",
+        "defmodule",
+        "defmacro",
+        "defmacrop",
+        "defstruct",
+        "let",
+        "var",
+        "const",
+        "class",
+        "struct",
+        "trait",
+        "interface",
+        "module",
+        "namespace",
+        "package",
+        "import",
+        "from",
+        "use",
+        "using",
+        "export",
+        "pub",
+        "public",
+        "private",
+        "protected",
+        "static",
+        "final",
+        "abstract",
+        "override",
+        "async",
+        "await",
+        "return",
+        "if",
+        "else",
+        "elif",
+        "while",
+        "for",
+        "do",
+        "match",
+        "switch",
+        "case",
+        "break",
+        "continue",
+        "type",
+        "typedef",
+        "enum",
+        "implements",
+        "extends",
+        "self",
+        "this",
+        "super",
+        "void",
+        "new",
+        "delete",
+        "object",
+        "trait",
     ];
     if SHARED.contains(&word) {
         return true;
@@ -4095,7 +4296,8 @@ fn is_language_keyword(word: &str, language: Language) -> bool {
         ),
         Language::Ocaml => matches!(
             word,
-            "let" | "rec"
+            "let"
+                | "rec"
                 | "and"
                 | "in"
                 | "fun"
@@ -4111,7 +4313,10 @@ fn is_language_keyword(word: &str, language: Language) -> bool {
                 | "val"
         ),
         Language::Java | Language::CSharp | Language::Kotlin => {
-            matches!(word, "synchronized" | "throws" | "throw" | "try" | "catch" | "finally")
+            matches!(
+                word,
+                "synchronized" | "throws" | "throw" | "try" | "catch" | "finally"
+            )
         }
         _ => false,
     }
@@ -4336,7 +4541,10 @@ fn match_definition(
 }
 
 fn definition_function_name_matches(name: &str, symbol: &str) -> bool {
-    name == symbol || name.rsplit_once("::").is_some_and(|(_, tail)| tail == symbol)
+    name == symbol
+        || name
+            .rsplit_once("::")
+            .is_some_and(|(_, tail)| tail == symbol)
 }
 
 /// Locate the 1-indexed column of `symbol` on line `line` (1-indexed) of
@@ -4452,9 +4660,7 @@ fn ast_locate_symbol_definition(
     let window_end = start_line.saturating_add(max_forward);
 
     let mut best: Option<(u32, u32)> = None;
-    walk_ast_for_definition_name(
-        root, bytes, symbol, start_line, window_end, &mut best,
-    );
+    walk_ast_for_definition_name(root, bytes, symbol, start_line, window_end, &mut best);
     best
 }
 
@@ -4499,9 +4705,7 @@ fn walk_ast_for_definition_name(
                         // Prefer earliest (line, then column).
                         match best {
                             None => *best = Some((row, col)),
-                            Some((br, bc)) if (row, col) < (*br, *bc) => {
-                                *best = Some((row, col))
-                            }
+                            Some((br, bc)) if (row, col) < (*br, *bc) => *best = Some((row, col)),
                             _ => {}
                         }
                     }
@@ -4511,9 +4715,7 @@ fn walk_ast_for_definition_name(
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_ast_for_definition_name(
-            child, source, symbol, start_line, window_end, best,
-        );
+        walk_ast_for_definition_name(child, source, symbol, start_line, window_end, best);
     }
 }
 
@@ -4535,11 +4737,10 @@ fn find_word_bounded(line_text: &str, symbol: &str) -> Option<u32> {
             return None;
         };
         let byte_offset = search_start + rel_offset;
-        let before_ok = byte_offset == 0
-            || !is_identifier_continuation(bytes[byte_offset.saturating_sub(1)]);
+        let before_ok =
+            byte_offset == 0 || !is_identifier_continuation(bytes[byte_offset.saturating_sub(1)]);
         let after_idx = byte_offset + sym_bytes.len();
-        let after_ok =
-            after_idx >= bytes.len() || !is_identifier_continuation(bytes[after_idx]);
+        let after_ok = after_idx >= bytes.len() || !is_identifier_continuation(bytes[after_idx]);
         if before_ok && after_ok {
             // 1-indexed character column (UTF-8 aware).
             let col_chars = line_text[..byte_offset].chars().count();
@@ -5071,8 +5272,19 @@ pub fn is_builtin(name: &str, language: &Language) -> bool {
 /// builtins is the correct go-to-definition answer (an external/builtin
 /// symbol with no user source location).
 const LUA_STDLIB_TABLES: &[&str] = &[
-    "string", "table", "math", "os", "io", "coroutine", "debug", "utf8",
-    "package", "bit32", "buffer", "vector", "task",
+    "string",
+    "table",
+    "math",
+    "os",
+    "io",
+    "coroutine",
+    "debug",
+    "utf8",
+    "package",
+    "bit32",
+    "buffer",
+    "vector",
+    "task",
 ];
 
 /// If `symbol` is a dotted member access `lib.member` whose base `lib` is
@@ -5095,10 +5307,7 @@ fn lua_stdlib_member(symbol: &str, language: Language) -> Option<&'static str> {
     if base.is_empty() || base == symbol {
         return None;
     }
-    LUA_STDLIB_TABLES
-        .iter()
-        .copied()
-        .find(|&lib| lib == base)
+    LUA_STDLIB_TABLES.iter().copied().find(|&lib| lib == base)
 }
 
 /// Build a builtin [`DefinitionResult`] for a standard-library / external
@@ -5732,8 +5941,13 @@ from . import types
             "resolved workspace root must not be empty"
         );
 
-        let result = find_definition_by_name("helper", Path::new("main.js"), Some(&resolved_root), "javascript")
-            .expect("helper must resolve cross-file from a bare relative --file");
+        let result = find_definition_by_name(
+            "helper",
+            Path::new("main.js"),
+            Some(&resolved_root),
+            "javascript",
+        )
+        .expect("helper must resolve cross-file from a bare relative --file");
         assert_eq!(result.symbol.kind, SymbolKind::Function);
         let def = result.definition.expect("definition location must be Some");
         assert!(
@@ -5950,7 +6164,11 @@ from . import types
             result.symbol.kind
         );
         let def = result.definition.expect("definition location must be Some");
-        assert_eq!(def.line, 1, "param `x` is declared on line 1, got {}", def.line);
+        assert_eq!(
+            def.line, 1,
+            "param `x` is declared on line 1, got {}",
+            def.line
+        );
     }
 
     #[test]
@@ -6006,11 +6224,7 @@ from . import types
         let def = result
             .definition
             .expect("import-scope resolution must produce a definition location");
-        assert_eq!(
-            def.line, 1,
-            "import click is on line 1, got {}",
-            def.line
-        );
+        assert_eq!(def.line, 1, "import click is on line 1, got {}", def.line);
     }
 
     #[test]
@@ -6085,11 +6299,7 @@ from . import types
         assert_eq!(result.symbol.name, "counter");
         assert_eq!(result.symbol.kind, SymbolKind::Variable);
         let def = result.definition.expect("definition location must be Some");
-        assert_eq!(
-            def.line, 2,
-            "let counter is on line 2, got {}",
-            def.line
-        );
+        assert_eq!(def.line, 2, "let counter is on line 2, got {}", def.line);
     }
 
     // =========================================================================
@@ -6113,7 +6323,11 @@ from . import types
         // Line 1: def handler():
         // Line 2:     handler = 1
         // Line 3:     return handler
-        fs::write(&file, "def handler():\n    handler = 1\n    return handler\n").unwrap();
+        fs::write(
+            &file,
+            "def handler():\n    handler = 1\n    return handler\n",
+        )
+        .unwrap();
 
         // Cursor ON the declaration name `handler` — column 4 of line 1.
         let result = find_definition_by_position(&file, 1, 4, None, "python")
@@ -6158,7 +6372,6 @@ from . import types
     // the 13 additional languages (java, c, cpp, ruby, kotlin, swift, scala,
     // php, lua, luau, elixir, ocaml, csharp).
     // =========================================================================
-
 
     fn assert_resolves_param(
         file: &Path,
@@ -6215,11 +6428,20 @@ from . import types
 
         // The *width* of `néme` alone (offset 9 -> 14): utf8=5, utf16=4, utf32=4.
         let start = li.byte_col_to(0, 9, PositionEncoding::Utf8Byte);
-        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf8Byte) - start, 5);
+        assert_eq!(
+            li.byte_col_to(0, byte_col, PositionEncoding::Utf8Byte) - start,
+            5
+        );
         let start16 = li.byte_col_to(0, 9, PositionEncoding::Utf16);
-        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf16) - start16, 4);
+        assert_eq!(
+            li.byte_col_to(0, byte_col, PositionEncoding::Utf16) - start16,
+            4
+        );
         let start32 = li.byte_col_to(0, 9, PositionEncoding::Utf32Char);
-        assert_eq!(li.byte_col_to(0, byte_col, PositionEncoding::Utf32Char) - start32, 4);
+        assert_eq!(
+            li.byte_col_to(0, byte_col, PositionEncoding::Utf32Char) - start32,
+            4
+        );
     }
 
     // Non-BMP: a 🦀 (U+1F980) is 4 UTF-8 bytes but TWO UTF-16 code units and
@@ -6231,7 +6453,7 @@ from . import types
         let li = LineIndex::new(src);
         let quote_open = src.find('"').unwrap(); // byte 8
         let after_crab = quote_open + 1 + "🦀".len(); // 9 + 4 = 13
-        // From just-after the opening quote to just-after the crab:
+                                                      // From just-after the opening quote to just-after the crab:
         let b0 = quote_open + 1; // byte 9
         assert_eq!(
             li.byte_col_to(0, after_crab, PositionEncoding::Utf16)
@@ -6296,13 +6518,34 @@ from . import types
     // Encoding parser accepts the LSP spellings + aliases, rejects garbage.
     #[test]
     fn r7_cl11_position_encoding_parse() {
-        assert_eq!(PositionEncoding::parse_cli("utf8"), Some(PositionEncoding::Utf8Byte));
-        assert_eq!(PositionEncoding::parse_cli("UTF-8"), Some(PositionEncoding::Utf8Byte));
-        assert_eq!(PositionEncoding::parse_cli("byte"), Some(PositionEncoding::Utf8Byte));
-        assert_eq!(PositionEncoding::parse_cli("utf16"), Some(PositionEncoding::Utf16));
-        assert_eq!(PositionEncoding::parse_cli("utf-16"), Some(PositionEncoding::Utf16));
-        assert_eq!(PositionEncoding::parse_cli("utf32"), Some(PositionEncoding::Utf32Char));
-        assert_eq!(PositionEncoding::parse_cli("char"), Some(PositionEncoding::Utf32Char));
+        assert_eq!(
+            PositionEncoding::parse_cli("utf8"),
+            Some(PositionEncoding::Utf8Byte)
+        );
+        assert_eq!(
+            PositionEncoding::parse_cli("UTF-8"),
+            Some(PositionEncoding::Utf8Byte)
+        );
+        assert_eq!(
+            PositionEncoding::parse_cli("byte"),
+            Some(PositionEncoding::Utf8Byte)
+        );
+        assert_eq!(
+            PositionEncoding::parse_cli("utf16"),
+            Some(PositionEncoding::Utf16)
+        );
+        assert_eq!(
+            PositionEncoding::parse_cli("utf-16"),
+            Some(PositionEncoding::Utf16)
+        );
+        assert_eq!(
+            PositionEncoding::parse_cli("utf32"),
+            Some(PositionEncoding::Utf32Char)
+        );
+        assert_eq!(
+            PositionEncoding::parse_cli("char"),
+            Some(PositionEncoding::Utf32Char)
+        );
         assert_eq!(PositionEncoding::parse_cli(""), None);
         assert_eq!(PositionEncoding::parse_cli("latin1"), None);
         assert_eq!(PositionEncoding::default(), PositionEncoding::Utf8Byte);
@@ -6418,11 +6661,7 @@ from . import types
         // Line 1: fun add(a: Int, b: Int): Int {
         // Line 2:   return a + b
         // Line 3: }
-        fs::write(
-            &file,
-            "fun add(a: Int, b: Int): Int {\n  return a + b\n}\n",
-        )
-        .unwrap();
+        fs::write(&file, "fun add(a: Int, b: Int): Int {\n  return a + b\n}\n").unwrap();
         // Cursor on `a` in line 2.
         assert_resolves_param(&file, 2, 9, "kotlin", "a", 1);
     }
@@ -6450,11 +6689,7 @@ from . import types
         // Line 1: def add(a: Int, b: Int): Int = {
         // Line 2:   a + b
         // Line 3: }
-        fs::write(
-            &file,
-            "def add(a: Int, b: Int): Int = {\n  a + b\n}\n",
-        )
-        .unwrap();
+        fs::write(&file, "def add(a: Int, b: Int): Int = {\n  a + b\n}\n").unwrap();
         assert_resolves_param(&file, 2, 2, "scala", "a", 1);
     }
 
@@ -6801,7 +7036,11 @@ from . import types
         // A decoy user file defining `find` so cross-file resolution has
         // something wrong to latch onto if the stdlib guard is missing.
         let decoy = dir.path().join("decoy.luau");
-        fs::write(&decoy, "local function find(a, b)\n  return a\nend\nreturn find\n").unwrap();
+        fs::write(
+            &decoy,
+            "local function find(a, b)\n  return a\nend\nreturn find\n",
+        )
+        .unwrap();
         let file = dir.path().join("main.luau");
         // Line 1: local function check(actual, expected)
         // Line 2:   assert(string.find(actual, expected))
@@ -6813,8 +7052,7 @@ from . import types
         .unwrap();
         // Cursor on `string` (base of the stdlib member access) in line 2.
         // `  assert(` is 9 bytes, so column 9 is `s` of `string`.
-        let result =
-            find_definition_by_position(&file, 2, 9, Some(dir.path()), "luau");
+        let result = find_definition_by_position(&file, 2, 9, Some(dir.path()), "luau");
         match result {
             Ok(def) => {
                 // Must be flagged as a builtin and carry NO bogus source

@@ -3,12 +3,15 @@
 //! Identifies functions that are never called (unreachable code).
 //! Auto-routes through daemon when available for ~35x speedup.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
+use tldr_core::callgraph::{
+    build_project_call_graph_v2, confidence_tier, BuildConfig, ConfidenceTier,
+};
 use tldr_core::walker::ProjectWalker;
 
 /// Maximum number of files to scan in WalkDir traversals.
@@ -26,7 +29,6 @@ use tldr_core::{
     build_project_call_graph, collect_all_functions, dead_code_analysis, FunctionRef, Language,
 };
 
-use crate::commands::daemon_router::{params_for_dead, try_daemon_route};
 use crate::output::{OutputFormat, OutputWriter};
 
 /// Find dead (unreachable) code
@@ -55,6 +57,10 @@ pub struct DeadArgs {
     /// Walk vendored/build dirs (node_modules, target, dist, etc.) that would normally be skipped.
     #[arg(long)]
     pub no_default_ignore: bool,
+
+    /// Treat weak liveness evidence as dead instead of possibly_dead
+    #[arg(long)]
+    pub approximate: bool,
 }
 
 impl DeadArgs {
@@ -73,43 +79,6 @@ impl DeadArgs {
             .lang
             .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
 
-        // Try daemon first for cached result
-        let entry_points: Option<Vec<String>> = if self.entry_points.is_empty() {
-            None
-        } else {
-            Some(self.entry_points.clone())
-        };
-
-        if let Some(report) = try_daemon_route::<DeadCodeReport>(
-            &self.path,
-            "dead",
-            params_for_dead(Some(&self.path), entry_points.as_deref()),
-        ) {
-            // Apply truncation if needed
-            let (truncated_report, truncated, total_count, shown_count) =
-                apply_truncation(report, self.max_items);
-
-            // Output based on format
-            if writer.is_text() {
-                let text = format_dead_code_text_truncated(
-                    &truncated_report,
-                    truncated,
-                    total_count,
-                    shown_count,
-                );
-                writer.write_text(&text)?;
-                return Ok(());
-            } else {
-                let _ = (total_count, shown_count); // text path only
-                let output = DeadCodeOutput {
-                    report: truncated_report,
-                    truncated,
-                };
-                writer.write(&output)?;
-                return Ok(());
-            }
-        }
-
         // Fallback to direct compute
         let entry_points_for_analysis: Option<Vec<String>> = if self.entry_points.is_empty() {
             None
@@ -117,7 +86,7 @@ impl DeadArgs {
             Some(self.entry_points.clone())
         };
 
-        let report = if self.call_graph {
+        let mut report = if self.call_graph {
             // Old path: build call graph, then analyze
             writer.progress(&format!(
                 "Building call graph for {} ({:?})...",
@@ -153,6 +122,16 @@ impl DeadArgs {
             )?
         };
 
+        let module_infos = collect_module_infos(&self.path, language, self.no_default_ignore);
+        let all_functions: Vec<FunctionRef> = collect_all_functions(&module_infos);
+        apply_weak_liveness_policy(
+            &mut report,
+            &all_functions,
+            &self.path,
+            language,
+            self.approximate,
+        );
+
         // Apply truncation if needed
         let (truncated_report, truncated, total_count, shown_count) =
             apply_truncation(report, self.max_items);
@@ -169,6 +148,7 @@ impl DeadArgs {
         } else {
             let _ = (total_count, shown_count); // text path only
             let output = DeadCodeOutput {
+                schema: "dead.v2",
                 report: truncated_report,
                 truncated,
             };
@@ -244,7 +224,9 @@ fn tag_directive_functions(info: &mut ModuleInfo, source: &str, path: &Path) {
 /// "possibly_dead" findings for every declared symbol. Mirrors the
 /// oversize-skip pattern used elsewhere in the codebase.
 fn is_typescript_declaration_file(path: &Path) -> bool {
-    path.to_string_lossy().to_ascii_lowercase().ends_with(".d.ts")
+    path.to_string_lossy()
+        .to_ascii_lowercase()
+        .ends_with(".d.ts")
 }
 
 /// Collect ModuleInfo from all files in a directory using detailed AST extraction.
@@ -435,6 +417,161 @@ pub(crate) fn collect_module_infos_with_refcounts(
     (module_infos, merged_counts)
 }
 
+fn apply_weak_liveness_policy(
+    report: &mut DeadCodeReport,
+    all_functions: &[FunctionRef],
+    root: &Path,
+    language: Language,
+    approximate: bool,
+) {
+    let mut config = BuildConfig {
+        language: format!("{:?}", language).to_lowercase(),
+        ..Default::default()
+    };
+    if let Some(workspace) = tldr_core::types::WorkspaceConfig::discover(root) {
+        config.workspace_roots = workspace.roots;
+    }
+    let Ok(ir) = build_project_call_graph_v2(root, config) else {
+        return;
+    };
+
+    let mut strong_called: HashSet<(String, String)> = HashSet::new();
+    let mut weak_evidence: HashMap<(String, String), Vec<String>> = HashMap::new();
+
+    for edge in &ir.edges {
+        let key = function_key(&edge.dst_file, &edge.dst_func);
+        match confidence_tier(edge.rung) {
+            ConfidenceTier::T1 => {
+                strong_called.insert(key);
+            }
+            ConfidenceTier::T2 => {
+                weak_evidence
+                    .entry(key)
+                    .or_default()
+                    .push(format!("t2-edge-only:{}", edge.rung.id()));
+            }
+        }
+    }
+
+    for unresolved in &ir.unresolved {
+        add_unresolved_name_match_evidence(&mut weak_evidence, &unresolved.target, all_functions);
+    }
+
+    for evidence in weak_evidence.values_mut() {
+        evidence.sort();
+        evidence.dedup();
+    }
+
+    let all_by_key: HashMap<(String, String), FunctionRef> = all_functions
+        .iter()
+        .map(|func| (function_key(&func.file, &func.name), func.clone()))
+        .collect();
+
+    report
+        .dead_functions
+        .retain(|func| !strong_called.contains(&function_key(&func.file, &func.name)));
+    report
+        .possibly_dead
+        .retain(|func| !strong_called.contains(&function_key(&func.file, &func.name)));
+
+    for (key, evidence) in weak_evidence {
+        if strong_called.contains(&key) {
+            continue;
+        }
+        report
+            .dead_functions
+            .retain(|func| function_key(&func.file, &func.name) != key);
+        if let Some(existing) = report
+            .possibly_dead
+            .iter_mut()
+            .find(|func| function_key(&func.file, &func.name) == key)
+        {
+            existing.dead_evidence = evidence;
+        } else if let Some(func) = all_by_key.get(&key) {
+            let mut weak_func = func.clone();
+            weak_func.dead_evidence = evidence;
+            report.possibly_dead.push(weak_func);
+        }
+    }
+
+    if approximate {
+        let promoted = std::mem::take(&mut report.possibly_dead);
+        for func in promoted {
+            if !report
+                .dead_functions
+                .iter()
+                .any(|existing| existing.file == func.file && existing.name == func.name)
+            {
+                report.dead_functions.push(func);
+            }
+        }
+    }
+
+    sort_and_dedup_functions(&mut report.dead_functions);
+    sort_and_dedup_functions(&mut report.possibly_dead);
+    recompute_dead_report_summary(report);
+}
+
+fn function_key(file: &Path, name: &str) -> (String, String) {
+    (normalize_path_for_key(file), name.to_string())
+}
+
+fn add_unresolved_name_match_evidence(
+    weak_evidence: &mut HashMap<(String, String), Vec<String>>,
+    unresolved_target: &str,
+    all_functions: &[FunctionRef],
+) {
+    let unresolved_leaf = last_name_segment(unresolved_target);
+    if unresolved_leaf.is_empty() {
+        return;
+    }
+    for func in all_functions {
+        if last_name_segment(&func.name) == unresolved_leaf {
+            weak_evidence
+                .entry(function_key(&func.file, &func.name))
+                .or_default()
+                .push(format!("unresolved-name-match:{unresolved_leaf}"));
+        }
+    }
+}
+
+fn normalize_path_for_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn last_name_segment(name: &str) -> &str {
+    let after_colons = name.rsplit("::").next().unwrap_or(name);
+    after_colons.rsplit('.').next().unwrap_or(after_colons)
+}
+
+fn sort_and_dedup_functions(functions: &mut Vec<FunctionRef>) {
+    functions.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.name.cmp(&b.name)));
+    functions.dedup_by(|a, b| a.file == b.file && a.name == b.name);
+}
+
+fn recompute_dead_report_summary(report: &mut DeadCodeReport) {
+    report.total_dead = report.dead_functions.len();
+    report.total_possibly_dead = report.possibly_dead.len();
+    report.dead_percentage = if report.total_functions > 0 {
+        (report.total_dead as f64 / report.total_functions as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let mut by_file: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    for func in &report.dead_functions {
+        by_file
+            .entry(func.file.clone())
+            .or_default()
+            .push(func.name.clone());
+    }
+    for funcs in by_file.values_mut() {
+        funcs.sort();
+        funcs.dedup();
+    }
+    report.by_file = by_file;
+}
+
 /// Wrapper struct for JSON output with truncation metadata.
 ///
 /// low-cleanup-bundle-v1 (L5): the previous shape redundantly carried three
@@ -445,6 +582,7 @@ pub(crate) fn collect_module_infos_with_refcounts(
 /// `truncated` flag for the rare case the list was clipped by --max-items.
 #[derive(Serialize)]
 struct DeadCodeOutput {
+    schema: &'static str,
     #[serde(flatten)]
     report: DeadCodeReport,
     #[serde(skip_serializing_if = "is_false", default)]
@@ -532,4 +670,57 @@ fn format_dead_code_text_truncated(
     }
 
     output
+}
+
+#[cfg(test)]
+mod val032_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_name_match_records_weak_liveness_evidence() {
+        let all_functions = vec![
+            FunctionRef {
+                file: PathBuf::from("helpers.py"),
+                name: "globals".to_string(),
+                line: 1,
+                signature: "globals()".to_string(),
+                ref_count: 1,
+                is_public: true,
+                is_test: false,
+                is_trait_method: false,
+                is_method: false,
+                has_decorator: false,
+                decorator_names: Vec::new(),
+                dead_evidence: Vec::new(),
+            },
+            FunctionRef {
+                file: PathBuf::from("helpers.py"),
+                name: "_truly_dead".to_string(),
+                line: 4,
+                signature: "_truly_dead()".to_string(),
+                ref_count: 1,
+                is_public: false,
+                is_test: false,
+                is_trait_method: false,
+                is_method: false,
+                has_decorator: false,
+                decorator_names: Vec::new(),
+                dead_evidence: Vec::new(),
+            },
+        ];
+        let mut weak_evidence = HashMap::new();
+
+        add_unresolved_name_match_evidence(&mut weak_evidence, "builtins.globals", &all_functions);
+
+        assert_eq!(
+            weak_evidence
+                .get(&("helpers.py".to_string(), "globals".to_string()))
+                .cloned(),
+            Some(vec!["unresolved-name-match:globals".to_string()])
+        );
+        assert!(
+            !weak_evidence.contains_key(&("helpers.py".to_string(), "_truly_dead".to_string())),
+            "unresolved-name-match must not keep unrelated functions alive"
+        );
+    }
 }

@@ -74,6 +74,10 @@ pub struct WhatbreaksArgs {
     /// Programming language (auto-detect if not specified)
     #[arg(long, short = 'l')]
     pub lang: Option<Language>,
+
+    /// Include lower-confidence approximate callers in impact sub-results
+    #[arg(long)]
+    pub approximate: bool,
 }
 
 impl WhatbreaksArgs {
@@ -93,9 +97,9 @@ impl WhatbreaksArgs {
         // `whatbreaks_analysis` language resolution — see deferred note in the
         // CL-15 report.)
         if self.lang.is_some() {
-            let resolved = self
-                .lang
-                .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+            let resolved = self.lang.unwrap_or_else(|| {
+                Language::from_directory(&self.path).unwrap_or(Language::Python)
+            });
             crate::commands::polyglot::warn_if_languages_dropped(&self.path, resolved);
         }
 
@@ -110,6 +114,7 @@ impl WhatbreaksArgs {
             quick: self.quick,
             language: self.lang,
             force_type: self.target_type.map(|t| t.into()),
+            approximate: self.approximate,
         };
 
         // Run analysis
@@ -130,13 +135,12 @@ impl WhatbreaksArgs {
         // boundary: the JSON value's `target_type`/`detection_reason` fields and
         // the text header are rewritten here. The underlying sub-analyses
         // (importers / references-based callers) still run and remain useful.
-        let type_label: Option<String> = if self.target_type.is_none()
-            && matches!(report.target_type, TargetType::Function)
-        {
-            detect_target_type_kind(&self.target, &self.path, self.lang)
-        } else {
-            None
-        };
+        let type_label: Option<String> =
+            if self.target_type.is_none() && matches!(report.target_type, TargetType::Function) {
+                detect_target_type_kind(&self.target, &self.path, self.lang)
+            } else {
+                None
+            };
 
         let effective_type_str = type_label
             .clone()
@@ -161,6 +165,10 @@ impl WhatbreaksArgs {
                 .map_err(|e| anyhow::anyhow!("serialize whatbreaks report: {e}"))?;
             if let Some(obj) = value.as_object_mut() {
                 obj.insert(
+                    "schema".to_string(),
+                    serde_json::Value::String("whatbreaks.v2".to_string()),
+                );
+                obj.insert(
                     "target_type".to_string(),
                     serde_json::Value::String(kind.clone()),
                 );
@@ -174,7 +182,15 @@ impl WhatbreaksArgs {
             }
             writer.write(&value)?;
         } else {
-            writer.write(&report)?;
+            let mut value = serde_json::to_value(&report)
+                .map_err(|e| anyhow::anyhow!("serialize whatbreaks report: {e}"))?;
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "schema".to_string(),
+                    serde_json::Value::String("whatbreaks.v2".to_string()),
+                );
+            }
+            writer.write(&value)?;
         }
 
         Ok(())
@@ -218,9 +234,7 @@ fn detect_target_type_kind(
     }
 
     let structure = match lang {
-        Some(l) => {
-            get_code_structure(project, l, usize::MAX, Some(&IgnoreSpec::default())).ok()?
-        }
+        Some(l) => get_code_structure(project, l, usize::MAX, Some(&IgnoreSpec::default())).ok()?,
         None => {
             // Auto-detect: prefer the polyglot structure so a type in ANY
             // detected language is found, mirroring the analysis path.

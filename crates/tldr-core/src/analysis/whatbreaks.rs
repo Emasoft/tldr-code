@@ -59,7 +59,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::change_impact::change_impact;
 use crate::analysis::clones::is_test_file;
-use crate::analysis::impact::impact_analysis_with_ast_fallback;
+use crate::analysis::impact::{
+    exclude_approximate_callers_from_report, impact_analysis_with_ast_fallback_options,
+};
 use crate::analysis::importers::find_importers;
 use crate::callgraph::build_project_call_graph;
 use crate::types::{Language, ProjectCallGraph};
@@ -227,6 +229,8 @@ pub struct WhatbreaksOptions {
     pub language: Option<Language>,
     /// Force target type (None = auto-detect)
     pub force_type: Option<TargetType>,
+    /// Include lower-confidence approximate callers in impact sub-results
+    pub approximate: bool,
 }
 
 impl Default for WhatbreaksOptions {
@@ -236,6 +240,7 @@ impl Default for WhatbreaksOptions {
             quick: false,
             language: None,
             force_type: None,
+            approximate: false,
         }
     }
 }
@@ -367,11 +372,19 @@ fn run_impact_analysis(
     call_graph: &ProjectCallGraph,
     depth: usize,
     language: Language,
+    approximate: bool,
 ) -> SubResult {
     let start = Instant::now();
 
-    match impact_analysis_with_ast_fallback(call_graph, target, depth, None, project_path, language)
-    {
+    match impact_analysis_with_ast_fallback_options(
+        call_graph,
+        target,
+        depth,
+        None,
+        project_path,
+        language,
+        approximate,
+    ) {
         Ok(mut report) => {
             // sibling-resolver-gaps-v1 (P14.AGG14-4): mirror the
             // user-facing `tldr impact` references-enrichment so
@@ -385,6 +398,9 @@ fn run_impact_analysis(
                 target,
                 language,
             );
+            if !approximate {
+                exclude_approximate_callers_from_report(&mut report);
+            }
 
             // Count direct callers from all targets
             let direct_count: usize = report.targets.values().map(|t| t.caller_count).sum();
@@ -436,10 +452,7 @@ fn count_transitive_callers(tree: &crate::types::CallerTree) -> usize {
 /// `affected_test_count` JSON field that
 /// [`whatbreaks_analysis`]'s Function-target branch reads back into
 /// [`WhatbreaksSummary::affected_test_count`].
-fn collect_test_files_from_tree(
-    tree: &crate::types::CallerTree,
-    acc: &mut HashSet<PathBuf>,
-) {
+fn collect_test_files_from_tree(tree: &crate::types::CallerTree, acc: &mut HashSet<PathBuf>) {
     if is_test_file(&tree.file) {
         acc.insert(tree.file.clone());
     }
@@ -583,8 +596,14 @@ pub fn whatbreaks_analysis(
     match target_type {
         TargetType::Function => {
             // Run impact analysis
-            let impact_result =
-                run_impact_analysis(target, project_path, &call_graph, options.depth, language);
+            let impact_result = run_impact_analysis(
+                target,
+                project_path,
+                &call_graph,
+                options.depth,
+                language,
+                options.approximate,
+            );
 
             // Extract counts from successful result and stash the function's
             // defining file (if any) so the importers/change-impact sub-runners
@@ -621,7 +640,8 @@ pub fn whatbreaks_analysis(
                     }
                     // M-010: pull the defining file of the first target from
                     // the impact report. `CallerTree.file` is project-relative.
-                    if let Some(targets) = data.get("report")
+                    if let Some(targets) = data
+                        .get("report")
                         .and_then(|r| r.get("targets"))
                         .and_then(|t| t.as_object())
                     {
@@ -682,8 +702,7 @@ pub fn whatbreaks_analysis(
                     run_change_impact_analysis(&def_file, project_path, language);
                 if change_impact_result.success {
                     if let Some(data) = &change_impact_result.data {
-                        if let Some(tests) = data.get("affected_tests").and_then(|v| v.as_array())
-                        {
+                        if let Some(tests) = data.get("affected_tests").and_then(|v| v.as_array()) {
                             // Prefer the larger count: change-impact may
                             // discover tests the caller tree missed, but
                             // never under-report what impact already found.

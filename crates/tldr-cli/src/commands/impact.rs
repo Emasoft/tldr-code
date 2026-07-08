@@ -8,14 +8,14 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Args;
+use serde::Serialize;
 
-use tldr_core::types::ImpactReport;
-use tldr_core::{
-    build_project_call_graph, enrich_impact_with_references, impact_analysis_with_ast_fallback,
-    Language,
+use tldr_core::analysis::impact::{
+    exclude_approximate_callers_from_report, impact_analysis_with_ast_fallback_options,
 };
+use tldr_core::types::ImpactReport;
+use tldr_core::{build_project_call_graph, enrich_impact_with_references, Language};
 
-use crate::commands::daemon_router::{params_with_func_depth, try_daemon_route};
 use crate::output::{format_impact_dot, format_impact_text, OutputFormat, OutputWriter};
 use crate::path_shape::PathShapeRewriter;
 use crate::path_validation::require_directory;
@@ -45,6 +45,17 @@ pub struct ImpactArgs {
     /// Enable type-aware method resolution (resolves self.method() to ClassName.method)
     #[arg(long)]
     pub type_aware: bool,
+
+    /// Include lower-confidence approximate callers in the main caller tree
+    #[arg(long)]
+    pub approximate: bool,
+}
+
+#[derive(Serialize)]
+struct ImpactOutput<'a> {
+    schema: &'static str,
+    #[serde(flatten)]
+    report: &'a ImpactReport,
 }
 
 impl ImpactArgs {
@@ -84,28 +95,6 @@ impl ImpactArgs {
 
         let type_aware_msg = if self.type_aware { " (type-aware)" } else { "" };
 
-        // Try daemon first for cached result
-        if let Some(report) = try_daemon_route::<ImpactReport>(
-            &self.path,
-            "impact",
-            params_with_func_depth(&self.function, Some(self.depth)),
-        ) {
-            // Output based on format
-            if writer.is_text() {
-                let text = format_impact_text(&report, self.type_aware);
-                writer.write_text(&text)?;
-                return Ok(());
-            } else if writer.is_dot() {
-                // surface-gaps-v1 (BUG-19): DOT impact graph (reverse calls).
-                let dot = format_impact_dot(&report);
-                writer.write_text(&dot)?;
-                return Ok(());
-            } else {
-                writer.write(&report)?;
-                return Ok(());
-            }
-        }
-
         // Fallback to direct compute
         writer.progress(&format!(
             "Building call graph for {} ({:?}){}...",
@@ -125,7 +114,7 @@ impl ImpactArgs {
         for scan_lang in &scan_languages {
             let g = build_project_call_graph(&self.path, *scan_lang, None, true)?;
             for edge in g.edges() {
-                graph.add_edge(edge.clone());
+                graph.add_edge_with_optional_rung(edge.clone(), g.edge_rung(edge));
             }
         }
 
@@ -159,13 +148,14 @@ impl ImpactArgs {
         // as the fallback error to surface if EVERY language misses.
         let mut last_not_found: Option<anyhow::Error> = None;
         for scan_lang in &scan_languages {
-            let mut r = match impact_analysis_with_ast_fallback(
+            let mut r = match impact_analysis_with_ast_fallback_options(
                 &graph,
                 &self.function,
                 self.depth,
                 self.file.as_deref(),
                 &self.path,
                 *scan_lang,
+                self.approximate,
             ) {
                 Ok(r) => r,
                 Err(tldr_core::TldrError::FunctionNotFound {
@@ -199,6 +189,9 @@ impl ImpactArgs {
             // also runs inside `whatbreaks`. The same-fix-different-shape
             // dedup (last-segment aware) lives in the core helper.
             enrich_impact_with_references(&mut r, &self.path, &self.function, *scan_lang);
+            if !self.approximate {
+                exclude_approximate_callers_from_report(&mut r);
+            }
 
             match report.as_mut() {
                 None => report = Some(r),
@@ -209,9 +202,8 @@ impl ImpactArgs {
         let mut report = match report {
             Some(r) => r,
             None => {
-                return Err(last_not_found.unwrap_or_else(|| {
-                    anyhow::anyhow!("Function not found: {}", self.function)
-                }));
+                return Err(last_not_found
+                    .unwrap_or_else(|| anyhow::anyhow!("Function not found: {}", self.function)));
             }
         };
 
@@ -237,6 +229,9 @@ impl ImpactArgs {
         // to share the user-input shape. Route every CallerTree.file
         // through the centralized emission-boundary normalizer.
         restore_impact_path_shape(&mut report, &self.path);
+        if !self.approximate {
+            exclude_approximate_callers_from_report(&mut report);
+        }
 
         // Output based on format
         if writer.is_text() {
@@ -247,7 +242,11 @@ impl ImpactArgs {
             let dot = format_impact_dot(&report);
             writer.write_text(&dot)?;
         } else {
-            writer.write(&report)?;
+            let output = ImpactOutput {
+                schema: "impact.v2",
+                report: &report,
+            };
+            writer.write(&output)?;
         }
 
         Ok(())
@@ -307,6 +306,11 @@ fn restore_impact_path_shape(report: &mut ImpactReport, user_root: &std::path::P
     fn walk(tree: &mut tldr_core::types::CallerTree, rewriter: &PathShapeRewriter) {
         if let Some(np) = rewriter.rewrite_pathbuf(&tree.file) {
             tree.file = np;
+        }
+        for caller in tree.approximate_callers.iter_mut() {
+            if let Some(np) = rewriter.rewrite_pathbuf(&caller.file) {
+                caller.file = np;
+            }
         }
         for child in tree.callers.iter_mut() {
             walk(child, rewriter);

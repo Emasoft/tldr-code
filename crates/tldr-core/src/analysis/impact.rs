@@ -22,9 +22,12 @@ use crate::ast::extractor::{
     extract_functions, extract_methods, extract_rust_impl_methods_qualified,
 };
 use crate::ast::parser::parse_file;
+use crate::callgraph::{confidence_tier, ConfidenceTier};
 use crate::error::TldrError;
 use crate::fs::tree::{collect_files, get_file_tree};
-use crate::types::{CallerTree, ImpactReport, ProjectCallGraph, WorkspaceConfig};
+use crate::types::{
+    ApproximateCaller, CallerTree, ImpactReport, ProjectCallGraph, WorkspaceConfig,
+};
 use crate::{Language, TldrResult};
 
 /// Strict last-segment compare for qualified function names.
@@ -39,12 +42,12 @@ fn last_segment(qualified: &str) -> &str {
     // Prefer the deepest separator that actually appears.
     let dot_idx = qualified.rfind('.');
     let coloncolon_idx = qualified.rfind("::").map(|i| i + 1); // position of last ':'
-    // FEATURE-1 d.6 (Fix A): the Lua/luau colon-method separator is a SINGLE
-    // ':' that is NOT part of a '::'. `Component:setState` must yield the bare
-    // `setState` so a bare `setState` query matches (`find_function_in_ast`
-    // seeds the Component.lua target). The `::` pairs are already handled by
-    // `coloncolon_idx`, so we deliberately exclude them here; C++ `A::b`, `.`,
-    // and `->` are therefore unaffected.
+                                                               // FEATURE-1 d.6 (Fix A): the Lua/luau colon-method separator is a SINGLE
+                                                               // ':' that is NOT part of a '::'. `Component:setState` must yield the bare
+                                                               // `setState` so a bare `setState` query matches (`find_function_in_ast`
+                                                               // seeds the Component.lua target). The `::` pairs are already handled by
+                                                               // `coloncolon_idx`, so we deliberately exclude them here; C++ `A::b`, `.`,
+                                                               // and `->` are therefore unaffected.
     let single_colon_idx = last_standalone_colon(qualified);
     let cut = [dot_idx, coloncolon_idx, single_colon_idx]
         .into_iter()
@@ -211,8 +214,19 @@ pub fn impact_analysis(
     max_depth: usize,
     target_file: Option<&Path>,
 ) -> TldrResult<ImpactReport> {
+    impact_analysis_with_options(call_graph, target_func, max_depth, target_file, false)
+}
+
+/// Impact analysis with explicit control over approximate T2 caller handling.
+pub fn impact_analysis_with_options(
+    call_graph: &ProjectCallGraph,
+    target_func: &str,
+    max_depth: usize,
+    target_file: Option<&Path>,
+    include_approximate: bool,
+) -> TldrResult<ImpactReport> {
     // Build reverse graph (callee -> callers)
-    let reverse_graph = build_reverse_graph(call_graph);
+    let reverse_graph = build_reverse_graph(call_graph, include_approximate);
 
     // Find all functions matching the target.
     //
@@ -311,8 +325,35 @@ pub fn impact_analysis_with_ast_fallback(
     project_root: &Path,
     language: Language,
 ) -> TldrResult<ImpactReport> {
+    impact_analysis_with_ast_fallback_options(
+        call_graph,
+        target_func,
+        max_depth,
+        target_file,
+        project_root,
+        language,
+        false,
+    )
+}
+
+/// Impact analysis with AST fallback and explicit approximate caller handling.
+pub fn impact_analysis_with_ast_fallback_options(
+    call_graph: &ProjectCallGraph,
+    target_func: &str,
+    max_depth: usize,
+    target_file: Option<&Path>,
+    project_root: &Path,
+    language: Language,
+    include_approximate: bool,
+) -> TldrResult<ImpactReport> {
     // Try normal call-graph-based analysis first
-    match impact_analysis(call_graph, target_func, max_depth, target_file) {
+    match impact_analysis_with_options(
+        call_graph,
+        target_func,
+        max_depth,
+        target_file,
+        include_approximate,
+    ) {
         Ok(mut report) => {
             // v031-issue-7: enrich the call-graph report with AST-discovered
             // definitions whose dst_file is NOT already represented as a
@@ -365,6 +406,7 @@ pub fn impact_analysis_with_ast_fallback(
                         file: func_file.clone(),
                         caller_count: 0,
                         callers: vec![],
+                        approximate_callers: vec![],
                         truncated: false,
                         note: Some(
                             "Defined in this file but no resolved callers in call graph (FuncIndex alias collision suppressed cross-file resolution)".to_string(),
@@ -579,6 +621,7 @@ pub fn impact_analysis_with_ast_fallback(
                                 file: func_file.clone(),
                                 caller_count: 0,
                                 callers: vec![],
+                                approximate_callers: vec![],
                                 truncated: false,
                                 note: Some(note),
                                 confidence: None,
@@ -605,6 +648,43 @@ pub fn impact_analysis_with_ast_fallback(
         }
         Err(other) => Err(other),
     }
+}
+
+/// Remove callers from the main caller tree when the same caller is already
+/// represented as a lower-confidence approximate caller on that target node.
+pub fn exclude_approximate_callers_from_report(report: &mut ImpactReport) {
+    for tree in report.targets.values_mut() {
+        exclude_approximate_callers_from_tree(tree);
+    }
+}
+
+fn exclude_approximate_callers_from_tree(tree: &mut CallerTree) {
+    for child in &mut tree.callers {
+        exclude_approximate_callers_from_tree(child);
+    }
+
+    if tree.approximate_callers.is_empty() {
+        tree.caller_count = tree.callers.len();
+        return;
+    }
+
+    tree.callers.retain(|caller| {
+        !tree.approximate_callers.iter().any(|approx| {
+            approx.function == caller.function && paths_match(&approx.file, &caller.file)
+        })
+    });
+    tree.caller_count = tree.callers.len();
+    let should_reset_note = match tree.note.as_deref() {
+        Some(note) => note.contains("caller_count"),
+        None => true,
+    };
+    if tree.caller_count == 0 && should_reset_note {
+        tree.note = Some("Entry point - no callers found".to_string());
+    }
+}
+
+fn paths_match(a: &Path, b: &Path) -> bool {
+    a == b || a.ends_with(b) || b.ends_with(a)
 }
 
 /// Enrich `report.targets` with cross-file callers discovered via
@@ -907,8 +987,7 @@ pub fn enrich_impact_with_references(
     // definitions through references' qualified path, so impact's caller
     // list comes back empty even though explain reports the same callers
     // via this exact mechanism.
-    let mut all_refs: Vec<crate::analysis::references::Reference> =
-        refs_report.references.clone();
+    let mut all_refs: Vec<crate::analysis::references::Reference> = refs_report.references.clone();
     if matches!(language, Language::Lua | Language::Luau) {
         if let Some(bare) = target_func.split('.').next_back() {
             if bare != target_func && !bare.is_empty() {
@@ -1247,8 +1326,7 @@ pub fn enrich_impact_with_references(
                         || last_segment_eq_pub(&c.function, inner)
                         || last_segment_eq_pub(inner, &c.function)
                 });
-                (names_match || inner_match)
-                    && paths_equivalent_root(&c.file, project_root, file)
+                (names_match || inner_match) && paths_equivalent_root(&c.file, project_root, file)
             });
             if already_present {
                 continue;
@@ -1277,6 +1355,7 @@ pub fn enrich_impact_with_references(
                 file: file.clone(),
                 caller_count: 0,
                 callers: vec![],
+                approximate_callers: vec![],
                 truncated: false,
                 note: Some(note),
                 confidence: None,
@@ -1701,6 +1780,7 @@ fn enrich_single_caller_tree_node_with_references(
             file: file.clone(),
             caller_count: 0,
             callers: vec![],
+            approximate_callers: vec![],
             truncated: false,
             note: Some(note),
             confidence: None,
@@ -1944,7 +2024,10 @@ fn selfref_type_inherits_qualifier(
         }
         // Follow transitive bases whose intermediate class is defined in this
         // file too (keyed by full name or last segment).
-        if let Some(next) = class_bases.get(&base).or_else(|| class_bases.get(base_leaf)) {
+        if let Some(next) = class_bases
+            .get(&base)
+            .or_else(|| class_bases.get(base_leaf))
+        {
             for b in next {
                 if !seen.contains(b) {
                     stack.push(b.clone());
@@ -2046,7 +2129,11 @@ fn extract_call_receiver(
 
     // Land on the identifier node that names the called method. If the
     // position resolved to a wrapper, search for the matching name leaf.
-    if node.utf8_text(src).map(|t| t != bare_target).unwrap_or(true) {
+    if node
+        .utf8_text(src)
+        .map(|t| t != bare_target)
+        .unwrap_or(true)
+    {
         if let Some(n) = find_named_leaf(&node, bare_target, src) {
             node = n;
         }
@@ -2767,11 +2854,7 @@ fn receiver_from_expr(expr: &tree_sitter::Node, src: &[u8]) -> CallReceiver {
 /// leading type identifier) on success, or `None` when the variable's type
 /// cannot be determined — in which case the caller keeps the bare variable
 /// name so existing receiver discrimination is preserved.
-fn resolve_receiver_var_type(
-    node: &tree_sitter::Node,
-    src: &[u8],
-    var: &str,
-) -> Option<String> {
+fn resolve_receiver_var_type(node: &tree_sitter::Node, src: &[u8], var: &str) -> Option<String> {
     if var.is_empty() || is_self_token(var) {
         return None;
     }
@@ -2804,12 +2887,8 @@ fn resolve_receiver_var_type(
     let mut cur = node.parent();
     while let Some(n) = cur {
         match n.kind() {
-            "class_specifier"
-            | "struct_specifier"
-            | "class_declaration"
-            | "class_definition"
-            | "struct_item"
-            | "impl_item" => {
+            "class_specifier" | "struct_specifier" | "class_declaration" | "class_definition"
+            | "struct_item" | "impl_item" => {
                 if let Some(ty) = find_field_decl_type_in_subtree(&n, src, var) {
                     return Some(ty);
                 }
@@ -2837,7 +2916,12 @@ fn type_leaf_name(raw: &str) -> Option<String> {
     // Drop leading qualifiers like `const`, `struct`, `class`, `volatile`.
     let cleaned: Vec<&str> = t
         .split_whitespace()
-        .filter(|w| !matches!(*w, "const" | "struct" | "class" | "volatile" | "mutable" | "static"))
+        .filter(|w| {
+            !matches!(
+                *w,
+                "const" | "struct" | "class" | "volatile" | "mutable" | "static"
+            )
+        })
         .collect();
     let last = cleaned.last().copied().unwrap_or(t).trim();
     // Keep only the trailing `::` segment so `tinyxml2::StrPair` -> `StrPair`.
@@ -2971,14 +3055,15 @@ fn receiver_base_node<'a>(expr: &tree_sitter::Node<'a>) -> Option<tree_sitter::N
                     _ => return Some(cur),
                 }
             }
-            "dot_index_expression" | "method_index_expression" => {
-                match cur.named_child(0) {
-                    Some(n) if n.id() != cur.id() => cur = n,
-                    _ => return Some(cur),
-                }
-            }
+            "dot_index_expression" | "method_index_expression" => match cur.named_child(0) {
+                Some(n) if n.id() != cur.id() => cur = n,
+                _ => return Some(cur),
+            },
             "scoped_identifier" | "scoped_type_identifier" | "qualified_identifier" => {
-                match cur.child_by_field_name("path").or_else(|| cur.child_by_field_name("scope")) {
+                match cur
+                    .child_by_field_name("path")
+                    .or_else(|| cur.child_by_field_name("scope"))
+                {
                     Some(n) if n.id() != cur.id() => cur = n,
                     _ => return Some(cur),
                 }
@@ -3167,13 +3252,12 @@ fn find_function_in_ast(
         // `Glob::parse` no longer matches a `parse` defined inside an
         // unrelated `impl Config { ... }` or in the top-level
         // `flags/parse.rs` module.
-        let rust_target_qualifier: Option<&str> = if matches!(language, Language::Rust)
-            && target_func.contains("::")
-        {
-            target_func.rsplit_once("::").map(|(ty, _)| ty)
-        } else {
-            None
-        };
+        let rust_target_qualifier: Option<&str> =
+            if matches!(language, Language::Rust) && target_func.contains("::") {
+                target_func.rsplit_once("::").map(|(ty, _)| ty)
+            } else {
+                None
+            };
 
         let qualified_methods: Vec<String> = if rust_target_qualifier.is_some() {
             let mut q = Vec::new();
@@ -3201,8 +3285,8 @@ fn find_function_in_ast(
                 // qualifier OR the candidate qualifier ends with
                 // `::<user_qualifier>` (so module-scoped impls still
                 // resolve when the user typed just the type name).
-                let qualifier_matches = cand_qual == qualifier
-                    || cand_qual.ends_with(&format!("::{qualifier}"));
+                let qualifier_matches =
+                    cand_qual == qualifier || cand_qual.ends_with(&format!("::{qualifier}"));
                 if qualifier_matches {
                     // Emit the qualified form so downstream surfaces
                     // (impact/whatbreaks/context) preserve `Type::method`
@@ -3378,15 +3462,43 @@ fn looks_like_declaration_of(line: &str, name: &str) -> bool {
 /// Key for the reverse graph: (file, function)
 type FunctionKey = (std::path::PathBuf, String);
 
+struct ReverseGraph {
+    callers: HashMap<FunctionKey, Vec<FunctionKey>>,
+    approximate_callers: HashMap<FunctionKey, Vec<ApproximateCaller>>,
+}
+
 /// Build reverse graph: (dst_file, dst_func) -> [(src_file, src_func)]
-fn build_reverse_graph(call_graph: &ProjectCallGraph) -> HashMap<FunctionKey, Vec<FunctionKey>> {
+fn build_reverse_graph(call_graph: &ProjectCallGraph, include_approximate: bool) -> ReverseGraph {
     let mut reverse: HashMap<FunctionKey, Vec<FunctionKey>> = HashMap::new();
+    let mut approximate: HashMap<FunctionKey, Vec<ApproximateCaller>> = HashMap::new();
 
     for edge in call_graph.edges() {
         let dst_key = (edge.dst_file.clone(), edge.dst_func.clone());
         let src_key = (edge.src_file.clone(), edge.src_func.clone());
 
-        reverse.entry(dst_key).or_default().push(src_key);
+        let is_t2 = call_graph
+            .edge_rung(edge)
+            .map(|rung| confidence_tier(rung) == ConfidenceTier::T2)
+            .unwrap_or(false);
+        if is_t2 {
+            if let Some(rung) = call_graph.edge_rung(edge) {
+                approximate
+                    .entry(dst_key.clone())
+                    .or_default()
+                    .push(ApproximateCaller {
+                        function: edge.src_func.clone(),
+                        file: edge.src_file.clone(),
+                        confidence: ConfidenceTier::T2.as_str().to_string(),
+                        rung: rung.id().to_string(),
+                        mechanism: rung.mechanism().to_string(),
+                    });
+            }
+            if include_approximate {
+                reverse.entry(dst_key).or_default().push(src_key);
+            }
+        } else {
+            reverse.entry(dst_key).or_default().push(src_key);
+        }
     }
 
     // CL-1 / GH #74: the BFS in `build_caller_tree` iterates each callee's
@@ -3404,22 +3516,39 @@ fn build_reverse_graph(call_graph: &ProjectCallGraph) -> HashMap<FunctionKey, Ve
         callers.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         callers.dedup();
     }
+    for callers in approximate.values_mut() {
+        callers.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.function.cmp(&b.function))
+                .then_with(|| a.rung.cmp(&b.rung))
+        });
+        callers.dedup();
+    }
 
-    reverse
+    ReverseGraph {
+        callers: reverse,
+        approximate_callers: approximate,
+    }
 }
 
 /// Build caller tree via BFS traversal
 fn build_caller_tree(
     file: &Path,
     func: &str,
-    reverse_graph: &HashMap<FunctionKey, Vec<FunctionKey>>,
+    reverse_graph: &ReverseGraph,
     max_depth: usize,
 ) -> CallerTree {
     let key = (file.to_path_buf(), func.to_string());
 
     // Get direct callers
-    let callers = reverse_graph.get(&key);
+    let callers = reverse_graph.callers.get(&key);
     let caller_count = callers.map(|c| c.len()).unwrap_or(0);
+    let approximate_callers = reverse_graph
+        .approximate_callers
+        .get(&key)
+        .cloned()
+        .unwrap_or_default();
 
     // Handle entry point (no callers)
     if caller_count == 0 {
@@ -3428,6 +3557,7 @@ fn build_caller_tree(
             file: file.to_path_buf(),
             caller_count: 0,
             callers: vec![],
+            approximate_callers,
             truncated: false,
             note: Some("Entry point - no callers found".to_string()),
             confidence: None,
@@ -3453,6 +3583,7 @@ fn build_caller_tree(
                         file: caller_file.clone(),
                         caller_count: 0,
                         callers: vec![],
+                        approximate_callers: vec![],
                         truncated: true,
                         note: Some("Cycle detected".to_string()),
                         confidence: None,
@@ -3476,6 +3607,7 @@ fn build_caller_tree(
         file: file.to_path_buf(),
         caller_count,
         callers: child_trees,
+        approximate_callers,
         truncated: max_depth == 0 && caller_count > 0,
         note: if max_depth == 0 && caller_count > 0 {
             Some(format!(
@@ -4140,17 +4272,10 @@ mod tests {
         );
 
         // ---- Drive the full impact caller-resolution path. ----
-        let graph =
-            build_project_call_graph(&root, Language::Elixir, None, true).unwrap();
-        let mut report = impact_analysis_with_ast_fallback(
-            &graph,
-            "handle",
-            3,
-            None,
-            &root,
-            Language::Elixir,
-        )
-        .expect("impact analysis should succeed");
+        let graph = build_project_call_graph(&root, Language::Elixir, None, true).unwrap();
+        let mut report =
+            impact_analysis_with_ast_fallback(&graph, "handle", 3, None, &root, Language::Elixir)
+                .expect("impact analysis should succeed");
         enrich_impact_with_references(&mut report, &root, "handle", Language::Elixir);
 
         // Flatten the resolved caller list across all targets.
@@ -4229,9 +4354,8 @@ mod tests {
     ) -> Vec<(String, usize, Vec<String>)> {
         use crate::callgraph::builder::build_project_call_graph;
         let graph = build_project_call_graph(root, language, None, true).unwrap();
-        let mut report =
-            impact_analysis_with_ast_fallback(&graph, func, 3, None, root, language)
-                .expect("impact analysis should succeed");
+        let mut report = impact_analysis_with_ast_fallback(&graph, func, 3, None, root, language)
+            .expect("impact analysis should succeed");
         enrich_impact_with_references(&mut report, root, func, language);
         report
             .targets
@@ -4273,11 +4397,13 @@ mod tests {
                     file: file.clone(),
                     caller_count: 0,
                     callers: vec![],
+                    approximate_callers: vec![],
                     truncated: false,
                     note: Some("Entry point - no callers found".to_string()),
                     confidence: None,
                     receiver_type: None,
                 }],
+                approximate_callers: vec![],
                 truncated: false,
                 note: None,
                 confidence: None,
@@ -4291,6 +4417,7 @@ mod tests {
                 file: file.clone(),
                 caller_count: 0,
                 callers: vec![],
+                approximate_callers: vec![],
                 truncated: false,
                 note: Some("Entry point - no callers found".to_string()),
                 confidence: None,

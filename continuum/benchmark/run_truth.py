@@ -1018,6 +1018,9 @@ def locate_call_position(case: Case, index: SourceIndex, edge: Dict[str, Any]) -
 
 
 def definition_output_location(output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    declined = output.get("declined")
+    if isinstance(declined, list) and declined:
+        return None
     definition = output.get("definition")
     if isinstance(definition, dict):
         return definition
@@ -1278,10 +1281,9 @@ def dead_reported_functions(output: Dict[str, Any], case: Case, index: SourceInd
     reported: Set[FunctionKey] = set()
     unknown: Set[FunctionKey] = set()
     items: List[Dict[str, Any]] = []
-    for key in ["dead_functions", "possibly_dead"]:
-        value = output.get(key)
-        if isinstance(value, list):
-            items.extend(item for item in value if isinstance(item, dict))
+    value = output.get("dead_functions")
+    if isinstance(value, list):
+        items.extend(item for item in value if isinstance(item, dict))
     for item in items:
         file_value = item.get("file")
         name_value = item.get("name")

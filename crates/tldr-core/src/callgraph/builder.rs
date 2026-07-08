@@ -68,15 +68,19 @@ pub fn build_project_call_graph(
 fn project_graph_from_ir(ir: CallGraphIR) -> ProjectCallGraph {
     let mut graph = ProjectCallGraph::new();
     for edge in ir.edges {
-        graph.add_edge(CallEdge {
-            src_file: edge.src_file,
-            src_func: edge.src_func,
-            dst_file: edge.dst_file,
-            dst_func: edge.dst_func,
-            // fix-cl-1-v1 (v0.5.0 CL-1): carry the call-site line through to
-            // the V1 graph so explain/coupling stop reporting line 0.
-            call_line: edge.call_line,
-        });
+        let rung = edge.rung;
+        graph.add_edge_with_rung(
+            CallEdge {
+                src_file: edge.src_file,
+                src_func: edge.src_func,
+                dst_file: edge.dst_file,
+                dst_func: edge.dst_func,
+                // fix-cl-1-v1 (v0.5.0 CL-1): carry the call-site line through to
+                // the V1 graph so explain/coupling stop reporting line 0.
+                call_line: edge.call_line,
+            },
+            rung,
+        );
     }
     graph
 }
@@ -89,14 +93,17 @@ fn project_graph_from_ir(ir: CallGraphIR) -> ProjectCallGraph {
 pub fn project_graph_from_ir_ref(ir: &CallGraphIR) -> ProjectCallGraph {
     let mut graph = ProjectCallGraph::new();
     for edge in &ir.edges {
-        graph.add_edge(CallEdge {
-            src_file: edge.src_file.clone(),
-            src_func: edge.src_func.clone(),
-            dst_file: edge.dst_file.clone(),
-            dst_func: edge.dst_func.clone(),
-            // fix-cl-1-v1 (v0.5.0 CL-1): preserve call-site line.
-            call_line: edge.call_line,
-        });
+        graph.add_edge_with_rung(
+            CallEdge {
+                src_file: edge.src_file.clone(),
+                src_func: edge.src_func.clone(),
+                dst_file: edge.dst_file.clone(),
+                dst_func: edge.dst_func.clone(),
+                // fix-cl-1-v1 (v0.5.0 CL-1): preserve call-site line.
+                call_line: edge.call_line,
+            },
+            edge.rung,
+        );
     }
     graph
 }

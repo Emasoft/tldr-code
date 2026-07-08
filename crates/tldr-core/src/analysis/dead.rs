@@ -72,9 +72,7 @@ pub fn dead_code_analysis(
         // fix-R7-cl6-blank-name (v0.5.0 CLOSEOUT): never report a nameless
         // entity (unresolved C++ lambda / trailing-return ghost) as dead. See
         // the matching guard in `dead_code_analysis_refcount`.
-        if func_ref.name.is_empty()
-            || func_ref.name.rsplit('.').next().unwrap_or("").is_empty()
-        {
+        if func_ref.name.is_empty() || func_ref.name.rsplit('.').next().unwrap_or("").is_empty() {
             continue;
         }
 
@@ -256,9 +254,7 @@ pub fn dead_code_analysis_refcount(
         // site to be "dead" relative to. (The root extractor name-resolution is
         // hardened separately, but this guard is the authoritative backstop so
         // no nameless ghost ever reaches a dead report.)
-        if func_ref.name.is_empty()
-            || func_ref.name.rsplit('.').next().unwrap_or("").is_empty()
-        {
+        if func_ref.name.is_empty() || func_ref.name.rsplit('.').next().unwrap_or("").is_empty() {
             continue;
         }
 
@@ -657,8 +653,7 @@ fn has_invocation_decorator(decorators: &[String]) -> bool {
 /// Python `receive`) is unaffected; `receive`/`fallback` are reserved keywords
 /// in Solidity so there is no in-language collision.
 fn is_solidity_evm_entry_point(name: &str, language: crate::types::Language) -> bool {
-    matches!(language, crate::types::Language::Solidity)
-        && matches!(name, "receive" | "fallback")
+    matches!(language, crate::types::Language::Solidity) && matches!(name, "receive" | "fallback")
 }
 
 /// Extract all functions from a project for dead code analysis.
@@ -754,6 +749,7 @@ pub fn collect_all_functions(
                 is_method: false,
                 has_decorator,
                 decorator_names: func.decorators.clone(),
+                dead_evidence: Vec::new(),
             });
         }
 
@@ -801,6 +797,7 @@ pub fn collect_all_functions(
                     is_method: true,
                     has_decorator,
                     decorator_names: method.decorators.clone(),
+                    dead_evidence: Vec::new(),
                 });
             }
         }
@@ -844,10 +841,7 @@ fn has_test_decorator(decorators: &[String]) -> bool {
         let lower = d.to_lowercase();
         // Direct test markers (covers Python `@pytest.mark.parametrize`, generic
         // `test`/`testXxx`, plus Rust `#[test]`).
-        if lower == "test"
-            || lower == "pytest.mark.parametrize"
-            || lower.starts_with("test")
-        {
+        if lower == "test" || lower == "pytest.mark.parametrize" || lower.starts_with("test") {
             return true;
         }
         // Rust ecosystem test attributes: `#[tokio::test]`, `#[async_std::test]`,
@@ -1639,6 +1633,7 @@ mod tests {
             is_method: false,
             has_decorator,
             decorator_names: decorator_names.into_iter().map(|s| s.to_string()).collect(),
+            dead_evidence: Vec::new(),
         }
     }
 
@@ -1659,6 +1654,7 @@ mod tests {
             is_method: true,
             has_decorator: false,
             decorator_names: Vec::new(),
+            dead_evidence: Vec::new(),
         }
     }
 
@@ -1842,6 +1838,7 @@ mod tests {
             is_method: false,
             has_decorator: false,
             decorator_names: vec![],
+            dead_evidence: vec![],
         }];
 
         let result = dead_code_analysis(&graph, &functions, None).unwrap();
@@ -2272,6 +2269,7 @@ mod tests {
             is_method: false,
             has_decorator: false,
             decorator_names: vec![],
+            dead_evidence: vec![],
         };
 
         let json = serde_json::to_string(&func).unwrap();
@@ -2297,6 +2295,7 @@ mod tests {
             is_method: false,
             has_decorator: false,
             decorator_names: vec![],
+            dead_evidence: vec![],
         };
 
         let json = serde_json::to_string(&func).unwrap();
@@ -3151,7 +3150,7 @@ mod tests {
         assert!(is_lua_metamethod("__concat"));
         assert!(is_lua_metamethod("__tostring"));
         assert!(is_lua_metamethod("__close")); // Lua 5.4 to-be-closed
-        // Not metamethods:
+                                               // Not metamethods:
         assert!(!is_lua_metamethod("__myhelper"));
         assert!(!is_lua_metamethod("__init__")); // Python dunder, handled elsewhere
         assert!(!is_lua_metamethod("helper"));
@@ -3204,7 +3203,11 @@ mod tests {
         )]
     }
 
-    fn method(name: &str, visibility: Option<&str>, decorators: Vec<&str>) -> crate::types::FunctionInfo {
+    fn method(
+        name: &str,
+        visibility: Option<&str>,
+        decorators: Vec<&str>,
+    ) -> crate::types::FunctionInfo {
         crate::types::FunctionInfo {
             name: name.to_string(),
             params: vec![],
@@ -3288,7 +3291,13 @@ mod tests {
     fn test_solidity_external_is_public_not_definitive_dead() {
         use crate::types::Language;
         assert!(
-            explicit_or_inferred_visibility(Some("external"), "transfer", Language::Solidity, false, &[]),
+            explicit_or_inferred_visibility(
+                Some("external"),
+                "transfer",
+                Language::Solidity,
+                false,
+                &[]
+            ),
             "Solidity `external` must be treated as public"
         );
         let modules = module_with_class(
@@ -3303,12 +3312,23 @@ mod tests {
         assert!(
             report.dead_functions.is_empty(),
             "an uncalled external fn must not be in the DEFINITIVE dead bucket; got {:?}",
-            report.dead_functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            report
+                .dead_functions
+                .iter()
+                .map(|f| &f.name)
+                .collect::<Vec<_>>()
         );
         assert!(
-            report.possibly_dead.iter().any(|f| f.name == "Token.orphanExternal"),
+            report
+                .possibly_dead
+                .iter()
+                .any(|f| f.name == "Token.orphanExternal"),
             "an uncalled external fn must be possibly_dead; got {:?}",
-            report.possibly_dead.iter().map(|f| &f.name).collect::<Vec<_>>()
+            report
+                .possibly_dead
+                .iter()
+                .map(|f| &f.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3513,8 +3533,8 @@ mod tests {
             "Glob",
             None,
             vec![
-                method("eq", None, vec!["trait_impl"]),     // impl PartialEq for Glob
-                method("inherent_helper", None, vec![]),    // inherent impl
+                method("eq", None, vec!["trait_impl"]), // impl PartialEq for Glob
+                method("inherent_helper", None, vec![]), // inherent impl
             ],
         );
         let funcs = collect_all_functions(&modules);
@@ -3641,7 +3661,7 @@ mod tests {
             "Fmt",
             None,
             vec![
-                method("", None, vec![]),         // nameless lambda ghost
+                method("", None, vec![]), // nameless lambda ghost
                 method("realMethod", None, vec![]),
             ],
         );
@@ -3654,7 +3674,9 @@ mod tests {
             .map(|f| f.name.clone())
             .collect();
         assert!(
-            !flagged.iter().any(|n| n.rsplit('.').next().unwrap_or("").is_empty()),
+            !flagged
+                .iter()
+                .any(|n| n.rsplit('.').next().unwrap_or("").is_empty()),
             "no blank-named entity may be flagged dead; got {:?}",
             flagged
         );

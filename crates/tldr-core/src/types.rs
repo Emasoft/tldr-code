@@ -137,8 +137,7 @@ const MAX_SNIFF_FILE_SIZE: u64 = 1024 * 1024;
 
 /// Per-path memo for [`Language::resolve_header_language`] so each unique `.h`
 /// is parsed at most once per process, no matter how many commands consult it.
-fn header_lang_cache(
-) -> &'static std::sync::Mutex<HashMap<PathBuf, Option<Language>>> {
+fn header_lang_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, Option<Language>>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, Option<Language>>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
@@ -429,8 +428,8 @@ impl Language {
         match ext.as_deref() {
             // Tier 0 — hard C++ facts (richer header spellings + C++ sources).
             // `.tcc` (template implementation) is C++ but not in `from_path`.
-            Some("hpp") | Some("hh") | Some("hxx") | Some("h++") | Some("tcc")
-            | Some("cpp") | Some("cc") | Some("cxx") | Some("c++") => {
+            Some("hpp") | Some("hh") | Some("hxx") | Some("h++") | Some("tcc") | Some("cpp")
+            | Some("cc") | Some("cxx") | Some("c++") => {
                 return Some(Language::Cpp);
             }
             // Only `.h` is ambiguous; resolve it per-file below.
@@ -589,16 +588,12 @@ impl Language {
             }
             // Skip files whose relative path traverses a noise dir.
             if let Ok(rel) = p.strip_prefix(path) {
-                if rel
-                    .components()
-                    .any(|c| match c {
-                        std::path::Component::Normal(s) => s
-                            .to_str()
-                            .map(|n| NOISE_DIRS.contains(&n))
-                            .unwrap_or(false),
-                        _ => false,
-                    })
-                {
+                if rel.components().any(|c| match c {
+                    std::path::Component::Normal(s) => {
+                        s.to_str().map(|n| NOISE_DIRS.contains(&n)).unwrap_or(false)
+                    }
+                    _ => false,
+                }) {
                     continue;
                 }
             }
@@ -624,16 +619,12 @@ impl Language {
                     continue;
                 }
                 if let Ok(rel) = p.strip_prefix(path) {
-                    if rel
-                        .components()
-                        .any(|c| match c {
-                            std::path::Component::Normal(s) => s
-                                .to_str()
-                                .map(|n| NOISE_DIRS.contains(&n))
-                                .unwrap_or(false),
-                            _ => false,
-                        })
-                    {
+                    if rel.components().any(|c| match c {
+                        std::path::Component::Normal(s) => {
+                            s.to_str().map(|n| NOISE_DIRS.contains(&n)).unwrap_or(false)
+                        }
+                        _ => false,
+                    }) {
                         continue;
                     }
                 }
@@ -651,7 +642,10 @@ impl Language {
         // Sort descending by count, stable on language enum order for
         // deterministic tie-breaks (avoids HashMap-iteration nondeterminism
         // when two langs are exactly tied).
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0))));
+        ranked.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
+        });
         let (dominant_lang_raw, _dominant_count_raw) = ranked[0];
 
         // --- Stage 3: C-vs-Cpp disambiguation ------------------------------
@@ -675,20 +669,24 @@ impl Language {
         // dominated by .h headers would always trigger the close-call
         // tiebreaker and let a stray `tools/fuzz/requirements.txt` flip
         // the answer to Python (the luau-luau bug).
-        let consolidated: Vec<(Language, usize)> = if matches!(dominant_lang, Language::C | Language::Cpp) {
-            let c_total = counts.get(&Language::C).copied().unwrap_or(0)
-                + counts.get(&Language::Cpp).copied().unwrap_or(0);
-            let mut v: Vec<(Language, usize)> = counts
-                .iter()
-                .filter(|(l, _)| !matches!(l, Language::C | Language::Cpp))
-                .map(|(l, c)| (*l, *c))
-                .collect();
-            v.push((dominant_lang, c_total));
-            v.sort_by(|a, b| b.1.cmp(&a.1).then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0))));
-            v
-        } else {
-            ranked.clone()
-        };
+        let consolidated: Vec<(Language, usize)> =
+            if matches!(dominant_lang, Language::C | Language::Cpp) {
+                let c_total = counts.get(&Language::C).copied().unwrap_or(0)
+                    + counts.get(&Language::Cpp).copied().unwrap_or(0);
+                let mut v: Vec<(Language, usize)> = counts
+                    .iter()
+                    .filter(|(l, _)| !matches!(l, Language::C | Language::Cpp))
+                    .map(|(l, c)| (*l, *c))
+                    .collect();
+                v.push((dominant_lang, c_total));
+                v.sort_by(|a, b| {
+                    b.1.cmp(&a.1)
+                        .then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
+                });
+                v
+            } else {
+                ranked.clone()
+            };
         let dominant_count = consolidated[0].1;
         let runner_up_count = consolidated.get(1).map(|(_, c)| *c).unwrap_or(0);
 
@@ -2259,6 +2257,9 @@ pub struct FunctionRef {
     /// Names of decorators/annotations on this function
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decorator_names: Vec<String>,
+    /// Evidence explaining why a weakly reached function is not definitely dead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dead_evidence: Vec<String>,
 }
 
 // Equality based on file + name only (metadata is for analysis, not identity)
@@ -2297,6 +2298,7 @@ impl FunctionRef {
             is_method: false,
             has_decorator: false,
             decorator_names: Vec::new(),
+            dead_evidence: Vec::new(),
         }
     }
 }
@@ -2725,6 +2727,27 @@ fn fallback_extract_yaml_list(content: &str, key: &str) -> Vec<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectCallGraph {
     edges: HashSet<CallEdge>,
+    #[serde(skip)]
+    edge_rungs: HashMap<CallEdgeKey, crate::callgraph::ResolutionRung>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CallEdgeKey {
+    src_file: PathBuf,
+    src_func: String,
+    dst_file: PathBuf,
+    dst_func: String,
+}
+
+impl From<&CallEdge> for CallEdgeKey {
+    fn from(edge: &CallEdge) -> Self {
+        Self {
+            src_file: edge.src_file.clone(),
+            src_func: edge.src_func.clone(),
+            dst_file: edge.dst_file.clone(),
+            dst_func: edge.dst_func.clone(),
+        }
+    }
 }
 
 /// Edge in the call graph
@@ -2975,6 +2998,7 @@ impl ProjectCallGraph {
     pub fn new() -> Self {
         Self {
             edges: HashSet::new(),
+            edge_rungs: HashMap::new(),
         }
     }
 
@@ -2986,6 +3010,31 @@ impl ProjectCallGraph {
     /// Add an edge to the graph
     pub fn add_edge(&mut self, edge: CallEdge) {
         self.edges.insert(edge);
+    }
+
+    /// Add an edge with its resolution rung.
+    pub fn add_edge_with_rung(&mut self, edge: CallEdge, rung: crate::callgraph::ResolutionRung) {
+        let key = CallEdgeKey::from(&edge);
+        self.edges.insert(edge);
+        self.edge_rungs.entry(key).or_insert(rung);
+    }
+
+    /// Add an edge, preserving optional resolution rung metadata when present.
+    pub fn add_edge_with_optional_rung(
+        &mut self,
+        edge: CallEdge,
+        rung: Option<crate::callgraph::ResolutionRung>,
+    ) {
+        if let Some(rung) = rung {
+            self.add_edge_with_rung(edge, rung);
+        } else {
+            self.add_edge(edge);
+        }
+    }
+
+    /// Return the resolution rung associated with an edge, when it came from V2.
+    pub fn edge_rung(&self, edge: &CallEdge) -> Option<crate::callgraph::ResolutionRung> {
+        self.edge_rungs.get(&CallEdgeKey::from(edge)).copied()
     }
 
     /// Check if the graph contains an edge
@@ -3040,6 +3089,9 @@ pub struct CallerTree {
     pub caller_count: usize,
     /// Recursive tree of callers (callers of callers)
     pub callers: Vec<CallerTree>,
+    /// Lower-confidence callers omitted from default impact/whatbreaks output.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approximate_callers: Vec<ApproximateCaller>,
     /// Whether the caller tree was truncated due to depth limits
     #[serde(default)]
     pub truncated: bool,
@@ -3052,6 +3104,21 @@ pub struct CallerTree {
     /// Resolved receiver type (when --type-aware is enabled)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receiver_type: Option<String>,
+}
+
+/// A lower-confidence caller candidate omitted from default caller traversal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApproximateCaller {
+    /// Name of the calling function.
+    pub function: String,
+    /// Path to the file containing the caller.
+    pub file: PathBuf,
+    /// Coarse confidence tier.
+    pub confidence: String,
+    /// Raw resolution rung id.
+    pub rung: String,
+    /// Human-facing resolution mechanism.
+    pub mechanism: String,
 }
 
 // =============================================================================
@@ -3949,11 +4016,7 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let h = dir.path().join("widget.h");
-        std::fs::write(
-            &h,
-            "namespace lib { template<class T> class Widget {}; }\n",
-        )
-        .unwrap();
+        std::fs::write(&h, "namespace lib { template<class T> class Widget {}; }\n").unwrap();
         assert_eq!(Language::resolve_header_language(&h), Some(Language::Cpp));
     }
 
@@ -5308,11 +5371,7 @@ mod tests {
             std::fs::write(dir.path().join(format!("doc/script_{}.py", i)), "").unwrap();
         }
         for i in 0..30 {
-            std::fs::write(
-                dir.path().join(format!("lib_{}.ml", i)),
-                "let x () = ()\n",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("lib_{}.ml", i)), "let x () = ()\n").unwrap();
         }
         assert_eq!(
             Language::from_directory(dir.path()),
@@ -5363,11 +5422,7 @@ mod tests {
             std::fs::write(dir.path().join(format!("A_{}.kt", i)), "fun x(){}\n").unwrap();
         }
         for i in 0..2 {
-            std::fs::write(
-                dir.path().join(format!("B_{}.java", i)),
-                "class B{}\n",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("B_{}.java", i)), "class B{}\n").unwrap();
         }
         assert_eq!(Language::from_directory(dir.path()), Some(Language::Kotlin));
     }
@@ -5377,11 +5432,7 @@ mod tests {
         // 8 .java vs 2 .kt -> strict majority -> Java.
         let dir = tempfile::tempdir().unwrap();
         for i in 0..8 {
-            std::fs::write(
-                dir.path().join(format!("A_{}.java", i)),
-                "class A{}\n",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("A_{}.java", i)), "class A{}\n").unwrap();
         }
         for i in 0..2 {
             std::fs::write(dir.path().join(format!("B_{}.kt", i)), "fun x(){}\n").unwrap();
