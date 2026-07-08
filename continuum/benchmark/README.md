@@ -20,3 +20,21 @@ Do not vendor repository source into this tree. Add a manifest under `repos/` pi
 - `suites/python/`: hand-written Python micro-cases covering direct calls, import forms, receiver and class resolution, constructors, same-name disambiguation, builtin shadowing, decorators, local scope collisions, `@overload` cohesion behavior, and an expected-unresolved higher-order callback.
 
 VAL-021 will implement scoring. For now, a smoke check is enough: `~/.cargo/bin/tldr calls CASE_DIR --format json` should produce parseable JSON for representative cases.
+
+## Run the Truth Harness
+
+Run the full corpus:
+
+```bash
+python3 continuum/benchmark/run_truth.py --out continuum/benchmark/report.json
+```
+
+Run a substring-filtered slice:
+
+```bash
+python3 continuum/benchmark/run_truth.py --filter direct_call --out /tmp/tldr-truth-direct-call.json
+```
+
+Options are `--binary` for the `tldr` executable path, `--timeout` for the per-case timeout in seconds, `--filter` for case id/path/metadata substring matching, and `--out` for the machine-readable report. The report schema is `harness.v1`; it includes per-case results and aggregates by language, suite group, suite family, defect class, and command.
+
+Scoring uses normalized edge keys (`src_file`, `src_func`, `dst_file`, `dst_func`). Extra reported edges outside truth coverage are `unscored`; false positives are limited to explicit negative-edge matches and wrong-owner contradictions for a covered call. Rung attribution is not available in current `tldr calls` output, so reports set `rung_supported: false`.

@@ -78,3 +78,11 @@ Real-repo suites live under `repos/` as manifests only. A manifest pins `name`, 
 ## Harness interface sketch
 
 VAL-021 should iterate cases, run `tldr calls CASE_DIR --format json`, normalize reported edges to this schema, and compare against `truth.json` plus `meta.json` negative edges. The output should include per-language, per-command, and per-rung precision and recall, with separate counts for matched truth edges, missed truth edges, reported negative edges, unexpected extras, and `expected_unresolved` exclusions. The harness should accept a case root, an optional language filter, and a JSON output path; it should not mutate case fixtures.
+
+## Scoring
+
+`run_truth.py` implements `harness.v1` scoring for `tldr calls`. The comparable edge key is `src_file`, `src_func`, `dst_file`, and `dst_func`; line numbers are ignored. Path separators are normalized to `/`, and Python module prefixes derived from each edge file are stripped from function names, so `main.run` in truth can match `run` from the current `tldr` JSON output.
+
+A true positive is an exact normalized edge match. A false negative is a truth edge that is absent from the normalized reported edge set. A reported edge is a false positive only when it matches a `negative_edges` entry or when it contradicts a covered call by using the same source file/function and destination leaf name with the wrong owner file/function. Reported edges outside truth coverage are counted as `unscored` and excluded from precision rather than treated as false positives by default.
+
+Expected-unresolved entries are converted into forbidden edges for scoring. Reporting the expected-unresolved `missing_edge` is a false positive; not reporting it is a true negative. Current `tldr calls` output does not expose the resolution rung, so every matched or reported edge in the harness report carries `rung: null` and the top-level report has `rung_supported: false`.
