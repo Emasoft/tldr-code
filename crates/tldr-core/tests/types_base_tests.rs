@@ -460,7 +460,7 @@ fn test_import_info_serde() {
         names: vec!["path".to_string()],
         is_from: Some(true),
         alias: None,
-            line: 0,
+        line: 0,
     };
 
     let json = serde_json::to_string(&import).unwrap();
@@ -864,8 +864,10 @@ fn test_caller_tree_creation() {
     let tree = CallerTree {
         function: "main".to_string(),
         file: PathBuf::from("/app.py"),
+        line: 0,
         caller_count: 0,
         callers: vec![],
+        approximate_callers: vec![],
         truncated: false,
         note: None,
         confidence: Some(Confidence::High),
@@ -1736,9 +1738,9 @@ fn test_skip_serializing_if_behavior() {
     // Test that Option::None fields are skipped
     let import = ImportInfo {
         module: "os".to_string(),
-        names: vec![],  // Empty vec should be skipped
+        names: vec![],        // Empty vec should be skipped
         is_from: Some(false), // Default should be skipped
-        alias: None,    // None should be skipped
+        alias: None,          // None should be skipped
         line: 0,
     };
 

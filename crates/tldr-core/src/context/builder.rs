@@ -30,6 +30,34 @@ use crate::error::TldrError;
 use crate::types::{FunctionInfo, Language, ProjectCallGraph};
 use crate::TldrResult;
 
+/// Provenance for a context call edge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextEdgeProvenance {
+    /// Raw resolution rung id.
+    pub rung: String,
+    /// Human-facing resolution mechanism.
+    pub mechanism: String,
+}
+
+/// Detailed call edge emitted by the context command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextCallEdge {
+    /// Destination file.
+    pub dst_file: PathBuf,
+    /// Destination function.
+    pub dst_func: String,
+    /// Destination definition line, or 0 when unknown.
+    #[serde(default)]
+    pub dst_line: u32,
+    /// Representative call-site line.
+    #[serde(default)]
+    pub call_line: Option<u32>,
+    /// Coarse confidence tier.
+    pub confidence: String,
+    /// Resolution provenance.
+    pub provenance: ContextEdgeProvenance,
+}
+
 /// Context information for a single function
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionContext {
@@ -46,6 +74,15 @@ pub struct FunctionContext {
     pub docstring: Option<String>,
     /// Functions called by this function
     pub calls: Vec<String>,
+    /// Detailed outgoing call edges with confidence and line metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub call_edges: Vec<ContextCallEdge>,
+    /// Confidence of the edge that brought this item into the context, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    /// Provenance of the edge that brought this item into the context, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ContextEdgeProvenance>,
     /// Number of basic blocks in CFG
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks: Option<usize>,
@@ -100,6 +137,23 @@ impl RelevantContext {
 
             if !func.calls.is_empty() {
                 output.push_str(&format!("**Calls:** {}\n\n", func.calls.join(", ")));
+            }
+
+            if !func.call_edges.is_empty() {
+                let edges: Vec<String> = func
+                    .call_edges
+                    .iter()
+                    .map(|edge| {
+                        format!(
+                            "{}:{}:{} [{}]",
+                            edge.dst_file.display(),
+                            edge.dst_line,
+                            edge.dst_func,
+                            edge.confidence
+                        )
+                    })
+                    .collect();
+                output.push_str(&format!("**Call edges:** {}\n\n", edges.join(", ")));
             }
 
             if let (Some(blocks), Some(cyclomatic)) = (func.blocks, func.cyclomatic) {
@@ -377,15 +431,13 @@ fn find_function_in_graph(
                         if class.name == class_name {
                             for method in &class.methods {
                                 if method.name == method_name {
-                                    if let Some(graph_key) = find_call_graph_key(
-                                        call_graph, &abs, func_name, project,
-                                    ) {
+                                    if let Some(graph_key) =
+                                        find_call_graph_key(call_graph, &abs, func_name, project)
+                                    {
                                         return Ok(graph_key);
                                     }
-                                    let rel = abs
-                                        .strip_prefix(project)
-                                        .unwrap_or(&abs)
-                                        .to_path_buf();
+                                    let rel =
+                                        abs.strip_prefix(project).unwrap_or(&abs).to_path_buf();
                                     return Ok((rel, func_name.to_string()));
                                 }
                             }
@@ -897,6 +949,9 @@ fn build_function_context(
             None
         },
         calls,
+        call_edges: vec![],
+        confidence: None,
+        provenance: None,
         blocks,
         cyclomatic,
     }
@@ -1166,6 +1221,9 @@ def helper(n):
                     signature: "def main()".to_string(),
                     docstring: Some("Entry point".to_string()),
                     calls: vec!["helper".to_string()],
+                    call_edges: vec![],
+                    confidence: None,
+                    provenance: None,
                     blocks: Some(3),
                     cyclomatic: Some(2),
                 },
@@ -1176,6 +1234,9 @@ def helper(n):
                     signature: "def helper(x: int) -> str".to_string(),
                     docstring: None,
                     calls: vec![],
+                    call_edges: vec![],
+                    confidence: None,
+                    provenance: None,
                     blocks: Some(1),
                     cyclomatic: Some(1),
                 },
@@ -1513,7 +1574,11 @@ class Alpha:
         let cyclomatic = cyclomatic.expect("expected `cyclomatic` Some for Alpha::process");
 
         assert_eq!(cyclomatic, 1);
-        assert!(blocks < 10, "got blocks={} (regressing cpp `::` path)", blocks);
+        assert!(
+            blocks < 10,
+            "got blocks={} (regressing cpp `::` path)",
+            blocks
+        );
     }
 
     /// cpp-python-ast-issues-v1 (v0.4.2 M-106) — `split_qualified_last_segment` helper.
@@ -1523,10 +1588,7 @@ class Alpha:
             split_qualified_last_segment("Alpha::process", Language::Cpp),
             "process"
         );
-        assert_eq!(
-            split_qualified_last_segment("a::b::c", Language::Rust),
-            "c"
-        );
+        assert_eq!(split_qualified_last_segment("a::b::c", Language::Rust), "c");
         assert_eq!(
             split_qualified_last_segment("plain", Language::Cpp),
             "plain"

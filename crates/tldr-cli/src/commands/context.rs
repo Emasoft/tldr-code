@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use clap::Args;
 
+use tldr_core::callgraph::{confidence_tier, ResolutionRung};
 use tldr_core::types::RelevantContext as TypesRelevantContext;
 use tldr_core::{
-    build_project_call_graph, extract_file, get_relevant_context, FunctionContext, Language,
-    RelevantContext,
+    build_project_call_graph, extract_file, get_relevant_context, ContextCallEdge,
+    ContextEdgeProvenance, FunctionContext, Language, RelevantContext,
 };
 
+use crate::commands::calls::{parse_min_confidence, MinConfidence};
 use crate::commands::daemon_router::{params_with_entry_depth, try_daemon_route};
 use crate::output::{OutputFormat, OutputWriter};
 
@@ -49,6 +51,10 @@ pub struct ContextArgs {
     /// Filter to functions in this file (for disambiguating common names like "render")
     #[arg(long)]
     pub file: Option<PathBuf>,
+
+    /// Minimum confidence tier to traverse: T2 includes all edges, T1 drops T2 guesses, T0 is reserved.
+    #[arg(long, default_value = "T2", value_parser = parse_min_confidence)]
+    pub(crate) min_confidence: MinConfidence,
 }
 
 impl ContextArgs {
@@ -121,18 +127,14 @@ impl ContextArgs {
 
         // The user-supplied --file (if any) wins over the derived form so
         // explicit flags always take precedence over inferred shorthands.
-        let effective_file: Option<PathBuf> =
-            self.file.clone().or_else(|| derived_file.clone());
+        let effective_file: Option<PathBuf> = self.file.clone().or_else(|| derived_file.clone());
 
         // Auto-derive project root from file when shorthand was used and
         // the user didn't supply an explicit one. Honour `.git` /
         // `package.json` / `Cargo.toml` markers; otherwise fall back to
         // the file's immediate parent directory. This keeps the
         // shorthand useful from any cwd.
-        if derived_file.is_some()
-            && self.path == PathBuf::from(".")
-            && self.project.is_none()
-        {
+        if derived_file.is_some() && self.path == PathBuf::from(".") && self.project.is_none() {
             if let Some(file) = effective_file.as_ref() {
                 if let Some(root) = infer_project_root_from_file(file) {
                     project_path = root;
@@ -149,7 +151,7 @@ impl ContextArgs {
         // daemon when there is no derived-file disambiguation, since the
         // daemon protocol does not currently propagate the `--file`
         // filter (would silently ignore the disambiguator).
-        if effective_file.is_none() {
+        if effective_file.is_none() && self.min_confidence == MinConfidence::T2 {
             if let Some(context) = try_daemon_route::<TypesRelevantContext>(
                 &project_path,
                 "context",
@@ -174,15 +176,33 @@ impl ContextArgs {
             entry, self.depth
         ));
 
-        // Get relevant context
-        let mut context = get_relevant_context(
-            &project_path,
-            &entry,
-            self.depth,
-            language,
-            self.include_docstrings,
-            effective_file.as_deref(),
-        )?;
+        // Get relevant context. Strict confidence filters must be applied to
+        // graph traversal itself, so those paths rebuild from the call graph.
+        let mut context = if self.min_confidence == MinConfidence::T2 {
+            get_relevant_context(
+                &project_path,
+                &entry,
+                self.depth,
+                language,
+                self.include_docstrings,
+                effective_file.as_deref(),
+            )?
+        } else {
+            build_context_from_call_graph(
+                &project_path,
+                &entry,
+                self.depth,
+                language,
+                self.include_docstrings,
+                effective_file.as_deref(),
+                self.min_confidence,
+            )
+            .unwrap_or_else(|| RelevantContext {
+                entry_point: entry.clone(),
+                depth: self.depth,
+                functions: vec![],
+            })
+        };
 
         // c3-context-neighborhood-v1 (v0.5.0 AUDIT-FIX, C3 gap-c): for some
         // languages (Lua/Luau nested `local function`s; Swift cross-file
@@ -207,6 +227,7 @@ impl ContextArgs {
                 language,
                 self.include_docstrings,
                 effective_file.as_deref(),
+                self.min_confidence,
             ) {
                 if rebuilt.functions.len() > context.functions.len() {
                     context = rebuilt;
@@ -229,6 +250,12 @@ impl ContextArgs {
         if let Some(user_input) = effective_file.as_ref() {
             restore_user_input_shape(&mut context, user_input);
         }
+        annotate_context_from_call_graph(
+            &mut context,
+            &project_path,
+            language,
+            self.min_confidence,
+        );
 
         // Output based on format
         if writer.is_text() {
@@ -409,6 +436,14 @@ fn name_matches(candidate: &str, entry: &str, entry_leaf: &str) -> bool {
         || last_segment(candidate) == entry
 }
 
+#[derive(Clone)]
+struct ContextGraphEdge {
+    dst_file: std::path::PathBuf,
+    dst_func: String,
+    call_line: Option<u32>,
+    rung: ResolutionRung,
+}
+
 /// c3-context-neighborhood-v1 (v0.5.0 AUDIT-FIX, C3 gap-c): build a
 /// [`RelevantContext`] for `entry` directly from the project call graph.
 ///
@@ -428,6 +463,7 @@ fn build_context_from_call_graph(
     language: Language,
     include_docstrings: bool,
     file_filter: Option<&Path>,
+    min_confidence: MinConfidence,
 ) -> Option<RelevantContext> {
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -443,13 +479,33 @@ fn build_context_from_call_graph(
 
     // Forward adjacency keyed by (file, func) -> ordered set of (callee names).
     // Keep a parallel map of node -> outgoing callee NAME list for `calls`.
-    let mut forward: BTreeMap<(std::path::PathBuf, String), Vec<(std::path::PathBuf, String)>> =
+    let mut forward: BTreeMap<(std::path::PathBuf, String), Vec<ContextGraphEdge>> =
         BTreeMap::new();
-    for edge in graph.edges() {
+    let mut graph_edges: Vec<_> = graph.edges().cloned().collect();
+    graph_edges.sort_by(|a, b| {
+        a.src_file
+            .cmp(&b.src_file)
+            .then_with(|| a.src_func.cmp(&b.src_func))
+            .then_with(|| a.dst_file.cmp(&b.dst_file))
+            .then_with(|| a.dst_func.cmp(&b.dst_func))
+            .then_with(|| a.call_line.cmp(&b.call_line))
+    });
+    for edge in &graph_edges {
+        let rung = graph
+            .edge_rung(edge)
+            .unwrap_or(ResolutionRung::LocalFunction);
+        if !min_confidence.includes_optional_rung(Some(rung)) {
+            continue;
+        }
         forward
             .entry((edge.src_file.clone(), edge.src_func.clone()))
             .or_default()
-            .push((edge.dst_file.clone(), edge.dst_func.clone()));
+            .push(ContextGraphEdge {
+                dst_file: edge.dst_file.clone(),
+                dst_func: edge.dst_func.clone(),
+                call_line: edge.call_line,
+                rung,
+            });
     }
 
     // Find the entry node among the graph's callers (nodes WITH outgoing
@@ -474,7 +530,10 @@ fn build_context_from_call_graph(
     // anchor the neighborhood — though with no outgoing edges the result would
     // be a single node, which the caller will reject in favour of the original.
     if exact_node.is_none() && fuzzy_node.is_none() {
-        for edge in graph.edges() {
+        for edge in &graph_edges {
+            if !min_confidence.includes_optional_rung(graph.edge_rung(edge)) {
+                continue;
+            }
             if name_matches(&edge.dst_func, entry, entry_leaf) && file_ok(&edge.dst_file) {
                 fuzzy_node = Some((edge.dst_file.clone(), edge.dst_func.clone()));
                 break;
@@ -486,6 +545,7 @@ fn build_context_from_call_graph(
     // BFS forward to `depth`, collecting nodes in discovery order.
     let mut visited: BTreeSet<(std::path::PathBuf, String)> = BTreeSet::new();
     let mut ordered: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut incoming: BTreeMap<(std::path::PathBuf, String), ResolutionRung> = BTreeMap::new();
     let mut queue: VecDeque<((std::path::PathBuf, String), usize)> = VecDeque::new();
     queue.push_back((entry_node.clone(), 0));
     visited.insert(entry_node.clone());
@@ -494,10 +554,12 @@ fn build_context_from_call_graph(
         if d >= depth {
             continue;
         }
-        if let Some(callees) = forward.get(&node) {
-            for callee in callees {
+        if let Some(edges) = forward.get(&node) {
+            for edge in edges {
+                let callee = (edge.dst_file.clone(), edge.dst_func.clone());
                 if visited.insert(callee.clone()) {
-                    queue.push_back((callee.clone(), d + 1));
+                    incoming.entry(callee.clone()).or_insert(edge.rung);
+                    queue.push_back((callee, d + 1));
                 }
             }
         }
@@ -505,41 +567,44 @@ fn build_context_from_call_graph(
 
     // Synthesize FunctionContext per node.
     let mut functions: Vec<FunctionContext> = Vec::new();
-    let mut module_cache: std::collections::HashMap<std::path::PathBuf, tldr_core::types::ModuleInfo> =
-        std::collections::HashMap::new();
+    let mut module_cache: std::collections::HashMap<
+        std::path::PathBuf,
+        tldr_core::types::ModuleInfo,
+    > = std::collections::HashMap::new();
     for (file, func) in &ordered {
         // Distinct, sorted callee NAMES for this node.
         let mut calls: Vec<String> = forward
             .get(&(file.clone(), func.clone()))
-            .map(|v| v.iter().map(|(_, n)| n.clone()).collect())
+            .map(|v| v.iter().map(|edge| edge.dst_func.clone()).collect())
             .unwrap_or_default();
         calls.sort();
         calls.dedup();
 
-        let full_path = if file.is_relative() {
-            project.join(file)
-        } else {
-            file.clone()
+        let (signature, line, docstring) = {
+            let module = cached_module(&mut module_cache, project, file, language);
+            lookup_signature(module, func, include_docstrings)
         };
-        let module = module_cache.entry(file.clone()).or_insert_with(|| {
-            extract_file(&full_path, Some(project)).unwrap_or_else(|_| {
-                tldr_core::types::ModuleInfo {
-                    file_path: file.clone(),
-                    language,
-                    docstring: None,
-                    imports: vec![],
-                    functions: vec![],
-                    classes: vec![],
-                    constants: vec![],
-                    call_graph: Default::default(),
-                    modifiers: Vec::new(),
-                    events: Vec::new(),
-                    errors: Vec::new(),
-                }
+        let call_edges: Vec<ContextCallEdge> = forward
+            .get(&(file.clone(), func.clone()))
+            .map(|edges| {
+                edges
+                    .iter()
+                    .map(|edge| context_call_edge(project, language, &mut module_cache, edge))
+                    .collect()
             })
-        });
-
-        let (signature, line, docstring) = lookup_signature(module, func, include_docstrings);
+            .unwrap_or_default();
+        let (confidence, provenance) = incoming
+            .get(&(file.clone(), func.clone()))
+            .map(|rung| {
+                (
+                    Some(confidence_tier(*rung).as_str().to_string()),
+                    Some(ContextEdgeProvenance {
+                        rung: rung.id().to_string(),
+                        mechanism: rung.mechanism().to_string(),
+                    }),
+                )
+            })
+            .unwrap_or((None, None));
 
         functions.push(FunctionContext {
             name: func.clone(),
@@ -548,6 +613,9 @@ fn build_context_from_call_graph(
             signature,
             docstring,
             calls,
+            call_edges,
+            confidence,
+            provenance,
             blocks: None,
             cyclomatic: None,
         });
@@ -558,6 +626,153 @@ fn build_context_from_call_graph(
         depth,
         functions,
     })
+}
+
+fn empty_module_info(file: &Path, language: Language) -> tldr_core::types::ModuleInfo {
+    tldr_core::types::ModuleInfo {
+        file_path: file.to_path_buf(),
+        language,
+        docstring: None,
+        imports: vec![],
+        functions: vec![],
+        classes: vec![],
+        constants: vec![],
+        call_graph: Default::default(),
+        modifiers: Vec::new(),
+        events: Vec::new(),
+        errors: Vec::new(),
+    }
+}
+
+fn cached_module<'a>(
+    module_cache: &'a mut std::collections::HashMap<
+        std::path::PathBuf,
+        tldr_core::types::ModuleInfo,
+    >,
+    project: &Path,
+    file: &Path,
+    language: Language,
+) -> &'a tldr_core::types::ModuleInfo {
+    let key = file.to_path_buf();
+    let full_path = if file.is_relative() {
+        project.join(file)
+    } else {
+        file.to_path_buf()
+    };
+    module_cache.entry(key.clone()).or_insert_with(|| {
+        extract_file(&full_path, Some(project))
+            .unwrap_or_else(|_| empty_module_info(&key, language))
+    })
+}
+
+fn context_call_edge(
+    project: &Path,
+    language: Language,
+    module_cache: &mut std::collections::HashMap<std::path::PathBuf, tldr_core::types::ModuleInfo>,
+    edge: &ContextGraphEdge,
+) -> ContextCallEdge {
+    let dst_line = {
+        let module = cached_module(module_cache, project, &edge.dst_file, language);
+        let (_, line, _) = lookup_signature(module, &edge.dst_func, false);
+        line
+    };
+    ContextCallEdge {
+        dst_file: edge.dst_file.clone(),
+        dst_func: edge.dst_func.clone(),
+        dst_line,
+        call_line: edge.call_line,
+        confidence: confidence_tier(edge.rung).as_str().to_string(),
+        provenance: ContextEdgeProvenance {
+            rung: edge.rung.id().to_string(),
+            mechanism: edge.rung.mechanism().to_string(),
+        },
+    }
+}
+
+fn context_path_matches(a: &Path, b: &Path) -> bool {
+    a == b || a.ends_with(b) || b.ends_with(a)
+}
+
+fn context_node_matches(
+    context_file: &Path,
+    context_name: &str,
+    edge_file: &Path,
+    edge_name: &str,
+) -> bool {
+    context_path_matches(context_file, edge_file)
+        && name_matches(context_name, edge_name, last_segment(edge_name))
+}
+
+fn annotate_context_from_call_graph(
+    context: &mut RelevantContext,
+    project: &Path,
+    language: Language,
+    min_confidence: MinConfidence,
+) {
+    let Ok(graph) = build_project_call_graph(project, language, None, true) else {
+        return;
+    };
+    let mut graph_edges: Vec<_> = graph.edges().cloned().collect();
+    graph_edges.sort_by(|a, b| {
+        a.src_file
+            .cmp(&b.src_file)
+            .then_with(|| a.src_func.cmp(&b.src_func))
+            .then_with(|| a.dst_file.cmp(&b.dst_file))
+            .then_with(|| a.dst_func.cmp(&b.dst_func))
+            .then_with(|| a.call_line.cmp(&b.call_line))
+    });
+    let mut module_cache: std::collections::HashMap<
+        std::path::PathBuf,
+        tldr_core::types::ModuleInfo,
+    > = std::collections::HashMap::new();
+
+    for func in context.functions.iter_mut() {
+        func.call_edges.clear();
+        for edge in &graph_edges {
+            let rung = graph
+                .edge_rung(edge)
+                .unwrap_or(ResolutionRung::LocalFunction);
+            if !min_confidence.includes_optional_rung(Some(rung)) {
+                continue;
+            }
+            if context_node_matches(&func.file, &func.name, &edge.src_file, &edge.src_func) {
+                let detailed = ContextGraphEdge {
+                    dst_file: edge.dst_file.clone(),
+                    dst_func: edge.dst_func.clone(),
+                    call_line: edge.call_line,
+                    rung,
+                };
+                func.call_edges.push(context_call_edge(
+                    project,
+                    language,
+                    &mut module_cache,
+                    &detailed,
+                ));
+            }
+            if func.confidence.is_none()
+                && func.name != context.entry_point
+                && context_node_matches(&func.file, &func.name, &edge.dst_file, &edge.dst_func)
+            {
+                func.confidence = Some(confidence_tier(rung).as_str().to_string());
+                func.provenance = Some(ContextEdgeProvenance {
+                    rung: rung.id().to_string(),
+                    mechanism: rung.mechanism().to_string(),
+                });
+            }
+        }
+        func.call_edges.sort_by(|a, b| {
+            a.dst_file
+                .cmp(&b.dst_file)
+                .then_with(|| a.dst_func.cmp(&b.dst_func))
+                .then_with(|| a.call_line.cmp(&b.call_line))
+        });
+        func.call_edges.dedup_by(|a, b| {
+            a.dst_file == b.dst_file
+                && a.dst_func == b.dst_func
+                && a.call_line == b.call_line
+                && a.provenance.rung == b.provenance.rung
+        });
+    }
 }
 
 /// Best-effort signature/line/docstring lookup for `func` within an extracted

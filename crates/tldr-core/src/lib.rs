@@ -144,7 +144,9 @@ pub use validation::{detect_or_parse_language, validate_file_path};
 pub mod context;
 
 // Re-export context module functions
-pub use context::{get_relevant_context, FunctionContext, RelevantContext};
+pub use context::{
+    get_relevant_context, ContextCallEdge, ContextEdgeProvenance, FunctionContext, RelevantContext,
+};
 
 // Phase 8: Quality & Security - implemented
 pub mod quality;

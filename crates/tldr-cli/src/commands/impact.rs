@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use tldr_core::analysis::impact::{
     exclude_approximate_callers_from_report, impact_analysis_with_ast_fallback_options,
+    populate_caller_tree_lines,
 };
 use tldr_core::types::ImpactReport;
 use tldr_core::{build_project_call_graph, enrich_impact_with_references, Language};
@@ -229,6 +230,7 @@ impl ImpactArgs {
         // to share the user-input shape. Route every CallerTree.file
         // through the centralized emission-boundary normalizer.
         restore_impact_path_shape(&mut report, &self.path);
+        populate_caller_tree_lines(&mut report, &self.path, language);
         if !self.approximate {
             exclude_approximate_callers_from_report(&mut report);
         }

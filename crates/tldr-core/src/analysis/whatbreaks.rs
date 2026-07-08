@@ -61,6 +61,7 @@ use crate::analysis::change_impact::change_impact;
 use crate::analysis::clones::is_test_file;
 use crate::analysis::impact::{
     exclude_approximate_callers_from_report, impact_analysis_with_ast_fallback_options,
+    populate_caller_tree_lines,
 };
 use crate::analysis::importers::find_importers;
 use crate::callgraph::build_project_call_graph;
@@ -401,6 +402,7 @@ fn run_impact_analysis(
             if !approximate {
                 exclude_approximate_callers_from_report(&mut report);
             }
+            populate_caller_tree_lines(&mut report, project_path, language);
 
             // Count direct callers from all targets
             let direct_count: usize = report.targets.values().map(|t| t.caller_count).sum();

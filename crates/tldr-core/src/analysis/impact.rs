@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::ast::extract::extract_file;
 use crate::ast::extractor::{
     extract_functions, extract_methods, extract_rust_impl_methods_qualified,
 };
@@ -26,7 +27,7 @@ use crate::callgraph::{confidence_tier, ConfidenceTier, ResolutionRung};
 use crate::error::TldrError;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{
-    ApproximateCaller, CallerTree, ImpactReport, ProjectCallGraph, WorkspaceConfig,
+    ApproximateCaller, CallerTree, ImpactReport, ModuleInfo, ProjectCallGraph, WorkspaceConfig,
 };
 use crate::{Language, TldrResult};
 
@@ -404,6 +405,7 @@ pub fn impact_analysis_with_ast_fallback_options(
                     report.targets.entry(key).or_insert_with(|| CallerTree {
                         function: qualified.clone(),
                         file: func_file.clone(),
+                        line: 0,
                         caller_count: 0,
                         callers: vec![],
                         approximate_callers: vec![],
@@ -619,6 +621,7 @@ pub fn impact_analysis_with_ast_fallback_options(
                             CallerTree {
                                 function: qualified.clone(),
                                 file: func_file.clone(),
+                                line: 0,
                                 caller_count: 0,
                                 callers: vec![],
                                 approximate_callers: vec![],
@@ -661,6 +664,105 @@ pub fn exclude_approximate_callers_from_report(report: &mut ImpactReport) {
     for tree in report.targets.values_mut() {
         exclude_approximate_callers_from_tree(tree, &approximate_by_target);
     }
+}
+
+/// Populate definition-line fields on impact caller trees.
+pub fn populate_caller_tree_lines(
+    report: &mut ImpactReport,
+    project_root: &Path,
+    language: Language,
+) {
+    let mut module_cache: HashMap<PathBuf, ModuleInfo> = HashMap::new();
+    for tree in report.targets.values_mut() {
+        populate_tree_lines(tree, project_root, language, &mut module_cache);
+    }
+}
+
+fn populate_tree_lines(
+    tree: &mut CallerTree,
+    project_root: &Path,
+    language: Language,
+    module_cache: &mut HashMap<PathBuf, ModuleInfo>,
+) {
+    if tree.line == 0 {
+        tree.line = lookup_function_line(
+            project_root,
+            language,
+            module_cache,
+            &tree.file,
+            &tree.function,
+        );
+    }
+    for caller in &mut tree.approximate_callers {
+        if caller.line == 0 {
+            caller.line = lookup_function_line(
+                project_root,
+                language,
+                module_cache,
+                &caller.file,
+                &caller.function,
+            );
+        }
+    }
+    for child in &mut tree.callers {
+        populate_tree_lines(child, project_root, language, module_cache);
+    }
+}
+
+fn lookup_function_line(
+    project_root: &Path,
+    language: Language,
+    module_cache: &mut HashMap<PathBuf, ModuleInfo>,
+    file: &Path,
+    function: &str,
+) -> u32 {
+    let module = cached_impact_module(project_root, language, module_cache, file);
+    let leaf = last_segment(function);
+    for func in &module.functions {
+        if func.name == function || func.name == leaf {
+            return func.line_number;
+        }
+    }
+    for class in &module.classes {
+        for method in &class.methods {
+            if method.name == function
+                || method.name == leaf
+                || format!("{}.{}", class.name, method.name) == function
+            {
+                return method.line_number;
+            }
+        }
+    }
+    0
+}
+
+fn cached_impact_module<'a>(
+    project_root: &Path,
+    language: Language,
+    module_cache: &'a mut HashMap<PathBuf, ModuleInfo>,
+    file: &Path,
+) -> &'a ModuleInfo {
+    let key = file.to_path_buf();
+    let full_path = if file.is_relative() {
+        project_root.join(file)
+    } else {
+        file.to_path_buf()
+    };
+    module_cache.entry(key.clone()).or_insert_with(|| {
+        extract_file(&full_path, Some(project_root)).unwrap_or_else(|_| ModuleInfo {
+            file_path: key,
+            language,
+            docstring: None,
+            imports: vec![],
+            functions: vec![],
+            classes: vec![],
+            constants: vec![],
+            call_graph: Default::default(),
+            modifiers: Vec::new(),
+            events: Vec::new(),
+            errors: Vec::new(),
+        })
+    })
 }
 
 fn collect_approximate_callers_from_tree(
@@ -716,6 +818,7 @@ fn reference_enrichment_approximate_caller(name: &str, file: &Path) -> Approxima
     ApproximateCaller {
         function: name.to_string(),
         file: file.to_path_buf(),
+        line: 0,
         confidence: confidence_tier(rung).as_str().to_string(),
         rung: rung.id().to_string(),
         mechanism: rung.mechanism().to_string(),
@@ -1424,6 +1527,7 @@ pub fn enrich_impact_with_references(
             tree.callers.push(CallerTree {
                 function: name.clone(),
                 file: file.clone(),
+                line: 0,
                 caller_count: 0,
                 callers: vec![],
                 approximate_callers: vec![],
@@ -1857,6 +1961,7 @@ fn enrich_single_caller_tree_node_with_references(
         tree.callers.push(CallerTree {
             function: name.clone(),
             file: file.clone(),
+            line: 0,
             caller_count: 0,
             callers: vec![],
             approximate_callers: vec![],
@@ -3572,6 +3677,7 @@ fn build_reverse_graph(call_graph: &ProjectCallGraph, include_approximate: bool)
                     .push(ApproximateCaller {
                         function: edge.src_func.clone(),
                         file: edge.src_file.clone(),
+                        line: 0,
                         confidence: ConfidenceTier::T2.as_str().to_string(),
                         rung: rung.id().to_string(),
                         mechanism: rung.mechanism().to_string(),
@@ -3639,6 +3745,7 @@ fn build_caller_tree(
         return CallerTree {
             function: func.to_string(),
             file: file.to_path_buf(),
+            line: 0,
             caller_count: 0,
             callers: vec![],
             approximate_callers,
@@ -3665,6 +3772,7 @@ fn build_caller_tree(
                     child_trees.push(CallerTree {
                         function: caller_func.clone(),
                         file: caller_file.clone(),
+                        line: 0,
                         caller_count: 0,
                         callers: vec![],
                         approximate_callers: vec![],
@@ -3689,6 +3797,7 @@ fn build_caller_tree(
     CallerTree {
         function: func.to_string(),
         file: file.to_path_buf(),
+        line: 0,
         caller_count,
         callers: child_trees,
         approximate_callers,
@@ -4475,10 +4584,12 @@ mod tests {
             CallerTree {
                 function: "A.leaf".to_string(),
                 file: file.clone(),
+                line: 0,
                 caller_count: 1,
                 callers: vec![CallerTree {
                     function: "Worker.step".to_string(),
                     file: file.clone(),
+                    line: 0,
                     caller_count: 0,
                     callers: vec![],
                     approximate_callers: vec![],
@@ -4499,6 +4610,7 @@ mod tests {
             CallerTree {
                 function: "B.leaf".to_string(),
                 file: file.clone(),
+                line: 0,
                 caller_count: 0,
                 callers: vec![],
                 approximate_callers: vec![],

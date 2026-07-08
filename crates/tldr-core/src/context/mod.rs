@@ -30,4 +30,6 @@
 
 pub mod builder;
 
-pub use builder::{get_relevant_context, FunctionContext, RelevantContext};
+pub use builder::{
+    get_relevant_context, ContextCallEdge, ContextEdgeProvenance, FunctionContext, RelevantContext,
+};

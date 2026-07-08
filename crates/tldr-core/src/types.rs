@@ -3085,6 +3085,9 @@ pub struct CallerTree {
     pub function: String,
     /// Path to the file containing this function
     pub file: PathBuf,
+    /// Line number where this function is defined (1-based, 0 = unknown).
+    #[serde(default)]
+    pub line: u32,
     /// Number of direct callers of this function
     pub caller_count: usize,
     /// Recursive tree of callers (callers of callers)
@@ -3113,6 +3116,9 @@ pub struct ApproximateCaller {
     pub function: String,
     /// Path to the file containing the caller.
     pub file: PathBuf,
+    /// Line number where the caller is defined (1-based, 0 = unknown).
+    #[serde(default)]
+    pub line: u32,
     /// Coarse confidence tier.
     pub confidence: String,
     /// Raw resolution rung id.

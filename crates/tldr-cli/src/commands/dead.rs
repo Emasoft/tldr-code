@@ -654,7 +654,13 @@ fn format_dead_code_text_truncated(
         for (file, funcs) in &report.by_file {
             output.push_str(&format!("{}\n", file.display().to_string().green()));
             for func in funcs {
-                output.push_str(&format!("  - {}\n", func.red()));
+                let line = report
+                    .dead_functions
+                    .iter()
+                    .find(|f| &f.file == file && &f.name == func)
+                    .map(|f| f.line)
+                    .unwrap_or(0);
+                output.push_str(&format!("  - {}:{}\n", line, func.red()));
             }
             output.push('\n');
         }

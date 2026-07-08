@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use tldr_core::callgraph::cross_file_types::CallType;
-use tldr_core::callgraph::{build_project_call_graph_v2, confidence_tier, BuildConfig};
+use tldr_core::callgraph::{
+    build_project_call_graph_v2, confidence_tier, BuildConfig, CallGraphIR, ResolutionRung,
+};
 use tldr_core::Language;
 
 use crate::commands::daemon_router::{params_with_path, try_daemon_route};
@@ -48,6 +50,45 @@ pub struct CallsArgs {
     /// CLIs that use that flag name.
     #[arg(long, alias = "limit", default_value = "200")]
     pub max_items: usize,
+
+    /// Minimum confidence tier to emit: T2 includes all edges, T1 drops T2 guesses, T0 is reserved.
+    #[arg(long, default_value = "T2", value_parser = parse_min_confidence)]
+    pub(crate) min_confidence: MinConfidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinConfidence {
+    T0,
+    T1,
+    T2,
+}
+
+impl MinConfidence {
+    pub(crate) fn includes_rung(self, rung: ResolutionRung) -> bool {
+        match self {
+            Self::T2 => true,
+            Self::T1 => confidence_tier(rung).as_str() == "T1",
+            Self::T0 => false,
+        }
+    }
+
+    pub(crate) fn includes_optional_rung(self, rung: Option<ResolutionRung>) -> bool {
+        match rung {
+            Some(rung) => self.includes_rung(rung),
+            None => self == Self::T2,
+        }
+    }
+}
+
+pub(crate) fn parse_min_confidence(value: &str) -> Result<MinConfidence, String> {
+    match value {
+        "T0" | "t0" => Ok(MinConfidence::T0),
+        "T1" | "t1" => Ok(MinConfidence::T1),
+        "T2" | "t2" => Ok(MinConfidence::T2),
+        other => Err(format!(
+            "invalid confidence tier '{other}'; expected T0, T1, or T2"
+        )),
+    }
 }
 
 /// Call graph output format
@@ -95,8 +136,14 @@ struct CallGraphOutput {
 struct EdgeOutput {
     src_file: PathBuf,
     src_func: String,
+    #[serde(default)]
+    src_line: u32,
+    #[serde(default)]
+    call_line: Option<u32>,
     dst_file: PathBuf,
     dst_func: String,
+    #[serde(default)]
+    dst_line: u32,
     call_type: CallType,
     confidence: String,
     provenance: EdgeProvenance,
@@ -141,6 +188,30 @@ fn sha256_file_hex(root: &Path, file: &Path) -> String {
 
 fn relative_to_root(path: &Path, root: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
+}
+
+fn definition_line_index(ir: &CallGraphIR) -> HashMap<(PathBuf, String), u32> {
+    let mut lines = HashMap::new();
+    for (file_path, file_ir) in &ir.files {
+        for func in &file_ir.funcs {
+            lines
+                .entry((file_path.clone(), func.name.clone()))
+                .or_insert(func.line);
+            if let Some(class_name) = &func.class_name {
+                lines
+                    .entry((file_path.clone(), format!("{}.{}", class_name, func.name)))
+                    .or_insert(func.line);
+            }
+        }
+    }
+    lines
+}
+
+fn has_endpoint_lines(output: &CallGraphOutput) -> bool {
+    output
+        .edges
+        .iter()
+        .all(|edge| edge.src_line != 0 && edge.dst_line != 0)
 }
 
 impl CallsArgs {
@@ -190,67 +261,76 @@ impl CallsArgs {
         };
 
         // Try daemon first for cached result
-        if let Some(output) = try_daemon_route::<CallGraphOutput>(
-            &self.path,
-            "calls",
-            params_with_path(Some(&self.path)),
-        ) {
-            // Output based on format
-            if writer.is_text() {
-                let mut text = String::new();
-                let lang_label = output
-                    .language
-                    .map(|l| l.as_str().to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                text.push_str(&format!(
-                    "Call Graph for {} ({})\n",
-                    output.root.display(),
-                    lang_label,
-                ));
-                text.push_str(&format!("Edges: {}\n\n", output.total_edges));
+        if self.min_confidence == MinConfidence::T2 {
+            if let Some(output) = try_daemon_route::<CallGraphOutput>(
+                &self.path,
+                "calls",
+                params_with_path(Some(&self.path)),
+            ) {
+                // Legacy daemon/cache payloads cannot satisfy calls.v2 line
+                // fields; fall back to direct compute rather than emitting
+                // serde-default zeroes.
+                if has_endpoint_lines(&output) {
+                    // Output based on format
+                    if writer.is_text() {
+                        let mut text = String::new();
+                        let lang_label = output
+                            .language
+                            .map(|l| l.as_str().to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        text.push_str(&format!(
+                            "Call Graph for {} ({})\n",
+                            output.root.display(),
+                            lang_label,
+                        ));
+                        text.push_str(&format!("Edges: {}\n\n", output.total_edges));
 
-                for edge in &output.edges {
-                    text.push_str(&format!(
-                        "{}:{} -> {}:{}\n",
-                        edge.src_file.display(),
-                        edge.src_func,
-                        edge.dst_file.display(),
-                        edge.dst_func
-                    ));
+                        for edge in &output.edges {
+                            text.push_str(&format!(
+                                "{}:{}:{} -> {}:{}:{}\n",
+                                edge.src_file.display(),
+                                edge.src_line,
+                                edge.src_func,
+                                edge.dst_file.display(),
+                                edge.dst_line,
+                                edge.dst_func
+                            ));
+                        }
+
+                        writer.write_text(&text)?;
+                        return Ok(());
+                    } else if writer.is_dot() {
+                        // surface-gaps-v1 (BUG-19): DOT support for the daemon path.
+                        let srcs: Vec<String> = output
+                            .edges
+                            .iter()
+                            .map(|e| format!("{}:{}", e.src_file.display(), e.src_func))
+                            .collect();
+                        let dsts: Vec<String> = output
+                            .edges
+                            .iter()
+                            .map(|e| format!("{}:{}", e.dst_file.display(), e.dst_func))
+                            .collect();
+                        let labels: Vec<String> = output
+                            .edges
+                            .iter()
+                            .map(|e| format!("{:?}", e.call_type))
+                            .collect();
+                        let dot_edges: Vec<DotCallEdge<'_>> = (0..output.edges.len())
+                            .map(|i| DotCallEdge {
+                                src: srcs[i].as_str(),
+                                dst: dsts[i].as_str(),
+                                label: Some(labels[i].as_str()),
+                            })
+                            .collect();
+                        let dot = format_calls_dot(&dot_edges);
+                        writer.write_text(&dot)?;
+                        return Ok(());
+                    } else {
+                        writer.write(&output)?;
+                        return Ok(());
+                    }
                 }
-
-                writer.write_text(&text)?;
-                return Ok(());
-            } else if writer.is_dot() {
-                // surface-gaps-v1 (BUG-19): DOT support for the daemon path.
-                let srcs: Vec<String> = output
-                    .edges
-                    .iter()
-                    .map(|e| format!("{}:{}", e.src_file.display(), e.src_func))
-                    .collect();
-                let dsts: Vec<String> = output
-                    .edges
-                    .iter()
-                    .map(|e| format!("{}:{}", e.dst_file.display(), e.dst_func))
-                    .collect();
-                let labels: Vec<String> = output
-                    .edges
-                    .iter()
-                    .map(|e| format!("{:?}", e.call_type))
-                    .collect();
-                let dot_edges: Vec<DotCallEdge<'_>> = (0..output.edges.len())
-                    .map(|i| DotCallEdge {
-                        src: srcs[i].as_str(),
-                        dst: dsts[i].as_str(),
-                        label: Some(labels[i].as_str()),
-                    })
-                    .collect();
-                let dot = format_calls_dot(&dot_edges);
-                writer.write_text(&dot)?;
-                return Ok(());
-            } else {
-                writer.write(&output)?;
-                return Ok(());
             }
         }
 
@@ -286,7 +366,11 @@ impl CallsArgs {
                 ..Default::default()
             };
             let ir = build_project_call_graph_v2(&self.path, config)?;
+            let definition_lines = definition_line_index(&ir);
             for e in &ir.edges {
+                if !self.min_confidence.includes_rung(e.rung) {
+                    continue;
+                }
                 let src = relative_to_root(&e.src_file, &root);
                 let dst = relative_to_root(&e.dst_file, &root);
                 let src_hash = source_hashes
@@ -297,8 +381,17 @@ impl CallsArgs {
                 edges.push(EdgeOutput {
                     src_file: src,
                     src_func: e.src_func.clone(),
+                    src_line: definition_lines
+                        .get(&(e.src_file.clone(), e.src_func.clone()))
+                        .copied()
+                        .unwrap_or(0),
+                    call_line: e.call_line,
                     dst_file: dst,
                     dst_func: e.dst_func.clone(),
+                    dst_line: definition_lines
+                        .get(&(e.dst_file.clone(), e.dst_func.clone()))
+                        .copied()
+                        .unwrap_or(0),
                     call_type: e.call_type,
                     confidence,
                     provenance: EdgeProvenance {
@@ -463,10 +556,12 @@ impl CallsArgs {
 
             for edge in output.edges.iter().take(visible_edges_len) {
                 text.push_str(&format!(
-                    "{}:{} -> {}:{}\n",
+                    "{}:{}:{} -> {}:{}:{}\n",
                     edge.src_file.display(),
+                    edge.src_line,
                     edge.src_func,
                     edge.dst_file.display(),
+                    edge.dst_line,
                     edge.dst_func
                 ));
             }
