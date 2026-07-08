@@ -31,6 +31,7 @@ use std::str::FromStr;
 
 use rayon::prelude::*;
 
+use super::confidence::ResolutionRung;
 use super::cross_file_types::{CallGraphIR, CallSite, CallType, FileIR};
 use super::import_resolver::{ImportResolver, ReExportTracer};
 use super::module_index::ModuleIndex;
@@ -50,11 +51,11 @@ pub use super::resolution::{
     resolve_call_with_receiver_enclosing, ResolutionContext, ResolvedTarget,
 };
 pub use super::scanner::{filter_tldrignored, scan_project_files, should_skip_path, ScannedFile};
+use super::types::sourceset_of_path;
 pub use super::types::{
     BuildConfig, BuildDiagnostics, BuildError, BuildResult, ClassEntry, ClassIndex, ClassScope,
     FuncEntry, FuncIndex, ParseDiagnostic, ResolutionWarning, SkipReason,
 };
-use super::types::sourceset_of_path;
 
 // --- Internal imports from sub-modules ---
 use super::module_path::{extract_definitions, normalize_path_relative_to_root};
@@ -333,6 +334,11 @@ pub fn extract_and_resolve_calls(
                 CallSiteResolution::Unresolved => {
                     if call_site.target.contains("__import__")
                         || call_site.target.contains("importlib")
+                        || call_site
+                            .receiver
+                            .as_deref()
+                            .map(|receiver| receiver.contains("importlib"))
+                            .unwrap_or(false)
                     {
                         result.warnings.push(ResolutionWarning {
                             file: current_file.clone(),
@@ -426,7 +432,7 @@ fn resolve_super_constructor_call(
     let class_entry = class_index.get(&base)?;
     if let Some(ctor_target) = resolve_constructor_target(&base, class_entry, func_index, language)
     {
-        return Some(ctor_target);
+        return Some(ctor_target.with_rung(ResolutionRung::SuperDispatch));
     }
     Some(ResolvedTarget {
         file: class_entry.file_path.clone(),
@@ -434,6 +440,7 @@ fn resolve_super_constructor_call(
         line: Some(class_entry.line),
         is_method: false,
         class_name: None,
+        rung: ResolutionRung::SuperDispatch,
     })
 }
 
@@ -478,6 +485,7 @@ fn resolve_intra_call(
             line: Some(func.line),
             is_method: false,
             class_name: None,
+            rung: ResolutionRung::LocalFunction,
         });
     }
 
@@ -490,9 +498,11 @@ fn resolve_intra_call(
     // the type-qualified target.
     if let Some(receiver) = call_site.receiver.as_deref() {
         if let Some((_, simple_method)) = call_site.target.split_once('.') {
-            if let Some(receiver_type) = call_site.receiver_type.as_deref().or_else(|| {
-                find_best_vartype_simple(&file_ir.var_types, receiver, call_site.line)
-            }) {
+            if let Some(receiver_type) = call_site
+                .receiver_type
+                .as_deref()
+                .or_else(|| find_best_vartype_simple(&file_ir.var_types, receiver, call_site.line))
+            {
                 if let Some(target) = resolve_method_in_class(
                     receiver_type,
                     simple_method,
@@ -500,7 +510,7 @@ fn resolve_intra_call(
                     func_index,
                     language,
                 ) {
-                    return Some(target);
+                    return Some(target.with_rung(ResolutionRung::ReceiverType));
                 }
                 if let Some(target) = resolve_method_in_bases(
                     receiver_type,
@@ -509,7 +519,7 @@ fn resolve_intra_call(
                     func_index,
                     language,
                 ) {
-                    return Some(target);
+                    return Some(target.with_rung(ResolutionRung::ReceiverType));
                 }
             }
         }
@@ -523,7 +533,7 @@ fn resolve_intra_call(
             func_index,
             language,
         ) {
-            return Some(target);
+            return Some(target.with_rung(ResolutionRung::SelfReceiver));
         }
         if let Some(target) = resolve_method_in_bases(
             &class_name,
@@ -532,7 +542,7 @@ fn resolve_intra_call(
             func_index,
             language,
         ) {
-            return Some(target);
+            return Some(target.with_rung(ResolutionRung::SelfReceiver));
         }
         return context.resolve_call(&call_site.target, &call_site.call_type);
     }
@@ -587,12 +597,12 @@ fn resolve_static_call(
             if let Some(target) =
                 resolve_method_in_class(&class_name, method, class_index, func_index, language)
             {
-                return Some(target);
+                return Some(target.with_rung(ResolutionRung::SelfReceiver));
             }
             if let Some(target) =
                 resolve_method_in_bases(&class_name, method, class_index, func_index, language)
             {
-                return Some(target);
+                return Some(target.with_rung(ResolutionRung::SelfReceiver));
             }
         }
         return context.resolve_call(&call_site.target, &call_site.call_type);
@@ -604,12 +614,12 @@ fn resolve_static_call(
                 if let Some(target) =
                     resolve_method_in_class(&base, method, class_index, func_index, language)
                 {
-                    return Some(target);
+                    return Some(target.with_rung(ResolutionRung::SuperDispatch));
                 }
                 if let Some(target) =
                     resolve_method_in_bases(&base, method, class_index, func_index, language)
                 {
-                    return Some(target);
+                    return Some(target.with_rung(ResolutionRung::SuperDispatch));
                 }
             }
         }
@@ -1073,6 +1083,25 @@ pub fn build_project_call_graph_v2(
         };
         let resolved_calls = extract_and_resolve_calls(&file_ir, &mut resolution_context);
 
+        for call_site in &resolved_calls.unresolved {
+            let reason = resolved_calls
+                .warnings
+                .iter()
+                .find(|warning| {
+                    warning.target == call_site.target
+                        && Some(warning.line) == call_site.line.or(Some(0))
+                })
+                .map(|warning| warning.reason.clone())
+                .unwrap_or_else(|| "Static resolver found no project target".to_string());
+            ir.add_unresolved(super::cross_file_types::UnresolvedCall {
+                caller_file: file_path.clone(),
+                caller_func: resolve_caller_name(&file_ir, call_site),
+                target: call_site.target.clone(),
+                line: call_site.line,
+                reason,
+            });
+        }
+
         // Step 10d: Add resolved edges to the IR (both cross-file and intra-file)
         for (call_site, target) in resolved_calls.resolved {
             use super::cross_file_types::CrossFileCallEdge;
@@ -1092,6 +1121,7 @@ pub fn build_project_call_graph_v2(
                 // edge identity, so the HashSet dedup below keeps the first
                 // (sort-stable smallest) line as the representative.
                 call_line: call_site.line,
+                rung: target.rung,
             };
             if edge_set.insert(edge.clone()) {
                 ir.add_edge(edge);
@@ -1550,7 +1580,10 @@ def main():
 
         let ts_module = path_to_module(Path::new("pkg/utils.ts"), "typescript");
         let ts_simple_module = if module_uses_dotted_alias("typescript") {
-            ts_module.split('.').next_back().unwrap_or(ts_module.as_str())
+            ts_module
+                .split('.')
+                .next_back()
+                .unwrap_or(ts_module.as_str())
         } else {
             ts_module.as_str()
         };

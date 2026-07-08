@@ -366,6 +366,8 @@ mod determinism {
             dst_func: "a_func".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
+            rung: crate::callgraph::ResolutionRung::LocalFunction,
         });
         graph.add_edge(CrossFileCallEdge {
             src_file: PathBuf::from("a.py"),
@@ -374,6 +376,8 @@ mod determinism {
             dst_func: "b_func".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
+            rung: crate::callgraph::ResolutionRung::LocalFunction,
         });
 
         let json = graph.edges_to_json();

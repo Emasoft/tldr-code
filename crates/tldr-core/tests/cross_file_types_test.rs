@@ -314,6 +314,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Direct,
             via_import: Some("utils".to_string()),
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         assert_eq!(edge.src_file, PathBuf::from("src/main.py"));
@@ -334,6 +335,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Intra,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         // Same file for intra-file calls
@@ -352,6 +354,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Method,
             via_import: Some("models.user.User".to_string()),
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         assert_eq!(edge.call_type, CallType::Method);
@@ -368,6 +371,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         let edge2 = CrossFileCallEdge {
@@ -378,6 +382,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         assert_eq!(edge1, edge2);
@@ -393,6 +398,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         let edge2 = edge1.clone();
@@ -414,6 +420,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         let edge2 = CrossFileCallEdge {
@@ -424,6 +431,7 @@ mod cross_file_call_edge_tests {
             call_type: CallType::Attr, // Different
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         assert_ne!(edge1, edge2);
@@ -456,6 +464,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: Some("utils".to_string()),
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         graph.add_edge(edge);
@@ -475,6 +484,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         graph.add_edge(edge.clone());
@@ -495,6 +505,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         graph.add_edge(CrossFileCallEdge {
@@ -505,6 +516,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         let edges: Vec<_> = graph.edges().collect();
@@ -524,6 +536,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // c.h -> b.g
@@ -535,6 +548,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // a.f -> d.i (different target)
@@ -546,6 +560,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // Query: who calls b.g?
@@ -571,6 +586,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // a.f -> c.h
@@ -582,6 +598,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // a.f -> d.i
@@ -593,6 +610,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // Query: what does a.f call?
@@ -640,6 +658,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         graph.add_edge(edge.clone());
@@ -654,6 +673,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         assert!(!graph.contains(&other_edge));
@@ -672,6 +692,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         };
 
         graph.add_edge(edge);
@@ -705,6 +726,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Direct,
             via_import: Some("b".to_string()),
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // Method call to same target
@@ -716,6 +738,7 @@ mod project_call_graph_v2_tests {
             call_type: CallType::Method, // Different call type
             via_import: Some("b".to_string()),
             call_line: None,
+            rung: tldr_core::callgraph::ResolutionRung::LocalFunction,
         });
 
         // These should be different edges (call_type differs)

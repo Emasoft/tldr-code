@@ -37,6 +37,7 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+sha2 = "0.10"
 colored = "2"
 comfy-table = "7"
 ctrlc = { workspace = true }

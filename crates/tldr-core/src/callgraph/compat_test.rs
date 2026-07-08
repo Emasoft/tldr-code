@@ -72,6 +72,8 @@ fn create_test_project_graph() -> ProjectCallGraphV2 {
         dst_func: "process".to_string(),
         call_type: CallType::Direct,
         via_import: Some("helper".to_string()),
+        call_line: None,
+        rung: crate::callgraph::ResolutionRung::LocalFunction,
     });
 
     graph.add_edge(CrossFileCallEdge {
@@ -81,6 +83,8 @@ fn create_test_project_graph() -> ProjectCallGraphV2 {
         dst_func: "validate".to_string(),
         call_type: CallType::Direct,
         via_import: Some("utils".to_string()),
+        call_line: None,
+        rung: crate::callgraph::ResolutionRung::LocalFunction,
     });
 
     graph
@@ -245,6 +249,8 @@ mod graph_conversion {
             dst_func: "process".to_string(),
             call_type: CallType::Direct,
             via_import: None,
+            call_line: None,
+            rung: crate::callgraph::ResolutionRung::LocalFunction,
         });
 
         let file_irs = std::collections::HashMap::new();

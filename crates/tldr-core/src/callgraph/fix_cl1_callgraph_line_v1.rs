@@ -27,6 +27,7 @@ fn call_line_is_excluded_from_edge_identity() {
         call_type: CallType::Direct,
         via_import: None,
         call_line: Some(10),
+        rung: crate::callgraph::ResolutionRung::LocalFunction,
     };
     let other_line = CrossFileCallEdge {
         call_line: Some(99),
@@ -84,8 +85,8 @@ int do_work(int x) {\n\
 }\n";
     std::fs::write(dir.join("caller.c"), caller_src).unwrap();
 
-    let graph = build_project_call_graph(&dir, Language::C, None, true)
-        .expect("build project call graph");
+    let graph =
+        build_project_call_graph(&dir, Language::C, None, true).expect("build project call graph");
 
     let edge = graph
         .edges()

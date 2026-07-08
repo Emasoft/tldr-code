@@ -45,6 +45,7 @@
 //! ```
 
 pub mod builder;
+pub mod confidence;
 pub mod cross_file_types;
 pub mod graph_utils;
 pub mod import_resolver;
@@ -121,6 +122,7 @@ mod fix_cl3b_callgraph_v1;
 mod fix_cl8_lua_colon_receiver_v1;
 
 pub use builder::build_project_call_graph;
+pub use confidence::{confidence_tier, ConfidenceTier, ResolutionRung};
 pub use cross_file_types::{
     // Phase 3: Container types
     CallGraphIR,
@@ -141,6 +143,7 @@ pub use cross_file_types::{
     ProjectCallGraphV2,
     ReExportChain,
     ResolvedImport,
+    UnresolvedCall,
     VarType,
     IR_VERSION,
 };

@@ -24,6 +24,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::confidence::ResolutionRung;
 use super::interner::{InternedId, StringInterner};
 
 // =============================================================================
@@ -1417,6 +1418,9 @@ pub struct CallGraphIR {
     /// Cross-file call edges resolved from imports and calls.
     /// Added in Phase 14d-14f to store resolution results.
     pub edges: Vec<CrossFileCallEdge>,
+
+    /// Calls that were extracted but not resolved by the static resolver.
+    pub unresolved: Vec<UnresolvedCall>,
 }
 
 impl CallGraphIR {
@@ -1430,6 +1434,7 @@ impl CallGraphIR {
             func_index: FuncIndexProxyMut::new(),
             class_index: HashMap::new(),
             edges: Vec::new(),
+            unresolved: Vec::new(),
         }
     }
 
@@ -1443,6 +1448,7 @@ impl CallGraphIR {
             func_index: FuncIndexProxyMut::with_capacity(capacity * 10), // ~10 funcs per file
             class_index: HashMap::with_capacity(capacity),
             edges: Vec::with_capacity(capacity * 20), // ~20 edges per file estimate
+            unresolved: Vec::new(),
         }
     }
 
@@ -1521,6 +1527,11 @@ impl CallGraphIR {
     /// Adds a cross-file call edge to the graph.
     pub fn add_edge(&mut self, edge: CrossFileCallEdge) {
         self.edges.push(edge);
+    }
+
+    /// Adds an unresolved call to the graph.
+    pub fn add_unresolved(&mut self, unresolved: UnresolvedCall) {
+        self.unresolved.push(unresolved);
     }
 
     /// Returns an iterator over all cross-file edges.
@@ -1645,6 +1656,21 @@ pub struct ReExportChain {
     pub hops: Vec<(String, String)>,
 }
 
+/// Call site that the static resolver could not bind to a project definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedCall {
+    /// Source file containing the unresolved call.
+    pub caller_file: std::path::PathBuf,
+    /// Function making the unresolved call.
+    pub caller_func: String,
+    /// Target text that could not be resolved.
+    pub target: String,
+    /// Call-site line, when available.
+    pub line: Option<u32>,
+    /// Resolver warning reason, or a generic static-resolution decline reason.
+    pub reason: String,
+}
+
 /// Edge in the cross-file call graph with extended metadata.
 ///
 /// Unlike the existing `CallEdge` type, this includes:
@@ -1659,10 +1685,10 @@ pub struct ReExportChain {
 /// and a callee. Multiple physical call sites (different lines) for the same
 /// `(src_file, src_func, dst_file, dst_func, call_type, via_import)` collapse
 /// to **one** logical edge. To honour that contract, `call_line` is recorded
-/// for line attribution (so `explain` / `coupling` stop reporting `line: 0`)
-/// but is deliberately **excluded** from `PartialEq`/`Eq`/`Hash` — adding it
+/// for line attribution and `rung` is recorded for honesty metadata, but both
+/// are deliberately **excluded** from `PartialEq`/`Eq`/`Hash` — adding either
 /// to the identity key would re-split deduplicated edges per call site. The
-/// builder keeps the smallest (first) call-site line as the representative.
+/// builder keeps the smallest (first) call-site line/rung as the representative.
 #[derive(Debug, Clone)]
 pub struct CrossFileCallEdge {
     /// Source file containing the call
@@ -1681,6 +1707,8 @@ pub struct CrossFileCallEdge {
     /// edge. `None` when the underlying `CallSite` had no location. Excluded
     /// from edge identity — see the type-level note above.
     pub call_line: Option<u32>,
+    /// Resolver rung that produced the edge. Excluded from edge identity.
+    pub rung: ResolutionRung,
 }
 
 impl PartialEq for CrossFileCallEdge {

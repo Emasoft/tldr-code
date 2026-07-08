@@ -3,14 +3,17 @@
 //! Builds and displays the cross-file call graph for a project.
 //! Auto-routes through daemon when available for ~35x speedup.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Args;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use tldr_core::callgraph::cross_file_types::CallType;
-use tldr_core::callgraph::{build_project_call_graph_v2, BuildConfig};
+use tldr_core::callgraph::{build_project_call_graph_v2, confidence_tier, BuildConfig};
 use tldr_core::Language;
 
 use crate::commands::daemon_router::{params_with_path, try_daemon_route};
@@ -56,6 +59,7 @@ pub struct CallsArgs {
 /// consumers can derive it locally.
 #[derive(Debug, Serialize, Deserialize)]
 struct CallGraphOutput {
+    schema: String,
     root: PathBuf,
     /// Resolved language. `None` (serialized as JSON `null`) when the
     /// caller passed no `--lang` flag and `Language::from_directory`
@@ -71,6 +75,7 @@ struct CallGraphOutput {
     language: Option<Language>,
     nodes: Vec<String>,
     edges: Vec<EdgeOutput>,
+    unresolved: Vec<UnresolvedOutput>,
     /// Whether the output was truncated due to max_items limit
     ///
     /// (path-and-schema-cleanup-v3 P3.BUG-N5) Always emitted — including
@@ -93,6 +98,49 @@ struct EdgeOutput {
     dst_file: PathBuf,
     dst_func: String,
     call_type: CallType,
+    confidence: String,
+    provenance: EdgeProvenance,
+    staleness: EdgeStaleness,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EdgeProvenance {
+    rung: String,
+    mechanism: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EdgeStaleness {
+    src_hash: String,
+    generated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UnresolvedOutput {
+    caller_file: PathBuf,
+    caller_func: String,
+    target: String,
+    line: Option<u32>,
+    reason: String,
+}
+
+fn sha256_file_hex(root: &Path, file: &Path) -> String {
+    let path = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    let bytes = fs::read(path).unwrap_or_default();
+    let digest = Sha256::digest(&bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn relative_to_root(path: &Path, root: &Path) -> PathBuf {
+    path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
 impl CallsArgs {
@@ -116,9 +164,7 @@ impl CallsArgs {
         // call-graph construction (the call-graph builder requires a
         // language) but the JSON `language` field reflects the actual
         // detection result.
-        let detected_language = self
-            .lang
-            .or_else(|| Language::from_directory(&self.path));
+        let detected_language = self.lang.or_else(|| Language::from_directory(&self.path));
         let language = detected_language.unwrap_or(Language::Python);
 
         // cl15-polyglot-v1 (v0.5.0 CL-15): determine the set of languages to
@@ -227,8 +273,11 @@ impl CallsArgs {
         // language; we accumulate edges and the per-language function
         // inventory (defined funcs as nodes) into a single combined graph.
         let mut edges: Vec<EdgeOutput> = Vec::new();
+        let mut unresolved: Vec<UnresolvedOutput> = Vec::new();
         let mut defined_nodes: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        let mut source_hashes: HashMap<PathBuf, String> = HashMap::new();
+        let generated_at = chrono::Utc::now().date_naive().to_string();
         for scan_lang in &scan_languages {
             let config = BuildConfig {
                 language: scan_lang.as_str().to_string(),
@@ -238,14 +287,37 @@ impl CallsArgs {
             };
             let ir = build_project_call_graph_v2(&self.path, config)?;
             for e in &ir.edges {
-                let src = e.src_file.strip_prefix(&root).unwrap_or(&e.src_file);
-                let dst = e.dst_file.strip_prefix(&root).unwrap_or(&e.dst_file);
+                let src = relative_to_root(&e.src_file, &root);
+                let dst = relative_to_root(&e.dst_file, &root);
+                let src_hash = source_hashes
+                    .entry(e.src_file.clone())
+                    .or_insert_with(|| sha256_file_hex(&root, &e.src_file))
+                    .clone();
+                let confidence = confidence_tier(e.rung).as_str().to_string();
                 edges.push(EdgeOutput {
-                    src_file: src.to_path_buf(),
+                    src_file: src,
                     src_func: e.src_func.clone(),
-                    dst_file: dst.to_path_buf(),
+                    dst_file: dst,
                     dst_func: e.dst_func.clone(),
                     call_type: e.call_type,
+                    confidence,
+                    provenance: EdgeProvenance {
+                        rung: e.rung.id().to_string(),
+                        mechanism: e.rung.mechanism().to_string(),
+                    },
+                    staleness: EdgeStaleness {
+                        src_hash,
+                        generated_at: generated_at.clone(),
+                    },
+                });
+            }
+            for unresolved_call in &ir.unresolved {
+                unresolved.push(UnresolvedOutput {
+                    caller_file: relative_to_root(&unresolved_call.caller_file, &root),
+                    caller_func: unresolved_call.caller_func.clone(),
+                    target: unresolved_call.target.clone(),
+                    line: unresolved_call.line,
+                    reason: unresolved_call.reason.clone(),
                 });
             }
             // Include every defined function as a graph node (zero-out-degree
@@ -280,6 +352,13 @@ impl CallsArgs {
             let b_key = format!("{}:{}", b.src_file.display(), b.src_func);
             a_key.cmp(&b_key)
         });
+        unresolved.sort_by(|a, b| {
+            a.caller_file
+                .cmp(&b.caller_file)
+                .then_with(|| a.caller_func.cmp(&b.caller_func))
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.target.cmp(&b.target))
+        });
         let total_edges = edges.len();
 
         // Build unique node set from ALL edges AND from every
@@ -311,10 +390,12 @@ impl CallsArgs {
         // their own truncated slice from `output.edges` (still the full
         // set on the struct — the cap is a presentation concern).
         let output = CallGraphOutput {
+            schema: "calls.v2".to_string(),
             root: self.path.clone(),
             language: detected_language,
             nodes,
             edges,
+            unresolved,
             truncated: false,
             total_edges,
             shown_edges: total_edges,

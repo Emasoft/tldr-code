@@ -8,6 +8,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use super::confidence::ResolutionRung;
 use super::cross_file_types::{CallSite, CallType, ClassDef, FileIR, FuncDef, VarType};
 use super::import_resolver::{ReExportTracer, DEFAULT_MAX_DEPTH};
 use super::type_resolver::{resolve_receiver_type_indexed, SourceTypeIndex};
@@ -68,17 +69,26 @@ pub struct ResolvedTarget {
 
     /// Containing class name if `is_method` is true.
     pub class_name: Option<String>,
+
+    /// Resolver rung that produced this target.
+    pub rung: ResolutionRung,
 }
 
 impl ResolvedTarget {
     /// Creates a ResolvedTarget for a standalone function.
-    pub fn function(file: PathBuf, name: impl Into<String>, line: Option<u32>) -> Self {
+    pub fn function(
+        file: PathBuf,
+        name: impl Into<String>,
+        line: Option<u32>,
+        rung: ResolutionRung,
+    ) -> Self {
         Self {
             file,
             name: name.into(),
             line,
             is_method: false,
             class_name: None,
+            rung,
         }
     }
 
@@ -88,6 +98,7 @@ impl ResolvedTarget {
         name: impl Into<String>,
         class_name: impl Into<String>,
         line: Option<u32>,
+        rung: ResolutionRung,
     ) -> Self {
         Self {
             file,
@@ -95,7 +106,14 @@ impl ResolvedTarget {
             line,
             is_method: true,
             class_name: Some(class_name.into()),
+            rung,
         }
+    }
+
+    /// Override the resolver rung while preserving the resolved destination.
+    pub fn with_rung(mut self, rung: ResolutionRung) -> Self {
+        self.rung = rung;
+        self
     }
 
     /// Returns the qualified name (Class.method or just name).
@@ -160,6 +178,7 @@ pub(crate) fn resolve_constructor_target(
                     ctor_name,
                     class_name.to_string(),
                     Some(entry.line),
+                    ResolutionRung::ConstructorMethod,
                 ));
             }
 
@@ -168,6 +187,7 @@ pub(crate) fn resolve_constructor_target(
                 ctor_name,
                 class_name.to_string(),
                 Some(class_entry.line),
+                ResolutionRung::ConstructorMethod,
             ));
         }
     }
@@ -387,9 +407,7 @@ pub fn apply_type_resolution(file_ir: &mut FileIR, source: &str, language: Langu
             // higher-confidence constructor/annotation rows are never overridden.
             if !var_types.is_empty() {
                 let vartype_key = receiver_key.strip_prefix('$').unwrap_or(receiver_key);
-                if let Some(vt) =
-                    find_best_vartype_ref(var_types, vartype_key, caller_name, line)
-                {
+                if let Some(vt) = find_best_vartype_ref(var_types, vartype_key, caller_name, line) {
                     if vt.source == "return" {
                         call_site.receiver_type = Some(vt.type_name.clone());
                         continue;
@@ -580,8 +598,7 @@ fn find_best_vartype_ref<'a>(
 fn caller_is_method_of_class(caller_name: &str, class_scope: &str) -> bool {
     match caller_name.rsplit_once("::") {
         Some((class_path, _method)) => {
-            class_path == class_scope
-                || class_path.rsplit("::").next() == Some(class_scope)
+            class_path == class_scope || class_path.rsplit("::").next() == Some(class_scope)
         }
         None => false,
     }
@@ -642,6 +659,7 @@ fn resolve_reexported_name(
             line: Some(entry.line),
             is_method: entry.is_method,
             class_name: entry.class_name.clone(),
+            rung: ResolutionRung::ReExportTrace,
         });
     }
 
@@ -657,6 +675,7 @@ fn resolve_reexported_name(
             line: Some(class_entry.line),
             is_method: false,
             class_name: None,
+            rung: ResolutionRung::ReExportTrace,
         });
     }
 
@@ -686,6 +705,7 @@ fn resolve_reexported_receiver_target(
             line: Some(entry.line),
             is_method: entry.is_method,
             class_name: entry.class_name.clone(),
+            rung: ResolutionRung::ReExportTrace,
         });
     }
 
@@ -696,6 +716,7 @@ fn resolve_reexported_receiver_target(
             line: Some(class_entry.line),
             is_method: false,
             class_name: None,
+            rung: ResolutionRung::ReExportTrace,
         });
     }
 
@@ -777,6 +798,7 @@ pub fn resolve_call(
                     line: Some(entry.line),
                     is_method: entry.is_method,
                     class_name: entry.class_name.clone(),
+                    rung: ResolutionRung::LocalFunction,
                 });
             }
 
@@ -799,6 +821,7 @@ pub fn resolve_call(
                     line: Some(class_entry.line),
                     is_method: false,
                     class_name: None,
+                    rung: ResolutionRung::ConstructorClassFallback,
                 });
             }
 
@@ -816,6 +839,7 @@ pub fn resolve_call(
                     line: Some(entry.line),
                     is_method: entry.is_method,
                     class_name: entry.class_name.clone(),
+                    rung: ResolutionRung::LocalFunction,
                 });
             }
 
@@ -871,6 +895,7 @@ pub fn resolve_call(
                         original_name,
                         original_name,
                         current_file,
+                        ResolutionRung::ImportMapExact,
                     ) {
                         return Some(resolved);
                     }
@@ -883,6 +908,11 @@ pub fn resolve_call(
                     original_name,
                     original_name,
                     current_file,
+                    if bare_module == module_path {
+                        ResolutionRung::ImportMapExact
+                    } else {
+                        ResolutionRung::ImportMapAlias
+                    },
                 ) {
                     return Some(resolved);
                 }
@@ -895,6 +925,7 @@ pub fn resolve_call(
                         original_name,
                         original_name,
                         current_file,
+                        ResolutionRung::ImportMapAlias,
                     ) {
                         return Some(resolved);
                     }
@@ -906,6 +937,7 @@ pub fn resolve_call(
                     original_name,
                     original_name,
                     current_file,
+                    ResolutionRung::ImportMapExact,
                 ) {
                     return Some(resolved);
                 }
@@ -929,6 +961,7 @@ pub fn resolve_call(
                         line: Some(class_entry.line),
                         is_method: false,
                         class_name: None,
+                        rung: ResolutionRung::ConstructorClassFallback,
                     });
                 }
 
@@ -961,6 +994,7 @@ pub fn resolve_call(
                     line: Some(class_entry.line),
                     is_method: false,
                     class_name: None,
+                    rung: ResolutionRung::ConstructorClassFallback,
                 });
             }
 
@@ -1024,6 +1058,7 @@ pub fn resolve_call(
                         line: Some(entry.line),
                         is_method: entry.is_method,
                         class_name: entry.class_name.clone(),
+                        rung: ResolutionRung::RefImport,
                     });
                 }
                 if let Some(resolved) = resolve_reexported_name(
@@ -1046,6 +1081,7 @@ pub fn resolve_call(
                     line: Some(entry.line),
                     is_method: entry.is_method,
                     class_name: entry.class_name.clone(),
+                    rung: ResolutionRung::RefLocal,
                 });
             }
 
@@ -1072,6 +1108,7 @@ pub fn resolve_call(
                         line: Some(entry.line),
                         is_method: entry.is_method,
                         class_name: entry.class_name.clone(),
+                        rung: ResolutionRung::StaticQualified,
                     });
                 }
 
@@ -1083,6 +1120,7 @@ pub fn resolve_call(
                         line: Some(entry.line),
                         is_method: entry.is_method,
                         class_name: Some(class_name.to_string()),
+                        rung: ResolutionRung::StaticQualified,
                     });
                 }
 
@@ -1186,6 +1224,7 @@ pub(crate) fn resolve_method_in_class(
             line: Some(entry.line),
             is_method: true,
             class_name: Some(class_name.to_string()),
+            rung: ResolutionRung::MethodInClass,
         });
     }
 
@@ -1196,6 +1235,7 @@ pub(crate) fn resolve_method_in_class(
             line: Some(class_entry.line),
             is_method: true,
             class_name: Some(class_name.to_string()),
+            rung: ResolutionRung::MethodInClass,
         });
     }
 
@@ -1268,6 +1308,7 @@ fn resolve_cpp_out_of_line_method(
         line: Some(entry.line),
         is_method: entry.is_method,
         class_name: entry.class_name.clone(),
+        rung: ResolutionRung::CppOutOfLineMethod,
     })
 }
 
@@ -1295,7 +1336,7 @@ pub(crate) fn resolve_method_in_bases(
         if let Some(resolved) =
             resolve_method_in_class(&base, method_name, class_index, func_index, language)
         {
-            return Some(resolved);
+            return Some(resolved.with_rung(ResolutionRung::MethodInBase));
         }
         if let Some(entry) = class_index.get(&base) {
             for parent in &entry.bases {
@@ -1331,13 +1372,24 @@ fn resolve_magic_call_owner(
     language: &str,
 ) -> Option<ResolvedTarget> {
     // Self first.
-    if let Some(resolved) =
-        resolve_method_in_class(receiver_class, PHP_MAGIC_CALL_METHOD, class_index, func_index, language)
-    {
-        return Some(resolved);
+    if let Some(resolved) = resolve_method_in_class(
+        receiver_class,
+        PHP_MAGIC_CALL_METHOD,
+        class_index,
+        func_index,
+        language,
+    ) {
+        return Some(resolved.with_rung(ResolutionRung::PhpMagicCall));
     }
     // Then bases (BFS, bounded by `seen`).
-    resolve_method_in_bases(receiver_class, PHP_MAGIC_CALL_METHOD, class_index, func_index, language)
+    resolve_method_in_bases(
+        receiver_class,
+        PHP_MAGIC_CALL_METHOD,
+        class_index,
+        func_index,
+        language,
+    )
+    .map(|target| target.with_rung(ResolutionRung::PhpMagicCall))
 }
 
 /// T4-php sub-gap 2: a method is "provably absent" from `receiver_class` (and
@@ -1357,8 +1409,14 @@ fn method_is_provably_absent(
         // Unknown class: cannot prove absence.
         return false;
     }
-    resolve_method_in_class_or_bases(receiver_class, method_name, class_index, func_index, language)
-        .is_none()
+    resolve_method_in_class_or_bases(
+        receiver_class,
+        method_name,
+        class_index,
+        func_index,
+        language,
+    )
+    .is_none()
 }
 
 /// Check if a type name is a known Python/Ruby/etc stdlib or builtin type.
@@ -2154,23 +2212,25 @@ fn resolve_with_receiver_type(
     language: &str,
 ) -> Option<ResolvedTarget> {
     let type_name = receiver_type?;
-    resolve_method_in_class_or_bases(type_name, bare_target, class_index, func_index, language)
-        // FEATURE-1 d.7-2.1: fallback-only — fires ONLY when the normal method
-        // resolution (class + bases) declined, so it can only ADD a cpp
-        // out-of-line-method edge, never re-point or drop one. The `caller_file`
-        // is threaded so the fallback can caller-scope its class selection and
-        // decline on same-bare-name collisions. See
-        // [`resolve_cpp_out_of_line_method`].
-        .or_else(|| {
-            resolve_cpp_out_of_line_method(
-                type_name,
-                bare_target,
-                caller_file,
-                class_index,
-                func_index,
-                language,
-            )
-        })
+    if let Some(resolved) =
+        resolve_method_in_class_or_bases(type_name, bare_target, class_index, func_index, language)
+    {
+        return Some(resolved.with_rung(ResolutionRung::ReceiverType));
+    }
+    // FEATURE-1 d.7-2.1: fallback-only — fires ONLY when the normal method
+    // resolution (class + bases) declined, so it can only ADD a cpp
+    // out-of-line-method edge, never re-point or drop one. The `caller_file`
+    // is threaded so the fallback can caller-scope its class selection and
+    // decline on same-bare-name collisions. See
+    // [`resolve_cpp_out_of_line_method`].
+    resolve_cpp_out_of_line_method(
+        type_name,
+        bare_target,
+        caller_file,
+        class_index,
+        func_index,
+        language,
+    )
 }
 
 fn resolve_self_receiver_in_current_file(
@@ -2197,6 +2257,7 @@ fn resolve_self_receiver_in_current_file(
                 line: Some(entry.line),
                 is_method: true,
                 class_name: entry.class_name.clone(),
+                rung: ResolutionRung::SelfReceiver,
             });
         }
     }
@@ -2207,6 +2268,7 @@ fn resolve_self_receiver_in_current_file(
         line: Some(class_entry.line),
         is_method: false,
         class_name: Some(bare_target.to_string()),
+        rung: ResolutionRung::SelfReceiver,
     })
 }
 
@@ -2245,6 +2307,7 @@ fn resolve_module_import_receiver(
         bare_target,
         bare_target,
         context.current_file,
+        ResolutionRung::ModuleImportReceiver,
     ) {
         return Some(resolved);
     }
@@ -2255,6 +2318,7 @@ fn resolve_module_import_receiver(
             bare_target,
             bare_target,
             context.current_file,
+            ResolutionRung::ImportMapAlias,
         ) {
             return Some(resolved);
         }
@@ -2266,6 +2330,7 @@ fn resolve_module_import_receiver(
             target,
             target,
             context.current_file,
+            ResolutionRung::ModuleImportReceiver,
         ) {
             return Some(resolved);
         }
@@ -2296,7 +2361,7 @@ fn resolve_import_map_receiver(
         context.func_index,
         context.language,
     ) {
-        return Some(resolved);
+        return Some(resolved.with_rung(ResolutionRung::ImportMapReceiver));
     }
 
     if let Some(entry) = context.func_index.get(module_path, bare_target) {
@@ -2306,6 +2371,7 @@ fn resolve_import_map_receiver(
             line: Some(entry.line),
             is_method: entry.is_method,
             class_name: entry.class_name.clone(),
+            rung: ResolutionRung::ImportMapReceiver,
         });
     }
     if bare_target != target {
@@ -2316,6 +2382,7 @@ fn resolve_import_map_receiver(
                 line: Some(entry.line),
                 is_method: entry.is_method,
                 class_name: entry.class_name.clone(),
+                rung: ResolutionRung::ImportMapReceiver,
             });
         }
     }
@@ -2357,6 +2424,7 @@ fn resolve_local_qualified_receiver(
         line: Some(entry.line),
         is_method: entry.is_method,
         class_name: entry.class_name.clone(),
+        rung: ResolutionRung::LocalQualifiedReceiver,
     })
 }
 
@@ -2372,6 +2440,7 @@ fn resolve_capitalized_receiver(
         return None;
     }
     resolve_method_in_class_or_bases(&capitalized, bare_target, class_index, func_index, language)
+        .map(|target| target.with_rung(ResolutionRung::CapitalizedReceiverGuess))
 }
 
 /// fix-R7 (R5): a path is "test" when any of its components is a conventional
@@ -2437,8 +2506,10 @@ fn pick_disambiguated_entry<'a>(
         return entries.first();
     }
     // (3) Prefer a unique non-test production file.
-    let mut nontest: Vec<&'a FuncEntry> =
-        entries.iter().filter(|e| !is_test_path(&e.file_path)).collect();
+    let mut nontest: Vec<&'a FuncEntry> = entries
+        .iter()
+        .filter(|e| !is_test_path(&e.file_path))
+        .collect();
     nontest.sort_by(|a, b| a.file_path.cmp(&b.file_path));
     let distinct_nontest_files = {
         let mut files: Vec<&Path> = nontest.iter().map(|e| e.file_path.as_path()).collect();
@@ -2503,8 +2574,10 @@ pub(crate) fn pick_disambiguated_class<'a>(
     // `interface Axios` vs `lib/core/Axios.js`; clap OsStr type-def vs impl).
     // Only narrows when BOTH kinds are present, so it is a pure tiebreak; a
     // declaration-only class still wins when no concrete spelling exists.
-    let concrete: Vec<&ClassEntry> =
-        entries.iter().filter(|e| !e.kind.is_declaration_only()).collect();
+    let concrete: Vec<&ClassEntry> = entries
+        .iter()
+        .filter(|e| !e.kind.is_declaration_only())
+        .collect();
     let candidates: Vec<&ClassEntry> = if concrete.is_empty() || concrete.len() == entries.len() {
         entries.iter().collect()
     } else {
@@ -2572,6 +2645,7 @@ fn resolve_disambiguated(
     name: &str,
     result_name: &str,
     current_file: &Path,
+    rung: ResolutionRung,
 ) -> Option<ResolvedTarget> {
     let entry = pick_disambiguated_entry(func_index.get_all(module, name), current_file)?;
     Some(ResolvedTarget {
@@ -2580,6 +2654,7 @@ fn resolve_disambiguated(
         line: Some(entry.line),
         is_method: entry.is_method,
         class_name: entry.class_name.clone(),
+        rung,
     })
 }
 
@@ -2604,17 +2679,27 @@ fn resolve_ocaml_module_receiver(
 ) -> Option<ResolvedTarget> {
     let lowercase = receiver.to_ascii_lowercase();
     // Try direct lowercase ("Util" → "util")
-    if let Some(resolved) =
-        resolve_disambiguated(func_index, &lowercase, bare_target, bare_target, current_file)
-    {
+    if let Some(resolved) = resolve_disambiguated(
+        func_index,
+        &lowercase,
+        bare_target,
+        bare_target,
+        current_file,
+        ResolutionRung::OcamlModuleReceiver,
+    ) {
         return Some(resolved);
     }
     // Try bare receiver as-is (in case the index already used the
     // capitalized alias from `compute_module_aliases`)
     if lowercase != receiver {
-        if let Some(resolved) =
-            resolve_disambiguated(func_index, receiver, bare_target, bare_target, current_file)
-        {
+        if let Some(resolved) = resolve_disambiguated(
+            func_index,
+            receiver,
+            bare_target,
+            bare_target,
+            current_file,
+            ResolutionRung::OcamlModuleReceiver,
+        ) {
             return Some(resolved);
         }
     }
@@ -2728,6 +2813,7 @@ fn resolve_local_fuzzy_match(
             line: Some(entry.line),
             is_method: entry.is_method,
             class_name: entry.class_name.clone(),
+            rung: ResolutionRung::LocalFuzzyMatch,
         });
     }
     None
@@ -2784,6 +2870,7 @@ fn resolve_global_free_function(
         line: Some(first.line),
         is_method: false,
         class_name: None,
+        rung: ResolutionRung::GlobalFreeFunction,
     })
 }
 
@@ -2855,6 +2942,7 @@ fn resolve_global_fuzzy_match(
             line: Some(entry.line),
             is_method: true,
             class_name: entry.class_name.clone(),
+            rung: ResolutionRung::GlobalFuzzyMatch,
         });
     }
     if !candidates.is_empty() {
@@ -2886,6 +2974,7 @@ fn resolve_global_fuzzy_match(
                 line: Some(entry.line),
                 is_method: false,
                 class_name: entry.class_name.clone(),
+                rung: ResolutionRung::GlobalFuzzyMatch,
             });
         }
     }
@@ -2907,6 +2996,7 @@ fn resolve_type_aware_fallback(
                 line: Some(class_entry.line),
                 is_method: true,
                 class_name: Some(type_name.to_string()),
+                rung: ResolutionRung::TypeAwareFallback,
             });
         }
         for base in &class_entry.bases {
@@ -2918,6 +3008,7 @@ fn resolve_type_aware_fallback(
                         line: Some(base_entry.line),
                         is_method: true,
                         class_name: Some(base.to_string()),
+                        rung: ResolutionRung::TypeAwareFallback,
                     });
                 }
             }
@@ -2936,6 +3027,7 @@ fn resolve_type_aware_fallback(
                 line: Some(entry.line),
                 is_method: true,
                 class_name: Some(type_name.to_string()),
+                rung: ResolutionRung::TypeAwareFallback,
             });
         }
     }
@@ -3153,7 +3245,7 @@ mod tests {
         let resolved = resolve_call_with_receiver_enclosing!(
             "self:_end",
             "self",
-            None,                 // self is UNtyped (the Lua reality: no self VarType)
+            None,                  // self is UNtyped (the Lua reality: no self VarType)
             Some("ClientRequest"), // ... but the enclosing class IS known
             &CallType::Method,
             &import_map,
@@ -3332,7 +3424,13 @@ mod tests {
         );
         class_index.insert(
             "ServerResponse",
-            ClassEntry::new(http.clone(), 67, 200, vec!["_solo".to_string()], vec!["Writable".to_string()]),
+            ClassEntry::new(
+                http.clone(),
+                67,
+                200,
+                vec!["_solo".to_string()],
+                vec!["Writable".to_string()],
+            ),
         );
         class_index.insert(
             "Writable",
@@ -3370,7 +3468,10 @@ mod tests {
             resolved.is_some(),
             "a name UNIQUE to one definer must still resolve (never-worse), even a sibling"
         );
-        assert_eq!(resolved.unwrap().class_name.as_deref(), Some("ServerResponse"));
+        assert_eq!(
+            resolved.unwrap().class_name.as_deref(),
+            Some("ServerResponse")
+        );
     }
 
     /// FALLBACK decline: `self:_ghost` inside `ClientRequest` where `_ghost` is
@@ -3398,7 +3499,13 @@ mod tests {
         );
         class_index.insert(
             "ServerResponse",
-            ClassEntry::new(http.clone(), 67, 200, vec!["_ghost".to_string()], vec!["Writable".to_string()]),
+            ClassEntry::new(
+                http.clone(),
+                67,
+                200,
+                vec!["_ghost".to_string()],
+                vec!["Writable".to_string()],
+            ),
         );
         class_index.insert(
             "Writable",
@@ -3446,7 +3553,12 @@ mod tests {
     /// Test: ResolvedTarget::function creates a function target
     #[test]
     fn test_resolved_target_function() {
-        let target = ResolvedTarget::function(PathBuf::from("helper.py"), "process", Some(10));
+        let target = ResolvedTarget::function(
+            PathBuf::from("helper.py"),
+            "process",
+            Some(10),
+            ResolutionRung::LocalFunction,
+        );
 
         assert_eq!(target.file, PathBuf::from("helper.py"));
         assert_eq!(target.name, "process");
@@ -3494,12 +3606,9 @@ mod tests {
                 SourceSet::default(),
             ),
         ];
-        let got = pick_disambiguated_class(
-            &entries,
-            Path::new("clap_bench/benches/complex.rs"),
-            "rust",
-        )
-        .unwrap();
+        let got =
+            pick_disambiguated_class(&entries, Path::new("clap_bench/benches/complex.rs"), "rust")
+                .unwrap();
         assert_eq!(
             got.file_path,
             PathBuf::from("clap_bench/benches/complex.rs"),
@@ -3514,7 +3623,11 @@ mod tests {
         let caller = PathBuf::from("src/foo/caller.rs");
         let caller_mod = path_to_module(&caller, "rust");
         let entries = vec![
-            class_at("src/bar/Other.rs", "some::other::module", SourceSet::default()),
+            class_at(
+                "src/bar/Other.rs",
+                "some::other::module",
+                SourceSet::default(),
+            ),
             class_at("src/foo/Def.rs", &caller_mod, SourceSet::default()),
         ];
         let got = pick_disambiguated_class(&entries, &caller, "rust").unwrap();
@@ -3530,7 +3643,11 @@ mod tests {
         let jvm_native_path = "core/jvm-native/src/main/scala/cats/effect/ArrayStack.scala";
         let js_path = "core/js/src/main/scala/cats/effect/ArrayStack.scala";
         let entries = vec![
-            class_at(js_path, "cats.effect", sourceset_of_path(Path::new(js_path))),
+            class_at(
+                js_path,
+                "cats.effect",
+                sourceset_of_path(Path::new(js_path)),
+            ),
             class_at(
                 jvm_native_path,
                 "cats.effect",
@@ -3574,7 +3691,8 @@ mod tests {
         let concrete = ClassEntry::new(PathBuf::from("lib/core/Axios.js"), 1, 20, vec![], vec![])
             .with_kind(ClassKind::Class);
         let entries = vec![decl.clone(), concrete.clone()];
-        let got = pick_disambiguated_class(&entries, Path::new("src/app.js"), "javascript").unwrap();
+        let got =
+            pick_disambiguated_class(&entries, Path::new("src/app.js"), "javascript").unwrap();
         assert_eq!(
             got.file_path,
             PathBuf::from("lib/core/Axios.js"),
@@ -3653,7 +3771,13 @@ mod tests {
     /// Test: ResolvedTarget::method creates a method target
     #[test]
     fn test_resolved_target_method() {
-        let target = ResolvedTarget::method(PathBuf::from("models.py"), "save", "User", Some(42));
+        let target = ResolvedTarget::method(
+            PathBuf::from("models.py"),
+            "save",
+            "User",
+            Some(42),
+            ResolutionRung::MethodInClass,
+        );
 
         assert_eq!(target.file, PathBuf::from("models.py"));
         assert_eq!(target.name, "save");
@@ -4744,7 +4868,10 @@ mod tests {
         );
 
         let target = resolved.expect("absent method on __call-defining class should redirect");
-        assert_eq!(target.name, "__call", "should redirect to the __call method");
+        assert_eq!(
+            target.name, "__call",
+            "should redirect to the __call method"
+        );
         assert_eq!(target.class_name, Some("Proxy".to_string()));
         assert!(target.is_method);
     }
@@ -5116,7 +5243,14 @@ mod tests {
 
         // Two unrelated Go structs both define MarshalJSON in the same package.
         index_method_both_keys(&mut func_index, "pkg", "User", "MarshalJSON", "user.go", 10);
-        index_method_both_keys(&mut func_index, "pkg", "Order", "MarshalJSON", "order.go", 20);
+        index_method_both_keys(
+            &mut func_index,
+            "pkg",
+            "Order",
+            "MarshalJSON",
+            "order.go",
+            20,
+        );
         class_index.insert(
             "User",
             ClassEntry::new(
@@ -6025,7 +6159,10 @@ mod tests {
     /// the Lua/Luau single-colon form).
     #[test]
     fn test_d6_normalize_receiver_strips_luau_colon() {
-        assert_eq!(normalize_receiver_target("self:setState", "self"), "setState");
+        assert_eq!(
+            normalize_receiver_target("self:setState", "self"),
+            "setState"
+        );
         assert_eq!(normalize_receiver_target("obj:method", "obj"), "method");
         // Non-matching receiver is untouched.
         assert_eq!(normalize_receiver_target("other:m", "self"), "other:m");
@@ -6094,9 +6231,9 @@ mod tests {
             language,
         );
 
-        let bound_free_closure = result
-            .as_ref()
-            .map_or(false, |r| r.file == PathBuf::from(&caller) && r.class_name.is_none());
+        let bound_free_closure = result.as_ref().map_or(false, |r| {
+            r.file == PathBuf::from(&caller) && r.class_name.is_none()
+        });
         assert!(
             !bound_free_closure,
             "[luau] colon `self:setState()` must not bind the same-file free `setState` \
@@ -6205,7 +6342,13 @@ mod tests {
         let mut class_index = ClassIndex::new();
         class_index.insert(
             "Foo",
-            ClassEntry::new(PathBuf::from(&caller), 10, 40, vec!["bar".to_string()], vec![]),
+            ClassEntry::new(
+                PathBuf::from(&caller),
+                10,
+                40,
+                vec!["bar".to_string()],
+                vec![],
+            ),
         );
 
         let import_map: ImportMap = HashMap::new();
@@ -6388,9 +6531,9 @@ mod tests {
             language,
         );
 
-        let bound_local = result
-            .as_ref()
-            .map_or(false, |r| r.file == PathBuf::from(&caller) && r.class_name.is_none());
+        let bound_local = result.as_ref().map_or(false, |r| {
+            r.file == PathBuf::from(&caller) && r.class_name.is_none()
+        });
         assert!(
             !bound_local,
             "[lua] colon `self:setState()` must not bind the same-file lexical-local \
@@ -6606,8 +6749,8 @@ mod tests {
             language,
         );
 
-        let target = result
-            .expect("[cpp] typed `f.bar()` must resolve to the out-of-line `Foo::bar`");
+        let target =
+            result.expect("[cpp] typed `f.bar()` must resolve to the out-of-line `Foo::bar`");
         assert_eq!(
             target.qualified_name(),
             "Foo::bar",
@@ -6687,8 +6830,7 @@ mod tests {
                 Path::new("."),
                 language,
             );
-            let target = result
-                .expect("[cpp] a.cpp caller must resolve its OWN Config::load");
+            let target = result.expect("[cpp] a.cpp caller must resolve its OWN Config::load");
             assert_eq!(
                 target.file,
                 PathBuf::from(a_file),
@@ -6714,8 +6856,7 @@ mod tests {
                 Path::new("."),
                 language,
             );
-            let target = result
-                .expect("[cpp] b.cpp caller must resolve its OWN Config::load");
+            let target = result.expect("[cpp] b.cpp caller must resolve its OWN Config::load");
             assert_eq!(
                 target.file,
                 PathBuf::from(b_file),
@@ -6746,13 +6887,25 @@ mod tests {
         let mut class_index = ClassIndex::new();
         class_index.insert(
             "A",
-            ClassEntry::new(PathBuf::from("a.h"), 1, 40, vec!["resize".to_string()], vec![])
-                .with_kind(ClassKind::Class),
+            ClassEntry::new(
+                PathBuf::from("a.h"),
+                1,
+                40,
+                vec!["resize".to_string()],
+                vec![],
+            )
+            .with_kind(ClassKind::Class),
         );
         class_index.insert(
             "B",
-            ClassEntry::new(PathBuf::from("b.h"), 1, 40, vec!["resize".to_string()], vec![])
-                .with_kind(ClassKind::Class),
+            ClassEntry::new(
+                PathBuf::from("b.h"),
+                1,
+                40,
+                vec!["resize".to_string()],
+                vec![],
+            )
+            .with_kind(ClassKind::Class),
         );
         // The receiver's actual type — has no `resize`.
         class_index.insert(
@@ -6942,7 +7095,13 @@ mod tests {
             let mut class_index = ClassIndex::new();
             class_index.insert(
                 "Beta",
-                ClassEntry::new(PathBuf::from(&file_b), 5, 30, vec![method.to_string()], vec![]),
+                ClassEntry::new(
+                    PathBuf::from(&file_b),
+                    5,
+                    30,
+                    vec![method.to_string()],
+                    vec![],
+                ),
             );
 
             // The pre-gate global matcher would bind: exactly ONE method
@@ -7045,7 +7204,10 @@ mod tests {
                      (never-worse invariant); got None"
                 )
             });
-            assert_eq!(resolved.name, method, "[{language}] resolved name must match");
+            assert_eq!(
+                resolved.name, method,
+                "[{language}] resolved name must match"
+            );
             assert_eq!(
                 resolved.class_name.as_deref(),
                 Some("Solo"),
@@ -7066,16 +7228,35 @@ mod tests {
         let mut func_index = FuncIndex::new();
         // Ambiguous across two unrelated classes...
         index_method_both_keys(&mut func_index, "table", "Table", method, "table.php", 10);
-        index_method_both_keys(&mut func_index, "tree", "TreeHelper", method, "tree.php", 20);
+        index_method_both_keys(
+            &mut func_index,
+            "tree",
+            "TreeHelper",
+            method,
+            "tree.php",
+            20,
+        );
 
         let mut class_index = ClassIndex::new();
         class_index.insert(
             "Table",
-            ClassEntry::new(PathBuf::from("table.php"), 5, 40, vec![method.to_string()], vec![]),
+            ClassEntry::new(
+                PathBuf::from("table.php"),
+                5,
+                40,
+                vec![method.to_string()],
+                vec![],
+            ),
         );
         class_index.insert(
             "TreeHelper",
-            ClassEntry::new(PathBuf::from("tree.php"), 5, 40, vec![method.to_string()], vec![]),
+            ClassEntry::new(
+                PathBuf::from("tree.php"),
+                5,
+                40,
+                vec![method.to_string()],
+                vec![],
+            ),
         );
 
         let import_map: ImportMap = HashMap::new();
@@ -7101,7 +7282,8 @@ mod tests {
             "php",
         );
 
-        let resolved = result.expect("self/$this receiver with a known enclosing class must resolve");
+        let resolved =
+            result.expect("self/$this receiver with a known enclosing class must resolve");
         assert_eq!(
             resolved.class_name.as_deref(),
             Some("Table"),
@@ -7163,19 +7345,37 @@ mod tests {
         // The one CONCRETE implementor.
         class_index.insert(
             "Solo",
-            ClassEntry::new(PathBuf::from("solo.go"), 1, 20, vec![method.to_string()], vec![]),
+            ClassEntry::new(
+                PathBuf::from("solo.go"),
+                1,
+                20,
+                vec![method.to_string()],
+                vec![],
+            ),
         );
         // An interface declaration of the same method (declaration-only kind).
         class_index.insert(
             "Handler",
-            ClassEntry::new(PathBuf::from("iface.go"), 1, 5, vec![method.to_string()], vec![])
-                .with_kind(ClassKind::Interface),
+            ClassEntry::new(
+                PathBuf::from("iface.go"),
+                1,
+                5,
+                vec![method.to_string()],
+                vec![],
+            )
+            .with_kind(ClassKind::Interface),
         );
         // A trait declaration of the same method (declaration-only kind).
         class_index.insert(
             "Handle",
-            ClassEntry::new(PathBuf::from("trait.rs"), 1, 5, vec![method.to_string()], vec![])
-                .with_kind(ClassKind::Trait),
+            ClassEntry::new(
+                PathBuf::from("trait.rs"),
+                1,
+                5,
+                vec![method.to_string()],
+                vec![],
+            )
+            .with_kind(ClassKind::Trait),
         );
 
         assert_eq!(

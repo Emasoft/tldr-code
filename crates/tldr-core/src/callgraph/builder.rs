@@ -284,6 +284,7 @@ mod tests {
             call_type: CallType::Direct,
             via_import: None,
             call_line: None,
+            rung: crate::callgraph::ResolutionRung::LocalFunction,
         });
         ir.edges.push(CrossFileCallEdge {
             src_file: PathBuf::from("src/b.py"),
@@ -293,6 +294,7 @@ mod tests {
             call_type: CallType::Method,
             via_import: Some("c".to_string()),
             call_line: None,
+            rung: crate::callgraph::ResolutionRung::LocalFunction,
         });
 
         let graph = project_graph_from_ir_ref(&ir);
@@ -323,6 +325,7 @@ mod tests {
                 call_type: CallType::Direct,
                 via_import: None,
                 call_line: None,
+                rung: crate::callgraph::ResolutionRung::LocalFunction,
             });
             ir
         };
