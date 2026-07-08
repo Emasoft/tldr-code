@@ -1,0 +1,8 @@
+{
+  "case_id": "repos/python-requests",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "python",
+  "notes": "Sampled real-repo callHierarchy truth for python-requests at d64b9ad4bf1c14e21e0df3f0f4320fec81180e91. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}

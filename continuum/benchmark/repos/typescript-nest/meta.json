@@ -1,0 +1,1177 @@
+{
+  "case_id": "repos/typescript-nest",
+  "defect_class": null,
+  "description": "Deterministic sampled LSP callHierarchy truth set for typescript-nest.",
+  "entrypoints": [
+    "packages/common/test/services/logger.service.spec.ts",
+    "packages/core/injector/injector.ts"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "typescript",
+  "lsp_errors": [
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 6,
+        "call_line": 10,
+        "call_text": "beforeEach(() => {",
+        "character": 22,
+        "end_line": 402,
+        "line": 4,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 6,
+        "call_line": 10,
+        "call_text": "beforeEach(() => {",
+        "character": 34,
+        "end_line": 401,
+        "line": 5,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 6,
+        "call_line": 10,
+        "call_text": "beforeEach(() => {",
+        "character": 51,
+        "end_line": 184,
+        "line": 6,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 38,
+        "call_line": 11,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 13,
+        "line": 10,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 30,
+        "call_line": 16,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 18,
+        "line": 15,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 24,
+        "call_text": "Logger.log(message, context);",
+        "character": 55,
+        "end_line": 31,
+        "line": 20,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 36,
+        "call_text": "Logger.log(message);",
+        "character": 71,
+        "end_line": 40,
+        "line": 33,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 46,
+        "call_text": "Logger.log(messages[0], messages[1], messages[2], context);",
+        "character": 61,
+        "end_line": 69,
+        "line": 42,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 75,
+        "call_text": "Logger.error(message, context);",
+        "character": 66,
+        "end_line": 82,
+        "line": 71,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 88,
+        "call_text": "Logger.error(message, stacktrace);",
+        "character": 69,
+        "end_line": 96,
+        "line": 84,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 101,
+        "call_text": "Logger.error(message);",
+        "character": 69,
+        "end_line": 105,
+        "line": 98,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 26,
+        "call_line": 108,
+        "call_text": "const error = new Error('Random text here');",
+        "character": 72,
+        "end_line": 116,
+        "line": 107,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 123,
+        "call_text": "Logger.error(error);",
+        "character": 96,
+        "end_line": 133,
+        "line": 118,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 140,
+        "call_text": "Logger.error(message, stacktrace, context);",
+        "character": 81,
+        "end_line": 155,
+        "line": 135,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 162,
+        "call_text": "Logger.error(messages[0], messages[1], stack, context);",
+        "character": 80,
+        "end_line": 183,
+        "line": 157,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 25,
+        "call_line": 187,
+        "call_text": "const logger = new ConsoleLogger({ json: true });",
+        "character": 76,
+        "end_line": 285,
+        "line": 186,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 38,
+        "call_line": 193,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 195,
+        "line": 192,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 30,
+        "call_line": 198,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 200,
+        "line": 197,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 26,
+        "call_line": 204,
+        "call_text": "const error = new Error(errorMessage);",
+        "character": 68,
+        "end_line": 213,
+        "line": 202,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 217,
+        "call_text": "logger.log(message);",
+        "character": 48,
+        "end_line": 224,
+        "line": 214,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 228,
+        "call_text": "logger.error(message);",
+        "character": 57,
+        "end_line": 235,
+        "line": 225,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 24,
+        "call_line": 237,
+        "call_text": "const map = new Map([",
+        "character": 37,
+        "end_line": 251,
+        "line": 236,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 24,
+        "call_line": 253,
+        "call_text": "const set = new Set(['value1', 'value2']);",
+        "character": 37,
+        "end_line": 262,
+        "line": 252,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 23,
+        "call_line": 264,
+        "call_text": "const bigInt = BigInt(9007199254740991);",
+        "character": 33,
+        "end_line": 273,
+        "line": 263,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 23,
+        "call_line": 275,
+        "call_text": "const symbol = Symbol('test');",
+        "character": 33,
+        "end_line": 284,
+        "line": 274,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 25,
+        "call_line": 288,
+        "call_text": "const logger = new ConsoleLogger({ json: true, compact: false });",
+        "character": 110,
+        "end_line": 330,
+        "line": 287,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 38,
+        "call_line": 294,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 296,
+        "line": 293,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 30,
+        "call_line": 299,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 301,
+        "line": 298,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 306,
+        "call_text": "logger.log(message);",
+        "character": 64,
+        "end_line": 315,
+        "line": 303,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 320,
+        "call_text": "logger.error(message);",
+        "character": 73,
+        "end_line": 329,
+        "line": 317,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 6,
+        "call_line": 336,
+        "call_text": "beforeEach(() => {",
+        "character": 44,
+        "end_line": 358,
+        "line": 332,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 38,
+        "call_line": 337,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 342,
+        "line": 336,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 30,
+        "call_line": 345,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 348,
+        "line": 344,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 354,
+        "call_text": "Logger.log(message, context);",
+        "character": 59,
+        "end_line": 357,
+        "line": 350,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 8,
+        "call_line": 361,
+        "call_text": "log(message: any, context?: string) {}",
+        "character": 52,
+        "end_line": 389,
+        "line": 359,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 372,
+        "call_text": "Logger.overrideLogger(customLogger);",
+        "character": 20,
+        "end_line": 373,
+        "line": 369,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 15,
+        "call_line": 376,
+        "call_text": "Logger.overrideLogger(previousLoggerRef);",
+        "character": 19,
+        "end_line": 377,
+        "line": 375,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 41,
+        "call_line": 383,
+        "call_text": "const customLoggerLogSpy = sinon.spy(customLogger, 'log');",
+        "character": 57,
+        "end_line": 405,
+        "line": 379,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 43,
+        "call_line": 395,
+        "call_text": "const customLoggerErrorSpy = sinon.spy(customLogger, 'error');",
+        "character": 59,
+        "end_line": 405,
+        "line": 391,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    }
+  ],
+  "negative_edges": [],
+  "sampling": {
+    "max_sites": 50,
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [
+      {
+        "call_character": 5,
+        "call_line": 1023,
+        "call_text": ".replace(/'([^']+)'/g, '\"$1\"') // single-quoted strings",
+        "character": 9,
+        "end_line": 1035,
+        "line": 1021,
+        "name": "convertInspectToJSON",
+        "pattern_priority": 0,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 9,
+        "call_line": 439,
+        "call_text": "!isUndefined((value as OptionalFactoryDependency).token) &&",
+        "character": 13,
+        "end_line": 443,
+        "line": 435,
+        "name": "isOptionalFactoryDependency",
+        "pattern_priority": 0,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 38,
+        "call_line": 185,
+        "call_text": "const properties = await this.resolveProperties(",
+        "character": 12,
+        "end_line": 201,
+        "line": 184,
+        "name": "callback",
+        "pattern_priority": 1,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 17,
+        "call_line": 341,
+        "call_text": "if (this.isInquirer(param, parentInquirer)) {",
+        "character": 10,
+        "end_line": 411,
+        "line": 339,
+        "name": "resolveParam",
+        "pattern_priority": 1,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 18,
+        "call_line": 928,
+        "call_text": "return this.loadInstance(",
+        "character": 10,
+        "end_line": 934,
+        "line": 926,
+        "name": "loadEnhancer",
+        "pattern_priority": 1,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 18,
+        "call_line": 468,
+        "call_text": "...(Reflect.getMetadata(PARAMTYPES_METADATA, type) || []),",
+        "character": 9,
+        "end_line": 474,
+        "line": 466,
+        "name": "reflectConstructorParams",
+        "pattern_priority": 2,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 19,
+        "call_line": 477,
+        "call_text": "return Reflect.getMetadata(OPTIONAL_DEPS_METADATA, type) || [];",
+        "character": 9,
+        "end_line": 478,
+        "line": 476,
+        "name": "reflectOptionalParams",
+        "pattern_priority": 2,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 19,
+        "call_line": 481,
+        "call_text": "return Reflect.getMetadata(SELF_DECLARED_DEPS_METADATA, type) || [];",
+        "character": 9,
+        "end_line": 482,
+        "line": 480,
+        "name": "reflectSelfParams",
+        "pattern_priority": 2,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 31,
+        "call_line": 825,
+        "call_text": "const properties = Reflect.getMetadata(PROPERTY_DEPS_METADATA, type) || [];",
+        "character": 9,
+        "end_line": 834,
+        "line": 824,
+        "name": "reflectProperties",
+        "pattern_priority": 2,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 11,
+        "call_line": 1230,
+        "call_text": "return isFunction(token) ? (token as Function).name : token.toString();",
+        "character": 10,
+        "end_line": 1231,
+        "line": 1229,
+        "name": "getTokenName",
+        "pattern_priority": 2,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 23,
+        "call_line": 1303,
+        "call_text": "return performance.now();",
+        "character": 10,
+        "end_line": 1304,
+        "line": 1302,
+        "name": "getNowTimestamp",
+        "pattern_priority": 2,
+        "rel_file": "packages/core/injector/injector.ts"
+      },
+      {
+        "call_character": 6,
+        "call_line": 10,
+        "call_text": "beforeEach(() => {",
+        "character": 22,
+        "end_line": 402,
+        "line": 4,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 6,
+        "call_line": 10,
+        "call_text": "beforeEach(() => {",
+        "character": 34,
+        "end_line": 401,
+        "line": 5,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 6,
+        "call_line": 10,
+        "call_text": "beforeEach(() => {",
+        "character": 51,
+        "end_line": 184,
+        "line": 6,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 38,
+        "call_line": 11,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 13,
+        "line": 10,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 30,
+        "call_line": 16,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 18,
+        "line": 15,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 24,
+        "call_text": "Logger.log(message, context);",
+        "character": 55,
+        "end_line": 31,
+        "line": 20,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 36,
+        "call_text": "Logger.log(message);",
+        "character": 71,
+        "end_line": 40,
+        "line": 33,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 46,
+        "call_text": "Logger.log(messages[0], messages[1], messages[2], context);",
+        "character": 61,
+        "end_line": 69,
+        "line": 42,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 75,
+        "call_text": "Logger.error(message, context);",
+        "character": 66,
+        "end_line": 82,
+        "line": 71,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 88,
+        "call_text": "Logger.error(message, stacktrace);",
+        "character": 69,
+        "end_line": 96,
+        "line": 84,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 101,
+        "call_text": "Logger.error(message);",
+        "character": 69,
+        "end_line": 105,
+        "line": 98,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 26,
+        "call_line": 108,
+        "call_text": "const error = new Error('Random text here');",
+        "character": 72,
+        "end_line": 116,
+        "line": 107,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 123,
+        "call_text": "Logger.error(error);",
+        "character": 96,
+        "end_line": 133,
+        "line": 118,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 140,
+        "call_text": "Logger.error(message, stacktrace, context);",
+        "character": 81,
+        "end_line": 155,
+        "line": 135,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 162,
+        "call_text": "Logger.error(messages[0], messages[1], stack, context);",
+        "character": 80,
+        "end_line": 183,
+        "line": 157,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 25,
+        "call_line": 187,
+        "call_text": "const logger = new ConsoleLogger({ json: true });",
+        "character": 76,
+        "end_line": 285,
+        "line": 186,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 38,
+        "call_line": 193,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 195,
+        "line": 192,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 30,
+        "call_line": 198,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 200,
+        "line": 197,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 26,
+        "call_line": 204,
+        "call_text": "const error = new Error(errorMessage);",
+        "character": 68,
+        "end_line": 213,
+        "line": 202,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 217,
+        "call_text": "logger.log(message);",
+        "character": 48,
+        "end_line": 224,
+        "line": 214,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 228,
+        "call_text": "logger.error(message);",
+        "character": 57,
+        "end_line": 235,
+        "line": 225,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 24,
+        "call_line": 237,
+        "call_text": "const map = new Map([",
+        "character": 37,
+        "end_line": 251,
+        "line": 236,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 24,
+        "call_line": 253,
+        "call_text": "const set = new Set(['value1', 'value2']);",
+        "character": 37,
+        "end_line": 262,
+        "line": 252,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 23,
+        "call_line": 264,
+        "call_text": "const bigInt = BigInt(9007199254740991);",
+        "character": 33,
+        "end_line": 273,
+        "line": 263,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 23,
+        "call_line": 275,
+        "call_text": "const symbol = Symbol('test');",
+        "character": 33,
+        "end_line": 284,
+        "line": 274,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 25,
+        "call_line": 288,
+        "call_text": "const logger = new ConsoleLogger({ json: true, compact: false });",
+        "character": 110,
+        "end_line": 330,
+        "line": 287,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 38,
+        "call_line": 294,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 296,
+        "line": 293,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 30,
+        "call_line": 299,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 301,
+        "line": 298,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 306,
+        "call_text": "logger.log(message);",
+        "character": 64,
+        "end_line": 315,
+        "line": 303,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 320,
+        "call_text": "logger.error(message);",
+        "character": 73,
+        "end_line": 329,
+        "line": 317,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 6,
+        "call_line": 336,
+        "call_text": "beforeEach(() => {",
+        "character": 44,
+        "end_line": 358,
+        "line": 332,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 38,
+        "call_line": 337,
+        "call_text": "processStdoutWriteSpy = sinon.spy(process.stdout, 'write');",
+        "character": 20,
+        "end_line": 342,
+        "line": 336,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 30,
+        "call_line": 345,
+        "call_text": "processStdoutWriteSpy.restore();",
+        "character": 19,
+        "end_line": 348,
+        "line": 344,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 354,
+        "call_text": "Logger.log(message, context);",
+        "character": 59,
+        "end_line": 357,
+        "line": 350,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 8,
+        "call_line": 361,
+        "call_text": "log(message: any, context?: string) {}",
+        "character": 52,
+        "end_line": 389,
+        "line": 359,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 372,
+        "call_text": "Logger.overrideLogger(customLogger);",
+        "character": 20,
+        "end_line": 373,
+        "line": 369,
+        "name": "beforeEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 376,
+        "call_text": "Logger.overrideLogger(previousLoggerRef);",
+        "character": 19,
+        "end_line": 377,
+        "line": 375,
+        "name": "afterEach",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 41,
+        "call_line": 383,
+        "call_text": "const customLoggerLogSpy = sinon.spy(customLogger, 'log');",
+        "character": 57,
+        "end_line": 405,
+        "line": 379,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      },
+      {
+        "call_character": 43,
+        "call_line": 395,
+        "call_text": "const customLoggerErrorSpy = sinon.spy(customLogger, 'error');",
+        "character": 59,
+        "end_line": 405,
+        "line": 391,
+        "name": "it",
+        "pattern_priority": 3,
+        "rel_file": "packages/common/test/services/logger.service.spec.ts"
+      }
+    ],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "spot_checks": [
+    {
+      "edge": {
+        "dst_file": "packages/core/injector/injector.ts",
+        "dst_func": "applyProperties",
+        "src_file": "packages/core/injector/injector.ts",
+        "src_func": "callback"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "this.applyProperties(instance, properties);",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "packages/core/injector/injector.ts",
+        "dst_func": "getNowTimestamp",
+        "src_file": "packages/core/injector/injector.ts",
+        "src_func": "callback"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "const t0 = this.getNowTimestamp();",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "packages/core/injector/injector.ts",
+        "dst_func": "instantiateClass",
+        "src_file": "packages/core/injector/injector.ts",
+        "src_func": "callback"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "const instance = await this.instantiateClass(",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "packages/core/injector/injector.ts",
+        "dst_func": "resolveProperties",
+        "src_file": "packages/core/injector/injector.ts",
+        "src_func": "callback"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "const properties = await this.resolveProperties(",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "packages/core/injector/injector.ts",
+        "dst_func": "createResolutionContext",
+        "src_file": "packages/core/injector/injector.ts",
+        "src_func": "loadEnhancer"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "const localResolutionContext = this.createResolutionContext(",
+      "verdict": "accepted"
+    }
+  ],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

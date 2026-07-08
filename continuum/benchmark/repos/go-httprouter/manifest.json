@@ -1,0 +1,17 @@
+{
+  "commit_sha": "484018016424d215c0b87c42f4c9b57d980fbd00",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/go-httprouter",
+  "language": "go",
+  "lsp_server": {
+    "command": [
+      "gopls"
+    ],
+    "version": "flag provided but not defined: -version"
+  },
+  "name": "go-httprouter",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

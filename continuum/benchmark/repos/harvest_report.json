@@ -1,0 +1,1241 @@
+{
+  "generated_at_utc": "2026-07-08T08:16:31.102587+00:00",
+  "install_inventory": {
+    "go": {
+      "available": true,
+      "command": [
+        "gopls"
+      ],
+      "version": "flag provided but not defined: -version"
+    },
+    "java": {
+      "available": true,
+      "command": [
+        "jdtls",
+        "-data",
+        "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/.jdtls-workspaces/_inventory"
+      ],
+      "version": "unknown"
+    },
+    "python": {
+      "available": true,
+      "command": [
+        "pyright-langserver",
+        "--stdio"
+      ],
+      "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+    },
+    "rust": {
+      "available": true,
+      "command": [
+        "rust-analyzer"
+      ],
+      "version": "error: Unknown binary 'rust-analyzer' in official toolchain 'stable-aarch64-apple-darwin'."
+    },
+    "typescript": {
+      "available": true,
+      "command": [
+        "typescript-language-server",
+        "--stdio"
+      ],
+      "version": "5.3.0"
+    }
+  },
+  "results": [
+    {
+      "duration_seconds": 8.024583,
+      "harvested_edges": 138,
+      "language": "go",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-gin/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-gin/meta.json",
+      "raw_response_files": 50,
+      "reason": null,
+      "repo": "go-gin",
+      "sampled_sites": 50,
+      "spot_checked_edges": 5,
+      "status": "ok",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-gin/truth.json"
+    },
+    {
+      "duration_seconds": 3.208593,
+      "harvested_edges": 67,
+      "language": "go",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-httprouter/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-httprouter/meta.json",
+      "raw_response_files": 50,
+      "reason": null,
+      "repo": "go-httprouter",
+      "sampled_sites": 50,
+      "spot_checked_edges": 5,
+      "status": "ok",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-httprouter/truth.json"
+    },
+    {
+      "duration_seconds": 33.509611,
+      "harvested_edges": 0,
+      "language": "java",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-petclinic/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-petclinic/meta.json",
+      "raw_response_files": 50,
+      "reason": "empty prepareCallHierarchy",
+      "repo": "java-petclinic",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-petclinic/truth.json"
+    },
+    {
+      "duration_seconds": 79.437935,
+      "harvested_edges": 0,
+      "language": "java",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-retrofit/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-retrofit/meta.json",
+      "raw_response_files": 8,
+      "reason": "stopped early after 8 consecutive prepareCallHierarchy timeouts",
+      "repo": "java-retrofit",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-retrofit/truth.json"
+    },
+    {
+      "duration_seconds": 42.833925,
+      "harvested_edges": 0,
+      "language": "python",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/meta.json",
+      "raw_response_files": 8,
+      "reason": "stopped early after 8 consecutive prepareCallHierarchy timeouts",
+      "repo": "python-flask",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/truth.json"
+    },
+    {
+      "duration_seconds": 42.829223,
+      "harvested_edges": 0,
+      "language": "python",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-requests/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-requests/meta.json",
+      "raw_response_files": 8,
+      "reason": "stopped early after 8 consecutive prepareCallHierarchy timeouts",
+      "repo": "python-requests",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-requests/truth.json"
+    },
+    {
+      "duration_seconds": 45.804785,
+      "harvested_edges": 0,
+      "language": "rust",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/rust-clap/manifest.json",
+      "meta": null,
+      "raw_response_files": 0,
+      "reason": "LSP startup/index failure: rust-clap: timeout waiting for initialize",
+      "repo": "rust-clap",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": null
+    },
+    {
+      "duration_seconds": 45.726642,
+      "harvested_edges": 0,
+      "language": "rust",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/rust-ripgrep/manifest.json",
+      "meta": null,
+      "raw_response_files": 0,
+      "reason": "LSP startup/index failure: rust-ripgrep: timeout waiting for initialize",
+      "repo": "rust-ripgrep",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": null
+    },
+    {
+      "duration_seconds": 2.526563,
+      "harvested_edges": 0,
+      "language": "typescript",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-axios/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-axios/meta.json",
+      "raw_response_files": 50,
+      "reason": "empty prepareCallHierarchy",
+      "repo": "typescript-axios",
+      "sampled_sites": 50,
+      "spot_checked_edges": 0,
+      "status": "skipped",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-axios/truth.json"
+    },
+    {
+      "duration_seconds": 2.534247,
+      "harvested_edges": 13,
+      "language": "typescript",
+      "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-nest/manifest.json",
+      "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-nest/meta.json",
+      "raw_response_files": 50,
+      "reason": null,
+      "repo": "typescript-nest",
+      "sampled_sites": 50,
+      "spot_checked_edges": 5,
+      "status": "ok",
+      "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-nest/truth.json"
+    }
+  ],
+  "runtime_trace": {
+    "edge_count": 174,
+    "edges": [
+      [
+        "<frozen _collections_abc>",
+        "__contains__",
+        "<frozen _collections_abc>",
+        "__iter__"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "__contains__",
+        "<frozen os>",
+        "__getitem__"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "__new__",
+        "<frozen _collections_abc>",
+        "_is_param_expr"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "__subclasshook__",
+        "<frozen _collections_abc>",
+        "_check_methods"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "_is_param_expr",
+        "<frozen _collections_abc>",
+        "<genexpr>"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "get",
+        "<frozen os>",
+        "__getitem__"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "pop",
+        "<frozen os>",
+        "__delitem__"
+      ],
+      [
+        "<frozen _collections_abc>",
+        "pop",
+        "<frozen os>",
+        "__getitem__"
+      ],
+      [
+        "<frozen abc>",
+        "__instancecheck__",
+        "<frozen abc>",
+        "__subclasscheck__"
+      ],
+      [
+        "<frozen abc>",
+        "__new__",
+        "<frozen importlib._bootstrap>",
+        "_lock_unlock_module"
+      ],
+      [
+        "<frozen abc>",
+        "__subclasscheck__",
+        "<frozen _collections_abc>",
+        "__subclasshook__"
+      ],
+      [
+        "<frozen abc>",
+        "__subclasscheck__",
+        "<frozen abc>",
+        "__subclasscheck__"
+      ],
+      [
+        "<frozen abc>",
+        "__subclasscheck__",
+        "<frozen os>",
+        "__subclasshook__"
+      ],
+      [
+        "<frozen abc>",
+        "register",
+        "<frozen abc>",
+        "__subclasscheck__"
+      ],
+      [
+        "<frozen codecs>",
+        "__init__",
+        "<frozen codecs>",
+        "__init__"
+      ],
+      [
+        "<frozen codecs>",
+        "reset",
+        "<frozen codecs>",
+        "reset"
+      ],
+      [
+        "<frozen genericpath>",
+        "samefile",
+        "<frozen genericpath>",
+        "samestat"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "__enter__",
+        "<frozen importlib._bootstrap>",
+        "_get_module_lock"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "__enter__",
+        "<frozen importlib._bootstrap>",
+        "acquire"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "__enter__",
+        "<frozen importlib._bootstrap>",
+        "setdefault"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "__exit__",
+        "<frozen importlib._bootstrap>",
+        "release"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen _collections_abc>",
+        "__new__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen _collections_abc>",
+        "get"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen abc>",
+        "__new__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen abc>",
+        "register"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen codecs>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen codecs>",
+        "decode"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen genericpath>",
+        "exists"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen genericpath>",
+        "isfile"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen importlib._bootstrap>",
+        "_find_and_load"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen importlib._bootstrap>",
+        "_gcd_import"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen importlib._bootstrap>",
+        "_handle_fromlist"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen importlib._bootstrap>",
+        "_lock_unlock_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen posixpath>",
+        "basename"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen posixpath>",
+        "dirname"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen posixpath>",
+        "join"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<frozen posixpath>",
+        "splitext"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed",
+        "<string>",
+        "<module>"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load",
+        "<frozen importlib._bootstrap>",
+        "__enter__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load",
+        "<frozen importlib._bootstrap>",
+        "__exit__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load",
+        "<frozen importlib._bootstrap>",
+        "_find_and_load_unlocked"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load",
+        "<frozen importlib._bootstrap>",
+        "cb"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load_unlocked",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load_unlocked",
+        "<frozen importlib._bootstrap>",
+        "_find_spec"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_and_load_unlocked",
+        "<frozen importlib._bootstrap>",
+        "_load_unlocked"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_spec",
+        "<frozen importlib._bootstrap>",
+        "__enter__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_spec",
+        "<frozen importlib._bootstrap>",
+        "__exit__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_spec",
+        "<frozen importlib._bootstrap>",
+        "find_spec"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "find_spec"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_gcd_import",
+        "<frozen importlib._bootstrap>",
+        "_find_and_load"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_gcd_import",
+        "<frozen importlib._bootstrap>",
+        "_resolve_name"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_gcd_import",
+        "<frozen importlib._bootstrap>",
+        "_sanity_check"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_get_module_lock",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_handle_fromlist",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_init_module_attrs",
+        "<frozen importlib._bootstrap>",
+        "cached"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_init_module_attrs",
+        "<frozen importlib._bootstrap>",
+        "has_location"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_init_module_attrs",
+        "<frozen importlib._bootstrap>",
+        "parent"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_load_unlocked",
+        "<frozen importlib._bootstrap>",
+        "_verbose_message"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_load_unlocked",
+        "<frozen importlib._bootstrap>",
+        "exec_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_load_unlocked",
+        "<frozen importlib._bootstrap>",
+        "module_from_spec"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_load_unlocked",
+        "<frozen importlib._bootstrap_external>",
+        "exec_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_lock_unlock_module",
+        "<frozen importlib._bootstrap>",
+        "_get_module_lock"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_lock_unlock_module",
+        "<frozen importlib._bootstrap>",
+        "acquire"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_lock_unlock_module",
+        "<frozen importlib._bootstrap>",
+        "release"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "_requires_builtin_wrapper",
+        "<frozen importlib._bootstrap>",
+        "is_package"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "acquire",
+        "<frozen importlib._bootstrap>",
+        "__enter__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "acquire",
+        "<frozen importlib._bootstrap>",
+        "__exit__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "acquire",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "acquire",
+        "<frozen importlib._bootstrap>",
+        "remove"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "cached",
+        "<frozen importlib._bootstrap_external>",
+        "_get_cached"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "create_module",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "create_module",
+        "<frozen importlib._bootstrap>",
+        "_new_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "exec_module",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "exec_module",
+        "<frozen importlib.machinery>",
+        "<module>"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "exec_module",
+        "<frozen importlib.util>",
+        "<module>"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "find_spec",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "find_spec",
+        "<frozen importlib._bootstrap>",
+        "_resolve_filename"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "find_spec",
+        "<frozen importlib._bootstrap>",
+        "spec_from_loader"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "module_from_spec",
+        "<frozen importlib._bootstrap>",
+        "_init_module_attrs"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "module_from_spec",
+        "<frozen importlib._bootstrap>",
+        "_new_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "module_from_spec",
+        "<frozen importlib._bootstrap>",
+        "create_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "module_from_spec",
+        "<frozen importlib._bootstrap_external>",
+        "create_module"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "setdefault",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "setdefault",
+        "<frozen importlib._bootstrap>",
+        "__new__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "spec_from_loader",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap>",
+        "spec_from_loader",
+        "<frozen importlib._bootstrap>",
+        "_requires_builtin_wrapper"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "__init__",
+        "<frozen importlib._bootstrap_external>",
+        "<genexpr>"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "__init__",
+        "<frozen importlib._bootstrap_external>",
+        "_get_parent_path"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "__init__",
+        "<frozen importlib._bootstrap_external>",
+        "_path_abspath"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "__iter__",
+        "<frozen importlib._bootstrap_external>",
+        "_recalculate"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_check_name_wrapper",
+        "<frozen importlib._bootstrap_external>",
+        "get_filename"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_classify_pyc",
+        "<frozen importlib._bootstrap_external>",
+        "_unpack_uint32"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_compile_bytecode",
+        "<frozen importlib._bootstrap>",
+        "_verbose_message"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_cached",
+        "<frozen importlib._bootstrap_external>",
+        "cache_from_source"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_parent_path",
+        "<frozen importlib._bootstrap_external>",
+        "_find_parent_path_names"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec",
+        "<frozen importlib._bootstrap_external>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec",
+        "<frozen importlib._bootstrap_external>",
+        "__iter__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_path_importer_cache"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec",
+        "<frozen importlib._bootstrap_external>",
+        "find_spec"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec",
+        "<frozen importlib._bootstrap_external>",
+        "spec_from_file_location"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_abspath",
+        "<frozen importlib._bootstrap_external>",
+        "_path_isabs"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_hooks",
+        "<frozen importlib._bootstrap_external>",
+        "path_hook_for_FileFinder"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_hooks",
+        "<frozen zipimport>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_importer_cache",
+        "<frozen importlib._bootstrap_external>",
+        "_path_hooks"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_is_mode_type",
+        "<frozen importlib._bootstrap_external>",
+        "_path_stat"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_isdir",
+        "<frozen importlib._bootstrap_external>",
+        "_path_is_mode_type"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_isfile",
+        "<frozen importlib._bootstrap_external>",
+        "_path_is_mode_type"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_path_split",
+        "<frozen importlib._bootstrap_external>",
+        "<genexpr>"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_recalculate",
+        "<frozen importlib._bootstrap_external>",
+        "_get_parent_path"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "_validate_timestamp_pyc",
+        "<frozen importlib._bootstrap_external>",
+        "_unpack_uint32"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "cache_from_source",
+        "<frozen importlib._bootstrap_external>",
+        "_path_join"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "cache_from_source",
+        "<frozen importlib._bootstrap_external>",
+        "_path_split"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "create_module",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "create_module",
+        "<frozen importlib._bootstrap>",
+        "_verbose_message"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "exec_module",
+        "<frozen importlib._bootstrap>",
+        "_call_with_frames_removed"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "exec_module",
+        "<frozen importlib._bootstrap>",
+        "_verbose_message"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "exec_module",
+        "<frozen importlib._bootstrap_external>",
+        "get_code"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_distributions",
+        "<frozen importlib._bootstrap>",
+        "_handle_fromlist"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap>",
+        "_verbose_message"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_fill_cache"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_get_spec"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_path_isdir"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_path_isfile"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_path_join"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_path_stat"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "find_spec",
+        "<frozen importlib._bootstrap_external>",
+        "_relax_case"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap>",
+        "_verbose_message"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "_check_name_wrapper"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "_classify_pyc"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "_compile_bytecode"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "_validate_timestamp_pyc"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "cache_from_source"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "get_data"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "get_code",
+        "<frozen importlib._bootstrap_external>",
+        "path_stats"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "path_hook_for_FileFinder",
+        "<frozen importlib._bootstrap_external>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "path_hook_for_FileFinder",
+        "<frozen importlib._bootstrap_external>",
+        "_path_isdir"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "path_stats",
+        "<frozen importlib._bootstrap_external>",
+        "_path_stat"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "spec_from_file_location",
+        "<frozen importlib._bootstrap>",
+        "__init__"
+      ],
+      [
+        "<frozen importlib._bootstrap_external>",
+        "spec_from_file_location",
+        "<frozen importlib._bootstrap_external>",
+        "_path_abspath"
+      ],
+      [
+        "<frozen importlib.machinery>",
+        "<module>",
+        "<frozen importlib._bootstrap>",
+        "parent"
+      ],
+      [
+        "<frozen importlib.util>",
+        "<module>",
+        "<frozen abc>",
+        "__new__"
+      ],
+      [
+        "<frozen importlib.util>",
+        "<module>",
+        "<frozen importlib._bootstrap>",
+        "_find_and_load"
+      ],
+      [
+        "<frozen importlib.util>",
+        "<module>",
+        "<frozen importlib._bootstrap>",
+        "parent"
+      ],
+      [
+        "<frozen importlib.util>",
+        "<module>",
+        "<frozen importlib.util>",
+        "LazyLoader"
+      ],
+      [
+        "<frozen importlib.util>",
+        "<module>",
+        "<frozen importlib.util>",
+        "_LazyModule"
+      ],
+      [
+        "<frozen importlib.util>",
+        "<module>",
+        "<frozen importlib.util>",
+        "_incompatible_extension_module_restrictions"
+      ],
+      [
+        "<frozen os>",
+        "__delitem__",
+        "<frozen os>",
+        "encode"
+      ],
+      [
+        "<frozen os>",
+        "__getitem__",
+        "<frozen os>",
+        "decode"
+      ],
+      [
+        "<frozen os>",
+        "__getitem__",
+        "<frozen os>",
+        "encode"
+      ],
+      [
+        "<frozen os>",
+        "__setitem__",
+        "<frozen os>",
+        "encode"
+      ],
+      [
+        "<frozen os>",
+        "__subclasshook__",
+        "<frozen _collections_abc>",
+        "_check_methods"
+      ],
+      [
+        "<frozen os>",
+        "_get_exports_list",
+        "<frozen importlib._bootstrap>",
+        "has_location"
+      ],
+      [
+        "<frozen os>",
+        "getenv",
+        "<frozen _collections_abc>",
+        "get"
+      ],
+      [
+        "<frozen os>",
+        "makedirs",
+        "<frozen genericpath>",
+        "exists"
+      ],
+      [
+        "<frozen os>",
+        "makedirs",
+        "<frozen genericpath>",
+        "isdir"
+      ],
+      [
+        "<frozen os>",
+        "makedirs",
+        "<frozen posixpath>",
+        "split"
+      ],
+      [
+        "<frozen posixpath>",
+        "abspath",
+        "<frozen posixpath>",
+        "join"
+      ],
+      [
+        "<frozen posixpath>",
+        "basename",
+        "<frozen posixpath>",
+        "_get_sep"
+      ],
+      [
+        "<frozen posixpath>",
+        "dirname",
+        "<frozen posixpath>",
+        "_get_sep"
+      ],
+      [
+        "<frozen posixpath>",
+        "expanduser",
+        "<frozen _collections_abc>",
+        "__contains__"
+      ],
+      [
+        "<frozen posixpath>",
+        "expanduser",
+        "<frozen os>",
+        "__getitem__"
+      ],
+      [
+        "<frozen posixpath>",
+        "expanduser",
+        "<frozen posixpath>",
+        "_get_sep"
+      ],
+      [
+        "<frozen posixpath>",
+        "isabs",
+        "<frozen posixpath>",
+        "_get_sep"
+      ],
+      [
+        "<frozen posixpath>",
+        "join",
+        "<frozen posixpath>",
+        "_get_sep"
+      ],
+      [
+        "<frozen posixpath>",
+        "split",
+        "<frozen posixpath>",
+        "_get_sep"
+      ],
+      [
+        "<frozen posixpath>",
+        "splitext",
+        "<frozen genericpath>",
+        "_splitext"
+      ],
+      [
+        "<frozen zipimport>",
+        "__init__",
+        "<frozen importlib._bootstrap_external>",
+        "_path_stat"
+      ],
+      [
+        "<string>",
+        "__init__",
+        "<string>",
+        "__init__"
+      ],
+      [
+        "tests/test_basic.py",
+        "<module>",
+        "<frozen importlib._bootstrap>",
+        "_find_and_load"
+      ],
+      [
+        "tests/test_basic.py",
+        "<module>",
+        "<frozen importlib._bootstrap>",
+        "_handle_fromlist"
+      ]
+    ],
+    "reason": "pytest exit code 1",
+    "returncode": 2,
+    "status": "skipped",
+    "stderr_tail": "",
+    "stdout_tail": "unner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, eval_example, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, pytester_pretty, record_property, record_testsuite_property, record_xml_attribute, recwarn, snapshot_check, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory\n>       use 'pytest --fixtures [testpath]' for help on them.\n\n/private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.f7kkza2i/python-flask/tests/test_basic.py:1903\n____________________ ERROR at setup of test_max_cookie_size ____________________\nfile /private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.f7kkza2i/python-flask/tests/test_basic.py, line 1927\n  def test_max_cookie_size(app, client, recwarn):\nE       fixture 'app' not found\n>       available fixtures: _class_scoped_runner, _examples_to_update, _function_scoped_runner, _module_scoped_runner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, eval_example, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, pytester_pretty, record_property, record_testsuite_property, record_xml_attribute, recwarn, snapshot_check, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory\n>       use 'pytest --fixtures [testpath]' for help on them.\n\n/private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.f7kkza2i/python-flask/tests/test_basic.py:1927\nResults (32.00s):\n        16 passed\n       116 errors\n"
+  },
+  "schema": "lsp-harvest-report.v1"
+}

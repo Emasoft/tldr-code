@@ -1,0 +1,177 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [
+    {
+      "id": 37,
+      "jsonrpc": "2.0",
+      "result": []
+    }
+  ],
+  "prepare_params": {
+    "position": {
+      "character": 6,
+      "line": 53
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/formData.smoke.test.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 36,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "detail": "",
+        "kind": 12,
+        "name": "bodyAsUtf8",
+        "range": {
+          "end": {
+            "character": 1,
+            "line": 55
+          },
+          "start": {
+            "character": 19,
+            "line": 53
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 16,
+            "line": 53
+          },
+          "start": {
+            "character": 6,
+            "line": 53
+          }
+        },
+        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/formData.smoke.test.ts"
+      }
+    ]
+  },
+  "repo": "typescript-axios",
+  "sample": {
+    "call_character": 16,
+    "call_line": 54,
+    "call_text": "return Buffer.isBuffer(value) ? value.toString('utf8') : String(value);",
+    "character": 6,
+    "end_line": 55,
+    "line": 53,
+    "name": "bodyAsUtf8",
+    "pattern_priority": 1,
+    "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+  },
+  "sample_index": 17
+}

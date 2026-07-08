@@ -1,0 +1,589 @@
+{
+  "case_id": "repos/go-gin",
+  "defect_class": null,
+  "description": "Deterministic sampled LSP callHierarchy truth set for go-gin.",
+  "entrypoints": [
+    "auth.go",
+    "auth_test.go",
+    "benchmarks_test.go",
+    "binding/binding.go",
+    "binding/binding_msgpack_test.go",
+    "binding/binding_nomsgpack.go",
+    "binding/binding_test.go"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "go",
+  "lsp_errors": [
+    {
+      "error": "go-gin: textDocument/prepareCallHierarchy error {'code': 0, 'message': 'no package metadata for file file:///Users/cosimo/.tldr-audit/corpora/go-gin/binding/binding_nomsgpack.go'}",
+      "sample": {
+        "call_character": 18,
+        "call_line": 119,
+        "call_text": "return Validator.ValidateStruct(obj)",
+        "character": 5,
+        "end_line": 120,
+        "line": 115,
+        "name": "validate",
+        "rel_file": "binding/binding_nomsgpack.go"
+      }
+    }
+  ],
+  "negative_edges": [],
+  "sampling": {
+    "max_sites": 50,
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [
+      {
+        "call_character": 12,
+        "call_line": 36,
+        "call_text": "if subtle.ConstantTimeCompare(bytesconv.StringToBytes(pair.value), bytesconv.StringToBytes(authValue)) == 1 {",
+        "character": 19,
+        "end_line": 41,
+        "line": 31,
+        "name": "searchCredential",
+        "rel_file": "auth.go"
+      },
+      {
+        "call_character": 34,
+        "call_line": 51,
+        "call_text": "realm = \"Basic realm=\" + strconv.Quote(realm)",
+        "character": 5,
+        "end_line": 67,
+        "line": 47,
+        "name": "BasicAuthForRealm",
+        "rel_file": "auth.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 72,
+        "call_text": "return BasicAuthForRealm(accounts, \"\")",
+        "character": 5,
+        "end_line": 73,
+        "line": 71,
+        "name": "BasicAuth",
+        "rel_file": "auth.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 76,
+        "call_text": "length := len(accounts)",
+        "character": 5,
+        "end_line": 88,
+        "line": 75,
+        "name": "processAccounts",
+        "rel_file": "auth.go"
+      },
+      {
+        "call_character": 38,
+        "call_line": 92,
+        "call_text": "return \"Basic \" + base64.StdEncoding.EncodeToString(bytesconv.StringToBytes(base))",
+        "character": 5,
+        "end_line": 93,
+        "line": 90,
+        "name": "authorizationHeader",
+        "rel_file": "auth.go"
+      },
+      {
+        "call_character": 34,
+        "call_line": 101,
+        "call_text": "realm = \"Basic realm=\" + strconv.Quote(realm)",
+        "character": 5,
+        "end_line": 115,
+        "line": 97,
+        "name": "BasicAuthForProxy",
+        "rel_file": "auth.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 16,
+        "call_text": "pairs := processAccounts(Accounts{",
+        "character": 5,
+        "end_line": 35,
+        "line": 15,
+        "name": "TestBasicAuth",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 38,
+        "call_text": "assert.Panics(t, func() { processAccounts(nil) })",
+        "character": 5,
+        "end_line": 45,
+        "line": 37,
+        "name": "TestBasicAuthFails",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 48,
+        "call_text": "pairs := processAccounts(Accounts{",
+        "character": 5,
+        "end_line": 77,
+        "line": 47,
+        "name": "TestBasicAuthSearchCredential",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 80,
+        "call_text": "assert.Equal(t, \"Basic YWRtaW46cGFzc3dvcmQ=\", authorizationHeader(\"admin\", \"password\"))",
+        "character": 5,
+        "end_line": 81,
+        "line": 79,
+        "name": "TestBasicAuthAuthorizationHeader",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 85,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 98,
+        "line": 83,
+        "name": "TestBasicAuthSucceed",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 103,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 118,
+        "line": 100,
+        "name": "TestBasicAuth401",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 123,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 138,
+        "line": 120,
+        "name": "TestBasicAuth401WithCustomRealm",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 142,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 155,
+        "line": 140,
+        "name": "TestBasicAuthForProxySucceed",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 160,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 175,
+        "line": 157,
+        "name": "TestBasicAuthForProxy407",
+        "rel_file": "auth_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 14,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 17,
+        "line": 13,
+        "name": "BenchmarkOneRoute",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 20,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 24,
+        "line": 19,
+        "name": "BenchmarkRecoveryMiddleware",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 27,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 31,
+        "line": 26,
+        "name": "BenchmarkLoggerMiddleware",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 34,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 40,
+        "line": 33,
+        "name": "BenchmarkManyHandlers",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 44,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 48,
+        "line": 42,
+        "name": "Benchmark5Params",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 51,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 59,
+        "line": 50,
+        "name": "BenchmarkOneRouteJSON",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 62,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 71,
+        "line": 61,
+        "name": "BenchmarkOneRouteHTML",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 74,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 79,
+        "line": 73,
+        "name": "BenchmarkOneRouteSet",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 82,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 87,
+        "line": 81,
+        "name": "BenchmarkOneRouteString",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 90,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 93,
+        "line": 89,
+        "name": "BenchmarkManyRoutesFirst",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 96,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 99,
+        "line": 95,
+        "name": "BenchmarkManyRoutesLast",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 102,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 106,
+        "line": 101,
+        "name": "Benchmark404",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 109,
+        "call_text": "router := New()",
+        "character": 5,
+        "end_line": 121,
+        "line": 108,
+        "name": "Benchmark404Many",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 138,
+        "call_text": "return len(p), nil",
+        "character": 21,
+        "end_line": 139,
+        "line": 137,
+        "name": "Write",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 142,
+        "call_text": "return len(s), nil",
+        "character": 21,
+        "end_line": 143,
+        "line": 141,
+        "name": "WriteString",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 18,
+        "call_line": 149,
+        "call_text": "req, err := http.NewRequest(method, path, nil)",
+        "character": 5,
+        "end_line": 159,
+        "line": 147,
+        "name": "runRequest",
+        "rel_file": "benchmarks_test.go"
+      },
+      {
+        "call_character": 18,
+        "call_line": 125,
+        "call_text": "return Validator.ValidateStruct(obj)",
+        "character": 5,
+        "end_line": 126,
+        "line": 121,
+        "name": "validate",
+        "rel_file": "binding/binding.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 24,
+        "call_text": "assert.NotNil(t, h)",
+        "character": 5,
+        "end_line": 36,
+        "line": 18,
+        "name": "TestBindingMsgPack",
+        "rel_file": "binding/binding_msgpack_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 39,
+        "call_text": "assert.Equal(t, name, b.Name())",
+        "character": 5,
+        "end_line": 53,
+        "line": 38,
+        "name": "testMsgPackBodyBinding",
+        "rel_file": "binding/binding_msgpack_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 56,
+        "call_text": "assert.Equal(t, MsgPack, Default(http.MethodPost, MIMEMSGPACK))",
+        "character": 5,
+        "end_line": 58,
+        "line": 55,
+        "name": "TestBindingDefaultMsgPack",
+        "rel_file": "binding/binding_msgpack_test.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 150,
+        "call_text": "assert.Equal(t, Form, Default(http.MethodGet, \"\"))",
+        "character": 5,
+        "end_line": 178,
+        "line": 149,
+        "name": "TestBindingDefault",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 16,
+        "call_line": 182,
+        "call_text": "req, _ := http.NewRequest(http.MethodPost, \"/\", nil)",
+        "character": 5,
+        "end_line": 185,
+        "line": 180,
+        "name": "TestBindingJSONNilBody",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 188,
+        "call_text": "testBodyBinding(t,",
+        "character": 5,
+        "end_line": 192,
+        "line": 187,
+        "name": "TestBindingJSON",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 200,
+        "call_text": "testBodyBindingSlice(t, JSON, \"json\", \"/\", \"/\", `[]`, ``)",
+        "character": 5,
+        "end_line": 206,
+        "line": 194,
+        "name": "TestBindingJSONSlice",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 209,
+        "call_text": "testBodyBindingUseNumber(t,",
+        "character": 5,
+        "end_line": 213,
+        "line": 208,
+        "name": "TestBindingJSONUseNumber",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 216,
+        "call_text": "testBodyBindingUseNumber2(t,",
+        "character": 5,
+        "end_line": 220,
+        "line": 215,
+        "name": "TestBindingJSONUseNumber2",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 223,
+        "call_text": "testBodyBindingDisallowUnknownFields(t, JSON,",
+        "character": 5,
+        "end_line": 226,
+        "line": 222,
+        "name": "TestBindingJSONDisallowUnknownFields",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 229,
+        "call_text": "testBodyBindingStringMap(t, JSON,",
+        "character": 5,
+        "end_line": 232,
+        "line": 228,
+        "name": "TestBindingJSONStringMap",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 235,
+        "call_text": "testFormBinding(t, http.MethodPost,",
+        "character": 5,
+        "end_line": 238,
+        "line": 234,
+        "name": "TestBindingForm",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 241,
+        "call_text": "testFormBinding(t, http.MethodGet,",
+        "character": 5,
+        "end_line": 244,
+        "line": 240,
+        "name": "TestBindingForm2",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 247,
+        "call_text": "testFormBindingEmbeddedStruct(t, http.MethodPost,",
+        "character": 5,
+        "end_line": 250,
+        "line": 246,
+        "name": "TestBindingFormEmbeddedStruct",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 253,
+        "call_text": "testFormBindingEmbeddedStruct(t, http.MethodGet,",
+        "character": 5,
+        "end_line": 256,
+        "line": 252,
+        "name": "TestBindingFormEmbeddedStruct2",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 259,
+        "call_text": "testFormBindingDefaultValue(t, http.MethodPost,",
+        "character": 5,
+        "end_line": 262,
+        "line": 258,
+        "name": "TestBindingFormDefaultValue",
+        "rel_file": "binding/binding_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 265,
+        "call_text": "testFormBindingDefaultValue(t, http.MethodGet,",
+        "character": 5,
+        "end_line": 268,
+        "line": 264,
+        "name": "TestBindingFormDefaultValue2",
+        "rel_file": "binding/binding_test.go"
+      }
+    ],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "spot_checks": [
+    {
+      "edge": {
+        "dst_file": "auth.go",
+        "dst_func": "BasicAuthForRealm",
+        "src_file": "auth.go",
+        "src_func": "BasicAuth"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "// BasicAuthForRealm returns a Basic HTTP Authorization middleware. It takes as arguments a map[string]string where",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "auth.go",
+        "dst_func": "processAccounts",
+        "src_file": "auth.go",
+        "src_func": "BasicAuthForProxy"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "pairs := processAccounts(accounts)",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "auth.go",
+        "dst_func": "searchCredential",
+        "src_file": "auth.go",
+        "src_func": "BasicAuthForProxy"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "func (a authPairs) searchCredential(authValue string) (string, bool) {",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "context.go",
+        "dst_func": "AbortWithStatus",
+        "src_file": "auth.go",
+        "src_func": "BasicAuthForProxy"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "c.AbortWithStatus(http.StatusUnauthorized)",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "context.go",
+        "dst_func": "Header",
+        "src_file": "auth.go",
+        "src_func": "BasicAuthForProxy"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "user, found := pairs.searchCredential(c.requestHeader(\"Authorization\"))",
+      "verdict": "accepted"
+    }
+  ],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

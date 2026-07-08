@@ -1,0 +1,1578 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 12,
+                "line": 1027
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1027
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "replace",
+            "range": {
+              "end": {
+                "character": 124,
+                "line": 245
+              },
+              "start": {
+                "character": 4,
+                "line": 240
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 245
+              },
+              "start": {
+                "character": 4,
+                "line": 245
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es2015.symbol.wellknown.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 12,
+                "line": 1027
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1027
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1026
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1025
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1024
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            },
+            {
+              "end": {
+                "character": 12,
+                "line": 1023
+              },
+              "start": {
+                "character": 25,
+                "line": 1022
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "replace",
+            "range": {
+              "end": {
+                "character": 72,
+                "line": 460
+              },
+              "start": {
+                "character": 4,
+                "line": 455
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 460
+              },
+              "start": {
+                "character": 4,
+                "line": 460
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es5.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 21,
+                "line": 1030
+              },
+              "start": {
+                "character": 11,
+                "line": 1030
+              }
+            },
+            {
+              "end": {
+                "character": 21,
+                "line": 1030
+              },
+              "start": {
+                "character": 11,
+                "line": 1030
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "parse",
+            "range": {
+              "end": {
+                "character": 84,
+                "line": 1160
+              },
+              "start": {
+                "character": 4,
+                "line": 1153
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 9,
+                "line": 1160
+              },
+              "start": {
+                "character": 4,
+                "line": 1160
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es5.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 17,
+                "line": 1032
+              },
+              "start": {
+                "character": 4,
+                "line": 1032
+              }
+            },
+            {
+              "end": {
+                "character": 17,
+                "line": 1032
+              },
+              "start": {
+                "character": 4,
+                "line": 1032
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "error",
+            "range": {
+              "end": {
+                "character": 32,
+                "line": 42833
+              },
+              "start": {
+                "character": 4,
+                "line": 42828
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 9,
+                "line": 42833
+              },
+              "start": {
+                "character": 4,
+                "line": 42833
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+          }
+        }
+      ]
+    }
+  ],
+  "prepare_params": {
+    "position": {
+      "character": 9,
+      "line": 1021
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/common/test/services/logger.service.spec.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 2,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "detail": "",
+        "kind": 12,
+        "name": "convertInspectToJSON",
+        "range": {
+          "end": {
+            "character": 1,
+            "line": 1035
+          },
+          "start": {
+            "character": 0,
+            "line": 1021
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 29,
+            "line": 1021
+          },
+          "start": {
+            "character": 9,
+            "line": 1021
+          }
+        },
+        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/common/test/services/logger.service.spec.ts"
+      }
+    ]
+  },
+  "repo": "typescript-nest",
+  "sample": {
+    "call_character": 5,
+    "call_line": 1023,
+    "call_text": ".replace(/'([^']+)'/g, '\"$1\"') // single-quoted strings",
+    "character": 9,
+    "end_line": 1035,
+    "line": 1021,
+    "name": "convertInspectToJSON",
+    "pattern_priority": 0,
+    "rel_file": "packages/common/test/services/logger.service.spec.ts"
+  },
+  "sample_index": 0
+}

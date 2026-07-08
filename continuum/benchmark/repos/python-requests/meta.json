@@ -1,0 +1,137 @@
+{
+  "case_id": "repos/python-requests",
+  "defect_class": null,
+  "description": "Deterministic sampled LSP callHierarchy truth set for python-requests.",
+  "entrypoints": [
+    "src/requests/__init__.py",
+    "src/requests/_internal_utils.py",
+    "src/requests/_types.py",
+    "src/requests/adapters.py",
+    "src/requests/api.py",
+    "src/requests/auth.py",
+    "src/requests/compat.py",
+    "src/requests/cookies.py"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "python",
+  "lsp_errors": [
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 27,
+        "call_line": 64,
+        "call_text": "urllib3_version_list = urllib3_version.split(\".\")[:3]",
+        "character": 4,
+        "end_line": 95,
+        "line": 59,
+        "name": "check_compatibility",
+        "rel_file": "src/requests/__init__.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 36,
+        "call_line": 101,
+        "call_text": "cryptography_version_list = list(map(int, cryptography_version.split(\".\")))",
+        "character": 4,
+        "end_line": 107,
+        "line": 98,
+        "name": "_check_cryptography",
+        "rel_file": "src/requests/__init__.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 7,
+        "call_line": 30,
+        "call_text": "if isinstance(string, builtin_str):",
+        "character": 4,
+        "end_line": 35,
+        "line": 25,
+        "name": "to_native_string",
+        "rel_file": "src/requests/_internal_utils.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 11,
+        "call_line": 45,
+        "call_text": "assert isinstance(u_string, str)",
+        "character": 4,
+        "end_line": 50,
+        "line": 38,
+        "name": "unicode_is_ascii",
+        "rel_file": "src/requests/_internal_utils.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 11,
+        "call_line": 33,
+        "call_text": "return isinstance(obj, SupportsRead) or hasattr(obj, \"read\")",
+        "character": 4,
+        "end_line": 33,
+        "line": 31,
+        "name": "has_read",
+        "rel_file": "src/requests/_types.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 14,
+        "call_line": 66,
+        "call_text": "raise InvalidSchema(\"Missing dependencies for SOCKS support.\")",
+        "character": 8,
+        "end_line": 66,
+        "line": 65,
+        "name": "SOCKSProxyManager",
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 25,
+        "call_line": 92,
+        "call_text": "parsed_request_url = urlparse(request.url)",
+        "character": 4,
+        "end_line": 118,
+        "line": 84,
+        "name": "_urllib3_request_context",
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 8,
+        "call_line": 125,
+        "call_text": "super().__init__()",
+        "character": 8,
+        "end_line": 125,
+        "line": 124,
+        "name": "BaseAdapter.__init__",
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "stopped early after 8 consecutive prepareCallHierarchy timeouts"
+    }
+  ],
+  "negative_edges": [],
+  "sampling": {
+    "max_sites": 50,
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "spot_checks": [],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

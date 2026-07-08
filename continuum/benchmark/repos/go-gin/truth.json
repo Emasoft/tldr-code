@@ -1,0 +1,2493 @@
+{
+  "case_id": "repos/go-gin",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "auth.go",
+      "dst_func": "BasicAuthForRealm",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "112fe67b78fbe28b2f97f9dacfb858b95e82f85723c7979a6af60ff5fe8cbf27",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuth",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "processAccounts",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6ef0302040a06a8d95da75109d6f61f0a7971a54d9cbc13956ae756b12bcbe21",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForProxy",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "searchCredential",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "430120e1411d9dfc06ebdbefa0aef1ff48714afd4529dd3d46a25c1039a0f6cb",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForProxy",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "AbortWithStatus",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "59bd7b506844ac6ba07a4fdb6c7a703ca11d1bb2f30ae3e9216f224cace22895",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForProxy",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "Header",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3a37b0bc094901c5c937b0469abb633a5d19e17920b820685c2863691550f49b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForProxy",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "Set",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1422fd12abb14eadf9ab892df0ebb067d8928264825e9f2290522b6b84a32215",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForProxy",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "requestHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d5df12c0d1de6dd3d4ae9d715a03d89350ee437e7d6ee8b595526c44fa93514f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForProxy",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "processAccounts",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "796af34f0771434c3729095619f0c969b68566316b61167ca1c5672604dd3292",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "searchCredential",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0b4046377da2d8f9b6a204f08be5ef9538c2aa72fafd7e513043671123ffd2f1",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "AbortWithStatus",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "97a6e31d2aa01b7e65cbe601c492288e348dd7c9e0a4ce2c2ec08e2fa6866846",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "Header",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "420db8503fd7b5e1199c5e08e45832a5b6458a17fed0361daafb55e93e86918d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "Set",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7ab0eac80bdd99350f34260131bbd3f4a89859bd5d579be95d32a0447f34e7ec",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "requestHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2428bf415dc75df35a613e89759728650cd973cdc34a40e5f7157dba23b98119",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "BasicAuthForRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "internal/bytesconv/bytesconv.go",
+      "dst_func": "StringToBytes",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "35b3f7fd2eb5e58f89ceb9d82e8c3b9ca04be3232353533824dc283970a0bade",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "authorizationHeader",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "authorizationHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b065e0f8a1014ec8df460356956cc67e868e5608e47cefee315d86b7b4b538a8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "processAccounts",
+      "src_line": null
+    },
+    {
+      "dst_file": "utils.go",
+      "dst_func": "assert1",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "df4d6c850d23b152e244d377f7192b3dd977c890cb089b810db62a909d76eb81",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "processAccounts",
+      "src_line": null
+    },
+    {
+      "dst_file": "internal/bytesconv/bytesconv.go",
+      "dst_func": "StringToBytes",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0076dcd627716d02249b9fd63a2176aaf0ce21f23df54ae0658443b10703ce10",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth.go",
+      "src_func": "searchCredential",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "processAccounts",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d01090fbc1ffe5d372de73e38a4bdaa293489b32fc7ca1e6d8d8867998808f31",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "BasicAuth",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f04d5a4ab74b0517fe11a94e53d7ef296bacb8602438392271ae20599bd8b998",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "MustGet",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "60fbae1196183ad3db0e0edc7603c9b8b44692114e41cb9cbdb63259e861d68b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "String",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e7b1a271e8785616343d081109a7edb91ad23da2c01aebf14e839699c0a0581a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ee16d0bea818895d9e552ed33dd7532c8e622fed3de7ea8a2e4c2a855609b96e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "ServeHTTP",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ce73f75eeea21b469df771b7f885165e814abf8302096b81924355ad90408c16",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1806e1c51a3ff83e1473dd196c85da0bf202e9ad2d0085a4ffcd99a01385b268",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c9ada2b5f050bdf9d0f918efe22323d6caa924a55bc21f27eafb1ff9da5db4d0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "BasicAuthForRealm",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b7227870aced7834dde5f62e631938826e253b35b5323ab5b91b322336480ee0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "MustGet",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "85a109db22f6e2342520ea16dc6c1c7e57eb48db8eaeffef2d9f33d8a0d73202",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "String",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ffebb25a17dabd562b14d5bf3455116bf2e7640d6af1b6677c52e7abc01b2c03",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "19f86870a1f8cb0c041f2fbcf2b1a6271e76127345ad9460d3cff00b056528d2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "ServeHTTP",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e545f81799ef34a2676e275d2928a348e4423b70b68eddd4409011da54983ba4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ac38358626a673561445e8c79f08f66717184b3f09337477f6edc811d6041c29",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5fe8f8404e6e12830f2b121e71263d253f66394a68ce9907f9cdd0a97214702b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuth401WithCustomRealm",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "authorizationHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d638592347b1ce4efa236f545a36787c36c5dd661ed65dda39ab342115d4b7da",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthAuthorizationHeader",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "processAccounts",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "19de9f01a5cedb79954b35cf6b330df003c62e72991b29ec80876241c459bf9d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthFails",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "BasicAuthForProxy",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f499cd1f8f349345a79ff5035bb6a45d47aea1021a9432d4103470787bac9a17",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "MustGet",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f34d4edfa802efbfdbc943dadfe7e77984893b045cd791474f2197dc20d4dcd0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "String",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ef9aec3f28af558a90c4053aadfb8aa2adb6f69db0506d1d368980b8e3ff97f2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e35825d314cae36ec0089e76ed936dc19b81a138aba30493fd53ae8f83214882",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "ServeHTTP",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c9b9eed81aa332e8324b1a2bf60d7b159df5cf23c078a521149968a217d2cd2b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f497074d72254f25871d4ae86f66706d966e925d4529a390d9977c24d485d0f8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "Any",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9735d52068ba7787d7b6b9cbf2c01c08c9f97d6e0d69b75e62494dbfe298808a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxy407",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "BasicAuthForProxy",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2c766e0991e59b1a283b92694d7dda6da1239bae2ad40e9f942a75739078e794",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "authorizationHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c71e5ae4cba284c5f1d9874fdeb37e4c52679b945927c4095c51dc7ade10afe6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "MustGet",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "69c1103514f6e338441d8bb126cd539cd492c62c93e563548dd578e730632528",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "String",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "840b0cde691dbd4991eec49259b4ad4c2489c1f1c997614383438461694e3813",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "eab3c7b4af125250e7ddd7eb732ffac5ffe7da33645e56fd905facedeb858f14",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "ServeHTTP",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9109992b23629a7f735c26b897d1e87fa4efc6da03d933c8c74ad292b6721f3c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a6a8cdbd0b964cf3d5394f095794138fe7108393e6c197867e6d184606e7622a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "Any",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6043a7fbeecd9e8cad6f39b7aa1a53345b93442608251393eee3f32dc68fc7bc",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthForProxySucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "authorizationHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f0c999b553adf67a93d96ebc95f9a313b791b9b06846f82a1a1f9dcf14fc45f5",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSearchCredential",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "processAccounts",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d95d4d5c7945330e78e0ee264839b8c43622fc1d2a675c4f9fc953e386b74952",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSearchCredential",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "searchCredential",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "50ce256411af8c97149a3482218328cf4247e9a04bcda294ea35f5f193ffc8a0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSearchCredential",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "BasicAuth",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bcffd6fd6c829f46a3d89212e474111437f125be91f6b662dd0ecb0991a409e1",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "auth.go",
+      "dst_func": "authorizationHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fb30a47d96abcf84d66478152ea6dd6dc4b7c16689cd83c337e0b3a32cf6b131",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "MustGet",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "694bac34e76e2b9fb697f886978d4b98730d73b4a035d565c14e20451213179f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "String",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "00d0abec7e7c6e95aa6f547477e10f7b99cdbd1d416a54c21eb0dc3869180a31",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "290c4448d257a6870866e87aa7f6b17eaebbaad1a39e8d63d0c10391d48518e9",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "ServeHTTP",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d97557b937fd57a28f46890f10f227ce3bedcd1a113d643a7dbd5d972ca2ee60",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "55c91dc7fae19d1c5694d4df120666e16a5dab7499beb5c994de714007d6213d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2dbb1dbed872e956cddfa1b630b69e02f43dd32efc6f0f53bba8d87c476607f7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "auth_test.go",
+      "src_func": "TestBasicAuthSucceed",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b98ffe28c9fbe5c38956eac4adaabd604cbfd4e4f5c9637333ada2fa4e5e6790",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "94549c909078f4868e1951f58f25dc9a643fece0cb7da16317dddb38987bd254",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "NoRoute",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fbe7be886f789524974ae533dfd9277f23fdbc799a36d6003d2d009588f2218e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "Any",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b4aa9cfbf635d003dbfa68bdf7b47e86f7c23323c5caa6cc00ad8ee2e164f852",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2221510f767451c2a9fbf9c17918271efb125bc91622bc313a02494e62f9f35c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404Many",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "371005f6ebff6266ca8b49e309cec3ee62bd3e4532109d5e8fc5d7a537c917b2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404Many",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "NoRoute",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e05672a901b4138a48ea8106fa70a5c13fbc7f60227a760aa7547e818f6d1486",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404Many",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a9dc97b10ba5e34a4129374ccd42869b96bcce02843340240dcd9b3460d227d9",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark404Many",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8595c253e1049c86703c8b2f39e544478519e9d54850fd7917af3c72b5bcf7e4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark5Params",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c34c50ac2253a30328614e7596806ea18a559763907150469668eaf15807ed16",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark5Params",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5bc7c5e8eef60867389daf3176ba848c5c3d76f81fc0c02d4022f5e168702812",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark5Params",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c9e78f9f1415350c8da85411e141d963343c21abe0a9d162a785bbea5e9abd23",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "Benchmark5Params",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "newMockWriter",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "330697f75129bc2bba2f2014ac66682da8fa206de95c4a153891f522a9451233",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkLoggerMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ae52509bda71e47b91c2f04f130d041649090983dfb739a81a69ed640c555d79",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkLoggerMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e04baee10c5a165df3384ce911e81cd9e21413069f20fb21846932ad934f40ba",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkLoggerMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2433f79949715d80e996656be6bd47c8cf748c602745aeb59198461f986464b0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkLoggerMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "logger.go",
+      "dst_func": "LoggerWithWriter",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "86777301db39a78cc34505ffecff27c2ea4a7da07373982400b19e291ca6fddd",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkLoggerMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "54b557e5605525c522699c6c8789fb63da36c4118ab3448c5cc827db69bb3f64",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkLoggerMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "newMockWriter",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fc48041ba7f900966e5e479a59e04c8eca3dd2b21b4f2856e817a8c4b196ccf1",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "adb6297250c00e08bfbf7715a2e14284a2ce21a18e7c6d2cd41c3fbe3a5bc8cb",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1d22a87cfb11193c5b14f3f61dc13e4c4514cf49b91758fdfc05dc28509db51b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0f17b3abb9be6c28ca406c0547bbfd05fb16503e270339b847aa879c9f7c263a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "logger.go",
+      "dst_func": "LoggerWithWriter",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2444a1b2f212e4247da54ec9e256f99121b98e53ffc7503246742ae42829f0ea",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "recovery.go",
+      "dst_func": "Recovery",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "07ce1138dbdc2a23615bc9f7237138ca33fea4b0c450a56625af7a95e7118954",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4277126858e0a3c94e021fc16e3e09fd9137d02de7daddbd63ba8da4be95f438",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyHandlers",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e6ab151861482591837589044e854824caf667e3d9a084faf40304b8c7537f91",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyRoutesFirst",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ac0408569c16b34852a5046fe574b16a0a99a034d6335d9b8e2d107851dc3821",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyRoutesFirst",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "Any",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3111aeec7273fe91bb0e0a11e80c9f1dccdfef9d2db0da78e1a5beea7b28d004",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyRoutesFirst",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5a7ef9b1fb6004006ff7c03beed13bc89e8b23fc65162b1f1f38e776a7bc91ad",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyRoutesLast",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f9cb36c17e053a304b09c60975325b5c597126810bf632dd097c10e7a53f4882",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyRoutesLast",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "Any",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cf49e7413d6b07113a8d840db709404bdc79f54804a8279257853acd65f25de5",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkManyRoutesLast",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "907252a42729afda3af7a8549bae079e27b30a14e6c91093464f379b18b5796a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRoute",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cc0e03a9fd76bb7e20675c6eb23941d004361272015b635fa44db091e1fd43a1",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRoute",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a55cc27a5239c8fdad1fe880709c788c6f94a5af4dba98bd2a5f5b0d146c5d72",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRoute",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "465849f7b41f933da0e2a49a586b8e7890c84316faf13c502d0adcac3cf90fdd",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteHTML",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "HTML",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "13681126c975ff47921c3723acb1f6f732efb76d9591f6232c020db878f421aa",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteHTML",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d3b65c41291bfced27d6f8758db6ed51d2e1f6fe28acab9c25855cc73b66393f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteHTML",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "SetHTMLTemplate",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f2183959c7307006e753d6e774eea10fa4ea0ba0983b059bf733e3824c0ac928",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteHTML",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b55cf9f1b771c37238466651ce728b844fb8b57a96e3b5f134d5bec6cf993f41",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteHTML",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8d9acf370f1bd0cf0b7b2702651eb0502a5d540baa392557135469a9fae25f45",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteJSON",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "JSON",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cb3f5106c8602093c2c4f9ea7e128d53b8579a82da4572040d4973b4715e7f22",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteJSON",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3f65142c5b154e1f5d05569006b107c87d2b923c5b294a8fd9e3e78e39a514ea",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteJSON",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8aabe5eb6aae35eb2de1a924846cacc8de4c46af6d9ceb38c79f6f393a662ce4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteJSON",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d4a186c8cc5ed55399eb4d92cd1441f6039c6876d897e807ee4790f35a98f19d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteSet",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "Set",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d4bfd136644e53c48c9c3b612b72ed7f821a292ed5ec0c23df3c240d4e1f01e4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteSet",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "10b225755f89e99c7653e23f577107081a4c47a935326984d0d784efd8be6cd6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteSet",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "758d7dc866acf255272b92cf480d6e40f90a61342b977d4d82f1dfe9434ca84d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteSet",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f5b1841a1c16b0a21056f62eaf4bd6ea6374769f21e7923fce0f2291ca564964",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteString",
+      "src_line": null
+    },
+    {
+      "dst_file": "context.go",
+      "dst_func": "String",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f44972394d0baab57bbfb645630a534e9b81a4990b99e807478c7789cfbba15e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteString",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "66c50f90e67388a4081b91dd75a7986175389554d2076c80e0bdc32103058229",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteString",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8a094e248534b0a24e533807f3f1afee711097fa2b40b0dd1ec5cd899ff96721",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkOneRouteString",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "runRequest",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3bada898252e10702ca1e71378d9cf3cf1c9a1cf97215e3b32c1f15b413b6cb9",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkRecoveryMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "New",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8431c538e4062102c42b54de0273ee473951cbc80696bfec1790f6f6a45455a6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkRecoveryMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "Use",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3648461d0077d266414d982c9594f32c4a1321a20aabc699d87a4b8c8fab4db8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkRecoveryMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "recovery.go",
+      "dst_func": "Recovery",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "14823ddd8ca3cbc93d9d7b14a681881cd6c6d2fbe29a7f28c87ce11bf6ca9707",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkRecoveryMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "routergroup.go",
+      "dst_func": "GET",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3d9a6cd2d128d9a47932897dba62b6335aa3941508b805ca3eea28f33956136e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "BenchmarkRecoveryMiddleware",
+      "src_line": null
+    },
+    {
+      "dst_file": "benchmarks_test.go",
+      "dst_func": "newMockWriter",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ec99fdfc6d07ec216029ab827abf5b1f9f3197a581f4ee2ebd7a1928965a05bd",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "runRequest",
+      "src_line": null
+    },
+    {
+      "dst_file": "gin.go",
+      "dst_func": "ServeHTTP",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "80225ab191139f5146bbf404b68775640acefdaa8a7996213bddb1a26111e941",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "benchmarks_test.go",
+      "src_func": "runRequest",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding.go",
+      "dst_func": "ValidateStruct",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "23fbc7481c200f44166bbf415e867c0147b45d566b71f3995a94e1400a19c5b6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding.go",
+      "src_func": "validate",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding.go",
+      "dst_func": "Default",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cbf311ca0f5d7bd88ce9377c77a05337b442f680f4603a3a2407301c42e5938a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_msgpack_test.go",
+      "src_func": "TestBindingDefaultMsgPack",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_msgpack_test.go",
+      "dst_func": "testMsgPackBodyBinding",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "31b4e427a198f65594641d672e7cf9f033cee6a247909f86b249754ecc52ee6f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_msgpack_test.go",
+      "src_func": "TestBindingMsgPack",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding.go",
+      "dst_func": "Bind",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "47acecd784835220d1f5b194a445138c58dcc6c0d570f2a8c27744d993a7359b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_msgpack_test.go",
+      "src_func": "testMsgPackBodyBinding",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding.go",
+      "dst_func": "Name",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7d5a9a3cbf87ff1a4806d855be6d5fa4ac4597418f574c36bb611506ca931564",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_msgpack_test.go",
+      "src_func": "testMsgPackBodyBinding",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "requestWithBody",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5f10f62e9c10832dcfe4166ba312552c70c18acb95b6a01a24108b2f79ef1329",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_msgpack_test.go",
+      "src_func": "testMsgPackBodyBinding",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding.go",
+      "dst_func": "Default",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b7ac4342ab565354afe0b18407285b697ecbdf58a55f92852995c725230da85c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingDefault",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testFormBinding",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "291d579f1b0c9d2de7f74de03237bf7602ecb60280cc96eec391df374bdb3fe0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingForm",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testFormBinding",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a3cf1c827e7a3fae384fb97f306e9337e7f74adebc057767476ff465246c42ec",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingForm2",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testFormBindingDefaultValue",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b15a0b1930969c039d421f30fc5d3cd8660166b8b7da5db8f0b172954feeda91",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingFormDefaultValue",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testFormBindingDefaultValue",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2d59f3e21733988edb833a865d3733ddfb25570e5587448ec867066a04887b0f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingFormDefaultValue2",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testFormBindingEmbeddedStruct",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1dcff72af390fd410b727116ae2d4d0391f7f169a4e02b75f3a48ed6384c920c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingFormEmbeddedStruct",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testFormBindingEmbeddedStruct",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "12797aafe6551f627ec9c26c35908b6de1558b7fb859015d6e7fd2d2438622bf",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingFormEmbeddedStruct2",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testBodyBinding",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c310de74be54f59b3785a84181f5663cc5da11b34293226686f2dcce9b141aab",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSON",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testBodyBindingDisallowUnknownFields",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9dd5e19ac8078186fe405f51a5eeafb35b811a01c2eec3e72f53944a7e35d269",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSONDisallowUnknownFields",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding.go",
+      "dst_func": "Bind",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "11314e6a6d227b55689cce9bced8d31da7635ceb90a89ba09945e019172ebf95",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSONNilBody",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testBodyBindingSlice",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0b2af76f66060a56ac58b96e3a4af1aec13372271a352e23cb2d15f401ea21be",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSONSlice",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testBodyBindingStringMap",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "248079927b0001ebd7b7c59cfdceaf85553f4136d60e1577659ab56993954606",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSONStringMap",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testBodyBindingUseNumber",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "201ef8923fe37f4aaf90303c070780994e372c26d84555f038b9bb2c83895081",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSONUseNumber",
+      "src_line": null
+    },
+    {
+      "dst_file": "binding/binding_test.go",
+      "dst_func": "testBodyBindingUseNumber2",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "00839162a329cfceeefd38d2f15ac6b7a8a2df3c9495395526fe8e234ce1c79b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "gopls",
+        "version": "flag provided but not defined: -version"
+      },
+      "src_file": "binding/binding_test.go",
+      "src_func": "TestBindingJSONUseNumber2",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "Sampled real-repo callHierarchy truth for go-gin at d75fcd4c9ab260e5225de590f1f0f8c0e0e12d11. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}

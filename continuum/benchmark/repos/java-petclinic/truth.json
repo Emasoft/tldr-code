@@ -1,0 +1,8 @@
+{
+  "case_id": "repos/java-petclinic",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "java",
+  "notes": "Sampled real-repo callHierarchy truth for java-petclinic at a2c2ef994340d3970eb6db51247456a51bb161f8. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}

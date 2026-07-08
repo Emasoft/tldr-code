@@ -1,0 +1,17 @@
+{
+  "commit_sha": "d75fcd4c9ab260e5225de590f1f0f8c0e0e12d11",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/go-gin",
+  "language": "go",
+  "lsp_server": {
+    "command": [
+      "gopls"
+    ],
+    "version": "flag provided but not defined: -version"
+  },
+  "name": "go-gin",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

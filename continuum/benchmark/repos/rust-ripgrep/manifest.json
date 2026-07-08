@@ -1,0 +1,17 @@
+{
+  "commit_sha": "82313cf95849bfe425109ad9506a52154879b1b1",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/rust-ripgrep",
+  "language": "rust",
+  "lsp_server": {
+    "command": [
+      "rust-analyzer"
+    ],
+    "version": "error: Unknown binary 'rust-analyzer' in official toolchain 'stable-aarch64-apple-darwin'."
+  },
+  "name": "rust-ripgrep",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

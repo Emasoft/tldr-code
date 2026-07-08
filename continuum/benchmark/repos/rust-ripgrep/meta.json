@@ -1,0 +1,529 @@
+{
+  "case_id": "repos/rust-ripgrep",
+  "corpus_commit": "82313cf95849bfe425109ad9506a52154879b1b1",
+  "defect_class": null,
+  "description": "Skipped deterministic sampled LSP callHierarchy truth set for rust-ripgrep: LSP startup/index failure: rust-ripgrep: timeout waiting for initialize",
+  "entrypoints": [
+    "build.rs",
+    "crates/cli/src/decompress.rs",
+    "crates/cli/src/escape.rs",
+    "crates/cli/src/hostname.rs",
+    "crates/cli/src/human.rs",
+    "crates/cli/src/lib.rs",
+    "crates/cli/src/pattern.rs"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "rust",
+  "negative_edges": [],
+  "sampling": {
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [
+      {
+        "call_character": 4,
+        "call_line": 1,
+        "call_text": "set_git_revision_hash();",
+        "character": 3,
+        "end_line": 3,
+        "line": 0,
+        "name": "main",
+        "rel_file": "build.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 14,
+        "call_text": "let Ok(target_os) = std::env::var(\"CARGO_CFG_TARGET_OS\") else { return };",
+        "character": 3,
+        "end_line": 31,
+        "line": 11,
+        "name": "set_windows_exe_options",
+        "rel_file": "build.rs"
+      },
+      {
+        "call_character": 37,
+        "call_line": 39,
+        "call_text": "let output = Command::new(\"git\").args(args).output();",
+        "character": 3,
+        "end_line": 60,
+        "line": 35,
+        "name": "set_git_revision_hash",
+        "rel_file": "build.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 53,
+        "call_text": "default_decompression_commands()",
+        "character": 11,
+        "end_line": 68,
+        "line": 49,
+        "name": "build",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 25,
+        "call_line": 361,
+        "call_text": "let file = File::open(path)?;",
+        "character": 7,
+        "end_line": 363,
+        "line": 360,
+        "name": "new_passthru",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 384,
+        "call_text": "Ok(ref mut rdr) => rdr.close(),",
+        "character": 11,
+        "end_line": 387,
+        "line": 382,
+        "name": "close",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 393,
+        "call_text": "Ok(ref mut rdr) => rdr.read(buf),",
+        "character": 7,
+        "end_line": 396,
+        "line": 391,
+        "name": "read",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 453,
+        "call_text": "let Ok(md) = path.metadata() else { return false };",
+        "character": 7,
+        "end_line": 455,
+        "line": 452,
+        "name": "is_exe",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 7,
+        "call_line": 499,
+        "call_text": "fn add(glob: &str, args: &[&str], cmds: &mut Vec<DecompressionCommand>) {",
+        "character": 3,
+        "end_line": 531,
+        "line": 489,
+        "name": "default_decompression_commands",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 24,
+        "call_line": 500,
+        "call_text": "let bin = match resolve_binary(Path::new(args[0])) {",
+        "character": 7,
+        "end_line": 516,
+        "line": 499,
+        "name": "add",
+        "rel_file": "crates/cli/src/decompress.rs"
+      },
+      {
+        "call_character": 10,
+        "call_line": 26,
+        "call_text": "bytes.escape_bytes().to_string()",
+        "character": 7,
+        "end_line": 27,
+        "line": 25,
+        "name": "escape",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 4,
+        "call_line": 33,
+        "call_text": "escape(Vec::from_os_str_lossy(string).as_bytes())",
+        "character": 7,
+        "end_line": 34,
+        "line": 32,
+        "name": "escape_os",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 9,
+        "call_line": 67,
+        "call_text": "Vec::unescape_bytes(s)",
+        "character": 7,
+        "end_line": 68,
+        "line": 66,
+        "name": "unescape",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 4,
+        "call_line": 77,
+        "call_text": "unescape(&string.to_string_lossy())",
+        "character": 7,
+        "end_line": 78,
+        "line": 76,
+        "name": "unescape_os",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 14,
+        "call_line": 85,
+        "call_text": "bytes.to_vec()",
+        "character": 7,
+        "end_line": 86,
+        "line": 84,
+        "name": "b",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 90,
+        "call_text": "assert_eq!(b(b\"\"), unescape(r\"\"));",
+        "character": 7,
+        "end_line": 92,
+        "line": 89,
+        "name": "empty",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 96,
+        "call_text": "assert_eq!(b(b\"\\\\\"), unescape(r\"\\\\\"));",
+        "character": 7,
+        "end_line": 98,
+        "line": 95,
+        "name": "backslash",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 102,
+        "call_text": "assert_eq!(b(b\"\\x00\"), unescape(r\"\\x00\"));",
+        "character": 7,
+        "end_line": 105,
+        "line": 101,
+        "name": "nul",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 109,
+        "call_text": "assert_eq!(b(b\"\\n\"), unescape(r\"\\n\"));",
+        "character": 7,
+        "end_line": 111,
+        "line": 108,
+        "name": "nl",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 115,
+        "call_text": "assert_eq!(b(b\"\\t\"), unescape(r\"\\t\"));",
+        "character": 7,
+        "end_line": 117,
+        "line": 114,
+        "name": "tab",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 121,
+        "call_text": "assert_eq!(b(b\"\\r\"), unescape(r\"\\r\"));",
+        "character": 7,
+        "end_line": 123,
+        "line": 120,
+        "name": "carriage",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 127,
+        "call_text": "assert_eq!(b(b\"\\\\a\"), unescape(r\"\\a\"));",
+        "character": 7,
+        "end_line": 130,
+        "line": 126,
+        "name": "nothing_simple",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 134,
+        "call_text": "assert_eq!(b(b\"\\\\x\"), unescape(r\"\\x\"));",
+        "character": 7,
+        "end_line": 137,
+        "line": 133,
+        "name": "nothing_hex0",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 141,
+        "call_text": "assert_eq!(b(b\"\\\\xz\"), unescape(r\"\\xz\"));",
+        "character": 7,
+        "end_line": 144,
+        "line": 140,
+        "name": "nothing_hex1",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 148,
+        "call_text": "assert_eq!(b(b\"\\\\xzz\"), unescape(r\"\\xzz\"));",
+        "character": 7,
+        "end_line": 151,
+        "line": 147,
+        "name": "nothing_hex2",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 28,
+        "call_line": 155,
+        "call_text": "assert_eq!(r\"\\xFF\", escape(b\"\\xFF\"));",
+        "character": 7,
+        "end_line": 157,
+        "line": 154,
+        "name": "invalid_utf8",
+        "rel_file": "crates/cli/src/escape.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 19,
+        "call_text": "get_computer_name(ComputerNameKind::PhysicalDnsHostname)",
+        "character": 7,
+        "end_line": 32,
+        "line": 15,
+        "name": "hostname",
+        "rel_file": "crates/cli/src/hostname.rs"
+      },
+      {
+        "call_character": 31,
+        "call_line": 40,
+        "call_text": "let limit = unsafe { libc::sysconf(libc::_SC_HOST_NAME_MAX) };",
+        "character": 3,
+        "end_line": 74,
+        "line": 35,
+        "name": "gethostname",
+        "rel_file": "crates/cli/src/hostname.rs"
+      },
+      {
+        "call_character": 25,
+        "call_line": 82,
+        "call_text": "println!(\"{:?}\", hostname().unwrap());",
+        "character": 7,
+        "end_line": 83,
+        "line": 81,
+        "name": "print_hostname",
+        "rel_file": "crates/cli/src/hostname.rs"
+      },
+      {
+        "call_character": 31,
+        "call_line": 20,
+        "call_text": "original: original.to_string(),",
+        "character": 7,
+        "end_line": 23,
+        "line": 18,
+        "name": "format",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 31,
+        "call_line": 27,
+        "call_text": "original: original.to_string(),",
+        "character": 7,
+        "end_line": 30,
+        "line": 25,
+        "name": "int",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 31,
+        "call_line": 34,
+        "call_text": "original: original.to_string(),",
+        "character": 7,
+        "end_line": 37,
+        "line": 32,
+        "name": "overflow",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 54,
+        "call_text": "InvalidInt(ref err) => write!(",
+        "character": 7,
+        "end_line": 61,
+        "line": 43,
+        "name": "fmt",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 80,
+        "call_text": "size.as_bytes().iter().take_while(|&b| b.is_ascii_digit()).count();",
+        "character": 7,
+        "end_line": 99,
+        "line": 78,
+        "name": "parse_human_readable_size",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 107,
+        "call_text": "let x = parse_human_readable_size(\"123\").unwrap();",
+        "character": 7,
+        "end_line": 109,
+        "line": 106,
+        "name": "suffix_none",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 113,
+        "call_text": "let x = parse_human_readable_size(\"123K\").unwrap();",
+        "character": 7,
+        "end_line": 115,
+        "line": 112,
+        "name": "suffix_k",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 119,
+        "call_text": "let x = parse_human_readable_size(\"123M\").unwrap();",
+        "character": 7,
+        "end_line": 121,
+        "line": 118,
+        "name": "suffix_m",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 125,
+        "call_text": "let x = parse_human_readable_size(\"123G\").unwrap();",
+        "character": 7,
+        "end_line": 127,
+        "line": 124,
+        "name": "suffix_g",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 131,
+        "call_text": "assert!(parse_human_readable_size(\"\").is_err());",
+        "character": 7,
+        "end_line": 132,
+        "line": 130,
+        "name": "invalid_empty",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 136,
+        "call_text": "assert!(parse_human_readable_size(\"a\").is_err());",
+        "character": 7,
+        "end_line": 137,
+        "line": 135,
+        "name": "invalid_non_digit",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 141,
+        "call_text": "assert!(parse_human_readable_size(\"9999999999999999G\").is_err());",
+        "character": 7,
+        "end_line": 142,
+        "line": 140,
+        "name": "invalid_overflow",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 16,
+        "call_line": 146,
+        "call_text": "assert!(parse_human_readable_size(\"123T\").is_err());",
+        "character": 7,
+        "end_line": 147,
+        "line": 145,
+        "name": "invalid_suffix",
+        "rel_file": "crates/cli/src/human.rs"
+      },
+      {
+        "call_character": 7,
+        "call_line": 173,
+        "call_text": "fn imp() -> bool {",
+        "character": 7,
+        "end_line": 249,
+        "line": 169,
+        "name": "is_readable_stdin",
+        "rel_file": "crates/cli/src/lib.rs"
+      },
+      {
+        "call_character": 29,
+        "call_line": 179,
+        "call_text": "let stdin = std::io::stdin();",
+        "character": 7,
+        "end_line": 215,
+        "line": 173,
+        "name": "imp",
+        "rel_file": "crates/cli/src/lib.rs"
+      },
+      {
+        "call_character": 44,
+        "call_line": 219,
+        "call_text": "let stdin = winapi_util::HandleRef::stdin();",
+        "character": 7,
+        "end_line": 240,
+        "line": 218,
+        "name": "imp",
+        "rel_file": "crates/cli/src/lib.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 261,
+        "call_text": "std::io::stdin().is_terminal()",
+        "character": 7,
+        "end_line": 262,
+        "line": 259,
+        "name": "is_tty_stdin",
+        "rel_file": "crates/cli/src/lib.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 280,
+        "call_text": "std::io::stdout().is_terminal()",
+        "character": 7,
+        "end_line": 281,
+        "line": 278,
+        "name": "is_tty_stdout",
+        "rel_file": "crates/cli/src/lib.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 293,
+        "call_text": "std::io::stderr().is_terminal()",
+        "character": 7,
+        "end_line": 294,
+        "line": 291,
+        "name": "is_tty_stderr",
+        "rel_file": "crates/cli/src/lib.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 51,
+        "call_text": "pattern.to_str().ok_or_else(|| {",
+        "character": 7,
+        "end_line": 58,
+        "line": 50,
+        "name": "pattern_from_os",
+        "rel_file": "crates/cli/src/pattern.rs"
+      },
+      {
+        "call_character": 14,
+        "call_line": 69,
+        "call_text": "std::str::from_utf8(pattern).map_err(|err| InvalidPatternError {",
+        "character": 7,
+        "end_line": 73,
+        "line": 66,
+        "name": "pattern_from_bytes",
+        "rel_file": "crates/cli/src/pattern.rs"
+      }
+    ],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "skip_reason": "LSP startup/index failure: rust-ripgrep: timeout waiting for initialize",
+  "spot_checks": [],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

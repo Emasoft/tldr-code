@@ -1,0 +1,144 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [],
+  "prepare_params": {
+    "position": {
+      "character": 63,
+      "line": 60
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 73,
+    "jsonrpc": "2.0",
+    "result": null
+  },
+  "repo": "typescript-axios",
+  "sample": {
+    "call_character": 36,
+    "call_line": 61,
+    "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+    "character": 63,
+    "end_line": 75,
+    "line": 60,
+    "name": "test",
+    "pattern_priority": 3,
+    "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+  },
+  "sample_index": 40
+}

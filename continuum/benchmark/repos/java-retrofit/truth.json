@@ -1,0 +1,8 @@
+{
+  "case_id": "repos/java-retrofit",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "java",
+  "notes": "Sampled real-repo callHierarchy truth for java-retrofit at 8e83a242eac1afc22a13c52098eddb27421353ff. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}

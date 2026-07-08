@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_BINARY = Path.home() / ".cargo" / "bin" / "tldr"
 DEFAULT_OUT = SCRIPT_DIR / "report.json"
+LANGUAGE_REGISTRY = SCRIPT_DIR / "languages.json"
 COMMAND = "calls"
 ALLOWED_PROVENANCE = {"manual", "lsp-callHierarchy", "runtime-trace", "vendored-pycg"}
 ALLOWED_EDGE_KINDS = {"call", "method", "constructor"}
@@ -59,6 +60,7 @@ class Case:
     suite_group: str
     suite_family: str
     defect_class: str
+    truth_quality_tier: str
 
 
 class ValidationError(Exception):
@@ -128,6 +130,13 @@ def load_json(path: Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValidationError(f"{path}: expected a JSON object")
     return data
+
+
+def load_language_registry(root: Path) -> Dict[str, Any]:
+    path = root / "languages.json"
+    if not path.exists():
+        return {}
+    return load_json(path)
 
 
 def require_keys(path: Path, data: Dict[str, Any], required: Iterable[str]) -> None:
@@ -258,6 +267,7 @@ def validate_meta(path: Path, meta: Dict[str, Any]) -> None:
 
 
 def discover_cases(root: Path, filter_text: Optional[str]) -> List[Case]:
+    registry = load_language_registry(root)
     truth_paths: List[Path] = []
     suites_root = root / "suites"
     vendored_root = root / "vendored"
@@ -280,6 +290,11 @@ def discover_cases(root: Path, filter_text: Optional[str]) -> List[Case]:
             raise ValidationError(f"{case_dir}: truth/meta case_id mismatch")
         if truth["language"] != meta["language"]:
             raise ValidationError(f"{case_dir}: truth/meta language mismatch")
+        truth_quality_tier = str(
+            meta.get("truth_quality_tier")
+            or registry.get(truth["language"], {}).get("truth_quality_tier")
+            or "unregistered"
+        )
 
         rel = case_dir.relative_to(root)
         if rel.parts[0] == "suites":
@@ -310,6 +325,7 @@ def discover_cases(root: Path, filter_text: Optional[str]) -> List[Case]:
                 suite_group=suite_group,
                 suite_family=suite_family,
                 defect_class=meta.get("defect_class") or "none",
+                truth_quality_tier=truth_quality_tier,
             )
         )
     return sorted(cases, key=lambda item: item.case_id)
@@ -458,6 +474,7 @@ def score_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, An
         "feature": case.meta.get("feature"),
         "defect_class": case.defect_class,
         "command": COMMAND,
+        "truth_quality_tier": case.truth_quality_tier,
         "duration_seconds": round(duration, 6),
         "timeout_seconds": timeout_seconds,
         "rung_supported": False,

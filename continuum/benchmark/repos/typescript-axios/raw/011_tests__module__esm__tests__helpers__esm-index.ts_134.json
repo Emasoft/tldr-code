@@ -1,0 +1,328 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [
+    {
+      "id": 25,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 13,
+                "line": 134
+              },
+              "start": {
+                "character": 2,
+                "line": 134
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 134
+              },
+              "start": {
+                "character": 2,
+                "line": 134
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 135
+              },
+              "start": {
+                "character": 2,
+                "line": 135
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 135
+              },
+              "start": {
+                "character": 2,
+                "line": 135
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 136
+              },
+              "start": {
+                "character": 2,
+                "line": 136
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 136
+              },
+              "start": {
+                "character": 2,
+                "line": 136
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 137
+              },
+              "start": {
+                "character": 2,
+                "line": 137
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 137
+              },
+              "start": {
+                "character": 2,
+                "line": 137
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 138
+              },
+              "start": {
+                "character": 2,
+                "line": 138
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 138
+              },
+              "start": {
+                "character": 2,
+                "line": 138
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 139
+              },
+              "start": {
+                "character": 2,
+                "line": 139
+              }
+            },
+            {
+              "end": {
+                "character": 13,
+                "line": 139
+              },
+              "start": {
+                "character": 2,
+                "line": 139
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "log",
+            "range": {
+              "end": {
+                "character": 30,
+                "line": 42863
+              },
+              "start": {
+                "character": 4,
+                "line": 42858
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 7,
+                "line": 42863
+              },
+              "start": {
+                "character": 4,
+                "line": 42863
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+          }
+        }
+      ]
+    }
+  ],
+  "prepare_params": {
+    "position": {
+      "character": 6,
+      "line": 133
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/esm/tests/helpers/esm-index.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 24,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "detail": "",
+        "kind": 12,
+        "name": "handleUserResponse",
+        "range": {
+          "end": {
+            "character": 1,
+            "line": 140
+          },
+          "start": {
+            "character": 27,
+            "line": 133
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 24,
+            "line": 133
+          },
+          "start": {
+            "character": 6,
+            "line": 133
+          }
+        },
+        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/esm/tests/helpers/esm-index.ts"
+      }
+    ]
+  },
+  "repo": "typescript-axios",
+  "sample": {
+    "call_character": 10,
+    "call_line": 134,
+    "call_text": "console.log(response.data.id);",
+    "character": 6,
+    "end_line": 140,
+    "line": 133,
+    "name": "handleUserResponse",
+    "pattern_priority": 1,
+    "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+  },
+  "sample_index": 11
+}

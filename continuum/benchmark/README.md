@@ -1,6 +1,6 @@
 # tldr Ground-Truth Benchmark
 
-This directory contains the m2 benchmark corpus. It has two Python sources of truth today: vendored PyCG micro-benchmarks and hand-written CATS-style cases for tldr resolver defect classes.
+This directory contains the m2 benchmark corpus. It includes vendored PyCG micro-benchmarks, hand-written CATS-style suites, and sampled real-repo LSP truth sets.
 
 ## Add a language suite
 
@@ -8,7 +8,7 @@ Create `suites/LANGUAGE/FEATURE/CASE`. Keep each case tiny, add the source files
 
 ## Add a real-repo truth set
 
-Do not vendor repository source into this tree. Add a manifest under `repos/` pinning the git URL and commit, then place truth data beside the manifest and let the future harness materialize sources under `$HOME/.tldr-audit/corpora`.
+Do not vendor repository source into this tree. Add the language/repo to `languages.json`, place or refresh the source checkout under `$HOME/.tldr-audit/corpora`, then run `harvest_lsp.py` to produce the source-free manifest, metadata, truth, raw LSP cache, and harvest report under `repos/`.
 
 ## Schema reference
 
@@ -22,8 +22,9 @@ Do not vendor repository source into this tree. Add a manifest under `repos/` pi
 - `suites/go/`: 12 hand-written Go micro-cases covering package imports and aliases, receiver methods, interface dispatch as expected-unresolved, factory construction, same-name packages, builtin-name shadowing, embedded inherited methods, reflection as expected-unresolved, and index-expression receivers.
 - `suites/rust/`: 12 hand-written Rust micro-cases covering module and `crate::` paths, `use` aliases, inherent impls, trait methods, dyn trait dispatch as expected-unresolved, out-of-line impls, constructors, same-name modules, std/prelude shadowing, and associated functions.
 - `suites/java/`: 12 hand-written Java micro-cases covering package and static imports, class methods, inherited and overridden methods, constructors, overload arity, same-name packages, stdlib-name shadowing, reflection as expected-unresolved, and interface dispatch as expected-unresolved.
+- `repos/`: sampled real-repo truth sets for configured Python, TypeScript, Go, Rust, and Java corpora, with raw LSP responses and skip reasons captured in `harvest_report.json`.
 
-VAL-021 will implement scoring. For now, a smoke check is enough: `~/.cargo/bin/tldr calls CASE_DIR --format json` should produce parseable JSON for representative cases.
+For smoke checks, `~/.cargo/bin/tldr calls CASE_DIR --format json` should produce parseable JSON for representative cases.
 
 ## Run the Truth Harness
 

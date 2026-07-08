@@ -1,0 +1,18 @@
+{
+  "commit_sha": "fa6a55ef99235074d2c11d80a1064ef02850d598",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/typescript-axios",
+  "language": "typescript",
+  "lsp_server": {
+    "command": [
+      "typescript-language-server",
+      "--stdio"
+    ],
+    "version": "5.3.0"
+  },
+  "name": "typescript-axios",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

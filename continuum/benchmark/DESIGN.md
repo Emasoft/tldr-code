@@ -8,6 +8,8 @@ This directory is the m2 ground-truth corpus for measuring absolute precision an
 continuum/benchmark/
   DESIGN.md
   README.md
+  languages.json
+  harvest_lsp.py
   schemas/truth.schema.json
   suites/LANGUAGE/FEATURE/CASE/
     source files
@@ -24,9 +26,15 @@ continuum/benchmark/
       meta.json
   repos/
     README.md
+    harvest_report.json
+    REPO/
+      manifest.json
+      meta.json
+      truth.json
+      raw/
 ```
 
-`suites/LANGUAGE/FEATURE/CASE` contains CATS-style micro-cases: tiny projects with one behavior under test. `vendored/pycg/` contains the upstream PyCG micro-benchmark suite converted into the same case format with its Apache-2.0 license preserved. `repos/` is reserved for manifest-driven real-repo truth sets; real repository sources are not vendored here and should be checked out into a shared cache such as `$HOME/.tldr-audit/corpora` by a future harness.
+`suites/LANGUAGE/FEATURE/CASE` contains CATS-style micro-cases: tiny projects with one behavior under test. `vendored/pycg/` contains the upstream PyCG micro-benchmark suite converted into the same case format with its Apache-2.0 license preserved. `repos/` contains manifest-driven real-repo sampled truth sets; real repository sources are not vendored here and are referenced from `$HOME/.tldr-audit/corpora`.
 
 ## Truth edge schema
 
@@ -73,7 +81,9 @@ A micro-case directory contains source files, `truth.json`, and `meta.json`. `me
 
 ## Real-repo truth sets
 
-Real-repo suites live under `repos/` as manifests only. A manifest pins `name`, `language`, `git_url`, `commit`, `checkout_subdir`, `truth_files`, and optional corpus cache hints. The source checkout belongs in `$HOME/.tldr-audit/corpora/NAME/COMMIT` so benchmark data remains small and reviewable.
+Real-repo suites live under `repos/` as source-free sampled truth cases. `languages.json` is the registry for language server command, corpus repos, truth source type, and truth quality tier; adding another LSP-backed language should be a registry change rather than a harness code change. `harvest_lsp.py` reads that registry, samples call sites deterministically by sorted path/declaration/call-site order, calls LSP `prepareCallHierarchy` and `outgoingCalls`, and writes `manifest.json`, `meta.json`, `truth.json`, cached raw LSP responses under `raw/`, and a top-level `harvest_report.json`.
+
+Each repo `manifest.json` pins the corpus path, corpus commit, language, LSP command/version, truth files, and truth quality tier. The source checkout belongs in `$HOME/.tldr-audit/corpora/NAME`, keeping benchmark data small and reviewable.
 
 ## Harness interface sketch
 

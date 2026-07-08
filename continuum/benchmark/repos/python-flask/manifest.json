@@ -1,0 +1,18 @@
+{
+  "commit_sha": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/python-flask",
+  "language": "python",
+  "lsp_server": {
+    "command": [
+      "pyright-langserver",
+      "--stdio"
+    ],
+    "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+  },
+  "name": "python-flask",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

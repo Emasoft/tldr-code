@@ -1,0 +1,8 @@
+{
+  "case_id": "repos/typescript-axios",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "typescript",
+  "notes": "Sampled real-repo callHierarchy truth for typescript-axios at fa6a55ef99235074d2c11d80a1064ef02850d598. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}

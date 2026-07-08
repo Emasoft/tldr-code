@@ -1,0 +1,18 @@
+{
+  "commit_sha": "5843d513521917c0bc57d5464f127b03e830bff9",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/typescript-nest",
+  "language": "typescript",
+  "lsp_server": {
+    "command": [
+      "typescript-language-server",
+      "--stdio"
+    ],
+    "version": "5.3.0"
+  },
+  "name": "typescript-nest",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

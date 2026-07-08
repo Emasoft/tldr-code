@@ -1,0 +1,583 @@
+{
+  "case_id": "repos/go-httprouter",
+  "defect_class": null,
+  "description": "Deterministic sampled LSP callHierarchy truth set for go-httprouter.",
+  "entrypoints": [
+    "path.go",
+    "path_test.go",
+    "router.go",
+    "tree.go",
+    "tree_test.go"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "go",
+  "lsp_errors": [],
+  "negative_edges": [],
+  "sampling": {
+    "max_sites": 50,
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [
+      {
+        "call_character": 8,
+        "call_line": 30,
+        "call_text": "buf := make([]byte, 0, stackBufSize)",
+        "character": 5,
+        "end_line": 123,
+        "line": 20,
+        "name": "CleanPath",
+        "rel_file": "path.go"
+      },
+      {
+        "call_character": 4,
+        "call_line": 129,
+        "call_text": "if len(b) == 0 {",
+        "character": 5,
+        "end_line": 149,
+        "line": 127,
+        "name": "bufApp",
+        "rel_file": "path.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 70,
+        "call_text": "if s := CleanPath(test.path); s != test.result {",
+        "character": 5,
+        "end_line": 77,
+        "line": 68,
+        "name": "TestPathClean",
+        "rel_file": "path_test.go"
+      },
+      {
+        "call_character": 12,
+        "call_line": 80,
+        "call_text": "if testing.Short() {",
+        "character": 5,
+        "end_line": 91,
+        "line": 79,
+        "name": "TestPathCleanMallocs",
+        "rel_file": "path_test.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 94,
+        "call_text": "b.ReportAllocs()",
+        "character": 5,
+        "end_line": 101,
+        "line": 93,
+        "name": "BenchmarkPathClean",
+        "rel_file": "path_test.go"
+      },
+      {
+        "call_character": 16,
+        "call_line": 105,
+        "call_text": "ss := strings.Repeat(\"a\", i)",
+        "character": 5,
+        "end_line": 123,
+        "line": 103,
+        "name": "genLongPaths",
+        "rel_file": "path_test.go"
+      },
+      {
+        "call_character": 15,
+        "call_line": 126,
+        "call_text": "cleanTests := genLongPaths()",
+        "character": 5,
+        "end_line": 136,
+        "line": 125,
+        "name": "TestPathCleanLong",
+        "rel_file": "path_test.go"
+      },
+      {
+        "call_character": 15,
+        "call_line": 139,
+        "call_text": "cleanTests := genLongPaths()",
+        "character": 5,
+        "end_line": 148,
+        "line": 138,
+        "name": "BenchmarkPathCleanLong",
+        "rel_file": "path_test.go"
+      },
+      {
+        "call_character": 13,
+        "call_line": 120,
+        "call_text": "p, _ := ctx.Value(ParamsKey).(Params)",
+        "character": 5,
+        "end_line": 122,
+        "line": 119,
+        "name": "ParamsFromContext",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 132,
+        "call_text": "return ps.ByName(MatchedRoutePathParam)",
+        "character": 17,
+        "end_line": 133,
+        "line": 131,
+        "name": "MatchedRoutePath",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 23,
+        "call_line": 222,
+        "call_text": "ps, _ := r.paramsPool.Get().(*Params)",
+        "character": 17,
+        "end_line": 225,
+        "line": 221,
+        "name": "getParams",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 15,
+        "call_line": 229,
+        "call_text": "r.paramsPool.Put(ps)",
+        "character": 17,
+        "end_line": 231,
+        "line": 227,
+        "name": "putParams",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 12,
+        "call_line": 236,
+        "call_text": "psp := r.getParams()",
+        "character": 17,
+        "end_line": 246,
+        "line": 233,
+        "name": "saveMatchedRoutePath",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 250,
+        "call_text": "r.Handle(http.MethodGet, path, handle)",
+        "character": 17,
+        "end_line": 251,
+        "line": 249,
+        "name": "GET",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 255,
+        "call_text": "r.Handle(http.MethodHead, path, handle)",
+        "character": 17,
+        "end_line": 256,
+        "line": 254,
+        "name": "HEAD",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 260,
+        "call_text": "r.Handle(http.MethodOptions, path, handle)",
+        "character": 17,
+        "end_line": 261,
+        "line": 259,
+        "name": "OPTIONS",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 265,
+        "call_text": "r.Handle(http.MethodPost, path, handle)",
+        "character": 17,
+        "end_line": 266,
+        "line": 264,
+        "name": "POST",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 270,
+        "call_text": "r.Handle(http.MethodPut, path, handle)",
+        "character": 17,
+        "end_line": 271,
+        "line": 269,
+        "name": "PUT",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 275,
+        "call_text": "r.Handle(http.MethodPatch, path, handle)",
+        "character": 17,
+        "end_line": 276,
+        "line": 274,
+        "name": "PATCH",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 280,
+        "call_text": "r.Handle(http.MethodDelete, path, handle)",
+        "character": 17,
+        "end_line": 281,
+        "line": 279,
+        "name": "DELETE",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 14,
+        "call_line": 292,
+        "call_text": "varsCount := uint16(0)",
+        "character": 17,
+        "end_line": 335,
+        "line": 291,
+        "name": "Handle",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 341,
+        "call_text": "r.Handle(method, path,",
+        "character": 17,
+        "end_line": 351,
+        "line": 340,
+        "name": "Handler",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 3,
+        "call_line": 356,
+        "call_text": "r.Handler(method, path, handler)",
+        "character": 17,
+        "end_line": 357,
+        "line": 355,
+        "name": "HandlerFunc",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 4,
+        "call_line": 370,
+        "call_text": "if len(path) < 10 || path[len(path)-10:] != \"/*filepath\" {",
+        "character": 17,
+        "end_line": 380,
+        "line": 369,
+        "name": "ServeFiles",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 11,
+        "call_line": 383,
+        "call_text": "if rcv := recover(); rcv != nil {",
+        "character": 17,
+        "end_line": 386,
+        "line": 382,
+        "name": "recv",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 26,
+        "call_line": 395,
+        "call_text": "handle, ps, tsr := root.getValue(path, r.getParams)",
+        "character": 17,
+        "end_line": 406,
+        "line": 393,
+        "name": "Lookup",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 12,
+        "call_line": 409,
+        "call_text": "allowed := make([]string, 0, 9)",
+        "character": 17,
+        "end_line": 459,
+        "line": 408,
+        "name": "allowed",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 464,
+        "call_text": "defer r.recv(w, req)",
+        "character": 17,
+        "end_line": 541,
+        "line": 462,
+        "name": "ServeHTTP",
+        "rel_file": "router.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 21,
+        "call_text": "max := min(len(a), len(b))",
+        "character": 5,
+        "end_line": 26,
+        "line": 19,
+        "name": "longestCommonPrefix",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 25,
+        "call_line": 32,
+        "call_text": "for start, c := range []byte(path) {",
+        "character": 5,
+        "end_line": 51,
+        "line": 30,
+        "name": "findWildcard",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 18,
+        "call_line": 55,
+        "call_text": "for i := range []byte(path) {",
+        "character": 5,
+        "end_line": 62,
+        "line": 53,
+        "name": "countParams",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 4,
+        "call_line": 114,
+        "call_text": "n.insertChild(path, fullPath, handle)",
+        "character": 15,
+        "end_line": 214,
+        "line": 108,
+        "name": "addRoute",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 24,
+        "call_line": 219,
+        "call_text": "wildcard, i, valid := findWildcard(path)",
+        "character": 15,
+        "end_line": 318,
+        "line": 216,
+        "name": "insertChild",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 5,
+        "call_line": 329,
+        "call_text": "if len(path) > len(prefix) {",
+        "character": 15,
+        "end_line": 462,
+        "line": 325,
+        "name": "getValue",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 8,
+        "call_line": 473,
+        "call_text": "buf := make([]byte, 0, stackBufSize)",
+        "character": 15,
+        "end_line": 486,
+        "line": 468,
+        "name": "findCaseInsensitivePath",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 506,
+        "call_text": "npLen := len(n.path)",
+        "character": 15,
+        "end_line": 684,
+        "line": 505,
+        "name": "findCaseInsensitivePathRec",
+        "rel_file": "tree.go"
+      },
+      {
+        "call_character": 7,
+        "call_line": 42,
+        "call_text": "ps := make(Params, 0, 20)",
+        "character": 5,
+        "end_line": 44,
+        "line": 41,
+        "name": "getParams",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 26,
+        "call_line": 48,
+        "call_text": "handler, psp, _ := tree.getValue(request.path, getParams)",
+        "character": 5,
+        "end_line": 73,
+        "line": 46,
+        "name": "checkRequests",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 4,
+        "call_line": 86,
+        "call_text": "t.Errorf(",
+        "character": 5,
+        "end_line": 93,
+        "line": 75,
+        "name": "checkPriorities",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 4,
+        "call_line": 96,
+        "call_text": "if countParams(\"/path/:param1/static/*catch-all\") != 2 {",
+        "character": 5,
+        "end_line": 102,
+        "line": 95,
+        "name": "TestCountParams",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 7,
+        "call_line": 121,
+        "call_text": "tree.addRoute(route, fakeHandler(route))",
+        "character": 5,
+        "end_line": 141,
+        "line": 104,
+        "name": "TestTreeAddAndGet",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 7,
+        "call_line": 163,
+        "call_text": "tree.addRoute(route, fakeHandler(route))",
+        "character": 5,
+        "end_line": 186,
+        "line": 143,
+        "name": "TestTreeWildcard",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 9,
+        "call_line": 190,
+        "call_text": "recv = recover()",
+        "character": 5,
+        "end_line": 195,
+        "line": 188,
+        "name": "catchPanic",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 207,
+        "call_text": "recv := catchPanic(func() {",
+        "character": 5,
+        "end_line": 221,
+        "line": 202,
+        "name": "testRoutes",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 241,
+        "call_text": "testRoutes(t, routes)",
+        "character": 5,
+        "end_line": 242,
+        "line": 223,
+        "name": "TestTreeWildcardConflict",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 257,
+        "call_text": "testRoutes(t, routes)",
+        "character": 5,
+        "end_line": 258,
+        "line": 244,
+        "name": "TestTreeChildConflict",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 272,
+        "call_text": "recv := catchPanic(func() {",
+        "character": 5,
+        "end_line": 297,
+        "line": 260,
+        "name": "TestTreeDupliatePath",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 10,
+        "call_line": 310,
+        "call_text": "recv := catchPanic(func() {",
+        "character": 5,
+        "end_line": 317,
+        "line": 299,
+        "name": "TestEmptyWildcardName",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 327,
+        "call_text": "testRoutes(t, routes)",
+        "character": 5,
+        "end_line": 328,
+        "line": 319,
+        "name": "TestTreeCatchAllConflict",
+        "rel_file": "tree_test.go"
+      },
+      {
+        "call_character": 1,
+        "call_line": 335,
+        "call_text": "testRoutes(t, routes)",
+        "character": 5,
+        "end_line": 336,
+        "line": 330,
+        "name": "TestTreeCatchAllConflictRoot",
+        "rel_file": "tree_test.go"
+      }
+    ],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "spot_checks": [
+    {
+      "edge": {
+        "dst_file": "path.go",
+        "dst_func": "bufApp",
+        "src_file": "path.go",
+        "src_func": "CleanPath"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "// gets completely inlined (bufApp calls).",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "path.go",
+        "dst_func": "CleanPath",
+        "src_file": "path_test.go",
+        "src_func": "BenchmarkPathClean"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "if s := CleanPath(test.path); s != test.result {",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "path.go",
+        "dst_func": "CleanPath",
+        "src_file": "path_test.go",
+        "src_func": "BenchmarkPathCleanLong"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "if s := CleanPath(test.path); s != test.result {",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "path_test.go",
+        "dst_func": "genLongPaths",
+        "src_file": "path_test.go",
+        "src_func": "BenchmarkPathCleanLong"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "func genLongPaths() (testPaths []cleanPathTest) {",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "path.go",
+        "dst_func": "CleanPath",
+        "src_file": "path_test.go",
+        "src_func": "TestPathClean"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "if s := CleanPath(test.path); s != test.result {",
+      "verdict": "accepted"
+    }
+  ],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

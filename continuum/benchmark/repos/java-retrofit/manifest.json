@@ -1,0 +1,19 @@
+{
+  "commit_sha": "8e83a242eac1afc22a13c52098eddb27421353ff",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/java-retrofit",
+  "language": "java",
+  "lsp_server": {
+    "command": [
+      "jdtls",
+      "-data",
+      "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/.jdtls-workspaces/java-retrofit"
+    ],
+    "version": "unknown"
+  },
+  "name": "java-retrofit",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

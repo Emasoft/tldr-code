@@ -1,0 +1,8 @@
+{
+  "case_id": "repos/rust-clap",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "rust",
+  "notes": "Skipped sampled real-repo LSP harvest for rust-clap: LSP startup/index failure: rust-clap: timeout waiting for initialize",
+  "schema_version": "truth.v1"
+}

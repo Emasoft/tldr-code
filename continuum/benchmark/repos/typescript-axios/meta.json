@@ -1,0 +1,854 @@
+{
+  "case_id": "repos/typescript-axios",
+  "defect_class": null,
+  "description": "Deterministic sampled LSP callHierarchy truth set for typescript-axios.",
+  "entrypoints": [
+    "index.d.ts",
+    "tests/module/cjs/tests/helpers/cjs-typing.ts",
+    "tests/module/esm/tests/helpers/esm-index.ts",
+    "tests/smoke/bun/tests/cancel.smoke.test.ts",
+    "tests/smoke/bun/tests/error.smoke.test.ts",
+    "tests/smoke/bun/tests/fetch.smoke.test.ts",
+    "tests/smoke/bun/tests/formData.smoke.test.ts",
+    "tests/smoke/bun/tests/headers.smoke.test.ts",
+    "tests/smoke/bun/tests/http.smoke.test.ts",
+    "tests/smoke/bun/tests/interceptors.smoke.test.ts",
+    "tests/smoke/bun/tests/progress.smoke.test.ts",
+    "tests/smoke/bun/tests/timeout.smoke.test.ts",
+    "tests/smoke/deno/tests/cancel.smoke.test.ts",
+    "tests/smoke/deno/tests/fetch.smoke.test.ts",
+    "tests/smoke/deno/tests/headers.smoke.test.ts"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "typescript",
+  "lsp_errors": [
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 2,
+        "call_line": 10,
+        "call_text": "test('pre-aborted AbortController cancels before fetch is called', async () => {",
+        "character": 28,
+        "end_line": 36,
+        "line": 9,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 18,
+        "call_line": 13,
+        "call_text": "const fetch = async () => {",
+        "character": 78,
+        "end_line": 30,
+        "line": 10,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 10,
+        "call_line": 42,
+        "call_text": "reject(new DOMException('The operation was aborted', 'AbortError'));",
+        "character": 71,
+        "end_line": 70,
+        "line": 38,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 4,
+        "call_line": 81,
+        "call_text": "expect(axios.isCancel(new Error('random'))).toBe(false);",
+        "character": 60,
+        "end_line": 82,
+        "line": 80,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 2,
+        "call_line": 10,
+        "call_text": "test('non-2xx response rejects with AxiosError and status 404', async () => {",
+        "character": 22,
+        "end_line": 27,
+        "line": 9,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/error.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 18,
+        "call_line": 11,
+        "call_text": "const fetch = async () =>",
+        "character": 75,
+        "end_line": 22,
+        "line": 10,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/error.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 4,
+        "call_line": 30,
+        "call_text": "expect(axios.isAxiosError(new Error('plain'))).toBe(false);",
+        "character": 64,
+        "end_line": 31,
+        "line": 29,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/error.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 2,
+        "call_line": 47,
+        "call_text": "test('GET resolves JSON response via fetch adapter', async () => {",
+        "character": 29,
+        "end_line": 58,
+        "line": 46,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 36,
+        "call_line": 48,
+        "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+        "character": 64,
+        "end_line": 53,
+        "line": 47,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 36,
+        "call_line": 61,
+        "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+        "character": 63,
+        "end_line": 75,
+        "line": 60,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 16,
+        "call_line": 78,
+        "call_text": "const run = async (",
+        "character": 56,
+        "end_line": 103,
+        "line": 77,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 36,
+        "call_line": 113,
+        "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+        "character": 62,
+        "end_line": 118,
+        "line": 112,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 2,
+        "call_line": 58,
+        "call_text": "test('native Bun FormData body produces multipart/form-data content-type', async () => {",
+        "character": 25,
+        "end_line": 82,
+        "line": 57,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 21,
+        "call_line": 59,
+        "call_text": "const form = new FormData();",
+        "character": 86,
+        "end_line": 75,
+        "line": 58,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 21,
+        "call_line": 85,
+        "call_text": "const form = new FormDataPackage();",
+        "character": 74,
+        "end_line": 101,
+        "line": 84,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 2,
+        "call_line": 29,
+        "call_text": "test('custom X-Custom header is forwarded to mock fetch (case-insensitive)', async () => {",
+        "character": 23,
+        "end_line": 42,
+        "line": 28,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 32,
+        "call_line": 30,
+        "call_text": "const { fetch, getCalls } = createFetchCapture();",
+        "character": 88,
+        "end_line": 38,
+        "line": 29,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 32,
+        "call_line": 45,
+        "call_text": "const { fetch, getCalls } = createFetchCapture();",
+        "character": 80,
+        "end_line": 60,
+        "line": 44,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy",
+      "sample": {
+        "call_character": 2,
+        "call_line": 62,
+        "call_text": "test('GET via http adapter returns mocked response data', async () => {",
+        "character": 28,
+        "end_line": 74,
+        "line": 61,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/http.smoke.test.ts"
+      }
+    }
+  ],
+  "negative_edges": [],
+  "sampling": {
+    "max_sites": 50,
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [
+      {
+        "call_character": 16,
+        "call_line": 710,
+        "call_text": "export function toFormData(",
+        "character": 16,
+        "end_line": 750,
+        "line": 706,
+        "name": "getAdapter",
+        "pattern_priority": 0,
+        "rel_file": "index.d.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 716,
+        "call_text": "export function formToJSON(form: GenericFormData | GenericHTMLFormElement): object;",
+        "character": 16,
+        "end_line": 750,
+        "line": 710,
+        "name": "toFormData",
+        "pattern_priority": 0,
+        "rel_file": "index.d.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 731,
+        "call_text": "export function create(config?: CreateAxiosDefaults): AxiosInstance;",
+        "character": 16,
+        "end_line": 750,
+        "line": 716,
+        "name": "formToJSON",
+        "pattern_priority": 0,
+        "rel_file": "index.d.ts"
+      },
+      {
+        "call_character": 43,
+        "call_line": 575,
+        "call_text": "...(options.headers as AxiosHeaders).toJSON(),",
+        "character": 9,
+        "end_line": 579,
+        "line": 571,
+        "name": "getRequestConfig2",
+        "pattern_priority": 0,
+        "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 50,
+        "call_text": "console.log(response.data);",
+        "character": 6,
+        "end_line": 55,
+        "line": 49,
+        "name": "handleResponse",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/cjs/tests/helpers/cjs-typing.ts"
+      },
+      {
+        "call_character": 12,
+        "call_line": 59,
+        "call_text": "console.log(error.response.data);",
+        "character": 6,
+        "end_line": 65,
+        "line": 57,
+        "name": "handleError",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/cjs/tests/helpers/cjs-typing.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 112,
+        "call_text": "console.log(response.data.id);",
+        "character": 6,
+        "end_line": 118,
+        "line": 111,
+        "name": "handleUserResponse",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/cjs/tests/helpers/cjs-typing.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 209,
+        "call_text": "console.log(response);",
+        "character": 6,
+        "end_line": 210,
+        "line": 208,
+        "name": "handleStringResponse",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/cjs/tests/helpers/cjs-typing.ts"
+      },
+      {
+        "call_character": 17,
+        "call_line": 375,
+        "call_text": "return Promise.resolve(response);",
+        "character": 6,
+        "end_line": 376,
+        "line": 367,
+        "name": "adapter",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/cjs/tests/helpers/cjs-typing.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 72,
+        "call_text": "console.log(response.data);",
+        "character": 6,
+        "end_line": 77,
+        "line": 71,
+        "name": "handleResponse",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+      },
+      {
+        "call_character": 12,
+        "call_line": 81,
+        "call_text": "console.log(error.response.data);",
+        "character": 6,
+        "end_line": 87,
+        "line": 79,
+        "name": "handleError",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 134,
+        "call_text": "console.log(response.data.id);",
+        "character": 6,
+        "end_line": 140,
+        "line": 133,
+        "name": "handleUserResponse",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 231,
+        "call_text": "console.log(response);",
+        "character": 6,
+        "end_line": 232,
+        "line": 230,
+        "name": "handleStringResponse",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+      },
+      {
+        "call_character": 17,
+        "call_line": 401,
+        "call_text": "return Promise.resolve(response);",
+        "character": 6,
+        "end_line": 402,
+        "line": 393,
+        "name": "adapter",
+        "pattern_priority": 1,
+        "rel_file": "tests/module/esm/tests/helpers/esm-index.ts"
+      },
+      {
+        "call_character": 17,
+        "call_line": 16,
+        "call_text": "return new Response(JSON.stringify({ ok: true }), {",
+        "character": 10,
+        "end_line": 20,
+        "line": 13,
+        "name": "fetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 9,
+        "call_text": "calls.push({ input, init });",
+        "character": 8,
+        "end_line": 19,
+        "line": 8,
+        "name": "mockFetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 57,
+        "call_line": 28,
+        "call_text": "const request = input instanceof Request ? input : new Request(input as string, init);",
+        "character": 6,
+        "end_line": 38,
+        "line": 27,
+        "name": "getRequestMeta",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 54,
+        "call_text": "return Buffer.isBuffer(value) ? value.toString('utf8') : String(value);",
+        "character": 6,
+        "end_line": 55,
+        "line": 53,
+        "name": "bodyAsUtf8",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 6,
+        "call_text": "const fetch = async (input: unknown, init?: RequestInit) => {",
+        "character": 6,
+        "end_line": 20,
+        "line": 3,
+        "name": "createFetchCapture",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 59,
+        "call_line": 7,
+        "call_text": "const request = input instanceof Request ? input : new Request(input as string, init);",
+        "character": 8,
+        "end_line": 14,
+        "line": 6,
+        "name": "fetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 6,
+        "call_text": "const fetch = async (input: unknown, init?: RequestInit) => {",
+        "character": 6,
+        "end_line": 20,
+        "line": 3,
+        "name": "createFetchCapture",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/interceptors.smoke.test.ts"
+      },
+      {
+        "call_character": 59,
+        "call_line": 7,
+        "call_text": "const request = input instanceof Request ? input : new Request(input as string, init);",
+        "character": 8,
+        "end_line": 14,
+        "line": 6,
+        "name": "fetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/interceptors.smoke.test.ts"
+      },
+      {
+        "call_character": 25,
+        "call_line": 14,
+        "call_text": "const stream = new ReadableStream({",
+        "character": 10,
+        "end_line": 29,
+        "line": 13,
+        "name": "fetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/progress.smoke.test.ts"
+      },
+      {
+        "call_character": 20,
+        "call_line": 10,
+        "call_text": "const error = new Error('The operation was aborted') as Error & { code?: string; name: string };",
+        "character": 6,
+        "end_line": 14,
+        "line": 9,
+        "name": "createAbortedError",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/bun/tests/timeout.smoke.test.ts"
+      },
+      {
+        "call_character": 15,
+        "call_line": 15,
+        "call_text": "return new Response(JSON.stringify({ ok: true }), {",
+        "character": 8,
+        "end_line": 19,
+        "line": 12,
+        "name": "fetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/deno/tests/cancel.smoke.test.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 9,
+        "call_text": "calls.push({ input, init });",
+        "character": 8,
+        "end_line": 19,
+        "line": 8,
+        "name": "mockFetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/deno/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 57,
+        "call_line": 28,
+        "call_text": "const request = input instanceof Request ? input : new Request(input, init);",
+        "character": 6,
+        "end_line": 38,
+        "line": 27,
+        "name": "getRequestMeta",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/deno/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 6,
+        "call_text": "const fetch = async (input: any, init?: any) => {",
+        "character": 6,
+        "end_line": 20,
+        "line": 3,
+        "name": "createFetchCapture",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/deno/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 59,
+        "call_line": 7,
+        "call_text": "const request = input instanceof Request ? input : new Request(input, init);",
+        "character": 8,
+        "end_line": 14,
+        "line": 6,
+        "name": "fetch",
+        "pattern_priority": 1,
+        "rel_file": "tests/smoke/deno/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 17,
+        "call_line": 14,
+        "call_text": "chunks.push(Buffer.from(chunk));",
+        "character": 8,
+        "end_line": 16,
+        "line": 13,
+        "name": "write",
+        "pattern_priority": 2,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      },
+      {
+        "call_character": 21,
+        "call_line": 16,
+        "call_text": "controller.enqueue(new TextEncoder().encode('ab'));",
+        "character": 8,
+        "end_line": 19,
+        "line": 15,
+        "name": "start",
+        "pattern_priority": 2,
+        "rel_file": "tests/smoke/bun/tests/progress.smoke.test.ts"
+      },
+      {
+        "call_character": 2,
+        "call_line": 10,
+        "call_text": "test('pre-aborted AbortController cancels before fetch is called', async () => {",
+        "character": 28,
+        "end_line": 36,
+        "line": 9,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      },
+      {
+        "call_character": 18,
+        "call_line": 13,
+        "call_text": "const fetch = async () => {",
+        "character": 78,
+        "end_line": 30,
+        "line": 10,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      },
+      {
+        "call_character": 10,
+        "call_line": 42,
+        "call_text": "reject(new DOMException('The operation was aborted', 'AbortError'));",
+        "character": 71,
+        "end_line": 70,
+        "line": 38,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      },
+      {
+        "call_character": 4,
+        "call_line": 81,
+        "call_text": "expect(axios.isCancel(new Error('random'))).toBe(false);",
+        "character": 60,
+        "end_line": 82,
+        "line": 80,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/cancel.smoke.test.ts"
+      },
+      {
+        "call_character": 2,
+        "call_line": 10,
+        "call_text": "test('non-2xx response rejects with AxiosError and status 404', async () => {",
+        "character": 22,
+        "end_line": 27,
+        "line": 9,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/error.smoke.test.ts"
+      },
+      {
+        "call_character": 18,
+        "call_line": 11,
+        "call_text": "const fetch = async () =>",
+        "character": 75,
+        "end_line": 22,
+        "line": 10,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/error.smoke.test.ts"
+      },
+      {
+        "call_character": 4,
+        "call_line": 30,
+        "call_text": "expect(axios.isAxiosError(new Error('plain'))).toBe(false);",
+        "character": 64,
+        "end_line": 31,
+        "line": 29,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/error.smoke.test.ts"
+      },
+      {
+        "call_character": 2,
+        "call_line": 47,
+        "call_text": "test('GET resolves JSON response via fetch adapter', async () => {",
+        "character": 29,
+        "end_line": 58,
+        "line": 46,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 36,
+        "call_line": 48,
+        "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+        "character": 64,
+        "end_line": 53,
+        "line": 47,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 36,
+        "call_line": 61,
+        "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+        "character": 63,
+        "end_line": 75,
+        "line": 60,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 16,
+        "call_line": 78,
+        "call_text": "const run = async (",
+        "character": 56,
+        "end_line": 103,
+        "line": 77,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 36,
+        "call_line": 113,
+        "call_text": "const { mockFetch, getCalls } = createFetchMock();",
+        "character": 62,
+        "end_line": 118,
+        "line": 112,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/fetch.smoke.test.ts"
+      },
+      {
+        "call_character": 2,
+        "call_line": 58,
+        "call_text": "test('native Bun FormData body produces multipart/form-data content-type', async () => {",
+        "character": 25,
+        "end_line": 82,
+        "line": 57,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      },
+      {
+        "call_character": 21,
+        "call_line": 59,
+        "call_text": "const form = new FormData();",
+        "character": 86,
+        "end_line": 75,
+        "line": 58,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      },
+      {
+        "call_character": 21,
+        "call_line": 85,
+        "call_text": "const form = new FormDataPackage();",
+        "character": 74,
+        "end_line": 101,
+        "line": 84,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/formData.smoke.test.ts"
+      },
+      {
+        "call_character": 2,
+        "call_line": 29,
+        "call_text": "test('custom X-Custom header is forwarded to mock fetch (case-insensitive)', async () => {",
+        "character": 23,
+        "end_line": 42,
+        "line": 28,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 32,
+        "call_line": 30,
+        "call_text": "const { fetch, getCalls } = createFetchCapture();",
+        "character": 88,
+        "end_line": 38,
+        "line": 29,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 32,
+        "call_line": 45,
+        "call_text": "const { fetch, getCalls } = createFetchCapture();",
+        "character": 80,
+        "end_line": 60,
+        "line": 44,
+        "name": "test",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/headers.smoke.test.ts"
+      },
+      {
+        "call_character": 2,
+        "call_line": 62,
+        "call_text": "test('GET via http adapter returns mocked response data', async () => {",
+        "character": 28,
+        "end_line": 74,
+        "line": 61,
+        "name": "describe",
+        "pattern_priority": 3,
+        "rel_file": "tests/smoke/bun/tests/http.smoke.test.ts"
+      }
+    ],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "spot_checks": [],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

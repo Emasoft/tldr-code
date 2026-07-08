@@ -1,0 +1,378 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [
+    {
+      "id": 13,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 45,
+                "line": 470
+              },
+              "start": {
+                "character": 23,
+                "line": 470
+              }
+            },
+            {
+              "end": {
+                "character": 45,
+                "line": 470
+              },
+              "start": {
+                "character": 23,
+                "line": 470
+              }
+            }
+          ],
+          "to": {
+            "detail": "Injector",
+            "kind": 6,
+            "name": "reflectSelfParams",
+            "range": {
+              "end": {
+                "character": 3,
+                "line": 482
+              },
+              "start": {
+                "character": 2,
+                "line": 480
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 26,
+                "line": 480
+              },
+              "start": {
+                "character": 9,
+                "line": 480
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/core/injector/injector.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 22,
+                "line": 472
+              },
+              "start": {
+                "character": 4,
+                "line": 472
+              }
+            },
+            {
+              "end": {
+                "character": 22,
+                "line": 472
+              },
+              "start": {
+                "character": 4,
+                "line": 472
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "forEach",
+            "range": {
+              "end": {
+                "character": 92,
+                "line": 1461
+              },
+              "start": {
+                "character": 4,
+                "line": 1456
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 1461
+              },
+              "start": {
+                "character": 4,
+                "line": 1461
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es5.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 21,
+                "line": 473
+              },
+              "start": {
+                "character": 11,
+                "line": 473
+              }
+            },
+            {
+              "end": {
+                "character": 21,
+                "line": 473
+              },
+              "start": {
+                "character": 11,
+                "line": 473
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "from",
+            "range": {
+              "end": {
+                "character": 42,
+                "line": 69
+              },
+              "start": {
+                "character": 4,
+                "line": 65
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 8,
+                "line": 69
+              },
+              "start": {
+                "character": 4,
+                "line": 69
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es2015.core.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 21,
+                "line": 473
+              },
+              "start": {
+                "character": 11,
+                "line": 473
+              }
+            },
+            {
+              "end": {
+                "character": 21,
+                "line": 473
+              },
+              "start": {
+                "character": 11,
+                "line": 473
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "from",
+            "range": {
+              "end": {
+                "character": 55,
+                "line": 98
+              },
+              "start": {
+                "character": 4,
+                "line": 94
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 8,
+                "line": 98
+              },
+              "start": {
+                "character": 4,
+                "line": 98
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es2015.iterable.d.ts"
+          }
+        }
+      ]
+    }
+  ],
+  "prepare_params": {
+    "position": {
+      "character": 9,
+      "line": 466
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/core/injector/injector.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 12,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "detail": "Injector",
+        "kind": 6,
+        "name": "reflectConstructorParams",
+        "range": {
+          "end": {
+            "character": 3,
+            "line": 474
+          },
+          "start": {
+            "character": 2,
+            "line": 466
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 33,
+            "line": 466
+          },
+          "start": {
+            "character": 9,
+            "line": 466
+          }
+        },
+        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/core/injector/injector.ts"
+      }
+    ]
+  },
+  "repo": "typescript-nest",
+  "sample": {
+    "call_character": 18,
+    "call_line": 468,
+    "call_text": "...(Reflect.getMetadata(PARAMTYPES_METADATA, type) || []),",
+    "character": 9,
+    "end_line": 474,
+    "line": 466,
+    "name": "reflectConstructorParams",
+    "pattern_priority": 2,
+    "rel_file": "packages/core/injector/injector.ts"
+  },
+  "sample_index": 5
+}

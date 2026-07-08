@@ -1,0 +1,132 @@
+{
+  "go": {
+    "corpus_repos": [
+      "go-gin",
+      "go-httprouter"
+    ],
+    "file_extensions": [
+      ".go"
+    ],
+    "lsp_server": {
+      "command": [
+        "gopls"
+      ],
+      "initialize_timeout": 60,
+      "language_id": "go"
+    },
+    "scanner": {
+      "function_patterns": [
+        "^\\s*func\\s+(?:\\([^)]*\\)\\s*)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\("
+      ],
+      "style": "brace"
+    },
+    "truth_quality_tier": "T1",
+    "truth_source_type": "callHierarchy"
+  },
+  "java": {
+    "corpus_repos": [
+      "java-petclinic",
+      "java-retrofit"
+    ],
+    "file_extensions": [
+      ".java"
+    ],
+    "lsp_server": {
+      "command": [
+        "jdtls"
+      ],
+      "initialize_timeout": 60,
+      "language_id": "java",
+      "workspace_data_root": "continuum/benchmark/repos/.jdtls-workspaces"
+    },
+    "scanner": {
+      "function_patterns": [
+        "^\\s*(?:public|protected|private|static|final|synchronized|abstract|native|strictfp|\\s)+[A-Za-z0-9_<>,.?\\[\\]@\\s]+\\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\([^;]*\\)\\s*(?:throws\\s+[A-Za-z0-9_,.\\s]+)?\\{",
+        "^\\s*(?:public|protected|private|\\s)*(?P<name>[A-Z][A-Za-z0-9_]*)\\s*\\([^;]*\\)\\s*(?:throws\\s+[A-Za-z0-9_,.\\s]+)?\\{"
+      ],
+      "style": "brace"
+    },
+    "truth_quality_tier": "T1",
+    "truth_source_type": "callHierarchy"
+  },
+  "python": {
+    "corpus_repos": [
+      "python-flask",
+      "python-requests"
+    ],
+    "file_extensions": [
+      ".py"
+    ],
+    "lsp_server": {
+      "command": [
+        "pyright-langserver",
+        "--stdio"
+      ],
+      "initialize_timeout": 60,
+      "language_id": "python"
+    },
+    "runtime_trace": {
+      "repo": "python-flask",
+      "timeout_seconds": 120
+    },
+    "scanner": {
+      "style": "python-ast"
+    },
+    "truth_quality_tier": "T1",
+    "truth_source_type": "callHierarchy"
+  },
+  "rust": {
+    "corpus_repos": [
+      "rust-ripgrep",
+      "rust-clap"
+    ],
+    "file_extensions": [
+      ".rs"
+    ],
+    "lsp_server": {
+      "command": [
+        "rust-analyzer"
+      ],
+      "initialize_timeout": 45,
+      "language_id": "rust"
+    },
+    "scanner": {
+      "function_patterns": [
+        "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?(?:const\\s+)?(?:unsafe\\s+)?(?:extern\\s+\"[^\"]+\"\\s+)?fn\\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\\s*\\("
+      ],
+      "style": "brace"
+    },
+    "truth_quality_tier": "T1",
+    "truth_source_type": "callHierarchy"
+  },
+  "typescript": {
+    "corpus_repos": [
+      "typescript-axios",
+      "typescript-nest"
+    ],
+    "file_extensions": [
+      ".ts",
+      ".tsx"
+    ],
+    "lsp_server": {
+      "command": [
+        "typescript-language-server",
+        "--stdio"
+      ],
+      "initialize_timeout": 60,
+      "language_id": "typescript"
+    },
+    "scanner": {
+      "function_patterns": [
+        "^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(",
+        "^\\s*(?:export\\s+)?(?:const|let|var)\\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\\s*(?::[^=]+)?=\\s*(?:async\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][A-Za-z0-9_$]*)\\s*(?::[^=]+)?=>\\s*\\{",
+        "^\\s*(?:public\\s+|private\\s+|protected\\s+|static\\s+|async\\s+|override\\s+|readonly\\s+)*(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:<[^>{}]+>)?\\s*\\([^)]*\\)\\s*(?::[^={]+)?\\{",
+        "^\\s*(?P<name>describe|it|test|beforeEach|afterEach)\\s*\\([^\\n]*?(?:async\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][A-Za-z0-9_$]*)\\s*(?P<target>=>)\\s*\\{",
+        "^\\s*Deno\\.(?P<name>test)\\s*\\([^\\n]*?(?:async\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][A-Za-z0-9_$]*)\\s*(?P<target>=>)\\s*\\{"
+      ],
+      "style": "brace"
+    },
+    "truth_quality_tier": "T1",
+    "truth_source_type": "callHierarchy"
+  }
+}

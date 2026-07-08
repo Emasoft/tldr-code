@@ -1,0 +1,530 @@
+{
+  "case_id": "repos/rust-clap",
+  "corpus_commit": "8387c812c4b9726474b8407f81ec97f0acf570ed",
+  "defect_class": null,
+  "description": "Skipped deterministic sampled LSP callHierarchy truth set for rust-clap: LSP startup/index failure: rust-clap: timeout waiting for initialize",
+  "entrypoints": [
+    "clap_bench/benches/complex.rs",
+    "clap_bench/benches/empty.rs",
+    "clap_bench/benches/ripgrep.rs",
+    "clap_bench/benches/rustup.rs",
+    "clap_bench/benches/simple.rs",
+    "clap_builder/src/builder/action.rs",
+    "clap_builder/src/builder/app_settings.rs",
+    "clap_builder/src/builder/arg.rs"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "rust",
+  "negative_edges": [],
+  "sampling": {
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [
+      {
+        "call_character": 18,
+        "call_line": 50,
+        "call_text": "create_app!().get_matches_from(args.args())",
+        "character": 3,
+        "end_line": 51,
+        "line": 49,
+        "name": "startup",
+        "rel_file": "clap_bench/benches/complex.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 56,
+        "call_text": "bencher.bench_local(|| build_help(&mut cmd));",
+        "character": 3,
+        "end_line": 57,
+        "line": 54,
+        "name": "render_help",
+        "rel_file": "clap_bench/benches/complex.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 60,
+        "call_text": "let help = cmd.render_help();",
+        "character": 3,
+        "end_line": 62,
+        "line": 59,
+        "name": "build_help",
+        "rel_file": "clap_bench/benches/complex.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 131,
+        "call_text": "self.name().fmt(f)",
+        "character": 7,
+        "end_line": 132,
+        "line": 130,
+        "name": "fmt",
+        "rel_file": "clap_bench/benches/complex.rs"
+      },
+      {
+        "call_character": 18,
+        "call_line": 16,
+        "call_text": "create_app!().get_matches_from(vec![\"\"])",
+        "character": 3,
+        "end_line": 17,
+        "line": 15,
+        "name": "startup",
+        "rel_file": "clap_bench/benches/empty.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 22,
+        "call_text": "bencher.bench_local(|| build_help(&mut cmd));",
+        "character": 3,
+        "end_line": 23,
+        "line": 20,
+        "name": "render_help",
+        "rel_file": "clap_bench/benches/empty.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 26,
+        "call_text": "let help = cmd.render_help();",
+        "character": 3,
+        "end_line": 28,
+        "line": 25,
+        "name": "build_help",
+        "rel_file": "clap_bench/benches/empty.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 17,
+        "call_text": "app_short()",
+        "character": 7,
+        "end_line": 18,
+        "line": 16,
+        "name": "short_help",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 22,
+        "call_text": "app_long()",
+        "character": 7,
+        "end_line": 23,
+        "line": 21,
+        "name": "long_help",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 22,
+        "call_line": 31,
+        "call_text": "let mut cmd = app_short();",
+        "character": 7,
+        "end_line": 33,
+        "line": 30,
+        "name": "short_help",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 22,
+        "call_line": 37,
+        "call_text": "let mut cmd = app_long();",
+        "character": 7,
+        "end_line": 39,
+        "line": 36,
+        "name": "long_help",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 47,
+        "call_text": "app_short().get_matches_from(vec![\"rg\", \"pat\"])",
+        "character": 7,
+        "end_line": 48,
+        "line": 46,
+        "name": "simple",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 52,
+        "call_text": "app_short().get_matches_from(vec![",
+        "character": 7,
+        "end_line": 65,
+        "line": 51,
+        "name": "complex",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 69,
+        "call_text": "app_short().get_matches_from(vec![",
+        "character": 7,
+        "end_line": 231,
+        "line": 68,
+        "name": "xargs",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 4,
+        "call_line": 266,
+        "call_text": "cmd(false, |k| USAGES[k].short)",
+        "character": 3,
+        "end_line": 267,
+        "line": 265,
+        "name": "app_short",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 4,
+        "call_line": 271,
+        "call_text": "cmd(true, |k| USAGES[k].long)",
+        "character": 3,
+        "end_line": 272,
+        "line": 270,
+        "name": "app_long",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 276,
+        "call_text": "let help = cmd.render_help();",
+        "character": 3,
+        "end_line": 278,
+        "line": 275,
+        "name": "build_help",
+        "rel_file": "clap_bench/benches/ripgrep.rs"
+      },
+      {
+        "call_character": 4,
+        "call_line": 10,
+        "call_text": "build_cli()",
+        "character": 3,
+        "end_line": 11,
+        "line": 9,
+        "name": "build",
+        "rel_file": "clap_bench/benches/rustup.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 18,
+        "call_text": "build_cli().get_matches_from([\"\"])",
+        "character": 7,
+        "end_line": 19,
+        "line": 17,
+        "name": "empty",
+        "rel_file": "clap_bench/benches/rustup.rs"
+      },
+      {
+        "call_character": 8,
+        "call_line": 23,
+        "call_text": "build_cli().get_matches_from([\"rustup override add stable\"])",
+        "character": 7,
+        "end_line": 24,
+        "line": 22,
+        "name": "sc",
+        "rel_file": "clap_bench/benches/rustup.rs"
+      },
+      {
+        "call_character": 9,
+        "call_line": 29,
+        "call_text": ".version(\"0.9.0\") // Simulating",
+        "character": 3,
+        "end_line": 315,
+        "line": 27,
+        "name": "build_cli",
+        "rel_file": "clap_bench/benches/rustup.rs"
+      },
+      {
+        "call_character": 22,
+        "call_line": 26,
+        "call_text": "create_app!().get_matches_from(vec![\"myprog\", \"-f\"])",
+        "character": 7,
+        "end_line": 27,
+        "line": 25,
+        "name": "flag",
+        "rel_file": "clap_bench/benches/simple.rs"
+      },
+      {
+        "call_character": 22,
+        "call_line": 31,
+        "call_text": "create_app!().get_matches_from(vec![\"myprog\", \"-o\", \"option1\"])",
+        "character": 7,
+        "end_line": 32,
+        "line": 30,
+        "name": "opt",
+        "rel_file": "clap_bench/benches/simple.rs"
+      },
+      {
+        "call_character": 22,
+        "call_line": 36,
+        "call_text": "create_app!().get_matches_from(vec![\"myprog\", \"arg1\"])",
+        "character": 7,
+        "end_line": 37,
+        "line": 35,
+        "name": "pos",
+        "rel_file": "clap_bench/benches/simple.rs"
+      },
+      {
+        "call_character": 12,
+        "call_line": 43,
+        "call_text": "bencher.bench_local(|| build_help(&mut cmd));",
+        "character": 3,
+        "end_line": 44,
+        "line": 41,
+        "name": "render_help",
+        "rel_file": "clap_bench/benches/simple.rs"
+      },
+      {
+        "call_character": 19,
+        "call_line": 47,
+        "call_text": "let help = cmd.render_help();",
+        "character": 3,
+        "end_line": 49,
+        "line": 46,
+        "name": "build_help",
+        "rel_file": "clap_bench/benches/simple.rs"
+      },
+      {
+        "call_character": 29,
+        "call_line": 406,
+        "call_text": "Self::SetTrue => Some(std::ffi::OsStr::new(\"false\")),",
+        "character": 18,
+        "end_line": 414,
+        "line": 402,
+        "name": "default_value",
+        "rel_file": "clap_builder/src/builder/action.rs"
+      },
+      {
+        "call_character": 29,
+        "call_line": 420,
+        "call_text": "Self::SetTrue => Some(std::ffi::OsStr::new(\"true\")),",
+        "character": 18,
+        "end_line": 428,
+        "line": 416,
+        "name": "default_missing_value",
+        "rel_file": "clap_builder/src/builder/action.rs"
+      },
+      {
+        "call_character": 29,
+        "call_line": 434,
+        "call_text": "Self::SetTrue => Some(super::ValueParser::bool()),",
+        "character": 18,
+        "end_line": 442,
+        "line": 430,
+        "name": "default_value_parser",
+        "rel_file": "clap_builder/src/builder/action.rs"
+      },
+      {
+        "call_character": 27,
+        "call_line": 451,
+        "call_text": "Self::Count => Some(AnyValueId::of::<CountType>()),",
+        "character": 18,
+        "end_line": 457,
+        "line": 445,
+        "name": "value_type_id",
+        "rel_file": "clap_builder/src/builder/action.rs"
+      },
+      {
+        "call_character": 26,
+        "call_line": 10,
+        "call_text": "self.0 |= setting.bit();",
+        "character": 18,
+        "end_line": 11,
+        "line": 9,
+        "name": "set",
+        "rel_file": "clap_builder/src/builder/app_settings.rs"
+      },
+      {
+        "call_character": 27,
+        "call_line": 14,
+        "call_text": "self.0 &= !setting.bit();",
+        "character": 18,
+        "end_line": 15,
+        "line": 13,
+        "name": "unset",
+        "rel_file": "clap_builder/src/builder/app_settings.rs"
+      },
+      {
+        "call_character": 25,
+        "call_line": 18,
+        "call_text": "self.0 & setting.bit() != 0",
+        "character": 18,
+        "end_line": 19,
+        "line": 17,
+        "name": "is_set",
+        "rel_file": "clap_builder/src/builder/app_settings.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 30,
+        "call_text": "self.insert(rhs);",
+        "character": 7,
+        "end_line": 32,
+        "line": 29,
+        "name": "bitor",
+        "rel_file": "clap_builder/src/builder/app_settings.rs"
+      },
+      {
+        "call_character": 21,
+        "call_line": 130,
+        "call_text": "self.id = id.into();",
+        "character": 11,
+        "end_line": 132,
+        "line": 129,
+        "name": "id",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 15,
+        "call_line": 182,
+        "call_text": "if let Some(s) = s.into_resettable().into_option() {",
+        "character": 11,
+        "end_line": 189,
+        "line": 181,
+        "name": "short",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 22,
+        "call_line": 228,
+        "call_text": "self.long = l.into_resettable().into_option();",
+        "character": 11,
+        "end_line": 230,
+        "line": 227,
+        "name": "long",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 15,
+        "call_line": 254,
+        "call_text": "if let Some(name) = name.into_resettable().into_option() {",
+        "character": 11,
+        "end_line": 260,
+        "line": 253,
+        "name": "alias",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 15,
+        "call_line": 284,
+        "call_text": "if let Some(name) = name.into_resettable().into_option() {",
+        "character": 11,
+        "end_line": 291,
+        "line": 283,
+        "name": "short_alias",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 318,
+        "call_text": ".extend(names.into_iter().map(|x| (x.into(), false)));",
+        "character": 11,
+        "end_line": 320,
+        "line": 316,
+        "name": "aliases",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 31,
+        "call_line": 348,
+        "call_text": "self.short_aliases.push((s, false));",
+        "character": 11,
+        "end_line": 351,
+        "line": 345,
+        "name": "short_aliases",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 15,
+        "call_line": 375,
+        "call_text": "if let Some(name) = name.into_resettable().into_option() {",
+        "character": 11,
+        "end_line": 381,
+        "line": 374,
+        "name": "visible_alias",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 15,
+        "call_line": 404,
+        "call_text": "if let Some(name) = name.into_resettable().into_option() {",
+        "character": 11,
+        "end_line": 411,
+        "line": 403,
+        "name": "visible_short_alias",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 13,
+        "call_line": 436,
+        "call_text": ".extend(names.into_iter().map(|n| (n.into(), true)));",
+        "character": 11,
+        "end_line": 438,
+        "line": 434,
+        "name": "visible_aliases",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 31,
+        "call_line": 463,
+        "call_text": "self.short_aliases.push((n, true));",
+        "character": 11,
+        "end_line": 466,
+        "line": 460,
+        "name": "visible_short_aliases",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 25,
+        "call_line": 539,
+        "call_text": "self.index = idx.into_resettable().into_option();",
+        "character": 11,
+        "end_line": 541,
+        "line": 538,
+        "name": "index",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 17,
+        "call_line": 581,
+        "call_text": "self.setting(ArgSettings::TrailingVarArg)",
+        "character": 11,
+        "end_line": 585,
+        "line": 579,
+        "name": "trailing_var_arg",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 17,
+        "call_line": 690,
+        "call_text": "self.setting(ArgSettings::Last)",
+        "character": 11,
+        "end_line": 694,
+        "line": 688,
+        "name": "last",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 17,
+        "call_line": 756,
+        "call_text": "self.setting(ArgSettings::Required)",
+        "character": 11,
+        "end_line": 760,
+        "line": 754,
+        "name": "required",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      },
+      {
+        "call_character": 15,
+        "call_line": 825,
+        "call_text": "if let Some(arg_id) = arg_id.into_resettable().into_option() {",
+        "character": 11,
+        "end_line": 831,
+        "line": 824,
+        "name": "requires",
+        "rel_file": "clap_builder/src/builder/arg.rs"
+      }
+    ],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "skip_reason": "LSP startup/index failure: rust-clap: timeout waiting for initialize",
+  "spot_checks": [],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

@@ -1,0 +1,368 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [
+    {
+      "id": 63,
+      "jsonrpc": "2.0",
+      "result": [
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 28,
+                "line": 16
+              },
+              "start": {
+                "character": 10,
+                "line": 16
+              }
+            },
+            {
+              "end": {
+                "character": 28,
+                "line": 16
+              },
+              "start": {
+                "character": 10,
+                "line": 16
+              }
+            },
+            {
+              "end": {
+                "character": 28,
+                "line": 17
+              },
+              "start": {
+                "character": 10,
+                "line": 17
+              }
+            },
+            {
+              "end": {
+                "character": 28,
+                "line": 17
+              },
+              "start": {
+                "character": 10,
+                "line": 17
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "enqueue",
+            "range": {
+              "end": {
+                "character": 28,
+                "line": 30368
+              },
+              "start": {
+                "character": 4,
+                "line": 30363
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 30368
+              },
+              "start": {
+                "character": 4,
+                "line": 30368
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 53,
+                "line": 16
+              },
+              "start": {
+                "character": 29,
+                "line": 16
+              }
+            },
+            {
+              "end": {
+                "character": 53,
+                "line": 16
+              },
+              "start": {
+                "character": 29,
+                "line": 16
+              }
+            },
+            {
+              "end": {
+                "character": 53,
+                "line": 17
+              },
+              "start": {
+                "character": 29,
+                "line": 17
+              }
+            },
+            {
+              "end": {
+                "character": 53,
+                "line": 17
+              },
+              "start": {
+                "character": 29,
+                "line": 17
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "encode",
+            "range": {
+              "end": {
+                "character": 52,
+                "line": 36489
+              },
+              "start": {
+                "character": 4,
+                "line": 36484
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 10,
+                "line": 36489
+              },
+              "start": {
+                "character": 4,
+                "line": 36489
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+          }
+        },
+        {
+          "fromRanges": [
+            {
+              "end": {
+                "character": 26,
+                "line": 18
+              },
+              "start": {
+                "character": 10,
+                "line": 18
+              }
+            },
+            {
+              "end": {
+                "character": 26,
+                "line": 18
+              },
+              "start": {
+                "character": 10,
+                "line": 18
+              }
+            }
+          ],
+          "to": {
+            "detail": "",
+            "kind": 6,
+            "name": "close",
+            "range": {
+              "end": {
+                "character": 18,
+                "line": 30362
+              },
+              "start": {
+                "character": 4,
+                "line": 30357
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 9,
+                "line": 30362
+              },
+              "start": {
+                "character": 4,
+                "line": 30362
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+          }
+        }
+      ]
+    }
+  ],
+  "prepare_params": {
+    "position": {
+      "character": 8,
+      "line": 15
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 62,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "detail": "",
+        "kind": 6,
+        "name": "start",
+        "range": {
+          "end": {
+            "character": 9,
+            "line": 19
+          },
+          "start": {
+            "character": 8,
+            "line": 15
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 13,
+            "line": 15
+          },
+          "start": {
+            "character": 8,
+            "line": 15
+          }
+        },
+        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
+      }
+    ]
+  },
+  "repo": "typescript-axios",
+  "sample": {
+    "call_character": 21,
+    "call_line": 16,
+    "call_text": "controller.enqueue(new TextEncoder().encode('ab'));",
+    "character": 8,
+    "end_line": 19,
+    "line": 15,
+    "name": "start",
+    "pattern_priority": 2,
+    "rel_file": "tests/smoke/bun/tests/progress.smoke.test.ts"
+  },
+  "sample_index": 30
+}

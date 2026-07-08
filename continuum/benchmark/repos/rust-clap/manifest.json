@@ -1,0 +1,17 @@
+{
+  "commit_sha": "8387c812c4b9726474b8407f81ec97f0acf570ed",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/rust-clap",
+  "language": "rust",
+  "lsp_server": {
+    "command": [
+      "rust-analyzer"
+    ],
+    "version": "error: Unknown binary 'rust-analyzer' in official toolchain 'stable-aarch64-apple-darwin'."
+  },
+  "name": "rust-clap",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

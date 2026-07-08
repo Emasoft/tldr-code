@@ -1,0 +1,177 @@
+{
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "\"",
+            "'",
+            "/",
+            "@",
+            "<"
+          ]
+        },
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "_typescript.applyRefactoring",
+            "_typescript.configurePlugin",
+            "_typescript.organizeImports",
+            "_typescript.applyRenameFile",
+            "_typescript.goToSourceDefinition",
+            "_typescript.applyCodeActionCommand",
+            "_typescript.applyFixAllCodeAction",
+            "typescript.tsserverRequest"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "linkedEditingRangeProvider": false,
+        "referencesProvider": true,
+        "renameProvider": true,
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": null,
+          "full": true,
+          "legend": {
+            "tokenModifiers": [
+              "declaration",
+              "static",
+              "async",
+              "readonly",
+              "defaultLibrary",
+              "local"
+            ],
+            "tokenTypes": [
+              "class",
+              "enum",
+              "interface",
+              "namespace",
+              "typeParameter",
+              "type",
+              "parameter",
+              "variable",
+              "enumMember",
+              "property",
+              "function",
+              "member"
+            ]
+          },
+          "range": true
+        },
+        "signatureHelpProvider": {
+          "retriggerCharacters": [
+            ")"
+          ],
+          "triggerCharacters": [
+            "(",
+            ",",
+            "<"
+          ]
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": true,
+        "workspace": {
+          "fileOperations": {
+            "willRename": {
+              "filters": [
+                {
+                  "pattern": {
+                    "glob": "**/*.{ts,js,jsx,tsx,mjs,mts,cjs,cts}",
+                    "matches": "file"
+                  },
+                  "scheme": "file"
+                },
+                {
+                  "pattern": {
+                    "glob": "**",
+                    "matches": "folder"
+                  },
+                  "scheme": "file"
+                }
+              ]
+            }
+          }
+        },
+        "workspaceSymbolProvider": true
+      }
+    }
+  },
+  "language": "typescript",
+  "outgoing_responses": [
+    {
+      "id": 15,
+      "jsonrpc": "2.0",
+      "result": []
+    }
+  ],
+  "prepare_params": {
+    "position": {
+      "character": 9,
+      "line": 476
+    },
+    "textDocument": {
+      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/core/injector/injector.ts"
+    }
+  },
+  "prepare_response": {
+    "id": 14,
+    "jsonrpc": "2.0",
+    "result": [
+      {
+        "detail": "Injector",
+        "kind": 6,
+        "name": "reflectOptionalParams",
+        "range": {
+          "end": {
+            "character": 3,
+            "line": 478
+          },
+          "start": {
+            "character": 2,
+            "line": 476
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 30,
+            "line": 476
+          },
+          "start": {
+            "character": 9,
+            "line": 476
+          }
+        },
+        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-nest/packages/core/injector/injector.ts"
+      }
+    ]
+  },
+  "repo": "typescript-nest",
+  "sample": {
+    "call_character": 19,
+    "call_line": 477,
+    "call_text": "return Reflect.getMetadata(OPTIONAL_DEPS_METADATA, type) || [];",
+    "character": 9,
+    "end_line": 478,
+    "line": 476,
+    "name": "reflectOptionalParams",
+    "pattern_priority": 2,
+    "rel_file": "packages/core/injector/injector.ts"
+  },
+  "sample_index": 6
+}

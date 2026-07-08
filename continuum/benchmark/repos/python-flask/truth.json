@@ -1,0 +1,8 @@
+{
+  "case_id": "repos/python-flask",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "language": "python",
+  "notes": "Sampled real-repo callHierarchy truth for python-flask at 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}

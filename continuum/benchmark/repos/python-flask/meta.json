@@ -1,0 +1,131 @@
+{
+  "case_id": "repos/python-flask",
+  "defect_class": null,
+  "description": "Deterministic sampled LSP callHierarchy truth set for python-flask.",
+  "entrypoints": [
+    "src/flask/app.py",
+    "src/flask/cli.py"
+  ],
+  "feature": "real repo sampled callHierarchy",
+  "language": "python",
+  "lsp_errors": [
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 24,
+        "call_line": 73,
+        "call_text": "if value is None or isinstance(value, timedelta):",
+        "character": 4,
+        "end_line": 76,
+        "line": 72,
+        "name": "_make_timedelta",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 20,
+        "call_line": 86,
+        "call_text": "if args and isinstance(args[0], AppContext):",
+        "character": 4,
+        "end_line": 91,
+        "line": 84,
+        "name": "remove_ctx",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 20,
+        "call_line": 86,
+        "call_text": "if args and isinstance(args[0], AppContext):",
+        "character": 8,
+        "end_line": 89,
+        "line": 85,
+        "name": "wrapper",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 20,
+        "call_line": 99,
+        "call_text": "args = (app_ctx._get_current_object(),)",
+        "character": 4,
+        "end_line": 105,
+        "line": 96,
+        "name": "add_ctx",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 20,
+        "call_line": 99,
+        "call_text": "args = (app_ctx._get_current_object(),)",
+        "character": 8,
+        "end_line": 103,
+        "line": 97,
+        "name": "wrapper",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 26,
+        "call_line": 273,
+        "call_text": "base_method = getattr(Flask, method.__name__)",
+        "character": 8,
+        "end_line": 307,
+        "line": 253,
+        "name": "Flask.__init_subclass__",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 8,
+        "call_line": 322,
+        "call_text": "super().__init__(",
+        "character": 8,
+        "end_line": 362,
+        "line": 309,
+        "name": "Flask.__init__",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "sample": {
+        "call_character": 11,
+        "call_line": 386,
+        "call_text": "if isinstance(value, timedelta):",
+        "character": 8,
+        "end_line": 389,
+        "line": 364,
+        "name": "Flask.get_send_file_max_age",
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "stopped early after 8 consecutive prepareCallHierarchy timeouts"
+    }
+  ],
+  "negative_edges": [],
+  "sampling": {
+    "max_sites": 50,
+    "method": "file path sort, function declaration order, call-site line order; first N",
+    "n": 50,
+    "sampled_sites": [],
+    "seed": "deterministic:path-sort:no-random"
+  },
+  "spot_checks": [],
+  "truth_quality_tier": "T1",
+  "truth_source_type": "callHierarchy"
+}

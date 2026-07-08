@@ -1,0 +1,18 @@
+{
+  "commit_sha": "d64b9ad4bf1c14e21e0df3f0f4320fec81180e91",
+  "corpus_path": "/Users/cosimo/.tldr-audit/corpora/python-requests",
+  "language": "python",
+  "lsp_server": {
+    "command": [
+      "pyright-langserver",
+      "--stdio"
+    ],
+    "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+  },
+  "name": "python-requests",
+  "schema_version": "repo-truth-manifest.v1",
+  "truth_files": [
+    "truth.json"
+  ],
+  "truth_quality_tier": "T1"
+}

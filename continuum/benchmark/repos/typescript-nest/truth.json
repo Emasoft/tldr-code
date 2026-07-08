@@ -1,0 +1,243 @@
+{
+  "case_id": "repos/typescript-nest",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "applyProperties",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8abaf1408faa1b4829a3126cd8a0ce180259328eaf5a56c384a465492bf4fa17",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "callback",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "getNowTimestamp",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ce3981ac9777280691f32852603ccf0368f2994aabf76d66dde813bc7a84ef52",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "callback",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "instantiateClass",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "72197c88d11c0434890798560f1e0d23612201a2e255c8dc98fb49ccf375dd2f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "callback",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "resolveProperties",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a64540a5b7753cb5e33abfd9d43fa35d9b5832d5d40b5dfbf883ccfff92a897c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "callback",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "createResolutionContext",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "61c56fa987e1e364b2a86189740de76324bd1ee30ca57cf0480fc31289819667",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "loadEnhancer",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "loadInstance",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1a0911db7ae8d243d7c300eb5fd0ec4939f7790ee9f189ec1087c6ac79ad9635",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "loadEnhancer",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "reflectSelfParams",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "54897c356d19090328b0cd67ffe6b26ce8d86875cc6a90dcf0cd67e50869c7d8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "reflectConstructorParams",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "getContextId",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dea4a608ba29357120406ece7bf44cbdc696c8c2c29882fe208087fc1a8d1514",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "resolveParam",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "getEffectiveResolutionContext",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bce52e900c2b2bae51f5912f61a445100b2d8f1a7507e9482e6391197110e1de",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "resolveParam",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "getStaticTransientResolutionContext",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9e79d21760074bb93a0eb5f69863b0a8932d46404706ccdb6231062276c72b16",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "resolveParam",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "isInquirer",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cff4932fac1af1152690f23fbea3e2cc60ab32c46e80e39db8a6ec9ff87673b2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "resolveParam",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "resolveComponentHost",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8e6cb8557864170249a60604857ebe6337fdd509e963b8fd0b4d7257fa2a9ef0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "resolveParam",
+      "src_line": null
+    },
+    {
+      "dst_file": "packages/core/injector/injector.ts",
+      "dst_func": "resolveSingleParam",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7d72cf29f7ca50020ac931c0ec93c6082b5c969b24ede73d810b89c16e5f64a4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "packages/core/injector/injector.ts",
+      "src_func": "resolveParam",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "Sampled real-repo callHierarchy truth for typescript-nest at 5843d513521917c0bc57d5464f127b03e830bff9. Scope is the deterministic sampled call sites in meta.json.",
+  "schema_version": "truth.v1"
+}
