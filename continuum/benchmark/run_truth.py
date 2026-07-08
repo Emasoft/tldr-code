@@ -2,16 +2,19 @@
 """Run the tldr ground-truth benchmark corpus.
 
 The harness is intentionally stdlib-only so it can run in the repo without
-bootstrap steps. It currently scores only `tldr calls`; report shape reserves
-slots for other commands and for future resolution-rung attribution.
+bootstrap steps. It scores `tldr calls` for the full corpus and scores
+definition/impact/dead only for micro-suites, where truth is complete enough
+for those command semantics.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,7 +29,15 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_BINARY = Path.home() / ".cargo" / "bin" / "tldr"
 DEFAULT_OUT = SCRIPT_DIR / "report.json"
 LANGUAGE_REGISTRY = SCRIPT_DIR / "languages.json"
-COMMAND = "calls"
+CALLS_COMMAND = "calls"
+MICRO_COMMANDS = ("definition", "impact", "dead")
+SOURCE_EXTENSIONS = {
+    "python": [".py"],
+    "typescript": [".ts"],
+    "go": [".go"],
+    "rust": [".rs"],
+    "java": [".java"],
+}
 ALLOWED_PROVENANCE = {"manual", "lsp-callHierarchy", "runtime-trace", "vendored-pycg"}
 ALLOWED_EDGE_KINDS = {"call", "method", "constructor"}
 
@@ -45,6 +56,29 @@ class EdgeKey:
             "dst_file": self.dst_file,
             "dst_func": self.dst_func,
         }
+
+
+@dataclass(frozen=True, order=True)
+class FunctionKey:
+    file: str
+    func: str
+
+    def as_dict(self) -> Dict[str, str]:
+        return {"file": self.file, "func": self.func}
+
+
+@dataclass(frozen=True)
+class SourceFunction:
+    key: FunctionKey
+    line_start: int
+    line_end: int
+
+
+@dataclass
+class SourceIndex:
+    lines_by_file: Dict[str, List[str]]
+    functions: List[SourceFunction]
+    by_key: Dict[FunctionKey, SourceFunction]
 
 
 @dataclass
@@ -245,7 +279,17 @@ def validate_truth(path: Path, truth: Dict[str, Any]) -> None:
 
 def validate_meta(path: Path, meta: Dict[str, Any], allow_harvest_fields: bool = False) -> None:
     require_keys(path, meta, ["case_id", "language", "feature", "defect_class", "description", "entrypoints", "negative_edges"])
-    allowed = ["case_id", "language", "feature", "defect_class", "description", "entrypoints", "negative_edges", "expected_unresolved"]
+    allowed = [
+        "case_id",
+        "language",
+        "feature",
+        "defect_class",
+        "description",
+        "entrypoints",
+        "entry_points",
+        "negative_edges",
+        "expected_unresolved",
+    ]
     if allow_harvest_fields:
         allowed += [
             "corpus_commit",
@@ -267,6 +311,9 @@ def validate_meta(path: Path, meta: Dict[str, Any], allow_harvest_fields: bool =
         raise ValidationError(f"{path}: defect_class must be string or null")
     if not isinstance(meta["entrypoints"], list) or not all(isinstance(item, str) for item in meta["entrypoints"]):
         raise ValidationError(f"{path}: entrypoints must be a string array")
+    if "entry_points" in meta:
+        if not isinstance(meta["entry_points"], list) or not all(isinstance(item, str) for item in meta["entry_points"]):
+            raise ValidationError(f"{path}: entry_points must be a string array")
     if not isinstance(meta["negative_edges"], list):
         raise ValidationError(f"{path}: negative_edges must be an array")
     for index, item in enumerate(meta["negative_edges"]):
@@ -448,6 +495,231 @@ def forbidden_edges(case: Case) -> Set[EdgeKey]:
     return keys
 
 
+def function_key(file_name: str, func_name: str) -> FunctionKey:
+    file_name = posix_path(file_name)
+    return FunctionKey(file=file_name, func=normalize_func(func_name, file_name))
+
+
+def strip_arity(func_name: str) -> str:
+    return re.sub(r"\([^)]*\)$", "", func_name)
+
+
+def source_paths(case: Case) -> List[Path]:
+    extensions = SOURCE_EXTENSIONS.get(case.language, [])
+    if not extensions:
+        return []
+    paths: List[Path] = []
+    for ext in extensions:
+        paths.extend(case.case_dir.rglob(f"*{ext}"))
+    ignored_parts = {"raw", ".jdtls-workspaces", "__pycache__", "node_modules", "target", "dist", "build"}
+    return sorted(path for path in paths if not any(part in ignored_parts for part in path.relative_to(case.case_dir).parts))
+
+
+def add_source_function(functions: List[SourceFunction], rel_file: str, func_name: str, line_start: int, line_end: int) -> None:
+    key = function_key(rel_file, func_name)
+    if line_end < line_start:
+        line_end = line_start
+    functions.append(SourceFunction(key=key, line_start=line_start, line_end=line_end))
+
+
+def parse_python_functions(rel_file: str, text: str, functions: List[SourceFunction]) -> None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return
+    lambda_counter = 0
+
+    def visit_body(nodes: List[ast.stmt], stack: List[str]) -> None:
+        nonlocal lambda_counter
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = ".".join(stack + [node.name])
+                add_source_function(functions, rel_file, name, node.lineno, getattr(node, "end_lineno", node.lineno))
+                visit_body(list(node.body), stack + [node.name])
+                for decorator in node.decorator_list:
+                    visit_expr(decorator, stack)
+            elif isinstance(node, ast.ClassDef):
+                visit_body(list(node.body), stack + [node.name])
+                for decorator in node.decorator_list:
+                    visit_expr(decorator, stack)
+            else:
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, ast.expr):
+                        visit_expr(child, stack)
+
+    def visit_expr(node: ast.AST, stack: List[str]) -> None:
+        nonlocal lambda_counter
+        if isinstance(node, ast.Lambda):
+            lambda_counter += 1
+            name = ".".join(stack + [f"<lambda{lambda_counter}>"])
+            add_source_function(functions, rel_file, name, node.lineno, getattr(node, "end_lineno", node.lineno))
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.expr):
+                visit_expr(child, stack)
+            elif isinstance(child, ast.stmt):
+                visit_body([child], stack)
+
+    visit_body(list(tree.body), [])
+
+
+def block_end_line(lines: List[str], start_line: int) -> int:
+    depth = 0
+    seen_open = False
+    for index in range(start_line - 1, len(lines)):
+        line = lines[index]
+        depth += line.count("{")
+        if "{" in line:
+            seen_open = True
+        depth -= line.count("}")
+        if seen_open and depth <= 0:
+            return index + 1
+    return start_line
+
+
+def parse_go_functions(rel_file: str, lines: List[str], functions: List[SourceFunction]) -> None:
+    receiver_re = re.compile(r"^\s*func\s*\((?P<recv>[^)]*)\)\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+    func_re = re.compile(r"^\s*func\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+    for line_no, line in enumerate(lines, 1):
+        match = receiver_re.search(line)
+        if match:
+            receiver_parts = match.group("recv").replace("*", " ").split()
+            receiver_type = receiver_parts[-1] if receiver_parts else ""
+            name = f"{receiver_type}.{match.group('name')}"
+            add_source_function(functions, rel_file, name, line_no, block_end_line(lines, line_no))
+            continue
+        match = func_re.search(line)
+        if match:
+            add_source_function(functions, rel_file, match.group("name"), line_no, block_end_line(lines, line_no))
+
+
+def parse_typescript_functions(rel_file: str, lines: List[str], functions: List[SourceFunction]) -> None:
+    function_re = re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]+>)?\s*\(")
+    class_re = re.compile(r"\bclass\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\b")
+    method_re = re.compile(r"^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+)*?(?P<name>[A-Za-z_$][A-Za-z0-9_$]*|constructor)\s*(?:<[^>]+>)?\s*\(")
+    current_class: Optional[str] = None
+    class_depth = 0
+    depth = 0
+    for line_no, line in enumerate(lines, 1):
+        stripped = line.strip()
+        class_match = class_re.search(line)
+        if class_match:
+            current_class = class_match.group("name")
+            class_depth = depth + max(1, line.count("{"))
+        elif current_class and depth >= class_depth:
+            method_match = method_re.search(line)
+            if method_match and not stripped.startswith(("if", "for", "while", "switch", "catch")):
+                method = method_match.group("name")
+                name = f"{current_class}.constructor" if method == "constructor" else f"{current_class}.{method}"
+                add_source_function(functions, rel_file, name, line_no, block_end_line(lines, line_no))
+        func_match = function_re.search(line)
+        if func_match:
+            add_source_function(functions, rel_file, func_match.group("name"), line_no, block_end_line(lines, line_no))
+        depth += line.count("{") - line.count("}")
+        if current_class and depth < class_depth:
+            current_class = None
+            class_depth = 0
+
+
+def java_param_signature(params: str) -> str:
+    params = params.strip()
+    if not params:
+        return ""
+    parts = []
+    for raw in params.split(","):
+        tokens = [token for token in raw.strip().split() if token not in {"final"}]
+        if tokens:
+            parts.append(tokens[0].replace("...", "[]"))
+    return ",".join(parts)
+
+
+def parse_java_functions(rel_file: str, lines: List[str], functions: List[SourceFunction]) -> None:
+    class_re = re.compile(r"\b(?:class|interface)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b")
+    method_re = re.compile(
+        r"^\s*(?:public|private|protected|static|final|abstract|synchronized|\s)*"
+        r"(?:(?:[A-Za-z_][A-Za-z0-9_<>\[\].?,\s]+)\s+)?"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<params>[^)]*)\)"
+    )
+    current_class: Optional[str] = None
+    class_depth = 0
+    depth = 0
+    for line_no, line in enumerate(lines, 1):
+        stripped = line.strip()
+        class_match = class_re.search(line)
+        if class_match:
+            current_class = class_match.group("name")
+            class_depth = depth + max(1, line.count("{"))
+        elif current_class and depth >= class_depth:
+            method_match = method_re.search(line)
+            if method_match and "{" in line and not stripped.startswith(("if", "for", "while", "switch", "catch")):
+                method = method_match.group("name")
+                params = java_param_signature(method_match.group("params"))
+                if method == current_class:
+                    name = f"{current_class}.{current_class}"
+                elif params:
+                    name = f"{current_class}.{method}({params})"
+                else:
+                    name = f"{current_class}.{method}"
+                add_source_function(functions, rel_file, name, line_no, block_end_line(lines, line_no))
+        depth += line.count("{") - line.count("}")
+        if current_class and depth < class_depth:
+            current_class = None
+            class_depth = 0
+
+
+def parse_rust_functions(rel_file: str, lines: List[str], functions: List[SourceFunction]) -> None:
+    impl_re = re.compile(r"^\s*impl(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)?(?:\s+for)?\s+(?P<name>[A-Za-z_][A-Za-z0-9_:<>]*)\s*\{")
+    trait_re = re.compile(r"^\s*(?:pub\s+)?trait\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+    fn_re = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+    current_owner: Optional[str] = None
+    owner_depth = 0
+    depth = 0
+    for line_no, line in enumerate(lines, 1):
+        impl_match = impl_re.search(line)
+        trait_match = trait_re.search(line)
+        if impl_match:
+            current_owner = impl_match.group("name").split("::")[-1]
+            owner_depth = depth + max(1, line.count("{"))
+        elif trait_match:
+            current_owner = trait_match.group("name")
+            owner_depth = depth + max(1, line.count("{"))
+        fn_match = fn_re.search(line)
+        if fn_match:
+            fn_name = fn_match.group("name")
+            name = f"{current_owner}.{fn_name}" if current_owner and depth >= owner_depth else fn_name
+            add_source_function(functions, rel_file, name, line_no, block_end_line(lines, line_no))
+        depth += line.count("{") - line.count("}")
+        if current_owner and depth < owner_depth:
+            current_owner = None
+            owner_depth = 0
+
+
+def build_source_index(case: Case) -> SourceIndex:
+    lines_by_file: Dict[str, List[str]] = {}
+    functions: List[SourceFunction] = []
+    for path in source_paths(case):
+        rel_file = path.relative_to(case.case_dir).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        lines_by_file[rel_file] = lines
+        if case.language == "python":
+            parse_python_functions(rel_file, text, functions)
+        elif case.language == "go":
+            parse_go_functions(rel_file, lines, functions)
+        elif case.language == "typescript":
+            parse_typescript_functions(rel_file, lines, functions)
+        elif case.language == "java":
+            parse_java_functions(rel_file, lines, functions)
+        elif case.language == "rust":
+            parse_rust_functions(rel_file, lines, functions)
+    by_key: Dict[FunctionKey, SourceFunction] = {}
+    for function in functions:
+        by_key.setdefault(function.key, function)
+    return SourceIndex(lines_by_file=lines_by_file, functions=functions, by_key=by_key)
+
+
 def command_output_to_edges(output: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
     warnings: List[str] = []
     raw_edges = output.get("edges", [])
@@ -469,13 +741,13 @@ def command_output_to_edges(output: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
     return edges, warnings
 
 
-def run_tldr(binary: Path, case_dir: Path, timeout_seconds: float) -> Tuple[str, Dict[str, Any], str, float]:
+def run_tldr_args(binary: Path, args: Sequence[str], timeout_seconds: float) -> Tuple[str, Dict[str, Any], str, float]:
     env = os.environ.copy()
     env["TLDR_NO_DAEMON"] = "1"
     started = time.perf_counter()
     try:
         proc = subprocess.run(
-            [str(binary), COMMAND, str(case_dir), "--format", "json"],
+            [str(binary)] + list(args),
             cwd=str(SCRIPT_DIR.parent.parent),
             env=env,
             text=True,
@@ -501,9 +773,12 @@ def run_tldr(binary: Path, case_dir: Path, timeout_seconds: float) -> Tuple[str,
     return "ok", parsed, proc.stderr, duration
 
 
-def score_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, Any]:
-    status, output, stderr, duration = run_tldr(binary, case.execution_dir, timeout_seconds)
-    base = {
+def run_tldr_calls(binary: Path, case_dir: Path, timeout_seconds: float) -> Tuple[str, Dict[str, Any], str, float]:
+    return run_tldr_args(binary, [CALLS_COMMAND, str(case_dir), "--format", "json"], timeout_seconds)
+
+
+def base_result(case: Case, command: str, timeout_seconds: float, duration: float) -> Dict[str, Any]:
+    return {
         "case_id": case.case_id,
         "path": case.case_dir.relative_to(SCRIPT_DIR).as_posix(),
         "truth_path": case.truth_path.relative_to(SCRIPT_DIR).as_posix(),
@@ -514,12 +789,17 @@ def score_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, An
         "suite_family": case.suite_family,
         "feature": case.meta.get("feature"),
         "defect_class": case.defect_class,
-        "command": COMMAND,
+        "command": command,
         "truth_quality_tier": case.truth_quality_tier,
         "duration_seconds": round(duration, 6),
         "timeout_seconds": timeout_seconds,
         "rung_supported": False,
     }
+
+
+def score_calls_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, Any]:
+    status, output, stderr, duration = run_tldr_calls(binary, case.execution_dir, timeout_seconds)
+    base = base_result(case, CALLS_COMMAND, timeout_seconds, duration)
     if status != "ok":
         base.update(
             {
@@ -608,6 +888,517 @@ def score_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, An
     return base
 
 
+def is_micro_case(case: Case) -> bool:
+    return case.suite != "repos"
+
+
+def relative_to_case(path_value: str, case: Case) -> str:
+    path_value = posix_path(path_value)
+    if path_value.startswith("<"):
+        return path_value
+    path = Path(path_value)
+    if path.is_absolute():
+        try:
+            return path.relative_to(case.execution_dir).as_posix()
+        except ValueError:
+            try:
+                return path.relative_to(case.case_dir).as_posix()
+            except ValueError:
+                return path.name
+    case_prefix = case.case_dir.as_posix().rstrip("/") + "/"
+    execution_prefix = case.execution_dir.as_posix().rstrip("/") + "/"
+    if path_value.startswith(case_prefix):
+        return path_value[len(case_prefix) :]
+    if path_value.startswith(execution_prefix):
+        return path_value[len(execution_prefix) :]
+    return path_value
+
+
+def candidate_tokens_for_edge(edge: Dict[str, Any]) -> List[str]:
+    dst_file = posix_path(str(edge["dst_file"]))
+    dst_func = normalize_func(str(edge["dst_func"]), dst_file)
+    raw_parts = [part for part in strip_arity(dst_func).split(".") if part]
+    leaf = strip_arity(ownerless_name(dst_func))
+    tokens: List[str] = []
+    if leaf in {"__init__", "constructor"} and len(raw_parts) >= 2:
+        tokens.append(raw_parts[-2])
+    if leaf:
+        tokens.append(leaf)
+    if leaf == "new" and len(raw_parts) >= 2:
+        tokens.append("new")
+    if leaf.startswith("<lambda"):
+        tokens.append("lambda")
+    cleaned: List[str] = []
+    for token in tokens:
+        token = token.strip("<>")
+        if token and token not in cleaned:
+            cleaned.append(token)
+    return cleaned
+
+
+def identifier_boundary(line: str, start: int, end: int) -> bool:
+    before = line[start - 1] if start > 0 else ""
+    after = line[end] if end < len(line) else ""
+    before_ok = not (before.isalnum() or before in "_$")
+    after_ok = not (after.isalnum() or after in "_$")
+    return before_ok and after_ok
+
+
+def occurrence_score(line: str, start: int, token: str) -> int:
+    end = start + len(token)
+    suffix = line[end:].lstrip()
+    prefix = line[:start].rstrip()
+    score = 0
+    if suffix.startswith(("(", "<", "::")):
+        score += 4
+    if prefix.endswith((".", "::")):
+        score += 2
+    if line.lstrip().startswith(("@", "return", "await", "let ", "const ", "var ")):
+        score += 1
+    return score
+
+
+def source_span_for_edge(case: Case, index: SourceIndex, edge: Dict[str, Any]) -> Tuple[int, int]:
+    src_file = posix_path(str(edge["src_file"]))
+    lines = index.lines_by_file.get(src_file, [])
+    if not lines:
+        return (1, 0)
+    src_key = function_key(src_file, str(edge["src_func"]))
+    source_function = index.by_key.get(src_key)
+    if source_function:
+        return (source_function.line_start, source_function.line_end)
+    src_func = normalize_func(str(edge["src_func"]), src_file)
+    module = module_name_for_file(src_file)
+    if case.language == "python" and src_func in {module, "main", "<module>"}:
+        return (1, len(lines))
+    return (1, len(lines))
+
+
+def locate_call_position(case: Case, index: SourceIndex, edge: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    src_file = posix_path(str(edge["src_file"]))
+    if src_file.startswith("<"):
+        return None, "source file is synthetic"
+    lines = index.lines_by_file.get(src_file)
+    if not lines:
+        return None, f"source file not indexed: {src_file}"
+    tokens = candidate_tokens_for_edge(edge)
+    if not tokens:
+        return None, "no callee token candidate"
+    start_line, end_line = source_span_for_edge(case, index, edge)
+    if end_line <= 0:
+        return None, f"empty source span for {src_file}"
+    best: Optional[Tuple[int, int, int, str]] = None
+    for line_no in range(max(1, start_line), min(len(lines), end_line) + 1):
+        line = lines[line_no - 1]
+        for token in tokens:
+            offset = 0
+            while True:
+                found = line.find(token, offset)
+                if found < 0:
+                    break
+                end = found + len(token)
+                if identifier_boundary(line, found, end):
+                    score = occurrence_score(line, found, token)
+                    candidate = (score, -line_no, -found, token)
+                    if best is None or candidate > best:
+                        best = candidate
+                offset = found + len(token)
+    if best is None:
+        return None, f"callee token not found in {src_file}:{start_line}-{end_line}: {tokens}"
+    _, negative_line, negative_col, token = best
+    line_no = -negative_line
+    column = -negative_col
+    return {
+        "file": src_file,
+        "line": line_no,
+        "column": column,
+        "token": token,
+        "src_span": [start_line, end_line],
+    }, None
+
+
+def definition_output_location(output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    definition = output.get("definition")
+    if isinstance(definition, dict):
+        return definition
+    symbol = output.get("symbol")
+    if isinstance(symbol, dict) and isinstance(symbol.get("location"), dict):
+        return symbol["location"]
+    return None
+
+
+def definition_matches(case: Case, edge: Dict[str, Any], output: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+    expected = edge_key(edge)
+    symbol = output.get("symbol") if isinstance(output.get("symbol"), dict) else {}
+    if expected.dst_file == "<builtin>":
+        if symbol.get("is_builtin") is True:
+            return True, {"file": "<builtin>", "func": symbol.get("name", "")}, "builtin match"
+        return False, None, "expected builtin but output was not builtin"
+    location = definition_output_location(output)
+    if not location:
+        if symbol.get("is_builtin") is True:
+            return False, {"file": "<builtin>", "func": symbol.get("name", "")}, "returned builtin without source definition"
+        return False, None, "no definition location returned"
+    file_value = location.get("file")
+    line_value = location.get("line")
+    if not isinstance(file_value, str):
+        return False, None, "definition location missing file"
+    actual_file = relative_to_case(file_value, case)
+    actual = {"file": actual_file, "line": line_value, "column": location.get("column")}
+    if actual_file != expected.dst_file:
+        return False, actual, "definition file mismatch"
+    expected_line = edge.get("dst_line")
+    if expected_line is not None and line_value != expected_line:
+        return False, actual, "definition line mismatch"
+    return True, actual, "matched"
+
+
+def score_definition_case(case: Case, binary: Path, timeout_seconds: float, index: SourceIndex) -> Dict[str, Any]:
+    total_duration = 0.0
+    stderr_parts: List[str] = []
+    warnings: List[str] = []
+    matched: List[Dict[str, Any]] = []
+    missed: List[Dict[str, Any]] = []
+    false_positive: List[Dict[str, Any]] = []
+    reported_locations: Set[Tuple[str, Optional[int]]] = set()
+    truth_edges = case.truth.get("edges", [])
+    for edge in truth_edges:
+        query, reason = locate_call_position(case, index, edge)
+        expected = edge_key(edge)
+        if query is None:
+            missed.append({**edge_dict_from_key(expected, reason), "query": None})
+            continue
+        status, output, stderr, duration = run_tldr_args(
+            binary,
+            [
+                "definition",
+                str(case.case_dir / query["file"]),
+                str(query["line"]),
+                str(query["column"]),
+                "--project",
+                str(case.execution_dir),
+                "--format",
+                "json",
+            ],
+            timeout_seconds,
+        )
+        total_duration += duration
+        if stderr:
+            stderr_parts.append(stderr)
+        if status != "ok":
+            missed.append({**edge_dict_from_key(expected, status), "query": query})
+            warnings.append(f"{expected.src_file}:{query['line']}:{query['column']} definition {status}")
+            continue
+        ok, actual, match_reason = definition_matches(case, edge, output)
+        if actual and "file" in actual:
+            reported_locations.add((str(actual["file"]), actual.get("line") if isinstance(actual.get("line"), int) else None))
+        detail = {**edge_dict_from_key(expected, match_reason), "query": query, "actual": actual}
+        if ok:
+            matched.append(detail)
+        else:
+            missed.append(detail)
+            if actual:
+                false_positive.append(detail)
+    counts = {
+        "truth_edges": len(truth_edges),
+        "reported_edges": len(reported_locations),
+        "unique_reported_edges": len(reported_locations),
+        "true_positives": len(matched),
+        "false_negatives": len(missed),
+        "false_positives": len(false_positive),
+        "true_negatives": 0,
+        "unscored": 0,
+        "forbidden_edges": 0,
+        "wrong_owner_false_positives": len(false_positive),
+        "negative_edge_false_positives": 0,
+    }
+    base = base_result(case, "definition", timeout_seconds, total_duration)
+    base.update(
+        {
+            "status": "ok",
+            "stderr": "\n".join(stderr_parts),
+            "warnings": warnings,
+            "derivation": "For each truth edge, locate the destination identifier inside the source function span and query `tldr definition FILE LINE COLUMN --project CASE_DIR`.",
+            "counts": counts,
+            "metrics": metrics(counts["true_positives"], counts["false_positives"], counts["false_negatives"]),
+            "matched_definitions": matched,
+            "missed_definitions": missed,
+            "false_positive_definitions": false_positive,
+        }
+    )
+    return base
+
+
+def impact_callers(output: Dict[str, Any], case: Case) -> Set[FunctionKey]:
+    callers: Set[FunctionKey] = set()
+    targets = output.get("targets")
+    if not isinstance(targets, dict):
+        return callers
+    stack: List[Dict[str, Any]] = []
+    for target in targets.values():
+        if isinstance(target, dict) and isinstance(target.get("callers"), list):
+            stack.extend(item for item in target["callers"] if isinstance(item, dict))
+    while stack:
+        item = stack.pop()
+        file_value = item.get("file")
+        func_value = item.get("function")
+        if isinstance(file_value, str) and isinstance(func_value, str):
+            callers.add(function_key(relative_to_case(file_value, case), func_value))
+        nested = item.get("callers")
+        if isinstance(nested, list):
+            stack.extend(child for child in nested if isinstance(child, dict))
+    return callers
+
+
+def score_impact_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[str, Any]:
+    by_destination: Dict[FunctionKey, Set[FunctionKey]] = defaultdict(set)
+    for edge in case.truth.get("edges", []):
+        key = edge_key(edge)
+        by_destination[FunctionKey(key.dst_file, key.dst_func)].add(FunctionKey(key.src_file, key.src_func))
+
+    total_duration = 0.0
+    stderr_parts: List[str] = []
+    warnings: List[str] = []
+    matched: Set[Tuple[FunctionKey, FunctionKey]] = set()
+    missed: Set[Tuple[FunctionKey, FunctionKey]] = set()
+    false_positive: Set[Tuple[FunctionKey, FunctionKey]] = set()
+    reported_count = 0
+    details: List[Dict[str, Any]] = []
+
+    for dst, expected_callers in sorted(by_destination.items()):
+        query_func = dst.func
+        status, output, stderr, duration = run_tldr_args(
+            binary,
+            ["impact", query_func, str(case.execution_dir), "--file", dst.file, "--format", "json"],
+            timeout_seconds,
+        )
+        total_duration += duration
+        if stderr:
+            stderr_parts.append(stderr)
+        if status != "ok":
+            warnings.append(f"{dst.file}:{dst.func} impact {status}")
+            for caller in expected_callers:
+                missed.add((dst, caller))
+            details.append({"target": dst.as_dict(), "status": status, "expected_callers": [caller.as_dict() for caller in sorted(expected_callers)]})
+            continue
+        reported_callers = impact_callers(output, case)
+        reported_count += len(reported_callers)
+        target_matched = expected_callers & reported_callers
+        target_missed = expected_callers - reported_callers
+        target_false_positive = reported_callers - expected_callers
+        for caller in target_matched:
+            matched.add((dst, caller))
+        for caller in target_missed:
+            missed.add((dst, caller))
+        for caller in target_false_positive:
+            false_positive.add((dst, caller))
+        details.append(
+            {
+                "target": dst.as_dict(),
+                "status": "ok",
+                "expected_callers": [caller.as_dict() for caller in sorted(expected_callers)],
+                "reported_callers": [caller.as_dict() for caller in sorted(reported_callers)],
+            }
+        )
+
+    counts = {
+        "truth_edges": sum(len(callers) for callers in by_destination.values()),
+        "reported_edges": reported_count,
+        "unique_reported_edges": reported_count,
+        "true_positives": len(matched),
+        "false_negatives": len(missed),
+        "false_positives": len(false_positive),
+        "true_negatives": 0,
+        "unscored": 0,
+        "forbidden_edges": 0,
+        "wrong_owner_false_positives": len(false_positive),
+        "negative_edge_false_positives": 0,
+    }
+    base = base_result(case, "impact", timeout_seconds, total_duration)
+    base.update(
+        {
+            "status": "ok",
+            "stderr": "\n".join(stderr_parts),
+            "warnings": warnings,
+            "derivation": "For each unique truth destination, query `tldr impact <dst_func> CASE_DIR --file <dst_file>`; the --file filter disambiguates same-name targets.",
+            "counts": counts,
+            "metrics": metrics(counts["true_positives"], counts["false_positives"], counts["false_negatives"]),
+            "matched_callers": [{"target": dst.as_dict(), "caller": caller.as_dict()} for dst, caller in sorted(matched)],
+            "missed_callers": [{"target": dst.as_dict(), "caller": caller.as_dict()} for dst, caller in sorted(missed)],
+            "false_positive_callers": [{"target": dst.as_dict(), "caller": caller.as_dict()} for dst, caller in sorted(false_positive)],
+            "impact_targets": details,
+        }
+    )
+    return base
+
+
+def expected_unresolved_edges(case: Case) -> List[Dict[str, Any]]:
+    edges: List[Dict[str, Any]] = []
+    for item in case.truth.get("expected_unresolved", []):
+        edges.append(item["missing_edge"])
+    for item in case.meta.get("expected_unresolved", []):
+        edges.append(item["missing_edge"])
+    return edges
+
+
+def dead_entry_functions(case: Case) -> Set[FunctionKey]:
+    explicit = case.meta.get("entry_points")
+    roots: Set[FunctionKey] = set()
+    if isinstance(explicit, list) and explicit:
+        for item in explicit:
+            if ":" in item:
+                file_name, func_name = item.split(":", 1)
+                roots.add(function_key(file_name, func_name))
+            else:
+                roots.add(FunctionKey("*", item))
+        return roots
+
+    dst_keys = {FunctionKey(edge_key(edge).dst_file, edge_key(edge).dst_func) for edge in case.truth.get("edges", [])}
+    for edge in list(case.truth.get("edges", [])) + expected_unresolved_edges(case):
+        key = edge_key(edge)
+        src = FunctionKey(key.src_file, key.src_func)
+        if src not in dst_keys:
+            roots.add(src)
+    if not roots:
+        for default_name in ["main", "run", "entry", "Entry", "Main.run"]:
+            roots.add(FunctionKey("*", default_name))
+    return roots
+
+
+def is_entry_function(key: FunctionKey, roots: Set[FunctionKey]) -> bool:
+    if key in roots:
+        return True
+    for root in roots:
+        if root.file == "*" and (key.func == root.func or ownerless_name(key.func) == root.func):
+            return True
+    return False
+
+
+def dead_reported_functions(output: Dict[str, Any], case: Case, index: SourceIndex) -> Tuple[Set[FunctionKey], Set[FunctionKey]]:
+    reported: Set[FunctionKey] = set()
+    unknown: Set[FunctionKey] = set()
+    items: List[Dict[str, Any]] = []
+    for key in ["dead_functions", "possibly_dead"]:
+        value = output.get(key)
+        if isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    for item in items:
+        file_value = item.get("file")
+        name_value = item.get("name")
+        if not isinstance(file_value, str) or not isinstance(name_value, str):
+            continue
+        raw_key = function_key(relative_to_case(file_value, case), name_value)
+        resolved = resolve_function_key(raw_key, index)
+        if resolved:
+            reported.add(resolved)
+        else:
+            unknown.add(raw_key)
+    return reported, unknown
+
+
+def resolve_function_key(raw_key: FunctionKey, index: SourceIndex) -> Optional[FunctionKey]:
+    if raw_key in index.by_key:
+        return raw_key
+    raw_no_arity = FunctionKey(raw_key.file, strip_arity(raw_key.func))
+    if raw_no_arity in index.by_key:
+        return raw_no_arity
+    candidates = [
+        function.key
+        for function in index.functions
+        if function.key.file == raw_key.file
+        and (
+            function.key.func == raw_key.func
+            or strip_arity(function.key.func) == strip_arity(raw_key.func)
+            or ownerless_name(strip_arity(function.key.func)) == ownerless_name(strip_arity(raw_key.func))
+        )
+    ]
+    unique = sorted(set(candidates))
+    if len(unique) == 1:
+        return unique[0]
+    return None
+
+
+def score_dead_case(case: Case, binary: Path, timeout_seconds: float, index: SourceIndex) -> Dict[str, Any]:
+    all_functions = {function.key for function in index.functions}
+    reachable_dst = {FunctionKey(edge_key(edge).dst_file, edge_key(edge).dst_func) for edge in case.truth.get("edges", [])}
+    roots = dead_entry_functions(case)
+    expected_dead = {
+        key for key in all_functions if key not in reachable_dst and not is_entry_function(key, roots)
+    }
+    entry_points = sorted({root.func for root in roots})
+    status, output, stderr, duration = run_tldr_args(
+        binary,
+        ["dead", str(case.execution_dir), "--entry-points", ",".join(entry_points), "--format", "json"],
+        timeout_seconds,
+    )
+    base = base_result(case, "dead", timeout_seconds, duration)
+    if status != "ok":
+        counts = {
+            **empty_counts(),
+            "truth_edges": len(expected_dead),
+            "false_negatives": len(expected_dead),
+        }
+        base.update(
+            {
+                "status": "ok",
+                "stderr": stderr,
+                "warnings": [f"dead command {status}; all expected-dead functions counted as missed"],
+                "derivation": "Expected-dead is source functions not used as truth destinations and not selected as truth-graph roots.",
+                "counts": counts,
+                "metrics": metrics(0, 0, len(expected_dead)),
+                "expected_dead_functions": [key.as_dict() for key in sorted(expected_dead)],
+                "reported_dead_functions": [],
+            }
+        )
+        return base
+    reported_dead, unknown_reported = dead_reported_functions(output, case, index)
+    matched = expected_dead & reported_dead
+    missed = expected_dead - reported_dead
+    false_positive = reported_dead - expected_dead
+    counts = {
+        "truth_edges": len(expected_dead),
+        "reported_edges": len(reported_dead) + len(unknown_reported),
+        "unique_reported_edges": len(reported_dead) + len(unknown_reported),
+        "true_positives": len(matched),
+        "false_negatives": len(missed),
+        "false_positives": len(false_positive),
+        "true_negatives": 0,
+        "unscored": len(unknown_reported),
+        "forbidden_edges": 0,
+        "wrong_owner_false_positives": len(false_positive),
+        "negative_edge_false_positives": 0,
+    }
+    base.update(
+        {
+            "status": "ok",
+            "stderr": stderr,
+            "warnings": [],
+            "derivation": "Expected-dead is source functions not used as truth destinations and not selected as truth-graph roots; tldr dead is run with truth-derived root names.",
+            "dead_entry_points": entry_points,
+            "counts": counts,
+            "metrics": metrics(counts["true_positives"], counts["false_positives"], counts["false_negatives"]),
+            "expected_dead_functions": [key.as_dict() for key in sorted(expected_dead)],
+            "matched_dead_functions": [key.as_dict() for key in sorted(matched)],
+            "missed_dead_functions": [key.as_dict() for key in sorted(missed)],
+            "false_positive_dead_functions": [key.as_dict() for key in sorted(false_positive)],
+            "unscored_reported_functions": [key.as_dict() for key in sorted(unknown_reported)],
+            "tldr": summarize_tldr(output),
+        }
+    )
+    return base
+
+
+def score_case_commands(case: Case, binary: Path, timeout_seconds: float) -> List[Dict[str, Any]]:
+    results = [score_calls_case(case, binary, timeout_seconds)]
+    if not is_micro_case(case):
+        return results
+    index = build_source_index(case)
+    results.append(score_definition_case(case, binary, timeout_seconds, index))
+    results.append(score_impact_case(case, binary, timeout_seconds))
+    results.append(score_dead_case(case, binary, timeout_seconds, index))
+    return results
+
+
 def empty_counts() -> Dict[str, int]:
     return {
         "truth_edges": 0,
@@ -668,6 +1459,7 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     by_suite_family: Dict[str, Counts] = defaultdict(Counts)
     by_defect_class: Dict[str, Counts] = defaultdict(Counts)
     by_command: Dict[str, Counts] = defaultdict(Counts)
+    by_command_language: Dict[str, Counts] = defaultdict(Counts)
     for result in results:
         total.add_case(result)
         by_language[result["language"]].add_case(result)
@@ -675,6 +1467,7 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         by_suite_family[result["suite_family"]].add_case(result)
         by_defect_class[result["defect_class"]].add_case(result)
         by_command[result["command"]].add_case(result)
+        by_command_language[f"{result['command']}:{result['language']}"].add_case(result)
     return {
         "totals": total.to_dict(),
         "by_language": counts_map(by_language),
@@ -682,10 +1475,12 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "by_suite_family": counts_map(by_suite_family),
         "by_defect_class": counts_map(by_defect_class),
         "by_command": counts_map(by_command),
-        "commands_not_run": {
-            "impact": {"run": False, "reason": "VAL-021 only executes calls; report schema reserves command slot."},
-            "definition": {"run": False, "reason": "VAL-021 only executes calls; report schema reserves command slot."},
-            "dead": {"run": False, "reason": "VAL-021 only executes calls; report schema reserves command slot."},
+        "by_command_language": counts_map(by_command_language),
+        "command_scope": {
+            "calls": "all discovered cases, including real-repo truth sets",
+            "definition": "micro-suites only; real-repo truth is sampled/incomplete for per-call-site definition recall",
+            "impact": "micro-suites only; real-repo truth is sampled/incomplete for caller-set recall",
+            "dead": "micro-suites only; real-repo truth is sampled/incomplete for reachability/dead-code recall",
         },
     }
 
@@ -732,7 +1527,8 @@ def build_report(
 ) -> Dict[str, Any]:
     binary_sha = sha256_file(binary)
     return {
-        "schema": "harness.v1",
+        "schema": "harness.v2",
+        "schema_note": "harness.v2 is backward-compatible with harness.v1 per-case count/metric fields and adds command-scoped results for definition, impact, and dead.",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "benchmark_root": str(SCRIPT_DIR),
         "binary_sha": binary_sha,
@@ -742,15 +1538,17 @@ def build_report(
         },
         "corpus_commit": git_value(["rev-parse", "HEAD"]),
         "invocation": {
-            "command": COMMAND,
+            "command": "calls+micro-definition-impact-dead",
             "filter": filter_text,
             "timeout_seconds": timeout_seconds,
             "case_count": len(cases),
+            "micro_case_count": sum(1 for case in cases if is_micro_case(case)),
+            "result_count": len(results),
             "runtime_seconds": round(runtime_seconds, 6),
         },
         "rung_supported": False,
         "scoring": {
-            "schema": "scoring.v1",
+            "schema": "scoring.v2",
             "edge_key": ["src_file", "src_func", "dst_file", "dst_func"],
             "line_numbers": "ignored",
             "normalization": [
@@ -764,6 +1562,10 @@ def build_report(
             "unscored": "Reported edges outside truth coverage and outside negative/wrong-owner rules are counted separately and excluded from precision.",
             "expected_unresolved": "Expected-unresolved missing_edge values are treated as forbidden edges; reporting them is a false positive and not reporting them is a true negative.",
             "rung_attribution": "Unsupported by current tldr calls output; emitted as rung:null with rung_supported:false.",
+            "definition": "Micro-suite only. For each truth edge, the harness locates the destination identifier inside the source function span and runs `tldr definition FILE LINE COLUMN --project CASE_DIR`; wrong returned source locations count as both FP and FN.",
+            "impact": "Micro-suite only. For each unique truth destination, the harness runs `tldr impact <dst_func> CASE_DIR --file <dst_file>` and scores the returned caller set against truth callers.",
+            "dead": "Micro-suite only. Expected-dead functions are source definitions that are not truth destinations and are not truth-graph roots; reported reachable functions are false positives.",
+            "real_repo_command_scope": "Real-repo truth sets remain calls-only because sampled LSP/runtime truth is incomplete for definition, impact, and dead recall.",
         },
         "per_case": list(results),
         "aggregates": aggregate(results),
@@ -778,19 +1580,19 @@ def metric_text(value: Optional[float]) -> str:
 
 def print_table(report: Dict[str, Any]) -> None:
     rows: List[Tuple[str, Dict[str, Any]]] = [("total", report["aggregates"]["totals"])]
-    for name, data in report["aggregates"]["by_suite_group"].items():
+    for name, data in report["aggregates"]["by_command_language"].items():
         rows.append((name, data))
-    print("group                 cases skip TP  FN  FP  unscored  P      R      F1")
-    print("--------------------  ----- ---- --- --- --- --------- ------ ------ ------")
+    print("command:language          cases skip  TP   FN   FP  unscored  P      R      F1")
+    print("------------------------  ----- ---- ---- ---- ---- --------- ------ ------ ------")
     for name, data in rows:
         m = data["metrics"]
         print(
-            f"{name[:20]:20}  "
+            f"{name[:24]:24}  "
             f"{data['cases']:5d} "
             f"{data['skipped_cases']:4d} "
-            f"{data['true_positives']:3d} "
-            f"{data['false_negatives']:3d} "
-            f"{data['false_positives']:3d} "
+            f"{data['true_positives']:4d} "
+            f"{data['false_negatives']:4d} "
+            f"{data['false_positives']:4d} "
             f"{data['unscored']:9d} "
             f"{metric_text(m['precision']):>6} "
             f"{metric_text(m['recall']):>6} "
@@ -826,7 +1628,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("no cases matched", file=sys.stderr)
         return 2
     started = time.perf_counter()
-    results = [score_case(case, binary, args.timeout) for case in cases]
+    results: List[Dict[str, Any]] = []
+    for case in cases:
+        results.extend(score_case_commands(case, binary, args.timeout))
     runtime = time.perf_counter() - started
     report = build_report(
         binary=binary,

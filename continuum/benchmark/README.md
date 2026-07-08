@@ -40,9 +40,9 @@ Run a substring-filtered slice:
 python3 continuum/benchmark/run_truth.py --filter direct_call --out /tmp/tldr-truth-direct-call.json
 ```
 
-Options are `--binary` for the `tldr` executable path, `--timeout` for the per-case timeout in seconds, `--filter` for case id/path/metadata substring matching, and `--out` for the machine-readable report. The report schema is `harness.v1`; it includes per-case results and aggregates by language, suite group, suite family, defect class, and command.
+Options are `--binary` for the `tldr` executable path, `--timeout` for the per-command timeout in seconds, `--filter` for case id/path/metadata substring matching, and `--out` for the machine-readable report. The report schema is `harness.v2`; it includes per-case command results and aggregates by command, command/language, language, suite group, suite family, and defect class.
 
-Scoring uses normalized edge keys (`src_file`, `src_func`, `dst_file`, `dst_func`). Extra reported edges outside truth coverage are `unscored`; false positives are limited to explicit negative-edge matches and wrong-owner contradictions for a covered call. Rung attribution is not available in current `tldr calls` output, so reports set `rung_supported: false`.
+Calls scoring uses normalized edge keys (`src_file`, `src_func`, `dst_file`, `dst_func`). Extra reported call edges outside truth coverage are `unscored`; false positives are limited to explicit negative-edge matches and wrong-owner contradictions for a covered call. Definition, impact, and dead scoring run on micro-suites only because real-repo truth is sampled and incomplete for those commands; rung attribution is not available in current output, so reports set `rung_supported: false`.
 
 ## CI Scoring
 
@@ -52,6 +52,6 @@ Use one command to score an existing `tldr` binary:
 python3 continuum/benchmark/run_truth.py --binary <path> --out report.json
 ```
 
-On 2026-07-08, the full corpus run over micro-suites plus real-repo truth sets completed in 7.167 seconds on this machine, well below the 15-minute CI warning threshold. Scoring is a no-network operation: it reads committed benchmark fixtures and the already-present real-repo corpus paths recorded in manifests; language servers, package managers, and network access are only needed when harvesting or refreshing truth, not when running `run_truth.py`.
+On 2026-07-08, the full corpus run over calls plus micro-suite definition/impact/dead scoring completed in 14.827 seconds on this machine, well below the 15-minute CI warning threshold. Scoring is a no-network operation: it reads committed benchmark fixtures and the already-present real-repo corpus paths recorded in manifests; language servers, package managers, and network access are only needed when harvesting or refreshing truth, not when running `run_truth.py`.
 
 Exit code `0` means the harness validated inputs, completed discovery, and wrote the report. Exit code `2` means harness setup or validation failed, including an empty `--filter` result; individual `tldr` timeouts, nonzero exits, or JSON parse failures are recorded as skipped case results in `report.json` and do not by themselves make the process fail.

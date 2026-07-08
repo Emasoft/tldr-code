@@ -91,8 +91,16 @@ VAL-021 should iterate cases, run `tldr calls CASE_DIR --format json`, normalize
 
 ## Scoring
 
-`run_truth.py` implements `harness.v1` scoring for `tldr calls`. The comparable edge key is `src_file`, `src_func`, `dst_file`, and `dst_func`; line numbers are ignored. Path separators are normalized to `/`, and Python module prefixes derived from each edge file are stripped from function names, so `main.run` in truth can match `run` from the current `tldr` JSON output.
+`run_truth.py` implements `harness.v2` scoring. The schema is backward-compatible with the `harness.v1` count and metric fields, but adds command-scoped results for `definition`, `impact`, and `dead`. `tldr calls` is scored for the full corpus; `definition`, `impact`, and `dead` are scored only on micro-suites because sampled real-repo truth is incomplete and would make impact/dead recall unsound.
+
+For `calls`, the comparable edge key is `src_file`, `src_func`, `dst_file`, and `dst_func`; line numbers are ignored. Path separators are normalized to `/`, and Python module prefixes derived from each edge file are stripped from function names, so `main.run` in truth can match `run` from the current `tldr` JSON output.
 
 A true positive is an exact normalized edge match. A false negative is a truth edge that is absent from the normalized reported edge set. A reported edge is a false positive only when it matches a `negative_edges` entry or when it contradicts a covered call by using the same source file/function and destination leaf name with the wrong owner file/function. Reported edges outside truth coverage are counted as `unscored` and excluded from precision rather than treated as false positives by default.
 
 Expected-unresolved entries are converted into forbidden edges for scoring. Reporting the expected-unresolved `missing_edge` is a false positive; not reporting it is a true negative. Current `tldr calls` output does not expose the resolution rung, so every matched or reported edge in the harness report carries `rung: null` and the top-level report has `rung_supported: false`.
+
+For `definition`, the harness derives a query position for each truth edge by locating the destination identifier inside the source function body. It runs `tldr definition FILE LINE COLUMN --project CASE_DIR --format json`, with line numbers 1-indexed and columns 0-indexed to match the CLI contract. A correct result returns `dst_file`, and also `dst_line` when the truth edge provides one; a wrong source location counts as both a false positive and a false negative.
+
+For `impact`, the harness groups truth edges by destination and runs `tldr impact <dst_func> CASE_DIR --file <dst_file> --format json`. The `--file` filter is the qualification mechanism for same-name collisions. Expected callers are the truth sources that point at that destination; extra reported callers are false positives and missed truth callers are false negatives.
+
+For `dead`, the harness indexes source definitions from the micro-case source and treats functions as expected-dead when they appear in no truth edge as a destination and are not a truth-graph root. If `meta.json` grows an explicit `entry_points` list, those values are used as roots; the existing `entrypoints` field remains a source-file list and is not treated as dead-code root metadata. `tldr dead` is run with the derived root names; reporting a reachable function dead is a false positive, and failing to report an expected-dead function is a false negative.
