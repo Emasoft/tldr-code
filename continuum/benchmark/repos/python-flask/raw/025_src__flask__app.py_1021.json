@@ -1,0 +1,313 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 53,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 37,
+                  "line": 1038
+                },
+                "start": {
+                  "character": 24,
+                  "line": 1038
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "make_response",
+              "range": {
+                "end": {
+                  "character": 21,
+                  "line": 1223
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1223
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 21,
+                  "line": 1223
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1223
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 44,
+                  "line": 1040
+                },
+                "start": {
+                  "character": 28,
+                  "line": 1040
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "process_response",
+              "range": {
+                "end": {
+                  "character": 24,
+                  "line": 1393
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1393
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 24,
+                  "line": 1393
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1393
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 33,
+                  "line": 1047
+                },
+                "start": {
+                  "character": 24,
+                  "line": 1047
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "exception",
+              "range": {
+                "end": {
+                  "character": 17,
+                  "line": 176
+                },
+                "start": {
+                  "character": 8,
+                  "line": 176
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 17,
+                  "line": 176
+                },
+                "start": {
+                  "character": 8,
+                  "line": 176
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/logging/__init__.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 23,
+                  "line": 1047
+                },
+                "start": {
+                  "character": 17,
+                  "line": 1047
+                }
+              }
+            ],
+            "to": {
+              "kind": 7,
+              "name": "logger",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 439
+                },
+                "start": {
+                  "character": 8,
+                  "line": 439
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 439
+                },
+                "start": {
+                  "character": 8,
+                  "line": 439
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/sansio/app.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 1020
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+        }
+      },
+      "prepare_response": {
+        "id": 52,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 6,
+            "name": "finalize_request",
+            "range": {
+              "end": {
+                "character": 24,
+                "line": 1020
+              },
+              "start": {
+                "character": 8,
+                "line": 1020
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 24,
+                "line": 1020
+              },
+              "start": {
+                "character": 8,
+                "line": 1020
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 19,
+    "call_line": 1038,
+    "call_text": "response = self.make_response(rv)",
+    "character": 8,
+    "end_line": 1050,
+    "line": 1020,
+    "name": "Flask.finalize_request",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/app.py"
+  },
+  "sample_index": 25
+}

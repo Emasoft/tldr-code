@@ -1,0 +1,274 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 85,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 21,
+                  "line": 101
+                },
+                "start": {
+                  "character": 13,
+                  "line": 101
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "exc_info",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 369
+                },
+                "start": {
+                  "character": 4,
+                  "line": 369
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 369
+                },
+                "start": {
+                  "character": 4,
+                  "line": 369
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/sys/__init__.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 33,
+                  "line": 105
+                },
+                "start": {
+                  "character": 27,
+                  "line": 105
+                }
+              }
+            ],
+            "to": {
+              "kind": 7,
+              "name": "f_code",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 592
+                },
+                "start": {
+                  "character": 8,
+                  "line": 592
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 592
+                },
+                "start": {
+                  "character": 8,
+                  "line": 592
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/types.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 26,
+                  "line": 105
+                },
+                "start": {
+                  "character": 18,
+                  "line": 105
+                }
+              }
+            ],
+            "to": {
+              "kind": 7,
+              "name": "tb_frame",
+              "range": {
+                "end": {
+                  "character": 16,
+                  "line": 579
+                },
+                "start": {
+                  "character": 8,
+                  "line": 579
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 16,
+                  "line": 579
+                },
+                "start": {
+                  "character": 8,
+                  "line": 579
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/types.pyi"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 4,
+          "line": 93
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+        }
+      },
+      "prepare_response": {
+        "id": 84,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "_called_with_wrong_args",
+            "range": {
+              "end": {
+                "character": 27,
+                "line": 93
+              },
+              "start": {
+                "character": 4,
+                "line": 93
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 27,
+                "line": 93
+              },
+              "start": {
+                "character": 4,
+                "line": 93
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 9,
+    "call_line": 101,
+    "call_text": "tb = sys.exc_info()[2]",
+    "character": 4,
+    "end_line": 116,
+    "line": 93,
+    "name": "_called_with_wrong_args",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/cli.py"
+  },
+  "sample_index": 41
+}

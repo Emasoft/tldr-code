@@ -16,7 +16,7 @@
   "language": "python",
   "lsp_errors": [
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 27,
         "call_line": 64,
@@ -25,11 +25,12 @@
         "end_line": 95,
         "line": 59,
         "name": "check_compatibility",
+        "pattern_priority": 0,
         "rel_file": "src/requests/__init__.py"
       }
     },
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 36,
         "call_line": 101,
@@ -38,11 +39,12 @@
         "end_line": 107,
         "line": 98,
         "name": "_check_cryptography",
+        "pattern_priority": 0,
         "rel_file": "src/requests/__init__.py"
       }
     },
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 7,
         "call_line": 30,
@@ -51,11 +53,12 @@
         "end_line": 35,
         "line": 25,
         "name": "to_native_string",
+        "pattern_priority": 0,
         "rel_file": "src/requests/_internal_utils.py"
       }
     },
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 11,
         "call_line": 45,
@@ -64,11 +67,12 @@
         "end_line": 50,
         "line": 38,
         "name": "unicode_is_ascii",
+        "pattern_priority": 0,
         "rel_file": "src/requests/_internal_utils.py"
       }
     },
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 11,
         "call_line": 33,
@@ -77,24 +81,12 @@
         "end_line": 33,
         "line": 31,
         "name": "has_read",
+        "pattern_priority": 0,
         "rel_file": "src/requests/_types.py"
       }
     },
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
-      "sample": {
-        "call_character": 14,
-        "call_line": 66,
-        "call_text": "raise InvalidSchema(\"Missing dependencies for SOCKS support.\")",
-        "character": 8,
-        "end_line": 66,
-        "line": 65,
-        "name": "SOCKSProxyManager",
-        "rel_file": "src/requests/adapters.py"
-      }
-    },
-    {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 25,
         "call_line": 92,
@@ -103,11 +95,12 @@
         "end_line": 118,
         "line": 84,
         "name": "_urllib3_request_context",
+        "pattern_priority": 0,
         "rel_file": "src/requests/adapters.py"
       }
     },
     {
-      "error": "python-requests: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 8,
         "call_line": 125,
@@ -116,22 +109,867 @@
         "end_line": 125,
         "line": 124,
         "name": "BaseAdapter.__init__",
+        "pattern_priority": 0,
         "rel_file": "src/requests/adapters.py"
       }
     },
     {
-      "error": "stopped early after 8 consecutive prepareCallHierarchy timeouts"
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 22,
+        "call_line": 223,
+        "call_text": "return {attr: getattr(self, attr, None) for attr in self.__attrs__}",
+        "character": 8,
+        "end_line": 223,
+        "line": 222,
+        "name": "HTTPAdapter.__getstate__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 27,
+        "call_line": 261,
+        "call_text": "self.poolmanager = PoolManager(",
+        "character": 8,
+        "end_line": 266,
+        "line": 238,
+        "name": "HTTPAdapter.init_poolmanager",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 11,
+        "call_line": 320,
+        "call_text": "if url.lower().startswith(\"https\") and verify:",
+        "character": 8,
+        "end_line": 362,
+        "line": 306,
+        "name": "HTTPAdapter.cert_verify",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 8,
+        "call_line": 560,
+        "call_text": "self.poolmanager.clear()",
+        "character": 8,
+        "end_line": 562,
+        "line": 554,
+        "name": "HTTPAdapter.close",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 14,
+        "call_line": 81,
+        "call_text": "raise NotImplementedError(\"Auth hooks must be callable.\")",
+        "character": 8,
+        "end_line": 81,
+        "line": 80,
+        "name": "AuthBase.__call__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 100,
+        "call_text": "return all(",
+        "character": 8,
+        "end_line": 105,
+        "line": 99,
+        "name": "HTTPBasicAuth.__eq__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 29,
+        "call_line": 144,
+        "call_text": "self._thread_local = threading.local()",
+        "character": 8,
+        "end_line": 144,
+        "line": 140,
+        "name": "HTTPDigestAuth.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 148,
+        "call_text": "if not hasattr(self._thread_local, \"init\"):",
+        "character": 8,
+        "end_line": 154,
+        "line": 146,
+        "name": "HTTPDigestAuth.init_per_thread_state",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 19,
+        "call_line": 176,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 178,
+        "line": 175,
+        "name": "HTTPDigestAuth.md5_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 19,
+        "call_line": 184,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 186,
+        "line": 183,
+        "name": "HTTPDigestAuth.sha_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 19,
+        "call_line": 192,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 194,
+        "line": 191,
+        "name": "HTTPDigestAuth.sha256_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 19,
+        "call_line": 200,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 202,
+        "line": 199,
+        "name": "HTTPDigestAuth.sha512_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 19,
+        "call_line": 210,
+        "call_text": "return hash_utf8(f\"{s}:{d}\")",
+        "character": 12,
+        "end_line": 210,
+        "line": 209,
+        "name": "HTTPDigestAuth.KD",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 345,
+        "call_text": "return all(",
+        "character": 8,
+        "end_line": 350,
+        "line": 344,
+        "name": "HTTPDigestAuth.__eq__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 26,
+        "call_line": 41,
+        "call_text": "chardet = importlib.import_module(lib)",
+        "character": 4,
+        "end_line": 44,
+        "line": 35,
+        "name": "_resolve_char_detection",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/compat.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 54,
+        "call_text": "return urlparse(self._r.url).netloc",
+        "character": 8,
+        "end_line": 54,
+        "line": 53,
+        "name": "MockRequest.get_host",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/cookies.py"
+      }
     }
   ],
+  "lsp_readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
   "negative_edges": [],
   "sampling": {
     "max_sites": 50,
     "method": "file path sort, function declaration order, call-site line order; first N",
     "n": 50,
-    "sampled_sites": [],
+    "sampled_sites": [
+      {
+        "call_character": 27,
+        "call_line": 64,
+        "call_text": "urllib3_version_list = urllib3_version.split(\".\")[:3]",
+        "character": 4,
+        "end_line": 95,
+        "line": 59,
+        "name": "check_compatibility",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/__init__.py"
+      },
+      {
+        "call_character": 36,
+        "call_line": 101,
+        "call_text": "cryptography_version_list = list(map(int, cryptography_version.split(\".\")))",
+        "character": 4,
+        "end_line": 107,
+        "line": 98,
+        "name": "_check_cryptography",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/__init__.py"
+      },
+      {
+        "call_character": 7,
+        "call_line": 30,
+        "call_text": "if isinstance(string, builtin_str):",
+        "character": 4,
+        "end_line": 35,
+        "line": 25,
+        "name": "to_native_string",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/_internal_utils.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 45,
+        "call_text": "assert isinstance(u_string, str)",
+        "character": 4,
+        "end_line": 50,
+        "line": 38,
+        "name": "unicode_is_ascii",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/_internal_utils.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 33,
+        "call_text": "return isinstance(obj, SupportsRead) or hasattr(obj, \"read\")",
+        "character": 4,
+        "end_line": 33,
+        "line": 31,
+        "name": "has_read",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/_types.py"
+      },
+      {
+        "call_character": 14,
+        "call_line": 66,
+        "call_text": "raise InvalidSchema(\"Missing dependencies for SOCKS support.\")",
+        "character": 8,
+        "end_line": 66,
+        "line": 65,
+        "name": "SOCKSProxyManager",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 25,
+        "call_line": 92,
+        "call_text": "parsed_request_url = urlparse(request.url)",
+        "character": 4,
+        "end_line": 118,
+        "line": 84,
+        "name": "_urllib3_request_context",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 125,
+        "call_text": "super().__init__()",
+        "character": 8,
+        "end_line": 125,
+        "line": 124,
+        "name": "BaseAdapter.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 31,
+        "call_line": 208,
+        "call_text": "self.max_retries = Retry(0, read=False)",
+        "character": 8,
+        "end_line": 220,
+        "line": 200,
+        "name": "HTTPAdapter.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 22,
+        "call_line": 223,
+        "call_text": "return {attr: getattr(self, attr, None) for attr in self.__attrs__}",
+        "character": 8,
+        "end_line": 223,
+        "line": 222,
+        "name": "HTTPAdapter.__getstate__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 27,
+        "call_line": 231,
+        "call_text": "for attr, value in state.items():",
+        "character": 8,
+        "end_line": 236,
+        "line": 225,
+        "name": "HTTPAdapter.__setstate__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 27,
+        "call_line": 261,
+        "call_text": "self.poolmanager = PoolManager(",
+        "character": 8,
+        "end_line": 266,
+        "line": 238,
+        "name": "HTTPAdapter.init_poolmanager",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 13,
+        "call_line": 282,
+        "call_text": "elif proxy.lower().startswith(\"socks\"):",
+        "character": 8,
+        "end_line": 304,
+        "line": 268,
+        "name": "HTTPAdapter.proxy_manager_for",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 320,
+        "call_text": "if url.lower().startswith(\"https\") and verify:",
+        "character": 8,
+        "end_line": 362,
+        "line": 306,
+        "name": "HTTPAdapter.cert_verify",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 374,
+        "call_text": "assert _is_prepared(req)",
+        "character": 8,
+        "end_line": 400,
+        "line": 364,
+        "name": "HTTPAdapter.build_response",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 452,
+        "call_text": "return _urllib3_request_context(request, verify, cert, self.poolmanager)",
+        "character": 8,
+        "end_line": 452,
+        "line": 402,
+        "name": "HTTPAdapter.build_connection_pool_key_attributes",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 480,
+        "call_text": "assert _is_prepared(request)",
+        "character": 8,
+        "end_line": 509,
+        "line": 454,
+        "name": "HTTPAdapter.get_connection_with_tls_context",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 525,
+        "call_text": "warnings.warn(",
+        "character": 8,
+        "end_line": 552,
+        "line": 511,
+        "name": "HTTPAdapter.get_connection",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 560,
+        "call_text": "self.poolmanager.clear()",
+        "character": 8,
+        "end_line": 562,
+        "line": 554,
+        "name": "HTTPAdapter.close",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 580,
+        "call_text": "assert _is_prepared(request)",
+        "character": 8,
+        "end_line": 596,
+        "line": 564,
+        "name": "HTTPAdapter.request_url",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 29,
+        "call_line": 626,
+        "call_text": "username, password = get_auth_from_url(proxy)",
+        "character": 8,
+        "end_line": 631,
+        "line": 612,
+        "name": "HTTPAdapter.proxy_headers",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 658,
+        "call_text": "assert _is_prepared(request)",
+        "character": 8,
+        "end_line": 747,
+        "line": 633,
+        "name": "HTTPAdapter.send",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/adapters.py"
+      },
+      {
+        "call_character": 9,
+        "call_line": 69,
+        "call_text": "with sessions.Session() as session:",
+        "character": 4,
+        "end_line": 70,
+        "line": 23,
+        "name": "request",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 86,
+        "call_text": "return request(\"get\", url, params=params, **kwargs)",
+        "character": 4,
+        "end_line": 86,
+        "line": 73,
+        "name": "get",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 98,
+        "call_text": "return request(\"options\", url, **kwargs)",
+        "character": 4,
+        "end_line": 98,
+        "line": 89,
+        "name": "options",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 4,
+        "call_line": 112,
+        "call_text": "kwargs.setdefault(\"allow_redirects\", False)",
+        "character": 4,
+        "end_line": 113,
+        "line": 101,
+        "name": "head",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 133,
+        "call_text": "return request(\"post\", url, data=data, json=json, **kwargs)",
+        "character": 4,
+        "end_line": 133,
+        "line": 116,
+        "name": "post",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 150,
+        "call_text": "return request(\"put\", url, data=data, **kwargs)",
+        "character": 4,
+        "end_line": 150,
+        "line": 136,
+        "name": "put",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 167,
+        "call_text": "return request(\"patch\", url, data=data, **kwargs)",
+        "character": 4,
+        "end_line": 167,
+        "line": 153,
+        "name": "patch",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 179,
+        "call_text": "return request(\"delete\", url, **kwargs)",
+        "character": 4,
+        "end_line": 179,
+        "line": 170,
+        "name": "delete",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/api.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 43,
+        "call_text": "if not isinstance(username, basestring):  # runtime guard for non-str/bytes",
+        "character": 4,
+        "end_line": 74,
+        "line": 33,
+        "name": "_basic_auth_str",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 14,
+        "call_line": 81,
+        "call_text": "raise NotImplementedError(\"Auth hooks must be callable.\")",
+        "character": 8,
+        "end_line": 81,
+        "line": 80,
+        "name": "AuthBase.__call__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 100,
+        "call_text": "return all(",
+        "character": 8,
+        "end_line": 105,
+        "line": 99,
+        "name": "HTTPBasicAuth.__eq__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 37,
+        "call_line": 111,
+        "call_text": "r.headers[\"Authorization\"] = _basic_auth_str(self.username, self.password)",
+        "character": 8,
+        "end_line": 112,
+        "line": 110,
+        "name": "HTTPBasicAuth.__call__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 43,
+        "call_line": 119,
+        "call_text": "r.headers[\"Proxy-Authorization\"] = _basic_auth_str(self.username, self.password)",
+        "character": 8,
+        "end_line": 120,
+        "line": 118,
+        "name": "HTTPProxyAuth.__call__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 29,
+        "call_line": 144,
+        "call_text": "self._thread_local = threading.local()",
+        "character": 8,
+        "end_line": 144,
+        "line": 140,
+        "name": "HTTPDigestAuth.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 148,
+        "call_text": "if not hasattr(self._thread_local, \"init\"):",
+        "character": 8,
+        "end_line": 154,
+        "line": 146,
+        "name": "HTTPDigestAuth.init_per_thread_state",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 14,
+        "call_line": 163,
+        "call_text": "qop = self._thread_local.chal.get(\"qop\")",
+        "character": 8,
+        "end_line": 265,
+        "line": 156,
+        "name": "HTTPDigestAuth.build_digest_header",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 176,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 178,
+        "line": 175,
+        "name": "HTTPDigestAuth.md5_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 184,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 186,
+        "line": 183,
+        "name": "HTTPDigestAuth.sha_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 192,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 194,
+        "line": 191,
+        "name": "HTTPDigestAuth.sha256_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 200,
+        "call_text": "if isinstance(x, str):",
+        "character": 16,
+        "end_line": 202,
+        "line": 199,
+        "name": "HTTPDigestAuth.sha512_utf8",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 210,
+        "call_text": "return hash_utf8(f\"{s}:{d}\")",
+        "character": 12,
+        "end_line": 210,
+        "line": 209,
+        "name": "HTTPDigestAuth.KD",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 24,
+        "call_line": 288,
+        "call_text": "if (seek := getattr(r.request.body, \"seek\", None)) is not None:",
+        "character": 8,
+        "end_line": 318,
+        "line": 272,
+        "name": "HTTPDigestAuth.handle_401",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 322,
+        "call_text": "self.init_per_thread_state()",
+        "character": 8,
+        "end_line": 342,
+        "line": 320,
+        "name": "HTTPDigestAuth.__call__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 345,
+        "call_text": "return all(",
+        "character": 8,
+        "end_line": 350,
+        "line": 344,
+        "name": "HTTPDigestAuth.__eq__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/auth.py"
+      },
+      {
+        "call_character": 26,
+        "call_line": 41,
+        "call_text": "chardet = importlib.import_module(lib)",
+        "character": 4,
+        "end_line": 44,
+        "line": 35,
+        "name": "_resolve_char_detection",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/compat.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 45,
+        "call_text": "assert _is_prepared(request)",
+        "character": 8,
+        "end_line": 48,
+        "line": 44,
+        "name": "MockRequest.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/cookies.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 54,
+        "call_text": "return urlparse(self._r.url).netloc",
+        "character": 8,
+        "end_line": 54,
+        "line": 53,
+        "name": "MockRequest.get_host",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/cookies.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 57,
+        "call_text": "return self.get_host()",
+        "character": 8,
+        "end_line": 57,
+        "line": 56,
+        "name": "MockRequest.get_origin_req_host",
+        "pattern_priority": 0,
+        "rel_file": "src/requests/cookies.py"
+      }
+    ],
     "seed": "deterministic:path-sort:no-random"
   },
-  "spot_checks": [],
+  "spot_checks": [
+    {
+      "edge": {
+        "dst_file": "src/requests/exceptions.py",
+        "dst_func": "InvalidSchema",
+        "src_file": "src/requests/adapters.py",
+        "src_func": "SOCKSProxyManager"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "InvalidSchema,",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/requests/adapters.py",
+        "dst_func": "__init__",
+        "src_file": "src/requests/adapters.py",
+        "src_func": "__init__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "def __init__(self) -> None:",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/requests/adapters.py",
+        "dst_func": "init_poolmanager",
+        "src_file": "src/requests/adapters.py",
+        "src_func": "__init__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "self.init_poolmanager(pool_connections, pool_maxsize, block=pool_block)",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/requests/adapters.py",
+        "dst_func": "init_poolmanager",
+        "src_file": "src/requests/adapters.py",
+        "src_func": "__setstate__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "self.init_poolmanager(pool_connections, pool_maxsize, block=pool_block)",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/requests/adapters.py",
+        "dst_func": "_urllib3_request_context",
+        "src_file": "src/requests/adapters.py",
+        "src_func": "build_connection_pool_key_attributes"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "def _urllib3_request_context(",
+      "verdict": "accepted"
+    }
+  ],
   "truth_quality_tier": "T1",
   "truth_source_type": "callHierarchy"
 }

@@ -1,4 +1,476 @@
 {
+  "attempts": [
+    {
+      "call_response": {
+        "id": 34,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 24,
+                  "line": 375
+                },
+                "start": {
+                  "character": 9,
+                  "line": 375
+                }
+              },
+              {
+                "end": {
+                  "character": 24,
+                  "line": 375
+                },
+                "start": {
+                  "character": 9,
+                  "line": 375
+                }
+              }
+            ],
+            "to": {
+              "detail": "",
+              "kind": 6,
+              "name": "resolve",
+              "range": {
+                "end": {
+                  "character": 29,
+                  "line": 63
+                },
+                "start": {
+                  "character": 4,
+                  "line": 59
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 11,
+                  "line": 63
+                },
+                "start": {
+                  "character": 4,
+                  "line": 63
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es2015.promise.d.ts"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 6,
+          "line": 367
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 33,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 12,
+            "name": "adapter",
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 376
+              },
+              "start": {
+                "character": 36,
+                "line": 367
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 13,
+                "line": 367
+              },
+              "start": {
+                "character": 6,
+                "line": 367
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
+          }
+        ]
+      }
+    },
+    {
+      "call_response": {
+        "id": 36,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "from": {
+              "detail": "tests/module/cjs/tests/helpers",
+              "kind": 2,
+              "name": "cjs-typing.ts",
+              "range": {
+                "end": {
+                  "character": 0,
+                  "line": 554
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 0,
+                  "line": 0
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 63,
+                  "line": 318
+                },
+                "start": {
+                  "character": 56,
+                  "line": 318
+                }
+              },
+              {
+                "end": {
+                  "character": 17,
+                  "line": 324
+                },
+                "start": {
+                  "character": 10,
+                  "line": 324
+                }
+              },
+              {
+                "end": {
+                  "character": 52,
+                  "line": 335
+                },
+                "start": {
+                  "character": 45,
+                  "line": 335
+                }
+              },
+              {
+                "end": {
+                  "character": 82,
+                  "line": 360
+                },
+                "start": {
+                  "character": 75,
+                  "line": 360
+                }
+              },
+              {
+                "end": {
+                  "character": 33,
+                  "line": 382
+                },
+                "start": {
+                  "character": 26,
+                  "line": 382
+                }
+              },
+              {
+                "end": {
+                  "character": 53,
+                  "line": 382
+                },
+                "start": {
+                  "character": 46,
+                  "line": 382
+                }
+              },
+              {
+                "end": {
+                  "character": 58,
+                  "line": 400
+                },
+                "start": {
+                  "character": 51,
+                  "line": 400
+                }
+              },
+              {
+                "end": {
+                  "character": 40,
+                  "line": 426
+                },
+                "start": {
+                  "character": 33,
+                  "line": 426
+                }
+              }
+            ]
+          },
+          {
+            "from": {
+              "detail": "",
+              "kind": 12,
+              "name": "adapter",
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 376
+                },
+                "start": {
+                  "character": 36,
+                  "line": 367
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 367
+                },
+                "start": {
+                  "character": 6,
+                  "line": 367
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 24,
+                  "line": 375
+                },
+                "start": {
+                  "character": 17,
+                  "line": 375
+                }
+              }
+            ]
+          },
+          {
+            "from": {
+              "detail": "tests/module/esm/tests/helpers",
+              "kind": 2,
+              "name": "esm-index.ts",
+              "range": {
+                "end": {
+                  "character": 0,
+                  "line": 726
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 0,
+                  "line": 0
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/esm/tests/helpers/esm-index.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 29,
+                  "line": 346
+                },
+                "start": {
+                  "character": 22,
+                  "line": 346
+                }
+              },
+              {
+                "end": {
+                  "character": 58,
+                  "line": 351
+                },
+                "start": {
+                  "character": 51,
+                  "line": 351
+                }
+              },
+              {
+                "end": {
+                  "character": 46,
+                  "line": 361
+                },
+                "start": {
+                  "character": 39,
+                  "line": 361
+                }
+              },
+              {
+                "end": {
+                  "character": 76,
+                  "line": 386
+                },
+                "start": {
+                  "character": 69,
+                  "line": 386
+                }
+              },
+              {
+                "end": {
+                  "character": 33,
+                  "line": 408
+                },
+                "start": {
+                  "character": 26,
+                  "line": 408
+                }
+              },
+              {
+                "end": {
+                  "character": 53,
+                  "line": 408
+                },
+                "start": {
+                  "character": 46,
+                  "line": 408
+                }
+              },
+              {
+                "end": {
+                  "character": 35,
+                  "line": 415
+                },
+                "start": {
+                  "character": 28,
+                  "line": 415
+                }
+              },
+              {
+                "end": {
+                  "character": 55,
+                  "line": 415
+                },
+                "start": {
+                  "character": 48,
+                  "line": 415
+                }
+              },
+              {
+                "end": {
+                  "character": 52,
+                  "line": 440
+                },
+                "start": {
+                  "character": 45,
+                  "line": 440
+                }
+              },
+              {
+                "end": {
+                  "character": 40,
+                  "line": 466
+                },
+                "start": {
+                  "character": 33,
+                  "line": 466
+                }
+              }
+            ]
+          },
+          {
+            "from": {
+              "detail": "",
+              "kind": 12,
+              "name": "adapter",
+              "range": {
+                "end": {
+                  "character": 1,
+                  "line": 402
+                },
+                "start": {
+                  "character": 30,
+                  "line": 393
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 393
+                },
+                "start": {
+                  "character": 6,
+                  "line": 393
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/esm/tests/helpers/esm-index.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 24,
+                  "line": 401
+                },
+                "start": {
+                  "character": 17,
+                  "line": 401
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "mode": "callee_incoming",
+      "prepare_params": {
+        "position": {
+          "character": 17,
+          "line": 375
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 35,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 6,
+            "name": "resolve",
+            "range": {
+              "end": {
+                "character": 29,
+                "line": 63
+              },
+              "start": {
+                "character": 4,
+                "line": 59
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 63
+              },
+              "start": {
+                "character": 4,
+                "line": 63
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es2015.promise.d.ts"
+          }
+        ]
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -113,104 +585,19 @@
     }
   },
   "language": "typescript",
-  "outgoing_responses": [
-    {
-      "id": 19,
-      "jsonrpc": "2.0",
-      "result": [
-        {
-          "fromRanges": [
-            {
-              "end": {
-                "character": 24,
-                "line": 375
-              },
-              "start": {
-                "character": 9,
-                "line": 375
-              }
-            },
-            {
-              "end": {
-                "character": 24,
-                "line": 375
-              },
-              "start": {
-                "character": 9,
-                "line": 375
-              }
-            }
-          ],
-          "to": {
-            "detail": "",
-            "kind": 6,
-            "name": "resolve",
-            "range": {
-              "end": {
-                "character": 29,
-                "line": 63
-              },
-              "start": {
-                "character": 4,
-                "line": 59
-              }
-            },
-            "selectionRange": {
-              "end": {
-                "character": 11,
-                "line": 63
-              },
-              "start": {
-                "character": 4,
-                "line": 63
-              }
-            },
-            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.es2015.promise.d.ts"
-          }
-        }
-      ]
-    }
-  ],
-  "prepare_params": {
-    "position": {
-      "character": 6,
-      "line": 367
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 0,
+    "duration_seconds": 5.023139,
+    "notification_methods": {
+      "$/progress": 2,
+      "$/typescriptVersion": 1,
+      "window/logMessage": 1
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
-    }
-  },
-  "prepare_response": {
-    "id": 18,
-    "jsonrpc": "2.0",
-    "result": [
-      {
-        "detail": "",
-        "kind": 12,
-        "name": "adapter",
-        "range": {
-          "end": {
-            "character": 1,
-            "line": 376
-          },
-          "start": {
-            "character": 36,
-            "line": 367
-          }
-        },
-        "selectionRange": {
-          "end": {
-            "character": 13,
-            "line": 367
-          },
-          "start": {
-            "character": 6,
-            "line": 367
-          }
-        },
-        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/module/cjs/tests/helpers/cjs-typing.ts"
-      }
-    ]
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
   },
   "repo": "typescript-axios",
   "sample": {

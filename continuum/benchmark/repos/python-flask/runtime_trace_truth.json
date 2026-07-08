@@ -1,0 +1,3141 @@
+{
+  "case_id": "repos/python-flask/runtime_trace_partial",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "__iter__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2748d3c5b3f47873bb71ac5dcab8818352a2b26e10f33fee3c21185e3fe68d77",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "__contains__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "__getitem__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c26e367c69cfbe70bbf6e69fbe5b640739d04b75ff63b2e62bab53b0b48f0d09",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "__contains__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "_is_param_expr",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9a0f39e78a32050a0f472056701db83bec7416f223ed85a79bb98739a70fb2ca",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "__new__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "_check_methods",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "be03aa5050e238e91f5b4dd6ed311ad091981bdb32c7d6725314188d82fbf0d4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "__subclasshook__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "<genexpr>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cfbe18f42632d4f0f4d42ebbbd3c74bfb3349d2a73eac0f9ab414d4eae44b328",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "_is_param_expr",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "__getitem__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "85484a605f81ebcae16094bcacf6fece152a860630f7d10742e685e186281725",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "get",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "__delitem__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "622858f22ec5d658daddd318af8031eea31cd7dc965814a9e05b917bf8f06eaa",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "pop",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "__getitem__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "126e3d6ee64384138e6be5f0962ee8a50acacdc0b61ef80113bc1aa53e6b24f0",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen _collections_abc>",
+      "src_func": "pop",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen abc>",
+      "dst_func": "__subclasscheck__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b43d35bac57935fb901203b3ab979707e94cd2d009c164bd06c91e07eadcd077",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen abc>",
+      "src_func": "__instancecheck__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_lock_unlock_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e89d669093338bfcefd9360f3f9afcacbdb3884d9f96dac6356096a0624c5a0e",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen abc>",
+      "src_func": "__new__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "__subclasshook__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ac5df1b1348a263ca0f1c872684c6efa8c2f2bc36939a5986f239608cfb96565",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen abc>",
+      "src_func": "__subclasscheck__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen abc>",
+      "dst_func": "__subclasscheck__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ee9cbcf7c43b46b02d72c5dd4caff04f33088e0f0347092f956ff3f35852506b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen abc>",
+      "src_func": "__subclasscheck__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "__subclasshook__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1edb3c67abd99edb5b5d324d967e8b0824d6cfc10b18c6e2e26267aff456abf4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen abc>",
+      "src_func": "__subclasscheck__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen abc>",
+      "dst_func": "__subclasscheck__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9ec1ce5a5ed4b229362e4b6168b1bfa80cb415751d1becb8546183f8802f4e06",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen abc>",
+      "src_func": "register",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen codecs>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "24bca4b9e8e5835d443b0441eaa8d3272adf573cde31409f88328e77e253b816",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen codecs>",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen codecs>",
+      "dst_func": "reset",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b2243bbeeb89aeda329bf8753ff905bc35c240b454ab6eca6d48e4a7370e47a7",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen codecs>",
+      "src_func": "reset",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen genericpath>",
+      "dst_func": "samestat",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0cbcc868191dfa58f4ad56fed1de1f65815c0aae1bac54da73a5e76a91e29477",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen genericpath>",
+      "src_func": "samefile",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_get_module_lock",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "80d5b4854ce34a03c46c89ea65daf191ea296b4bb657d6f3d6cd757d9eb07e3d",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "__enter__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "acquire",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3ee7969d482422ae26e08d68a730d3f44b979a42d8f241e0a450bc162b972d0e",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "__enter__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "setdefault",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ab6c9be8b574177e4c4046e05758faede36c526b1052082134fbf505ccda7d36",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "__enter__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "release",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4e6e0ab59d71098ebd821bbc36dba81ded9d0b0be30e5d02e7924a8c995c77ce",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "__exit__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "__new__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d5026ab9ded3a2422aa51d345130b7191c17056eb48e8c6e3e21e01dc93c006f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "get",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9711a68c86420e0d0998c6937a4868b525e28ab63e93b77ed84a00a87866a79f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen abc>",
+      "dst_func": "__new__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "be09c528f646a03e64e0313901ab2244a9af3d788aaeac37c1e2530986368d86",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen abc>",
+      "dst_func": "register",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "78f9a6d6a38148dc2a9acabbe1226bf194289c939e9474d3671ecc8fed3f2075",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen codecs>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0929ebe32378b185f921663cc14500baf9704e3d35c41c4989813d24af33741f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen codecs>",
+      "dst_func": "decode",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4e30c2cd9aa43ac7449dceeaa04cfb102d220f0ce161a63aa17824a9265f3dfc",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen genericpath>",
+      "dst_func": "exists",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "140256359e0e7cea545ac6f6c77996bf7e3642ada6497359d0ce6b76ba9b51a4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen genericpath>",
+      "dst_func": "isfile",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "557990c96c5cb605755745e5b6f6a61485635c2a0682c70e408eb0d5b87e1506",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_find_and_load",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fc073af7fc8199f49a135de0e6185d31bb51280fc7909ff0a7c4c6caca11e3d2",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_gcd_import",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f64abbef96c17db3a2ff834d3af5b14165d6d307efff8777cb673de7349c94b2",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_handle_fromlist",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "874fc2cf98e7cf9c29c045e8e58f3056518373b92d7a7039e4abfeb5c340a7be",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_lock_unlock_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "20f03df5089019c198cf591e74e31fdc174925011d677219a5666934a3bd218e",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "basename",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8e329e28f827721d593badd72c5ecf6bbe6f3d792ef4da73a7e55f3071bbbf17",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "dirname",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ca143adb67ecb855f5aa9b8318d35576f2bead1c10e67e8d99fad3f13bcc9c51",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "join",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7e6aea5f24fa0312105c6af73de73644674479a56e15fc76f8c5485ebaeb671c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "splitext",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8583fa0b97880787db11965189d8f5940eaf02eb83aeb31a9ab4380da415ab17",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<string>",
+      "dst_func": "<module>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "261e326a89590c21484b67ac4d80ce207245c3c5f2484368b25dcb7159d8d6ac",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_call_with_frames_removed",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__enter__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c36b0dfb35cbfa4ddbb9a588e47fda69b94444990b6e8f01a554ea3300a29cba",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__exit__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3adad599b7bbdda0e5bc49e1b3079a017642559df4d4dc34710eee664e04b911",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6e4dfa4dbe3a4d5fa63945009e7c913ea63af9023a67d575e0ca65a3cc90884e",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_find_and_load_unlocked",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7a475bd4f341ea5b3276244328c456a41adafbe8301e23ebd4c569a586ce472d",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "cb",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3804fb995148354b3b8d4e5523c6e3bd46ca38431f2fad8c642028036f5da1f7",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d6c2a9881b2c6b44e366b5fcaf65d213cc155f916cbef4b34a7d5bc56e72fb86",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_find_spec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bdd450d2c7863213d335f77771918bb381d50685f378733b58dbe25322220f0f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_load_unlocked",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "75b656d7b4c896242224123a28f6ca73abd828ec2894a84d6a07a47d20e7a8e4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_and_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__enter__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "14ce9967ee41bdb461e2a51b602ebd50841fb53d4f0e986b01acb33082e0c644",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__exit__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b0c6c683af3da0d28276290bca72d2f5706b62e60413df206e3a091ffbd2f156",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "find_spec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cbd060b05570fd3d54f3c666a58dfd1af656d0f1d8fb1b3d303768d11a59cd05",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "find_spec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b7ae0c5551e3ffab89234b12bfb2063d6d55e84399c975ab2c539e33418e21aa",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_find_and_load",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2551259570b083834f811d6b143e0a25fa3982697f0080d0afbb494bf35c728d",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_gcd_import",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_resolve_name",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b6a8c498d1ff0090e092230ca5e58fd2f49962f622e473c0d217d17a9eb56f52",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_gcd_import",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_sanity_check",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "23a9f55b927ef89e1a6f1311ae95b9caf94dca9ddb0aa714521425a621610f37",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_gcd_import",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a6f99b6f52e8217c667c71f22f9a023a7fd9851cc579967c228f64b19f2f58b7",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_get_module_lock",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d8ca863078fc535b931b657b032a250dfe77b446b592482d4471e276d8b02ef9",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_handle_fromlist",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "cached",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "66ebf44eeb02317d71ba32d86a38b5102f9d575296d8e0445e530160607b30a8",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_init_module_attrs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "has_location",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2e19e226a26a15c58f2ddd94971f2d62177d0d775f8165b39e673e4db64bc7c1",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_init_module_attrs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "parent",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e7b53c6af66b51c7f40ceff9de6d71b107720810b97f9f127386c296c805b49f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_init_module_attrs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_verbose_message",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "399fb65d40bc79f650fe2ea045373fdf271979a3058daa6f79a6e557c169050d",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "exec_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ccdd8e679d50eb3ac795b1ccc57240f98ed017080bd5b22955299c66e42ef796",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "module_from_spec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d777c9c45156f6f458c4bbd3b30f730cd5cb6d2bd94fbbd3cf87912b9db182dc",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "exec_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a2ef40987697ba59c1b605d1af913cd518c5737c1b2355d2d92b17475d81f6e6",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_load_unlocked",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_get_module_lock",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "94b921300fa851a47fbf166c10df2ce1f92b1039be2cca0e5ed234366db7d27c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_lock_unlock_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "acquire",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ca17b1f0f5f5c4ba30b1b4b24e292205d8dbfc6b0d20bfb118e7fdde45729c96",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_lock_unlock_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "release",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cae2e1f487dbefec5e8b1a262fdaf7500ad4f37759744c3a437f48a422b298ff",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_lock_unlock_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "is_package",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e9a661254454b4c355b0c117c929d05d36680ab1fee5dfc568ecee25d23e2b07",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "_requires_builtin_wrapper",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__enter__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6ade0fa4be6b26f8d06c9142713a43c7875497a4fe6dc9a39c5fd3e1fcb99aa8",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "acquire",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__exit__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8c71315c934a3c50d76f32ee6c1634907fd00416a5bd51bbc2efc651900de9fa",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "acquire",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1405cb0f1af0f6b61656efff1bff5c6519817e7a12dc4338b9fdd8e16f05f78f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "acquire",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "remove",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8b859c762ffd7e3957efc8c59c5354503e6d2a2e00f460058350d078c9a82093",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "acquire",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_get_cached",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ee51c6bc5903b5af5415c75dc7589bead94ba9e66bfc72ebee9eac5418fe64b5",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "cached",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f84e03464349ee10c8d10b8d29cca93bea035a254e04346def220c462fca3a11",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "create_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_new_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7dbe45e512d8008e432fd807d20121714145d0e5cb3bb7a55d3c6fae3327cac2",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "create_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e1b65dc08ccdfa1bb5132eaf944a00e265e32d86e97a4488298219ca6c188493",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "exec_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib.machinery>",
+      "dst_func": "<module>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "71d51be5819737abadbac25eb142a2fded61894a1a2516ac0869d81130e0ac80",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "exec_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib.util>",
+      "dst_func": "<module>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4114aef7b10e40748cda25c44281e271fe667e80890eaf5030e7d4bf00e67793",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "exec_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3f7b037d3de8c9d82b7bb7e5ce23e35186b9cd824618e325be585680b2aa3080",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_resolve_filename",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4cebec65c88551b2c6513bbeaf24fc32b1e55d9f70e6b8407442ff259db7c5ba",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "spec_from_loader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a58ca67f4da25ea560a0ff61b75fb5befc5228910fe9ced928ba33cd3b4e2927",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_init_module_attrs",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e21382d3493dfa8a4866b29767b7598840a70a1a29cde5fdd3a2873a9638bbac",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "module_from_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_new_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "09576c5f6210c8008b841d5a330c708f4c66b33d0b1536be8940893ca3f27da1",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "module_from_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "create_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "383730cff41ab399afc4b8b15f1a62403bfe95eff57b5dd7184f87cc98b99c5a",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "module_from_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "create_module",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "887cba4d91e898f42ef9fe32ca5696b2ecd196bcdabbc7a9f3df56adb02335dc",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "module_from_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ba314877fad8a310030abcfaf507fa190085c519af65d6aa9ba3778a84fec09a",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "setdefault",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__new__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4d708dda3d523b4305ee8f640315c121eb81c21ac0815b4feed9576fa073d4d6",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "setdefault",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9cad1330263e4dff59184ff9470a50c662fee25f2d3e637a7cfe96edf210b281",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "spec_from_loader",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_requires_builtin_wrapper",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "04903d31b7447c4a5a37444a4f360a0570b3b5522007014da6aa26edb5a983fa",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap>",
+      "src_func": "spec_from_loader",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "<genexpr>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7198fbe11a53ea4ff5c79bff95e4d1d718cdd8cf52a89bff20af6f30b07d068c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_get_parent_path",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "aebcd1dd63d8ebd7c18be2ba09820de6a4dc2df3e1b90649fc2a97714687cbd6",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_abspath",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bb0758c9d6327d28f4c1dbbe203b8b8b48ad639e6324cd0e49677d1c96f8bdcf",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_recalculate",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "47480b362b173e009ef166d48638cf5a23e41bda7c3aea0abaf2e304c36f5e65",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "__iter__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "get_filename",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "df5c5c3ad19976a32dee2dccb7f66e9fb689ee4905f5f5d10f0f227f7e433ffd",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_check_name_wrapper",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_unpack_uint32",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "014d3c34552b343d7c15b7a1bdb4c6f608be2e14c9858f6870359755fc57d365",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_classify_pyc",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_verbose_message",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7dff82faac428b9a8a2e2157602b2cbc7c1b04e636a2bb6a49b6ffb43b393b8c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_compile_bytecode",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "cache_from_source",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8ab5b758055666da54f2c0925296e49dc4689390f6a294af84839e073d783d63",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_cached",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_find_parent_path_names",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7a7c5a4eb0325d93b904803a85f17eeb735b7bc1de16a30bdb2611f0a77a6065",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_parent_path",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a134823e8cbb98c5fab29fd5722e32f3a72c7f4ccece27d61ae7edf67a52f7ab",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5bdfcce4b31dcedd1234888bc9b56ba719b4a5bbf2a3a6db2b73147115363f9c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "__iter__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e7878de47af463a3f1f489b7999134959df711277570f371a4edfca9b9adec74",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_importer_cache",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bd138c4647711bcc3b5d2529783b40c5b5a00ddfb1318adcdf8aef57294799bc",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "find_spec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2bd971fd4320e9b11f7e59fec109b91de81ee20517709efb76a8c462850b4d0a",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "spec_from_file_location",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d9ddeac7315bb3600fc83efbdb3a8d14d2c48a1f41bad88145a025c89765c0ef",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_get_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_isabs",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9fb7ed1bb1e2c86738fa776a89db903d2c294e95329db6c5ebbda9d3566fae81",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_abspath",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "path_hook_for_FileFinder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0711efeaaa8a9845bd8bdaee5e79994a8591d681e4197ef167b71e14652ce321",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_hooks",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen zipimport>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "398a79935340d2f64e8d3dff1e8681d674c3f1e133ed93a6658e965d64efabe4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_hooks",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_hooks",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "efa818585036c989b1a81a70172d43c7f363fb2deb6688efbf3813d8a17c848d",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_importer_cache",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_stat",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "242682ac6ae697ed68f4d30bf75254637304ff17122a6fcd9de463abc79b5756",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_is_mode_type",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_is_mode_type",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "76799ba90f0fbbe9b29a03ea3d631b48aa2a6affa618f18b6e8a93e18065dd9f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_isdir",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_is_mode_type",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "274a57b14278bea51ff0fbed0900c2fb9b98474e1fd6b8f9e8c887991026be4b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_isfile",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "<genexpr>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d31f8b0ffa42f10f58a9f975a8907a40e56c15aa1bc2a63a64ea2e4e476631d7",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_path_split",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_get_parent_path",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "89c57c6819e150d588dfb17574caf8091f6c14391571d6b80698c468cfdca7d4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_recalculate",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_unpack_uint32",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ec4b84bd87952e8a7e69a5e4db621fb62db1919cfff6500c3fff2cd957504ed9",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "_validate_timestamp_pyc",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_join",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2fa9a98b12a5bd9ca658352a68660177ae2512b19c54f1574ec3845fd19a3367",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "cache_from_source",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_split",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dc6f161e2598ca9afe241a8873b245d3bb964a4632e924c4fe2435d7f4d83246",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "cache_from_source",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0233ef24538a4e19be764f429229402340b1dd22b9ee7eecec67f01078bfa277",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "create_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_verbose_message",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b85f554d81ff4b08e07414e256deae2c5776872ec951f460d4fc186392f13138",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "create_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_call_with_frames_removed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "503409930e2089a7c48149d2986f5a7a929e419e20bb4781cecf0d01c9efe1df",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "exec_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_verbose_message",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ae5d9ec6fd4a58afc9b0c81f7fb713020002e37423a22b825d880faa718b805f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "exec_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "get_code",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "719bd8784c923994c271a9cda791653a45aececde3dfebc5993f9714131c7248",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "exec_module",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_handle_fromlist",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "554e0b853251b015cd74f92ef19d9ac20a7543221dd79b6abe1a9f3614735be1",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_distributions",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "877e96547921eb32aa7f7147c713308f91f62218be1d98e0a4942f8f1bdf5ca3",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_verbose_message",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d846c610da669957d0c4b6deaceb57ca29982c0a526a75b415ee753e436e5a29",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "78835f78a478f53e1a9d715846ed057b132132974a0c570e30c79085d3611859",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_fill_cache",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a9b098bf32e0612d9dccbea248456adca2ccb72a741cadcbc37ca6a198cad9b4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_get_spec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fadf657b2a2ee4361051018732f221e3b1ab2fa77b94ced2fc8c57ca92c6e1ed",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_isdir",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bffaae4baeec3e1d6684fc096bf0258a7ebb6b4a667d646e235390fbd0979f98",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_isfile",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f016aef03333f4175c522e9a54910841bd4eeeb1e0c9546e90efb6ed5c778b58",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_join",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a3dda311bf8307adc2f3a44d494cd8db15c5866c92d5c2457cafda011e4fe026",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_stat",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "27ee986757c118a86dd3072d46f0da24f340db46fab72d615019ca37e7815d05",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_relax_case",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "223b0f6218722d92d6281fdc9c00764208ded8bcba15553071a911e2f6aac64f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "find_spec",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_verbose_message",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cca9d06ea73e1783079645e7b832a698d6719ec046580126167b44c7a6719540",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_check_name_wrapper",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "03246a0a7bcbec0e46c1555d3ec1a8ff0634c66e7d306d5e232a5190f62ad013",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_classify_pyc",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "14ebb41af8d0f88dda3d5101cf3392b713b779c7f978482aa88b6eb068845d55",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_compile_bytecode",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e29a7e11bc653bb26e15b44374c7606417ed4cdcf8a7011348e51ca810ebe809",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_validate_timestamp_pyc",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d1d796c5ccdfb34beed518daca5e8a23afca887917396a3b8eef396e2dee914b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "cache_from_source",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cde80c6360ab0c7e1a6dfc66223150db87559c261ffb40c1d456255e00c40adc",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "get_data",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "def622d01062fdb0742030dafb56007cb8116d7651332730d1b5ceaef7a1f9ba",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "path_stats",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7d37019e25654c9054db098aa7919dc3972f08736023a501dd64761956d5eff2",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "get_code",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dc34d2f93d8c1b616749af27cd7c722101432e0d2460cda7bb852f687eb4c9e4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "path_hook_for_FileFinder",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_isdir",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ab19b50853b37af4aefbd904ec9524fb0251c210c12f273b6398d1869db07c17",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "path_hook_for_FileFinder",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_stat",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "99291253e2cd5b4a66dd8c3ad40ce53f2e9da0538a1803629d7f6d9a8ef85ecd",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "path_stats",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ece4a5c33f5b70edaaccf01652b12f2dab039417cb325a6abcf2345405e6a41c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "spec_from_file_location",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_abspath",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c2013a635787289bd171b089ff95f7a54aeaf3c8e85613a60ccc393a9c0e507b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib._bootstrap_external>",
+      "src_func": "spec_from_file_location",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "parent",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "55c0f8beae5f202c4d89b0c71dbc04fd7a3cd9ae55e2dfabafbb78da1278b43d",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.machinery>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen abc>",
+      "dst_func": "__new__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "eef3eba99fcf6a1a1e26417a01d8dad996fe4ef35ea4fe76df1c34fea332ed8b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.util>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_find_and_load",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c79e476b2ec68e197dfb6a9b0015c7b8a6ef1c15e3545eceebd83e47be6a56d1",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.util>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "parent",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b50544daa6d8a23c696ae142d25922832ebd10f626d1eae26f72f02cd22cc150",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.util>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib.util>",
+      "dst_func": "LazyLoader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "72590ab62845d4055b3915f45cef1513289d83680289c92dc0bd1f35c0c2805f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.util>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib.util>",
+      "dst_func": "_LazyModule",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "591b38668cea6a30edc9c46e37ef7e6eeaec091cdc7edca6bad5444cd8cbc271",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.util>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib.util>",
+      "dst_func": "_incompatible_extension_module_restrictions",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "86494ccce29d51dc7204d1a8ad23b3793daceecf314839d90c5a060b94b16337",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen importlib.util>",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "encode",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e6ab9c42709bcc0d27329f4b277f175b16f639aac33f45234089b4b6349a1f03",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "__delitem__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "decode",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d3038f456dff46cd854820687d3c4a99aca7f133ecf183ca502dc05601a03e7a",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "__getitem__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "encode",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "34d1df3c060bb892132d20f7c5268adb210a4906f04845003f1f80e972a67827",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "__getitem__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "encode",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "eb9a8100dbb1fbda2749bc1bd03309845b5f6e38513e25412c8a2f81fada2915",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "__setitem__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "_check_methods",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d3895aa16637d504585d13a161cd33656e33ea6362831cecbc187b767fc2275b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "__subclasshook__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "has_location",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "15841a34a5192451ecfe9a4354fb3518e56c2cf5cb9da2e48c471b474dc65c0b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "_get_exports_list",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "get",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9f8982592d266083bf52c74fd9f01978fd2269e005bf84eacd91ea9c4d5d75e4",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "getenv",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen genericpath>",
+      "dst_func": "exists",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cdddfd26527fdf30227419e0ae6a957f70fbce2cf18168801dee417837ad5b69",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "makedirs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen genericpath>",
+      "dst_func": "isdir",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "536701e6f99b13c201e614cd1952034e56b7264b67e443ec372de8764e40edb8",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "makedirs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "split",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5a20d1c7881423d188d3905e5e988b92267c594aa37b6159b2b5917559a2993b",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen os>",
+      "src_func": "makedirs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "join",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bcc66e50849a40283c4ab06f605b7f423dde20323941a06ee368a14de421765f",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "abspath",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "_get_sep",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4455da49c1f4ca0ea26b9c74f1cb777f258d21a2795ec8f526d849569ba4c278",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "basename",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "_get_sep",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7b2df763451a9e3e30010a205da5ef758c7e9be68c09f9589ded6b96a9de9548",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "dirname",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen _collections_abc>",
+      "dst_func": "__contains__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ffb217b72c0124bb3b4a9e5e7bff2428110f58917bdc5fa035ba097dde91df37",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "expanduser",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen os>",
+      "dst_func": "__getitem__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "50719ea0ee70afa8edb5ad0b1419705e520945b6ab5daeed8be0abb274e88531",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "expanduser",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "_get_sep",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cd223f1bb8fa72d3273bfa5c26a38f5802e82611d88f43d10649058cfba4f33e",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "expanduser",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "_get_sep",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6353b8cf142bcc32f7c6e249f1458d3a5480f4145de98aaa38cb50bbe0a8eba0",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "isabs",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "_get_sep",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e82db9793bb999f441fe08f82774eab7eef3d16e6638d99ab758003ef60ccece",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "join",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen posixpath>",
+      "dst_func": "_get_sep",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d412765ccb92c57b0f1c5c962cf9f81be67238aede6879ff6b9fd5f4a70ef819",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "split",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen genericpath>",
+      "dst_func": "_splitext",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6a8aa6f1681a200cd3f238820930dada316b8f77320f5e768c1a7f5a81edfbbb",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen posixpath>",
+      "src_func": "splitext",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap_external>",
+      "dst_func": "_path_stat",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "52ddfcf1baba6fee311d4985bf4b4e949dcec4e70ec22ac1d0f4f1c7af1f859c",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<frozen zipimport>",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<string>",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bc596b99a41f36ef6f44d521d2ee8193fdbf2cb1b161d4bbe4810bd1355f03d3",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "<string>",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_find_and_load",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f16506d9dec85d33190692077a4ab6a5c359ed61573ac19015bdc0bbbeb02154",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "tests/test_basic.py",
+      "src_func": "<module>",
+      "src_line": null
+    },
+    {
+      "dst_file": "<frozen importlib._bootstrap>",
+      "dst_func": "_handle_fromlist",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "74936914dac528c63084d727cf828e1aacc4fb9419f517ee6da5b644e76646ce",
+        "harvested_at": "2026-07-08",
+        "source": "runtime-trace",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T2",
+        "tool": "sys.settrace",
+        "version": "python 3.14.6"
+      },
+      "src_file": "tests/test_basic.py",
+      "src_func": "<module>",
+      "src_line": null
+    }
+  ],
+  "language": "python",
+  "notes": "Partial Flask runtime trace at 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81; pytest did not run cleanly: pytest exit code 1.",
+  "schema_version": "truth.v1"
+}

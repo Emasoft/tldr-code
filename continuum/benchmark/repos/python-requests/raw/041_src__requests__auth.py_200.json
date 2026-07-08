@@ -1,0 +1,315 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 85,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 29,
+                  "line": 200
+                },
+                "start": {
+                  "character": 19,
+                  "line": 200
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "isinstance",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 1569
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1569
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 1569
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1569
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 32,
+                  "line": 201
+                },
+                "start": {
+                  "character": 26,
+                  "line": 201
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "encode",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 497
+                },
+                "start": {
+                  "character": 8,
+                  "line": 497
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 497
+                },
+                "start": {
+                  "character": 8,
+                  "line": 497
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 73,
+                  "line": 202
+                },
+                "start": {
+                  "character": 64,
+                  "line": 202
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "hexdigest",
+              "range": {
+                "end": {
+                  "character": 17,
+                  "line": 34
+                },
+                "start": {
+                  "character": 8,
+                  "line": 34
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 17,
+                  "line": 34
+                },
+                "start": {
+                  "character": 8,
+                  "line": 34
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 37,
+                  "line": 202
+                },
+                "start": {
+                  "character": 31,
+                  "line": 202
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "sha512",
+              "range": {
+                "end": {
+                  "character": 22,
+                  "line": 83
+                },
+                "start": {
+                  "character": 8,
+                  "line": 83
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 22,
+                  "line": 83
+                },
+                "start": {
+                  "character": 8,
+                  "line": 83
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 16,
+          "line": 199
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/auth.py"
+        }
+      },
+      "prepare_response": {
+        "id": 84,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "sha512_utf8",
+            "range": {
+              "end": {
+                "character": 27,
+                "line": 199
+              },
+              "start": {
+                "character": 16,
+                "line": 199
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 27,
+                "line": 199
+              },
+              "start": {
+                "character": 16,
+                "line": 199
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/auth.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
+  "repo": "python-requests",
+  "sample": {
+    "call_character": 19,
+    "call_line": 200,
+    "call_text": "if isinstance(x, str):",
+    "character": 16,
+    "end_line": 202,
+    "line": 199,
+    "name": "HTTPDigestAuth.sha512_utf8",
+    "pattern_priority": 0,
+    "rel_file": "src/requests/auth.py"
+  },
+  "sample_index": 41
+}

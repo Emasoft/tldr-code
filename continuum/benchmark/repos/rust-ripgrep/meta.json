@@ -27,6 +27,7 @@
         "end_line": 3,
         "line": 0,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "build.rs"
       },
       {
@@ -37,6 +38,7 @@
         "end_line": 31,
         "line": 11,
         "name": "set_windows_exe_options",
+        "pattern_priority": 0,
         "rel_file": "build.rs"
       },
       {
@@ -47,6 +49,7 @@
         "end_line": 60,
         "line": 35,
         "name": "set_git_revision_hash",
+        "pattern_priority": 0,
         "rel_file": "build.rs"
       },
       {
@@ -57,6 +60,7 @@
         "end_line": 68,
         "line": 49,
         "name": "build",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -67,6 +71,7 @@
         "end_line": 363,
         "line": 360,
         "name": "new_passthru",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -77,6 +82,7 @@
         "end_line": 387,
         "line": 382,
         "name": "close",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -87,6 +93,7 @@
         "end_line": 396,
         "line": 391,
         "name": "read",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -97,6 +104,7 @@
         "end_line": 455,
         "line": 452,
         "name": "is_exe",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -107,6 +115,7 @@
         "end_line": 531,
         "line": 489,
         "name": "default_decompression_commands",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -117,6 +126,7 @@
         "end_line": 516,
         "line": 499,
         "name": "add",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/decompress.rs"
       },
       {
@@ -127,6 +137,7 @@
         "end_line": 27,
         "line": 25,
         "name": "escape",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -137,6 +148,7 @@
         "end_line": 34,
         "line": 32,
         "name": "escape_os",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -147,6 +159,7 @@
         "end_line": 68,
         "line": 66,
         "name": "unescape",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -157,6 +170,7 @@
         "end_line": 78,
         "line": 76,
         "name": "unescape_os",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -167,6 +181,7 @@
         "end_line": 86,
         "line": 84,
         "name": "b",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -177,6 +192,7 @@
         "end_line": 92,
         "line": 89,
         "name": "empty",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -187,6 +203,7 @@
         "end_line": 98,
         "line": 95,
         "name": "backslash",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -197,6 +214,7 @@
         "end_line": 105,
         "line": 101,
         "name": "nul",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -207,6 +225,7 @@
         "end_line": 111,
         "line": 108,
         "name": "nl",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -217,6 +236,7 @@
         "end_line": 117,
         "line": 114,
         "name": "tab",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -227,6 +247,7 @@
         "end_line": 123,
         "line": 120,
         "name": "carriage",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -237,6 +258,7 @@
         "end_line": 130,
         "line": 126,
         "name": "nothing_simple",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -247,6 +269,7 @@
         "end_line": 137,
         "line": 133,
         "name": "nothing_hex0",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -257,6 +280,7 @@
         "end_line": 144,
         "line": 140,
         "name": "nothing_hex1",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -267,6 +291,7 @@
         "end_line": 151,
         "line": 147,
         "name": "nothing_hex2",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -277,6 +302,7 @@
         "end_line": 157,
         "line": 154,
         "name": "invalid_utf8",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/escape.rs"
       },
       {
@@ -287,6 +313,7 @@
         "end_line": 32,
         "line": 15,
         "name": "hostname",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/hostname.rs"
       },
       {
@@ -297,6 +324,7 @@
         "end_line": 74,
         "line": 35,
         "name": "gethostname",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/hostname.rs"
       },
       {
@@ -307,6 +335,7 @@
         "end_line": 83,
         "line": 81,
         "name": "print_hostname",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/hostname.rs"
       },
       {
@@ -317,6 +346,7 @@
         "end_line": 23,
         "line": 18,
         "name": "format",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -327,6 +357,7 @@
         "end_line": 30,
         "line": 25,
         "name": "int",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -337,6 +368,7 @@
         "end_line": 37,
         "line": 32,
         "name": "overflow",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -347,6 +379,7 @@
         "end_line": 61,
         "line": 43,
         "name": "fmt",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -357,6 +390,7 @@
         "end_line": 99,
         "line": 78,
         "name": "parse_human_readable_size",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -367,6 +401,7 @@
         "end_line": 109,
         "line": 106,
         "name": "suffix_none",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -377,6 +412,7 @@
         "end_line": 115,
         "line": 112,
         "name": "suffix_k",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -387,6 +423,7 @@
         "end_line": 121,
         "line": 118,
         "name": "suffix_m",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -397,6 +434,7 @@
         "end_line": 127,
         "line": 124,
         "name": "suffix_g",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -407,6 +445,7 @@
         "end_line": 132,
         "line": 130,
         "name": "invalid_empty",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -417,6 +456,7 @@
         "end_line": 137,
         "line": 135,
         "name": "invalid_non_digit",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -427,6 +467,7 @@
         "end_line": 142,
         "line": 140,
         "name": "invalid_overflow",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -437,6 +478,7 @@
         "end_line": 147,
         "line": 145,
         "name": "invalid_suffix",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/human.rs"
       },
       {
@@ -447,6 +489,7 @@
         "end_line": 249,
         "line": 169,
         "name": "is_readable_stdin",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/lib.rs"
       },
       {
@@ -457,6 +500,7 @@
         "end_line": 215,
         "line": 173,
         "name": "imp",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/lib.rs"
       },
       {
@@ -467,6 +511,7 @@
         "end_line": 240,
         "line": 218,
         "name": "imp",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/lib.rs"
       },
       {
@@ -477,6 +522,7 @@
         "end_line": 262,
         "line": 259,
         "name": "is_tty_stdin",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/lib.rs"
       },
       {
@@ -487,6 +533,7 @@
         "end_line": 281,
         "line": 278,
         "name": "is_tty_stdout",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/lib.rs"
       },
       {
@@ -497,6 +544,7 @@
         "end_line": 294,
         "line": 291,
         "name": "is_tty_stderr",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/lib.rs"
       },
       {
@@ -507,6 +555,7 @@
         "end_line": 58,
         "line": 50,
         "name": "pattern_from_os",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/pattern.rs"
       },
       {
@@ -517,6 +566,7 @@
         "end_line": 73,
         "line": 66,
         "name": "pattern_from_bytes",
+        "pattern_priority": 0,
         "rel_file": "crates/cli/src/pattern.rs"
       }
     ],

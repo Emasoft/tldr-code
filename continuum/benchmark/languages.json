@@ -35,8 +35,12 @@
       "command": [
         "jdtls"
       ],
-      "initialize_timeout": 60,
+      "initialize_timeout": 180,
       "language_id": "java",
+      "min_index_wait": 60,
+      "ready_idle_seconds": 10,
+      "ready_timeout": 600,
+      "request_timeout": 120,
       "workspace_data_root": "continuum/benchmark/repos/.jdtls-workspaces"
     },
     "scanner": {
@@ -62,8 +66,24 @@
         "pyright-langserver",
         "--stdio"
       ],
-      "initialize_timeout": 60,
-      "language_id": "python"
+      "initialize_timeout": 120,
+      "language_id": "python",
+      "min_index_wait": 15,
+      "ready_idle_seconds": 5,
+      "ready_timeout": 180,
+      "request_timeout": 90,
+      "settings": {
+        "python": {
+          "analysis": {
+            "autoSearchPaths": true,
+            "diagnosticMode": "workspace",
+            "useLibraryCodeForTypes": true
+          }
+        },
+        "pyright": {
+          "disableOrganizeImports": true
+        }
+      }
     },
     "runtime_trace": {
       "repo": "python-flask",
@@ -87,8 +107,23 @@
       "command": [
         "rust-analyzer"
       ],
-      "initialize_timeout": 45,
-      "language_id": "rust"
+      "initialization_options": {
+        "cargo": {
+          "allFeatures": true,
+          "buildScripts": {
+            "enable": true
+          }
+        },
+        "procMacro": {
+          "enable": true
+        }
+      },
+      "initialize_timeout": 600,
+      "language_id": "rust",
+      "min_index_wait": 60,
+      "ready_idle_seconds": 10,
+      "ready_timeout": 600,
+      "request_timeout": 120
     },
     "scanner": {
       "function_patterns": [
@@ -114,7 +149,15 @@
         "--stdio"
       ],
       "initialize_timeout": 60,
-      "language_id": "typescript"
+      "language_id": "typescript",
+      "min_index_wait": 5,
+      "probe_modes": [
+        "caller_outgoing",
+        "callee_incoming"
+      ],
+      "ready_idle_seconds": 2,
+      "ready_timeout": 60,
+      "request_timeout": 60
     },
     "scanner": {
       "function_patterns": [

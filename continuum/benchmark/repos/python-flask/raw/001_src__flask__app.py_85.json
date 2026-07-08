@@ -1,0 +1,235 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 30,
+                  "line": 86
+                },
+                "start": {
+                  "character": 20,
+                  "line": 86
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "isinstance",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 1569
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1569
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 1569
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1569
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 91
+                },
+                "start": {
+                  "character": 11,
+                  "line": 91
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "update_wrapper",
+              "range": {
+                "end": {
+                  "character": 22,
+                  "line": 138
+                },
+                "start": {
+                  "character": 8,
+                  "line": 138
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 22,
+                  "line": 138
+                },
+                "start": {
+                  "character": 8,
+                  "line": 138
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/functools.pyi"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 4,
+          "line": 84
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+        }
+      },
+      "prepare_response": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "remove_ctx",
+            "range": {
+              "end": {
+                "character": 14,
+                "line": 84
+              },
+              "start": {
+                "character": 4,
+                "line": 84
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 14,
+                "line": 84
+              },
+              "start": {
+                "character": 4,
+                "line": 84
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 20,
+    "call_line": 86,
+    "call_text": "if args and isinstance(args[0], AppContext):",
+    "character": 4,
+    "end_line": 91,
+    "line": 84,
+    "name": "remove_ctx",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/app.py"
+  },
+  "sample_index": 1
+}

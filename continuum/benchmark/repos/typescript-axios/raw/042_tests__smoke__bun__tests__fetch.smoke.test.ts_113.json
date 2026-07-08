@@ -1,4 +1,174 @@
 {
+  "attempts": [
+    {
+      "call_response": null,
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 62,
+          "line": 112
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 136,
+        "jsonrpc": "2.0",
+        "result": null
+      }
+    },
+    {
+      "call_response": {
+        "id": 138,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "from": {
+              "detail": "tests/smoke/bun/tests",
+              "kind": 2,
+              "name": "fetch.smoke.test.ts",
+              "range": {
+                "end": {
+                  "character": 0,
+                  "line": 126
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 0,
+                  "line": 0
+                },
+                "start": {
+                  "character": 0,
+                  "line": 0
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 51,
+                  "line": 48
+                },
+                "start": {
+                  "character": 36,
+                  "line": 48
+                }
+              },
+              {
+                "end": {
+                  "character": 51,
+                  "line": 61
+                },
+                "start": {
+                  "character": 36,
+                  "line": 61
+                }
+              },
+              {
+                "end": {
+                  "character": 51,
+                  "line": 113
+                },
+                "start": {
+                  "character": 36,
+                  "line": 113
+                }
+              }
+            ]
+          },
+          {
+            "from": {
+              "detail": "",
+              "kind": 12,
+              "name": "run",
+              "range": {
+                "end": {
+                  "character": 5,
+                  "line": 103
+                },
+                "start": {
+                  "character": 16,
+                  "line": 78
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 78
+                },
+                "start": {
+                  "character": 10,
+                  "line": 78
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 53,
+                  "line": 82
+                },
+                "start": {
+                  "character": 38,
+                  "line": 82
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "mode": "callee_incoming",
+      "prepare_params": {
+        "position": {
+          "character": 36,
+          "line": 113
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 137,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 12,
+            "name": "createFetchMock",
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 25
+              },
+              "start": {
+                "character": 24,
+                "line": 3
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 21,
+                "line": 3
+              },
+              "start": {
+                "character": 6,
+                "line": 3
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
+          }
+        ]
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -113,20 +283,19 @@
     }
   },
   "language": "typescript",
-  "outgoing_responses": [],
-  "prepare_params": {
-    "position": {
-      "character": 62,
-      "line": 112
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 0,
+    "duration_seconds": 5.023139,
+    "notification_methods": {
+      "$/progress": 2,
+      "$/typescriptVersion": 1,
+      "window/logMessage": 1
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/fetch.smoke.test.ts"
-    }
-  },
-  "prepare_response": {
-    "id": 75,
-    "jsonrpc": "2.0",
-    "result": null
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
   },
   "repo": "typescript-axios",
   "sample": {

@@ -1,0 +1,728 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 77,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 29,
+                  "line": 176
+                },
+                "start": {
+                  "character": 19,
+                  "line": 176
+                }
+              },
+              {
+                "end": {
+                  "character": 29,
+                  "line": 184
+                },
+                "start": {
+                  "character": 19,
+                  "line": 184
+                }
+              },
+              {
+                "end": {
+                  "character": 29,
+                  "line": 192
+                },
+                "start": {
+                  "character": 19,
+                  "line": 192
+                }
+              },
+              {
+                "end": {
+                  "character": 29,
+                  "line": 200
+                },
+                "start": {
+                  "character": 19,
+                  "line": 200
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "isinstance",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 1569
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1569
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 1569
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1569
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 32,
+                  "line": 177
+                },
+                "start": {
+                  "character": 26,
+                  "line": 177
+                }
+              },
+              {
+                "end": {
+                  "character": 32,
+                  "line": 185
+                },
+                "start": {
+                  "character": 26,
+                  "line": 185
+                }
+              },
+              {
+                "end": {
+                  "character": 32,
+                  "line": 193
+                },
+                "start": {
+                  "character": 26,
+                  "line": 193
+                }
+              },
+              {
+                "end": {
+                  "character": 32,
+                  "line": 201
+                },
+                "start": {
+                  "character": 26,
+                  "line": 201
+                }
+              },
+              {
+                "end": {
+                  "character": 54,
+                  "line": 231
+                },
+                "start": {
+                  "character": 48,
+                  "line": 231
+                }
+              },
+              {
+                "end": {
+                  "character": 32,
+                  "line": 233
+                },
+                "start": {
+                  "character": 26,
+                  "line": 233
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "encode",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 497
+                },
+                "start": {
+                  "character": 8,
+                  "line": 497
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 497
+                },
+                "start": {
+                  "character": 8,
+                  "line": 497
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 70,
+                  "line": 178
+                },
+                "start": {
+                  "character": 61,
+                  "line": 178
+                }
+              },
+              {
+                "end": {
+                  "character": 71,
+                  "line": 186
+                },
+                "start": {
+                  "character": 62,
+                  "line": 186
+                }
+              },
+              {
+                "end": {
+                  "character": 73,
+                  "line": 194
+                },
+                "start": {
+                  "character": 64,
+                  "line": 194
+                }
+              },
+              {
+                "end": {
+                  "character": 73,
+                  "line": 202
+                },
+                "start": {
+                  "character": 64,
+                  "line": 202
+                }
+              },
+              {
+                "end": {
+                  "character": 65,
+                  "line": 236
+                },
+                "start": {
+                  "character": 56,
+                  "line": 236
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "hexdigest",
+              "range": {
+                "end": {
+                  "character": 17,
+                  "line": 34
+                },
+                "start": {
+                  "character": 8,
+                  "line": 34
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 17,
+                  "line": 34
+                },
+                "start": {
+                  "character": 8,
+                  "line": 34
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 34,
+                  "line": 178
+                },
+                "start": {
+                  "character": 31,
+                  "line": 178
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "md5",
+              "range": {
+                "end": {
+                  "character": 19,
+                  "line": 68
+                },
+                "start": {
+                  "character": 8,
+                  "line": 68
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 19,
+                  "line": 68
+                },
+                "start": {
+                  "character": 8,
+                  "line": 68
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 35,
+                  "line": 186
+                },
+                "start": {
+                  "character": 31,
+                  "line": 186
+                }
+              },
+              {
+                "end": {
+                  "character": 29,
+                  "line": 236
+                },
+                "start": {
+                  "character": 25,
+                  "line": 236
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "sha1",
+              "range": {
+                "end": {
+                  "character": 20,
+                  "line": 71
+                },
+                "start": {
+                  "character": 8,
+                  "line": 71
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 20,
+                  "line": 71
+                },
+                "start": {
+                  "character": 8,
+                  "line": 71
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 37,
+                  "line": 194
+                },
+                "start": {
+                  "character": 31,
+                  "line": 194
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "sha256",
+              "range": {
+                "end": {
+                  "character": 22,
+                  "line": 77
+                },
+                "start": {
+                  "character": 8,
+                  "line": 77
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 22,
+                  "line": 77
+                },
+                "start": {
+                  "character": 8,
+                  "line": 77
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 37,
+                  "line": 202
+                },
+                "start": {
+                  "character": 31,
+                  "line": 202
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "sha512",
+              "range": {
+                "end": {
+                  "character": 22,
+                  "line": 83
+                },
+                "start": {
+                  "character": 8,
+                  "line": 83
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 22,
+                  "line": 83
+                },
+                "start": {
+                  "character": 8,
+                  "line": 83
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_hashlib.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 27,
+                  "line": 214
+                },
+                "start": {
+                  "character": 19,
+                  "line": 214
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "urlparse",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 171
+                },
+                "start": {
+                  "character": 4,
+                  "line": 171
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 171
+                },
+                "start": {
+                  "character": 4,
+                  "line": 171
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/urllib/parse.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 23,
+                  "line": 233
+                },
+                "start": {
+                  "character": 18,
+                  "line": 233
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "ctime",
+              "range": {
+                "end": {
+                  "character": 9,
+                  "line": 70
+                },
+                "start": {
+                  "character": 4,
+                  "line": 70
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 9,
+                  "line": 70
+                },
+                "start": {
+                  "character": 4,
+                  "line": 70
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/time.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 23,
+                  "line": 234
+                },
+                "start": {
+                  "character": 16,
+                  "line": 234
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "urandom",
+              "range": {
+                "end": {
+                  "character": 11,
+                  "line": 1637
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1637
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 11,
+                  "line": 1637
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1637
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/os/__init__.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 24,
+                  "line": 241
+                },
+                "start": {
+                  "character": 22,
+                  "line": 241
+                }
+              },
+              {
+                "end": {
+                  "character": 24,
+                  "line": 244
+                },
+                "start": {
+                  "character": 22,
+                  "line": 244
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "KD",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 209
+                },
+                "start": {
+                  "character": 12,
+                  "line": 209
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 209
+                },
+                "start": {
+                  "character": 12,
+                  "line": 209
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/auth.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 156
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/auth.py"
+        }
+      },
+      "prepare_response": {
+        "id": 76,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 6,
+            "name": "build_digest_header",
+            "range": {
+              "end": {
+                "character": 27,
+                "line": 156
+              },
+              "start": {
+                "character": 8,
+                "line": 156
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 27,
+                "line": 156
+              },
+              "start": {
+                "character": 8,
+                "line": 156
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/auth.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
+  "repo": "python-requests",
+  "sample": {
+    "call_character": 14,
+    "call_line": 163,
+    "call_text": "qop = self._thread_local.chal.get(\"qop\")",
+    "character": 8,
+    "end_line": 265,
+    "line": 156,
+    "name": "HTTPDigestAuth.build_digest_header",
+    "pattern_priority": 0,
+    "rel_file": "src/requests/auth.py"
+  },
+  "sample_index": 37
+}

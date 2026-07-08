@@ -1,0 +1,323 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 93,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 46,
+                  "line": 270
+                },
+                "start": {
+                  "character": 39,
+                  "line": 270
+                }
+              },
+              {
+                "end": {
+                  "character": 49,
+                  "line": 271
+                },
+                "start": {
+                  "character": 42,
+                  "line": 271
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "version",
+              "range": {
+                "end": {
+                  "character": 11,
+                  "line": 317
+                },
+                "start": {
+                  "character": 4,
+                  "line": 317
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 11,
+                  "line": 317
+                },
+                "start": {
+                  "character": 4,
+                  "line": 317
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/importlib/metadata/__init__.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 14,
+                  "line": 273
+                },
+                "start": {
+                  "character": 10,
+                  "line": 273
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "echo",
+              "range": {
+                "end": {
+                  "character": 8,
+                  "line": 221
+                },
+                "start": {
+                  "character": 4,
+                  "line": 221
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 8,
+                  "line": 221
+                },
+                "start": {
+                  "character": 4,
+                  "line": 221
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/utils.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 41,
+                  "line": 274
+                },
+                "start": {
+                  "character": 27,
+                  "line": 274
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "python_version",
+              "range": {
+                "end": {
+                  "character": 18,
+                  "line": 74
+                },
+                "start": {
+                  "character": 4,
+                  "line": 74
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 18,
+                  "line": 74
+                },
+                "start": {
+                  "character": 4,
+                  "line": 74
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/platform.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 12,
+                  "line": 279
+                },
+                "start": {
+                  "character": 8,
+                  "line": 279
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "exit",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 729
+                },
+                "start": {
+                  "character": 8,
+                  "line": 729
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 729
+                },
+                "start": {
+                  "character": 8,
+                  "line": 729
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/core.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 4,
+          "line": 266
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+        }
+      },
+      "prepare_response": {
+        "id": 92,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "get_version",
+            "range": {
+              "end": {
+                "character": 15,
+                "line": 266
+              },
+              "start": {
+                "character": 4,
+                "line": 266
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 15,
+                "line": 266
+              },
+              "start": {
+                "character": 4,
+                "line": 266
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 20,
+    "call_line": 270,
+    "call_text": "flask_version = importlib.metadata.version(\"flask\")",
+    "character": 4,
+    "end_line": 279,
+    "line": 266,
+    "name": "get_version",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/cli.py"
+  },
+  "sample_index": 45
+}

@@ -1,0 +1,471 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 27,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 37,
+                  "line": 282
+                },
+                "start": {
+                  "character": 27,
+                  "line": 282
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "startswith",
+              "range": {
+                "end": {
+                  "character": 18,
+                  "line": 593
+                },
+                "start": {
+                  "character": 8,
+                  "line": 593
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 18,
+                  "line": 593
+                },
+                "start": {
+                  "character": 8,
+                  "line": 593
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 24,
+                  "line": 282
+                },
+                "start": {
+                  "character": 19,
+                  "line": 282
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "lower",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 533
+                },
+                "start": {
+                  "character": 8,
+                  "line": 533
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 533
+                },
+                "start": {
+                  "character": 8,
+                  "line": 533
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 24,
+                  "line": 282
+                },
+                "start": {
+                  "character": 19,
+                  "line": 282
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "lower",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 535
+                },
+                "start": {
+                  "character": 8,
+                  "line": 535
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 535
+                },
+                "start": {
+                  "character": 8,
+                  "line": 535
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 50,
+                  "line": 283
+                },
+                "start": {
+                  "character": 33,
+                  "line": 283
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "get_auth_from_url",
+              "range": {
+                "end": {
+                  "character": 21,
+                  "line": 1069
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1069
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 21,
+                  "line": 1069
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1069
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/utils.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 67,
+                  "line": 284
+                },
+                "start": {
+                  "character": 50,
+                  "line": 284
+                }
+              }
+            ],
+            "to": {
+              "kind": 5,
+              "name": "SOCKSProxyManager",
+              "range": {
+                "end": {
+                  "character": 23,
+                  "line": 172
+                },
+                "start": {
+                  "character": 6,
+                  "line": 172
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 23,
+                  "line": 172
+                },
+                "start": {
+                  "character": 6,
+                  "line": 172
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/urllib3/contrib/socks.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 67,
+                  "line": 284
+                },
+                "start": {
+                  "character": 50,
+                  "line": 284
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "SOCKSProxyManager",
+              "range": {
+                "end": {
+                  "character": 25,
+                  "line": 65
+                },
+                "start": {
+                  "character": 8,
+                  "line": 65
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 25,
+                  "line": 65
+                },
+                "start": {
+                  "character": 8,
+                  "line": 65
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/adapters.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 46,
+                  "line": 294
+                },
+                "start": {
+                  "character": 33,
+                  "line": 294
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "proxy_headers",
+              "range": {
+                "end": {
+                  "character": 21,
+                  "line": 612
+                },
+                "start": {
+                  "character": 8,
+                  "line": 612
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 21,
+                  "line": 612
+                },
+                "start": {
+                  "character": 8,
+                  "line": 612
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/adapters.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 64,
+                  "line": 295
+                },
+                "start": {
+                  "character": 50,
+                  "line": 295
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "proxy_from_url",
+              "range": {
+                "end": {
+                  "character": 18,
+                  "line": 649
+                },
+                "start": {
+                  "character": 4,
+                  "line": 649
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 18,
+                  "line": 649
+                },
+                "start": {
+                  "character": 4,
+                  "line": 649
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/urllib3/poolmanager.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 268
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/adapters.py"
+        }
+      },
+      "prepare_response": {
+        "id": 26,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 6,
+            "name": "proxy_manager_for",
+            "range": {
+              "end": {
+                "character": 25,
+                "line": 268
+              },
+              "start": {
+                "character": 8,
+                "line": 268
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 25,
+                "line": 268
+              },
+              "start": {
+                "character": 8,
+                "line": 268
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/adapters.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
+  "repo": "python-requests",
+  "sample": {
+    "call_character": 13,
+    "call_line": 282,
+    "call_text": "elif proxy.lower().startswith(\"socks\"):",
+    "character": 8,
+    "end_line": 304,
+    "line": 268,
+    "name": "HTTPAdapter.proxy_manager_for",
+    "pattern_priority": 0,
+    "rel_file": "src/requests/adapters.py"
+  },
+  "sample_index": 12
+}

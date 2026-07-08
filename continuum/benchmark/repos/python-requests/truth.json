@@ -1,7 +1,1250 @@
 {
   "case_id": "repos/python-requests",
   "edge_model": "static-callgraph",
-  "edges": [],
+  "edges": [
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "InvalidSchema",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "09ac78c3f8c4e0e79d43fc8408e143e8d9e83af1292613a6cf02ff60b8b0b62e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "SOCKSProxyManager",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "847f2e539d8100a48458075cb099b47d46ba80c9f57ca8f560db9a3d5adc1297",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "init_poolmanager",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fa858c24bec4615572c6dee741901e0f9033ff9db54abc406d1ad38b79297165",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "init_poolmanager",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fcf3cda849f9f81459a4d1bf78894987894628d772100b746bf497ca5ceb0239",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "__setstate__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "_urllib3_request_context",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f1ca1cdf9e4bd4ad4f6dcccb31be61da668ba6bdc5b81141d5d1931edd010da2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "build_connection_pool_key_attributes",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/_types.py",
+      "dst_func": "_is_prepared",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f0058fd55003648b59e7fbf33eaf3261819cf7f505280430e562984c084559ca",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "build_response",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/cookies.py",
+      "dst_func": "extract_cookies_to_jar",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6af8dca3b8b6c5d11ab0aa11b8081d1f56b0c2b56ae67fe9963c846d594dce9c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "build_response",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "Response",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b5abde5554608eb0e487c90abf78c63e501c36474fbe3c7ecb3ef1583f66bc44",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "build_response",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/structures.py",
+      "dst_func": "CaseInsensitiveDict",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0bc494d8b0e975e3f500eed28fa753412700e4ae97c6dbb586ea9ef5bc1e97cc",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "build_response",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "get_encoding_from_headers",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "714abdbbc4940e2372738ef7df423efa2bc253a24f218cefd84f8a23dd855c85",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "build_response",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "proxy_manager_for",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8f8a1676c6dca818f0d92603254aebf1a6cd7e337e04b2933505a64a26758904",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "InvalidProxyURL",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3295a91cc63c24f43fd82581f51de1598b68a0818d4babb91e8a0bd499848198",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "prepend_scheme_if_needed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "98a52d46d9754df41d4c7ec175ec6c7318bf825bc5e5e2bc7079cd1eeb906aec",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "select_proxy",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bfde803c91594d1696fb0f7e103482bbe8d2837ff8d4bb69276d56ddf4076706",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/_types.py",
+      "dst_func": "_is_prepared",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d02237669aeede85f088f60cf849bca97e1029b7a9c90c3d37e3eb97b48bdc8b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "build_connection_pool_key_attributes",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0393da2096327dfb6172c80199c4ca5aca5e1de67ad633db6a6143e49587c910",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "proxy_manager_for",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4f9518ac7b189cb85ef3a32b46415cd2fbbc8e5962c9bab99a7da299ad185044",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "InvalidProxyURL",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "701765ff11c6db1bcb6aef8e166944bd75beb4c95627e1ab1a4d2cb82a96bc1f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "InvalidURL",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "df884f4e523a8173e28df7b6ffa9f87e9480e500ff8bff2a920387e971377ba2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "prepend_scheme_if_needed",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6a862a89e51b5e0f457d01d2e39da1c47c3e0461b52e87170cb8d6524576b008",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "select_proxy",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4cf8c0b19dc7811f61a634043e9b827de4f8d5010a1c9eb38d11e630b2956380",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "get_connection_with_tls_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/auth.py",
+      "dst_func": "_basic_auth_str",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "056f348e788df5c2fcc2c94244d39926680a2116b8d5a407817ccec6617ff86c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "proxy_headers",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "get_auth_from_url",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ae337ad142bec9890e8d4402b132614d02e39c1ac57547608c90f7806b5ace3c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "proxy_headers",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "SOCKSProxyManager",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "beaf4e9d79f38fb9c0941c970afeb4584932ff961b9e3c9376e9f18939a0d8a2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "proxy_manager_for",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "proxy_headers",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "75109d57f720cc65709aa685eae65a7e38fa2d0ee17a94cb1634e343a90dc1f3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "proxy_manager_for",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "get_auth_from_url",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d01477c894e0d7e4dd26ddb1e0f999744181bd6e078b6078bce0526c7c5bb6a3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "proxy_manager_for",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/_types.py",
+      "dst_func": "_is_prepared",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fc1f14595ff298c323a941787f296e00ad744b92a303abd52f76a8dab120dfa5",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "request_url",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "path_url",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ab1ac726ade502129fc60c5cd06a4c73eae16faee80e8ed5cd1a528da4c88b0e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "request_url",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "select_proxy",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "88f2d7a1dfebe6c9f1cc71634be462ae3f18e2fec040790eca6b27c2b568bd60",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "request_url",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "urldefragauth",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b7214d8d2ffcd7496d74ac551bf2c805c93d9838cb364c7b6d78a8cefdbbaf31",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "request_url",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/_types.py",
+      "dst_func": "_is_prepared",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e54cf42afaf1eeb0ece526d1dbaedf77f9754f4c781b967164d36eb3816ee7c2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "add_headers",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d041f5409d5e84a05cf6c12a891448898423876ee2e6fae831bef7a1bfdfddb6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "build_response",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "01e8e6b055bb626a475829008577fb1c186d41d19e32bcb4df24dafccca92e85",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "cert_verify",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "504c8a968653155a8f05ac821a01ac3561a85a24f4eee8c6c6b19a3a526dc084",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "get_connection_with_tls_context",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "53eff317bf0c14cfb3b5f443ee35b84d24570fec35b5aa6f60f65492b4d91b04",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "request_url",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e00cd905238beb8794679406bb765de0b34c0f1817b956dead1b6ad8190fe184",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "ConnectTimeout",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "25e993e919ad181fb0b57031c22c2601e1a39af74d3d3c0abfdbfcdaaa0ef8dd",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "ConnectionError",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cac2f816419dfbc5d539aad4e863c02e98a8815478a037329f9a27122274fa40",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "InvalidHeader",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7acbd8af8384c32b132a8858f8b6d7743a7afb1bb2629d494846e4364dbdaede",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "InvalidURL",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "93acf532a7cd6cc92512067ceb7fb1979785c77a349e39320a42c0495e57873d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "ProxyError",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7a486509356415a99a12d6a21d0ecea747a47d40881513bf107fc19fbaed46f3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "ReadTimeout",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "117568e8800a60ca9cb0b4af421c55bafb6b331605e7a577f96259e9c1a9287b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "RetryError",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "171865cf185bb09a0bc209a7847dfb15559203dbbfe6c19ebe6864f1cda41d18",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/exceptions.py",
+      "dst_func": "SSLError",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c584138dd7d25401c3d5be6a1731ff377e91c1d9a0ad30b62f51538b8c0fe90b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/adapters.py",
+      "src_func": "send",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8ae0e81e0a32ba3675cb9c27431e5edfd0ffc075ef61af309fd7c5d8c4ca53fc",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "delete",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7ed808778368d6f9a6d1b205fa0fa4cde1a388819c5d5058fca98b405791257f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "get",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8512a90705455921a84632d0391c8018d0c7a50bf7768eb5657f9520179e76ff",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "head",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "18deb8d4b28e8d9f95d526967df6c5f32670058eb37685248ae9ec91b205c58b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "options",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c867aba4e05882e5b41978a411298e4f7e282e3c4564d6f1963a83a47e50f54d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "patch",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b8f352997d7283ae3632f057e8e8500dfbcd7097d2695bffaf3340a4cd12f51f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "post",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/api.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cd43a8291a66b73cf9a8167d0c267cc91f39dc3cfe8f5a98f5841037c85d3898",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "put",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/sessions.py",
+      "dst_func": "Session",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "054e53b7b6a2f0d1149339bb7694f92e0cd579195a484a48ab756be6ba3fd691",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/sessions.py",
+      "dst_func": "request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b8673e35e5d71681c7f31e0313f20ca45a84278f63917de82fad4826a762a85e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/api.py",
+      "src_func": "request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/auth.py",
+      "dst_func": "_basic_auth_str",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a48892ba33881e36efbb37bd5c928cb46b07b9dd21b96352cd3d78c897262ba9",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "__call__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/auth.py",
+      "dst_func": "build_digest_header",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "99acaefc5519d22f811d7b655d0e08f6b0de70f4a233140460e34f228d2b5d50",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "__call__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/auth.py",
+      "dst_func": "init_per_thread_state",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0608143f6d7f9fb05ab85c67b23be772c15fcae490de3c2885db21b95c0b056a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "__call__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "register_hook",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8d31396aa40f6d6a6c1f51559fd7b9765e1ff12ba903ce1c18ef92d70d8f6c86",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "__call__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/_internal_utils.py",
+      "dst_func": "to_native_string",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6ed9d83d7d9c9e5d26c645d3653c46ffa297a4606909e06bfd445c9f207b878b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "_basic_auth_str",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/auth.py",
+      "dst_func": "KD",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dd118f8c3453efbd45314525c052e29b1ffa001ecffae9fdcbd869f39a75444d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "build_digest_header",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/adapters.py",
+      "dst_func": "send",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "62c343ca18b32c85f5669a7b88e9aa9717da6b78388759bdff47545b02b90d76",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/auth.py",
+      "dst_func": "build_digest_header",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5a657d4c35934806d20d62afa304fd1550da0f50d65304075c801d1912841c13",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/cookies.py",
+      "dst_func": "extract_cookies_to_jar",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "56edc686e36f249fe921e0ee446f040a505701cdb4e004338e31da160f1593c4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "close",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8090032e66da07f0a410627b3c82de713b6f877702f011f65c44af6a42072141",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "content",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7cf08c2e080eaf509847f3c57e154702ee674b18ed3b61033ff12e0fe958c174",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "copy",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "eec8e332b33afcb586ccb6579b7f94358121fb4481397e80cbbb2ca0e0f541c0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/models.py",
+      "dst_func": "prepare_cookies",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4e37ce38e2a23ea82e39d83ae59df27aa7d84fe98432076a3268ff4ed8e2b19c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/utils.py",
+      "dst_func": "parse_dict_header",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "db5fa2f5d2912c8c96ca40504a90858009111c0ce0001ad17a313294cc7cfb90",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/auth.py",
+      "src_func": "handle_401",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/_types.py",
+      "dst_func": "_is_prepared",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ea6f3cbd5d2799fea9bca71082ec6c73b19fd69d5ca4f2651cc0517eb6387d46",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/cookies.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/requests/cookies.py",
+      "dst_func": "get_host",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ad63b3ee329fcbf288c0863a6a0adf5227a204016040dc8d443719c4d03a9d73",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/requests/cookies.py",
+      "src_func": "get_origin_req_host",
+      "src_line": null
+    }
+  ],
   "language": "python",
   "notes": "Sampled real-repo callHierarchy truth for python-requests at d64b9ad4bf1c14e21e0df3f0f4320fec81180e91. Scope is the deterministic sampled call sites in meta.json.",
   "schema_version": "truth.v1"

@@ -1,0 +1,481 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 41,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 27,
+                  "line": 580
+                },
+                "start": {
+                  "character": 15,
+                  "line": 580
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "_is_prepared",
+              "range": {
+                "end": {
+                  "character": 15,
+                  "line": 46
+                },
+                "start": {
+                  "character": 4,
+                  "line": 46
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 15,
+                  "line": 46
+                },
+                "start": {
+                  "character": 4,
+                  "line": 46
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/_types.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 28,
+                  "line": 582
+                },
+                "start": {
+                  "character": 16,
+                  "line": 582
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "select_proxy",
+              "range": {
+                "end": {
+                  "character": 16,
+                  "line": 884
+                },
+                "start": {
+                  "character": 4,
+                  "line": 884
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 16,
+                  "line": 884
+                },
+                "start": {
+                  "character": 4,
+                  "line": 884
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/utils.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 583
+                },
+                "start": {
+                  "character": 17,
+                  "line": 583
+                }
+              },
+              {
+                "end": {
+                  "character": 35,
+                  "line": 588
+                },
+                "start": {
+                  "character": 27,
+                  "line": 588
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "urlparse",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 171
+                },
+                "start": {
+                  "character": 4,
+                  "line": 171
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 171
+                },
+                "start": {
+                  "character": 4,
+                  "line": 171
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/urllib/parse.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 55,
+                  "line": 588
+                },
+                "start": {
+                  "character": 50,
+                  "line": 588
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "lower",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 533
+                },
+                "start": {
+                  "character": 8,
+                  "line": 533
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 533
+                },
+                "start": {
+                  "character": 8,
+                  "line": 533
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 55,
+                  "line": 588
+                },
+                "start": {
+                  "character": 50,
+                  "line": 588
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "lower",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 535
+                },
+                "start": {
+                  "character": 8,
+                  "line": 535
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 535
+                },
+                "start": {
+                  "character": 8,
+                  "line": 535
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 55,
+                  "line": 589
+                },
+                "start": {
+                  "character": 45,
+                  "line": 589
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "startswith",
+              "range": {
+                "end": {
+                  "character": 18,
+                  "line": 593
+                },
+                "start": {
+                  "character": 8,
+                  "line": 593
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 18,
+                  "line": 593
+                },
+                "start": {
+                  "character": 8,
+                  "line": 593
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 30,
+                  "line": 591
+                },
+                "start": {
+                  "character": 22,
+                  "line": 591
+                }
+              }
+            ],
+            "to": {
+              "kind": 7,
+              "name": "path_url",
+              "range": {
+                "end": {
+                  "character": 16,
+                  "line": 111
+                },
+                "start": {
+                  "character": 8,
+                  "line": 111
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 16,
+                  "line": 111
+                },
+                "start": {
+                  "character": 8,
+                  "line": 111
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/models.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 31,
+                  "line": 594
+                },
+                "start": {
+                  "character": 18,
+                  "line": 594
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "urldefragauth",
+              "range": {
+                "end": {
+                  "character": 17,
+                  "line": 1121
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1121
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 17,
+                  "line": 1121
+                },
+                "start": {
+                  "character": 4,
+                  "line": 1121
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/utils.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 564
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/adapters.py"
+        }
+      },
+      "prepare_response": {
+        "id": 40,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 6,
+            "name": "request_url",
+            "range": {
+              "end": {
+                "character": 19,
+                "line": 564
+              },
+              "start": {
+                "character": 8,
+                "line": 564
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 19,
+                "line": 564
+              },
+              "start": {
+                "character": 8,
+                "line": 564
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/adapters.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
+  "repo": "python-requests",
+  "sample": {
+    "call_character": 15,
+    "call_line": 580,
+    "call_text": "assert _is_prepared(request)",
+    "character": 8,
+    "end_line": 596,
+    "line": 564,
+    "name": "HTTPAdapter.request_url",
+    "pattern_priority": 0,
+    "rel_file": "src/requests/adapters.py"
+  },
+  "sample_index": 19
+}

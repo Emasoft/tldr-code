@@ -1,0 +1,388 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 87,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 33,
+                  "line": 52
+                },
+                "start": {
+                  "character": 10,
+                  "line": 52
+                }
+              }
+            ],
+            "to": {
+              "detail": "retrofit2.Response",
+              "kind": 6,
+              "name": "isSuccessful() : boolean",
+              "range": {
+                "end": {
+                  "character": 3,
+                  "line": 147
+                },
+                "start": {
+                  "character": 2,
+                  "line": 144
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 29,
+                  "line": 145
+                },
+                "start": {
+                  "character": 17,
+                  "line": 145
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-retrofit/retrofit/src/main/java/retrofit2/Response.java"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 41,
+                  "line": 53
+                },
+                "start": {
+                  "character": 26,
+                  "line": 53
+                }
+              }
+            ],
+            "to": {
+              "detail": "retrofit2.Response",
+              "kind": 6,
+              "name": "body() : T",
+              "range": {
+                "end": {
+                  "character": 3,
+                  "line": 152
+                },
+                "start": {
+                  "character": 2,
+                  "line": 149
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 25,
+                  "line": 150
+                },
+                "start": {
+                  "character": 21,
+                  "line": 150
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-retrofit/retrofit/src/main/java/retrofit2/Response.java"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 49,
+                  "line": 56
+                },
+                "start": {
+                  "character": 22,
+                  "line": 56
+                }
+              }
+            ],
+            "to": {
+              "detail": "retrofit2.adapter.rxjava.HttpException",
+              "kind": 9,
+              "name": "HttpException(Response<?>)",
+              "range": {
+                "end": {
+                  "character": 3,
+                  "line": 9
+                },
+                "start": {
+                  "character": 2,
+                  "line": 7
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 22,
+                  "line": 7
+                },
+                "start": {
+                  "character": 9,
+                  "line": 7
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-retrofit/retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/HttpException.java"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 16,
+          "line": 51
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-retrofit/retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/BodyOnSubscribe.java"
+        }
+      },
+      "prepare_response": {
+        "id": 86,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "retrofit2.adapter.rxjava.BodyOnSubscribe$BodySubscriber",
+            "kind": 6,
+            "name": "onNext(Response<R>) : void",
+            "range": {
+              "end": {
+                "character": 5,
+                "line": 69
+              },
+              "start": {
+                "character": 4,
+                "line": 50
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 22,
+                "line": 51
+              },
+              "start": {
+                "character": 16,
+                "line": 51
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-retrofit/retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/BodyOnSubscribe.java"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [],
+          "resolveProvider": false
+        },
+        "codeLensProvider": {
+          "resolveProvider": true
+        },
+        "completionProvider": {
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "@",
+            "#",
+            "*",
+            " "
+          ]
+        },
+        "declarationProvider": true,
+        "definitionProvider": true,
+        "documentFormattingProvider": true,
+        "documentHighlightProvider": true,
+        "documentOnTypeFormattingProvider": {
+          "firstTriggerCharacter": ";",
+          "moreTriggerCharacter": [
+            "\n",
+            "}"
+          ]
+        },
+        "documentRangeFormattingProvider": true,
+        "documentSymbolProvider": true,
+        "executeCommandProvider": {
+          "commands": [
+            "java.project.import",
+            "java.project.changeImportedProjects",
+            "java.navigate.openTypeHierarchy",
+            "java.project.resolveStackTraceLocation",
+            "java.edit.handlePasteEvent",
+            "java.edit.stringFormatting",
+            "java.project.getSettings",
+            "java.project.resolveWorkspaceSymbol",
+            "java.project.upgradeGradle",
+            "java.project.createModuleInfo",
+            "java.vm.getAllInstalls",
+            "java.edit.organizeImports",
+            "java.project.refreshDiagnostics",
+            "java.getFullyQualifiedName",
+            "java.project.removeFromSourcePath",
+            "java.project.listSourcePaths",
+            "java.project.updateSettings",
+            "java.project.getAll",
+            "java.reloadBundles",
+            "java.project.isTestFile",
+            "java.project.resolveText",
+            "java.project.getClasspaths",
+            "java.navigate.resolveTypeHierarchy",
+            "java.getTroubleshootingInfo",
+            "java.edit.smartSemicolonDetection",
+            "java.project.updateSourceAttachment",
+            "java.project.updateClassPaths",
+            "java.decompile",
+            "java.protobuf.generateSources",
+            "java.project.resolveSourceAttachment",
+            "java.project.updateJdk",
+            "java.project.addToSourcePath",
+            "java.completion.onDidSelect"
+          ]
+        },
+        "foldingRangeProvider": true,
+        "hoverProvider": true,
+        "implementationProvider": true,
+        "inlayHintProvider": true,
+        "referencesProvider": true,
+        "renameProvider": {
+          "prepareProvider": true
+        },
+        "selectionRangeProvider": true,
+        "semanticTokensProvider": {
+          "documentSelector": [
+            {
+              "language": "java",
+              "scheme": "file"
+            },
+            {
+              "language": "java",
+              "scheme": "jdt"
+            }
+          ],
+          "full": {
+            "delta": false
+          },
+          "legend": {
+            "tokenModifiers": [
+              "abstract",
+              "static",
+              "readonly",
+              "deprecated",
+              "declaration",
+              "documentation",
+              "public",
+              "private",
+              "protected",
+              "native",
+              "generic",
+              "typeArgument",
+              "importDeclaration",
+              "constructor"
+            ],
+            "tokenTypes": [
+              "namespace",
+              "class",
+              "interface",
+              "enum",
+              "enumMember",
+              "type",
+              "typeParameter",
+              "method",
+              "property",
+              "variable",
+              "parameter",
+              "modifier",
+              "keyword",
+              "decorator",
+              "annotationMember",
+              "record",
+              "recordComponent"
+            ]
+          },
+          "range": false
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ","
+          ]
+        },
+        "textDocumentSync": {
+          "change": 2,
+          "openClose": true,
+          "save": {
+            "includeText": true
+          }
+        },
+        "typeDefinitionProvider": true,
+        "typeHierarchyProvider": true,
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": true
+      },
+      "serverInfo": {
+        "name": "JDT Language Server (Standard)",
+        "version": "1.60.0-SNAPSHOT"
+      }
+    }
+  },
+  "language": "java",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 184,
+    "duration_seconds": 374.07442,
+    "notification_methods": {
+      "$/progress": 482,
+      "language/eventNotification": 2,
+      "language/status": 485,
+      "textDocument/publishDiagnostics": 184
+    },
+    "progress_begin": 42,
+    "progress_end": 42,
+    "status": "settled",
+    "status_messages": [
+      "{\"message\": \"3800% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3800% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3805% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3810% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3900% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3900% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3900% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3905% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"3910% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4000% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4000% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4000% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4005% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4010% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4100% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"4100% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"Ready\", \"type\": \"Started\"}",
+      "{\"message\": \"4100% Starting Java Language Server - Resolve files of configuration ':retrofit:annotationProcessor'\", \"type\": \"Starting\"}",
+      "{\"message\": \"ServiceReady\", \"type\": \"ServiceReady\"}",
+      "{\"message\": \"4100% Starting Java Language Server\", \"type\": \"Starting\"}"
+    ]
+  },
+  "repo": "java-retrofit",
+  "sample": {
+    "call_character": 19,
+    "call_line": 52,
+    "call_text": "if (response.isSuccessful()) {",
+    "character": 16,
+    "end_line": 69,
+    "line": 51,
+    "name": "onNext",
+    "pattern_priority": 0,
+    "rel_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/BodyOnSubscribe.java"
+  },
+  "sample_index": 42
+}

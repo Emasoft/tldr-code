@@ -1,0 +1,274 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 69,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 1441
+                },
+                "start": {
+                  "character": 20,
+                  "line": 1441
+                }
+              }
+            ],
+            "to": {
+              "kind": 5,
+              "name": "chain",
+              "range": {
+                "end": {
+                  "character": 11,
+                  "line": 66
+                },
+                "start": {
+                  "character": 6,
+                  "line": 66
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 11,
+                  "line": 66
+                },
+                "start": {
+                  "character": 6,
+                  "line": 66
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/itertools.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 36,
+                  "line": 1443
+                },
+                "start": {
+                  "character": 28,
+                  "line": 1443
+                }
+              }
+            ],
+            "to": {
+              "kind": 5,
+              "name": "reversed",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 1884
+                },
+                "start": {
+                  "character": 6,
+                  "line": 1884
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 1884
+                },
+                "start": {
+                  "character": 6,
+                  "line": 1884
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 40,
+                  "line": 1445
+                },
+                "start": {
+                  "character": 29,
+                  "line": 1445
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "ensure_sync",
+              "range": {
+                "end": {
+                  "character": 19,
+                  "line": 1064
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1064
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 19,
+                  "line": 1064
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1064
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 1419
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+        }
+      },
+      "prepare_response": {
+        "id": 68,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 6,
+            "name": "do_teardown_request",
+            "range": {
+              "end": {
+                "character": 27,
+                "line": 1419
+              },
+              "start": {
+                "character": 8,
+                "line": 1419
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 27,
+                "line": 1419
+              },
+              "start": {
+                "character": 8,
+                "line": 1419
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 25,
+    "call_line": 1439,
+    "call_text": "collect_errors = _CollectErrors()",
+    "character": 8,
+    "end_line": 1450,
+    "line": 1419,
+    "name": "Flask.do_teardown_request",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/app.py"
+  },
+  "sample_index": 33
+}

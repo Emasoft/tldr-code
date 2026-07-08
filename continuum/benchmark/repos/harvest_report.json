@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-07-08T08:16:31.102587+00:00",
+  "generated_at_utc": "2026-07-08T09:03:44.773639+00:00",
   "install_inventory": {
     "go": {
       "available": true,
@@ -71,13 +71,13 @@
       "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/go-httprouter/truth.json"
     },
     {
-      "duration_seconds": 33.509611,
+      "duration_seconds": 94.649413,
       "harvested_edges": 0,
       "language": "java",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-petclinic/manifest.json",
       "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-petclinic/meta.json",
       "raw_response_files": 50,
-      "reason": "empty prepareCallHierarchy",
+      "reason": "empty prepareCallHierarchy/outgoingCalls",
       "repo": "java-petclinic",
       "sampled_sites": 50,
       "spot_checked_edges": 0,
@@ -85,49 +85,49 @@
       "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-petclinic/truth.json"
     },
     {
-      "duration_seconds": 79.437935,
-      "harvested_edges": 0,
+      "duration_seconds": 410.516228,
+      "harvested_edges": 94,
       "language": "java",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-retrofit/manifest.json",
       "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-retrofit/meta.json",
-      "raw_response_files": 8,
-      "reason": "stopped early after 8 consecutive prepareCallHierarchy timeouts",
+      "raw_response_files": 50,
+      "reason": null,
       "repo": "java-retrofit",
       "sampled_sites": 50,
-      "spot_checked_edges": 0,
-      "status": "skipped",
+      "spot_checked_edges": 5,
+      "status": "ok",
       "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/java-retrofit/truth.json"
     },
     {
-      "duration_seconds": 42.833925,
-      "harvested_edges": 0,
+      "duration_seconds": 18.769788,
+      "harvested_edges": 60,
       "language": "python",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/manifest.json",
       "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/meta.json",
-      "raw_response_files": 8,
-      "reason": "stopped early after 8 consecutive prepareCallHierarchy timeouts",
+      "raw_response_files": 50,
+      "reason": null,
       "repo": "python-flask",
       "sampled_sites": 50,
-      "spot_checked_edges": 0,
-      "status": "skipped",
+      "spot_checked_edges": 5,
+      "status": "ok",
       "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/truth.json"
     },
     {
-      "duration_seconds": 42.829223,
-      "harvested_edges": 0,
+      "duration_seconds": 183.79416,
+      "harvested_edges": 69,
       "language": "python",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-requests/manifest.json",
       "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-requests/meta.json",
-      "raw_response_files": 8,
-      "reason": "stopped early after 8 consecutive prepareCallHierarchy timeouts",
+      "raw_response_files": 50,
+      "reason": null,
       "repo": "python-requests",
       "sampled_sites": 50,
-      "spot_checked_edges": 0,
-      "status": "skipped",
+      "spot_checked_edges": 5,
+      "status": "ok",
       "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-requests/truth.json"
     },
     {
-      "duration_seconds": 45.804785,
+      "duration_seconds": 600.830841,
       "harvested_edges": 0,
       "language": "rust",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/rust-clap/manifest.json",
@@ -141,7 +141,7 @@
       "truth": null
     },
     {
-      "duration_seconds": 45.726642,
+      "duration_seconds": 600.770429,
       "harvested_edges": 0,
       "language": "rust",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/rust-ripgrep/manifest.json",
@@ -155,17 +155,17 @@
       "truth": null
     },
     {
-      "duration_seconds": 2.526563,
-      "harvested_edges": 0,
+      "duration_seconds": 8.375407,
+      "harvested_edges": 2,
       "language": "typescript",
       "manifest": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-axios/manifest.json",
       "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-axios/meta.json",
       "raw_response_files": 50,
-      "reason": "empty prepareCallHierarchy",
+      "reason": null,
       "repo": "typescript-axios",
       "sampled_sites": 50,
-      "spot_checked_edges": 0,
-      "status": "skipped",
+      "spot_checked_edges": 2,
+      "status": "ok",
       "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/typescript-axios/truth.json"
     },
     {
@@ -1231,11 +1231,16 @@
         "_handle_fromlist"
       ]
     ],
+    "meta": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/runtime_trace_meta.json",
     "reason": "pytest exit code 1",
     "returncode": 2,
-    "status": "skipped",
+    "spot_checked_edges": 5,
+    "status": "partial",
     "stderr_tail": "",
-    "stdout_tail": "unner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, eval_example, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, pytester_pretty, record_property, record_testsuite_property, record_xml_attribute, recwarn, snapshot_check, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory\n>       use 'pytest --fixtures [testpath]' for help on them.\n\n/private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.f7kkza2i/python-flask/tests/test_basic.py:1903\n____________________ ERROR at setup of test_max_cookie_size ____________________\nfile /private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.f7kkza2i/python-flask/tests/test_basic.py, line 1927\n  def test_max_cookie_size(app, client, recwarn):\nE       fixture 'app' not found\n>       available fixtures: _class_scoped_runner, _examples_to_update, _function_scoped_runner, _module_scoped_runner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, eval_example, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, pytester_pretty, record_property, record_testsuite_property, record_xml_attribute, recwarn, snapshot_check, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory\n>       use 'pytest --fixtures [testpath]' for help on them.\n\n/private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.f7kkza2i/python-flask/tests/test_basic.py:1927\nResults (32.00s):\n        16 passed\n       116 errors\n"
+    "stdout_tail": "unner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, eval_example, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, pytester_pretty, record_property, record_testsuite_property, record_xml_attribute, recwarn, snapshot_check, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory\n>       use 'pytest --fixtures [testpath]' for help on them.\n\n/private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.lmk34ox0/python-flask/tests/test_basic.py:1903\n____________________ ERROR at setup of test_max_cookie_size ____________________\nfile /private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.lmk34ox0/python-flask/tests/test_basic.py, line 1927\n  def test_max_cookie_size(app, client, recwarn):\nE       fixture 'app' not found\n>       available fixtures: _class_scoped_runner, _examples_to_update, _function_scoped_runner, _module_scoped_runner, _package_scoped_runner, _session_scoped_runner, anyio_backend, anyio_backend_name, anyio_backend_options, capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, eval_example, event_loop_policy, free_tcp_port, free_tcp_port_factory, free_udp_port, free_udp_port_factory, monkeypatch, pytestconfig, pytester_pretty, record_property, record_testsuite_property, record_xml_attribute, recwarn, snapshot_check, subtests, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory, unused_tcp_port, unused_tcp_port_factory, unused_udp_port, unused_udp_port_factory\n>       use 'pytest --fixtures [testpath]' for help on them.\n\n/private/var/folders/mm/p97ntk792cn9y44grpf_zn740000gn/T/val020c-flask-trace.lmk34ox0/python-flask/tests/test_basic.py:1927\nResults (31.47s):\n        16 passed\n       116 errors\n",
+    "truth": "/Users/cosimo/Desktop/PatchWork/tldr-code/continuum/benchmark/repos/python-flask/runtime_trace_truth.json",
+    "truth_edges": 174,
+    "truth_quality_tier": "T2"
   },
   "schema": "lsp-harvest-report.v1"
 }

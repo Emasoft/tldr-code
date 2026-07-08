@@ -163,10 +163,20 @@ def content_hash(data: Any) -> str:
 
 
 class LspClient:
-    def __init__(self, command: Sequence[str], root: Path, name: str, extra_env: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        command: Sequence[str],
+        root: Path,
+        name: str,
+        initialization_options: Optional[Dict[str, Any]] = None,
+        workspace_settings: Optional[Dict[str, Any]] = None,
+        extra_env: Optional[Dict[str, str]] = None,
+    ):
         self.command = list(command)
         self.root = root
         self.name = name
+        self.initialization_options = initialization_options or {}
+        self.workspace_settings = workspace_settings or {}
         env = os.environ.copy()
         if extra_env:
             env.update(extra_env)
@@ -248,7 +258,7 @@ class LspClient:
         if method == "workspace/configuration":
             params = message.get("params") or {}
             items = params.get("items") if isinstance(params, dict) else None
-            result = [{} for _ in items] if isinstance(items, list) else []
+            result = [self._configuration_for_item(item) for item in items] if isinstance(items, list) else []
         elif method == "client/registerCapability":
             result = None
         elif method == "window/workDoneProgress/create":
@@ -256,6 +266,19 @@ class LspClient:
         else:
             result = None
         self._send({"jsonrpc": "2.0", "id": message["id"], "result": result})
+
+    def _configuration_for_item(self, item: Any) -> Any:
+        if not isinstance(item, dict):
+            return self.workspace_settings
+        section = item.get("section")
+        if not isinstance(section, str) or not section:
+            return self.workspace_settings
+        current: Any = self.workspace_settings
+        for part in section.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return {}
+            current = current[part]
+        return current
 
     def request(self, method: str, params: Any, timeout: float = 15.0) -> Dict[str, Any]:
         req_id = self.next_id
@@ -294,11 +317,14 @@ class LspClient:
                 },
                 "window": {"workDoneProgress": True},
             },
-            "initializationOptions": {},
+            "initializationOptions": self.initialization_options,
         }
         response = self.request("initialize", params, timeout=timeout)
         self.notify("initialized", {})
         return response
+
+    def did_change_configuration(self) -> None:
+        self.notify("workspace/didChangeConfiguration", {"settings": self.workspace_settings})
 
     def did_open(self, path: Path, language_id: str) -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -328,6 +354,12 @@ class LspClient:
                 self.proc.kill()
             except Exception:
                 pass
+
+    def next_notification(self, timeout: float) -> Optional[Dict[str, Any]]:
+        try:
+            return self.notifications.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
 
 def iter_source_files(root: Path, extensions: Iterable[str]) -> List[Path]:
@@ -557,6 +589,85 @@ def server_command_for_repo(language_cfg: Dict[str, Any], repo: str) -> List[str
     return command
 
 
+def wait_for_lsp_ready(client: LspClient, language_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    lsp_cfg = language_cfg.get("lsp_server", {})
+    timeout = float(lsp_cfg.get("ready_timeout", lsp_cfg.get("index_timeout", 30.0)))
+    min_wait = float(lsp_cfg.get("min_index_wait", 1.0))
+    idle_seconds = float(lsp_cfg.get("ready_idle_seconds", 2.0))
+    deadline = time.perf_counter() + timeout
+    started = time.perf_counter()
+    last_activity = started
+    active_progress: set[str] = set()
+    progress_begin = 0
+    progress_end = 0
+    diagnostics = 0
+    status_messages: List[str] = []
+    notification_methods: Dict[str, int] = {}
+
+    while True:
+        now = time.perf_counter()
+        if now >= deadline:
+            return {
+                "status": "timeout",
+                "duration_seconds": round(now - started, 6),
+                "active_progress": sorted(active_progress),
+                "progress_begin": progress_begin,
+                "progress_end": progress_end,
+                "diagnostics": diagnostics,
+                "status_messages": status_messages[-20:],
+                "notification_methods": notification_methods,
+            }
+        if now - started >= min_wait and not active_progress and now - last_activity >= idle_seconds:
+            return {
+                "status": "settled",
+                "duration_seconds": round(now - started, 6),
+                "active_progress": [],
+                "progress_begin": progress_begin,
+                "progress_end": progress_end,
+                "diagnostics": diagnostics,
+                "status_messages": status_messages[-20:],
+                "notification_methods": notification_methods,
+            }
+        message = client.next_notification(timeout=min(1.0, max(0.05, deadline - now)))
+        if message is None:
+            continue
+        last_activity = time.perf_counter()
+        method = str(message.get("method") or message.get("json_error") or "<unknown>")
+        notification_methods[method] = notification_methods.get(method, 0) + 1
+        params = message.get("params") if isinstance(message, dict) else None
+        if method == "$/progress" and isinstance(params, dict):
+            token = str(params.get("token"))
+            value = params.get("value")
+            kind = value.get("kind") if isinstance(value, dict) else None
+            if kind == "begin":
+                progress_begin += 1
+                active_progress.add(token)
+            elif kind == "end":
+                progress_end += 1
+                active_progress.discard(token)
+        elif method == "textDocument/publishDiagnostics":
+            diagnostics += 1
+        elif method in {"language/status", "rust-analyzer/status", "experimental/serverStatus"}:
+            status_messages.append(json.dumps(params, sort_keys=True)[:500])
+
+
+def range_contains_line(item_range: Any, line: int) -> bool:
+    if not isinstance(item_range, dict):
+        return False
+    start = item_range.get("start")
+    end = item_range.get("end")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        return False
+    start_line = start.get("line")
+    end_line = end.get("line")
+    return isinstance(start_line, int) and isinstance(end_line, int) and start_line <= line <= end_line
+
+
+def sample_file_matches(root: Path, sample: FunctionSample, item: Dict[str, Any]) -> bool:
+    item_file = lsp_item_file(root, item)
+    return item_file == sample.rel_file
+
+
 def harvest_repo(language: str, language_cfg: Dict[str, Any], repo: str, max_sites: int, request_timeout: float, index_wait: float) -> RepoResult:
     start = time.perf_counter()
     corpus = CORPORA_ROOT / repo
@@ -592,53 +703,108 @@ def harvest_repo(language: str, language_cfg: Dict[str, Any], repo: str, max_sit
     errors: List[Dict[str, Any]] = []
     raw_count = 0
     consecutive_timeouts = 0
+    readiness: Dict[str, Any] = {}
     try:
-        client = LspClient(command, corpus, repo)
+        lsp_cfg = language_cfg.get("lsp_server", {})
+        client = LspClient(
+            command,
+            corpus,
+            repo,
+            initialization_options=lsp_cfg.get("initialization_options"),
+            workspace_settings=lsp_cfg.get("settings"),
+        )
         init_timeout = float(language_cfg["lsp_server"].get("initialize_timeout", 90.0))
         init = client.initialize(timeout=init_timeout)
-        time.sleep(index_wait)
+        client.did_change_configuration()
+        for rel_file in sorted({sample.rel_file for sample in samples}):
+            path = corpus / rel_file
+            client.did_open(path, language_cfg["lsp_server"]["language_id"])
+            opened.add(rel_file)
+        if index_wait > 0:
+            time.sleep(index_wait)
+        readiness = wait_for_lsp_ready(client, language_cfg)
+        effective_request_timeout = float(lsp_cfg.get("request_timeout", request_timeout))
+        probe_modes = list(lsp_cfg.get("probe_modes") or ["caller_outgoing"])
         for index, sample in enumerate(samples):
             path = corpus / sample.rel_file
             if sample.rel_file not in opened:
                 client.did_open(path, language_cfg["lsp_server"]["language_id"])
                 opened.add(sample.rel_file)
-            prepare_params = {
-                "textDocument": {"uri": file_uri(path)},
-                "position": {"line": sample.line, "character": sample.character},
-            }
             raw: Dict[str, Any] = {
                 "repo": repo,
                 "language": language,
                 "sample_index": index,
                 "sample": sample.__dict__,
                 "initialize": init,
-                "prepare_params": prepare_params,
+                "readiness": readiness,
+                "attempts": [],
             }
+            sample_edges = 0
             try:
-                prepare = client.request("textDocument/prepareCallHierarchy", prepare_params, timeout=request_timeout)
-                raw["prepare_response"] = prepare
-                items = prepare.get("result") or []
-                if not items:
-                    errors.append({"sample": sample.__dict__, "error": "empty prepareCallHierarchy"})
-                    raw["outgoing_responses"] = []
-                else:
+                for mode in probe_modes:
+                    if mode == "callee_incoming":
+                        position = {"line": sample.call_line, "character": sample.call_character}
+                    else:
+                        position = {"line": sample.line, "character": sample.character}
+                    prepare_params = {
+                        "textDocument": {"uri": file_uri(path)},
+                        "position": position,
+                    }
+                    attempt: Dict[str, Any] = {
+                        "mode": mode,
+                        "prepare_params": prepare_params,
+                    }
+                    raw["attempts"].append(attempt)
+                    prepare = client.request("textDocument/prepareCallHierarchy", prepare_params, timeout=effective_request_timeout)
+                    attempt["prepare_response"] = prepare
+                    items = prepare.get("result") or []
+                    if not items:
+                        attempt["call_response"] = None
+                        continue
                     item = items[0]
-                    outgoing = client.request("callHierarchy/outgoingCalls", {"item": item}, timeout=request_timeout)
-                    raw["outgoing_responses"] = [outgoing]
-                    for call in outgoing.get("result") or []:
-                        dst = call.get("to") if isinstance(call, dict) else None
-                        if not isinstance(dst, dict):
-                            continue
-                        prov = provenance(
-                            "lsp-callHierarchy",
-                            Path(command[0]).name,
-                            version,
-                            {"sample": sample.__dict__, "prepare": item, "outgoing": call},
-                            language_cfg["truth_quality_tier"],
-                        )
-                        edge = make_edge(corpus, item, dst, prov)
-                        if edge:
-                            edges[edge_key(edge)] = edge
+                    if mode == "callee_incoming":
+                        incoming = client.request("callHierarchy/incomingCalls", {"item": item}, timeout=effective_request_timeout)
+                        attempt["call_response"] = incoming
+                        for call in incoming.get("result") or []:
+                            src = call.get("from") if isinstance(call, dict) else None
+                            if not isinstance(src, dict) or not sample_file_matches(corpus, sample, src):
+                                continue
+                            ranges = call.get("fromRanges") if isinstance(call, dict) else None
+                            if isinstance(ranges, list) and ranges and not any(range_contains_line(item_range, sample.call_line) for item_range in ranges):
+                                continue
+                            prov = provenance(
+                                "lsp-callHierarchy",
+                                Path(command[0]).name,
+                                version,
+                                {"sample": sample.__dict__, "prepare": item, "incoming": call},
+                                language_cfg["truth_quality_tier"],
+                            )
+                            edge = make_edge(corpus, src, item, prov)
+                            if edge:
+                                edges[edge_key(edge)] = edge
+                                sample_edges += 1
+                    else:
+                        outgoing = client.request("callHierarchy/outgoingCalls", {"item": item}, timeout=effective_request_timeout)
+                        attempt["call_response"] = outgoing
+                        for call in outgoing.get("result") or []:
+                            dst = call.get("to") if isinstance(call, dict) else None
+                            if not isinstance(dst, dict):
+                                continue
+                            prov = provenance(
+                                "lsp-callHierarchy",
+                                Path(command[0]).name,
+                                version,
+                                {"sample": sample.__dict__, "prepare": item, "outgoing": call},
+                                language_cfg["truth_quality_tier"],
+                            )
+                            edge = make_edge(corpus, item, dst, prov)
+                            if edge:
+                                edges[edge_key(edge)] = edge
+                                sample_edges += 1
+                    if sample_edges:
+                        break
+                if not sample_edges:
+                    errors.append({"sample": sample.__dict__, "error": "empty prepareCallHierarchy/outgoingCalls"})
                 raw_path = raw_dir / f"{index:03d}_{sanitize(sample.rel_file)}_{sample.line + 1}.json"
                 write_json(raw_path, raw)
                 raw_count += 1
@@ -698,11 +864,10 @@ def harvest_repo(language: str, language_cfg: Dict[str, Any], repo: str, max_sit
         },
         "truth_quality_tier": language_cfg["truth_quality_tier"],
         "truth_source_type": language_cfg["truth_source_type"],
+        "lsp_readiness": readiness,
         "spot_checks": spot_checks,
         "lsp_errors": errors[:50],
     }
-    write_json(out_dir / "truth.json", truth)
-    write_json(out_dir / "meta.json", meta)
     if edge_list:
         status = "ok"
         reason = None
@@ -712,6 +877,10 @@ def harvest_repo(language: str, language_cfg: Dict[str, Any], repo: str, max_sit
     else:
         status = "skipped"
         reason = "LSP returned no in-repo outgoing call edges"
+    if reason:
+        meta["skip_reason"] = reason
+    write_json(out_dir / "truth.json", truth)
+    write_json(out_dir / "meta.json", meta)
     return RepoResult(
         repo=repo,
         language=language,
@@ -789,6 +958,86 @@ def spot_check_edges(corpus: Path, edges: Sequence[Dict[str, Any]]) -> List[Dict
     return checks
 
 
+def write_runtime_trace_truth(language_cfg: Dict[str, Any], repo: str, corpus: Path, result: Dict[str, Any]) -> Dict[str, Any]:
+    out_dir = REPOS_OUT / repo
+    raw_edges = result.get("edges") if isinstance(result, dict) else None
+    if not isinstance(raw_edges, list):
+        return result
+    version = f"python {sys.version.split()[0]}"
+    trace_edges: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    for raw in raw_edges:
+        if not isinstance(raw, list) or len(raw) != 4:
+            continue
+        src_file, src_func, dst_file, dst_func = [str(part) for part in raw]
+        if src_file.startswith("../") or dst_file.startswith("../") or src_file.startswith("/") or dst_file.startswith("/"):
+            continue
+        prov = provenance(
+            "runtime-trace",
+            "sys.settrace",
+            version,
+            {"edge": raw, "pytest_status": result.get("status"), "pytest_reason": result.get("reason")},
+            "T2",
+        )
+        edge = {
+            "src_file": src_file,
+            "src_func": src_func,
+            "src_line": None,
+            "dst_file": dst_file,
+            "dst_func": dst_func,
+            "dst_line": None,
+            "kind": "call",
+            "provenance": prov,
+        }
+        trace_edges[edge_key(edge)] = edge
+    edge_list = sorted(trace_edges.values(), key=edge_key)
+    if not edge_list:
+        return result
+    commit = git_value(corpus, ["rev-parse", "HEAD"]) or "unknown"
+    truth = {
+        "schema_version": "truth.v1",
+        "case_id": f"repos/{repo}/runtime_trace_partial",
+        "language": "python",
+        "edge_model": "static-callgraph",
+        "notes": f"Partial Flask runtime trace at {commit}; pytest did not run cleanly: {result.get('reason')}.",
+        "edges": edge_list,
+    }
+    meta = {
+        "case_id": f"repos/{repo}/runtime_trace_partial",
+        "language": "python",
+        "feature": "real repo partial runtime trace",
+        "defect_class": None,
+        "description": f"Partial sys.settrace caller-to-callee truth captured before pytest failure: {result.get('reason')}.",
+        "entrypoints": sorted({edge["src_file"] for edge in edge_list}),
+        "negative_edges": [],
+        "truth_quality_tier": "T2",
+        "truth_source_type": "runtime-trace",
+        "pytest_reason": result.get("reason"),
+        "pytest_returncode": result.get("returncode"),
+        "spot_checks": spot_check_edges(corpus, edge_list),
+    }
+    truth_path = out_dir / "runtime_trace_truth.json"
+    meta_path = out_dir / "runtime_trace_meta.json"
+    write_json(truth_path, truth)
+    write_json(meta_path, meta)
+    manifest_path = out_dir / "manifest.json"
+    if manifest_path.exists():
+        manifest = load_json(manifest_path)
+        truth_files = manifest.get("truth_files")
+        if not isinstance(truth_files, list):
+            truth_files = ["truth.json"]
+        if "runtime_trace_truth.json" not in truth_files:
+            truth_files.append("runtime_trace_truth.json")
+        manifest["truth_files"] = truth_files
+        write_json(manifest_path, manifest)
+    result["status"] = "partial"
+    result["truth_quality_tier"] = "T2"
+    result["truth"] = str(truth_path)
+    result["meta"] = str(meta_path)
+    result["truth_edges"] = len(edge_list)
+    result["spot_checked_edges"] = len(meta["spot_checks"])
+    return result
+
+
 def trace_flask(language_cfg: Dict[str, Any]) -> Dict[str, Any]:
     trace_cfg = language_cfg.get("runtime_trace") or {}
     repo = trace_cfg.get("repo")
@@ -851,6 +1100,7 @@ sys.exit(0 if status == 'ok' else 2)
         result["stdout_tail"] = proc.stdout[-2000:]
         result["stderr_tail"] = proc.stderr[-2000:]
         result["returncode"] = proc.returncode
+        result = write_runtime_trace_truth(language_cfg, repo, corpus, result)
         write_json(out_path, result)
         return result
     except subprocess.TimeoutExpired:

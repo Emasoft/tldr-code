@@ -1,0 +1,354 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 40,
+                  "line": 101
+                },
+                "start": {
+                  "character": 36,
+                  "line": 101
+                }
+              }
+            ],
+            "to": {
+              "kind": 5,
+              "name": "list",
+              "range": {
+                "end": {
+                  "character": 10,
+                  "line": 1119
+                },
+                "start": {
+                  "character": 6,
+                  "line": 1119
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 10,
+                  "line": 1119
+                },
+                "start": {
+                  "character": 6,
+                  "line": 1119
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 44,
+                  "line": 101
+                },
+                "start": {
+                  "character": 41,
+                  "line": 101
+                }
+              }
+            ],
+            "to": {
+              "kind": 5,
+              "name": "map",
+              "range": {
+                "end": {
+                  "character": 9,
+                  "line": 1577
+                },
+                "start": {
+                  "character": 6,
+                  "line": 1577
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 9,
+                  "line": 1577
+                },
+                "start": {
+                  "character": 6,
+                  "line": 1577
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 76,
+                  "line": 101
+                },
+                "start": {
+                  "character": 71,
+                  "line": 101
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "split",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 586
+                },
+                "start": {
+                  "character": 8,
+                  "line": 586
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 586
+                },
+                "start": {
+                  "character": 8,
+                  "line": 586
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 76,
+                  "line": 101
+                },
+                "start": {
+                  "character": 71,
+                  "line": 101
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "split",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 588
+                },
+                "start": {
+                  "character": 8,
+                  "line": 588
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 588
+                },
+                "start": {
+                  "character": 8,
+                  "line": 588
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 21,
+                  "line": 107
+                },
+                "start": {
+                  "character": 17,
+                  "line": 107
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "warn",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 18
+                },
+                "start": {
+                  "character": 8,
+                  "line": 18
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 18
+                },
+                "start": {
+                  "character": 8,
+                  "line": 18
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/_warnings.pyi"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 4,
+          "line": 98
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/__init__.py"
+        }
+      },
+      "prepare_response": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "_check_cryptography",
+            "range": {
+              "end": {
+                "character": 23,
+                "line": 98
+              },
+              "start": {
+                "character": 4,
+                "line": 98
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 23,
+                "line": 98
+              },
+              "start": {
+                "character": 4,
+                "line": 98
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/__init__.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
+  "repo": "python-requests",
+  "sample": {
+    "call_character": 36,
+    "call_line": 101,
+    "call_text": "cryptography_version_list = list(map(int, cryptography_version.split(\".\")))",
+    "character": 4,
+    "end_line": 107,
+    "line": 98,
+    "name": "_check_cryptography",
+    "pattern_priority": 0,
+    "rel_file": "src/requests/__init__.py"
+  },
+  "sample_index": 1
+}

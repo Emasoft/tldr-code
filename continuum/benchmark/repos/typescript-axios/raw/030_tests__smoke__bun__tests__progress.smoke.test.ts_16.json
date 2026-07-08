@@ -1,4 +1,346 @@
 {
+  "attempts": [
+    {
+      "call_response": {
+        "id": 109,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 28,
+                  "line": 16
+                },
+                "start": {
+                  "character": 10,
+                  "line": 16
+                }
+              },
+              {
+                "end": {
+                  "character": 28,
+                  "line": 16
+                },
+                "start": {
+                  "character": 10,
+                  "line": 16
+                }
+              },
+              {
+                "end": {
+                  "character": 28,
+                  "line": 17
+                },
+                "start": {
+                  "character": 10,
+                  "line": 17
+                }
+              },
+              {
+                "end": {
+                  "character": 28,
+                  "line": 17
+                },
+                "start": {
+                  "character": 10,
+                  "line": 17
+                }
+              }
+            ],
+            "to": {
+              "detail": "",
+              "kind": 6,
+              "name": "enqueue",
+              "range": {
+                "end": {
+                  "character": 28,
+                  "line": 30368
+                },
+                "start": {
+                  "character": 4,
+                  "line": 30363
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 11,
+                  "line": 30368
+                },
+                "start": {
+                  "character": 4,
+                  "line": 30368
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 53,
+                  "line": 16
+                },
+                "start": {
+                  "character": 29,
+                  "line": 16
+                }
+              },
+              {
+                "end": {
+                  "character": 53,
+                  "line": 16
+                },
+                "start": {
+                  "character": 29,
+                  "line": 16
+                }
+              },
+              {
+                "end": {
+                  "character": 53,
+                  "line": 17
+                },
+                "start": {
+                  "character": 29,
+                  "line": 17
+                }
+              },
+              {
+                "end": {
+                  "character": 53,
+                  "line": 17
+                },
+                "start": {
+                  "character": 29,
+                  "line": 17
+                }
+              }
+            ],
+            "to": {
+              "detail": "",
+              "kind": 6,
+              "name": "encode",
+              "range": {
+                "end": {
+                  "character": 52,
+                  "line": 36489
+                },
+                "start": {
+                  "character": 4,
+                  "line": 36484
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 10,
+                  "line": 36489
+                },
+                "start": {
+                  "character": 4,
+                  "line": 36489
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 26,
+                  "line": 18
+                },
+                "start": {
+                  "character": 10,
+                  "line": 18
+                }
+              },
+              {
+                "end": {
+                  "character": 26,
+                  "line": 18
+                },
+                "start": {
+                  "character": 10,
+                  "line": 18
+                }
+              }
+            ],
+            "to": {
+              "detail": "",
+              "kind": 6,
+              "name": "close",
+              "range": {
+                "end": {
+                  "character": 18,
+                  "line": 30362
+                },
+                "start": {
+                  "character": 4,
+                  "line": 30357
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 9,
+                  "line": 30362
+                },
+                "start": {
+                  "character": 4,
+                  "line": 30362
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 15
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 108,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 6,
+            "name": "start",
+            "range": {
+              "end": {
+                "character": 9,
+                "line": 19
+              },
+              "start": {
+                "character": 8,
+                "line": 15
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 13,
+                "line": 15
+              },
+              "start": {
+                "character": 8,
+                "line": 15
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
+          }
+        ]
+      }
+    },
+    {
+      "call_response": {
+        "id": 111,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "from": {
+              "detail": "",
+              "kind": 6,
+              "name": "start",
+              "range": {
+                "end": {
+                  "character": 9,
+                  "line": 19
+                },
+                "start": {
+                  "character": 8,
+                  "line": 15
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 15
+                },
+                "start": {
+                  "character": 8,
+                  "line": 15
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
+            },
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 28,
+                  "line": 16
+                },
+                "start": {
+                  "character": 21,
+                  "line": 16
+                }
+              },
+              {
+                "end": {
+                  "character": 28,
+                  "line": 17
+                },
+                "start": {
+                  "character": 21,
+                  "line": 17
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "mode": "callee_incoming",
+      "prepare_params": {
+        "position": {
+          "character": 21,
+          "line": 16
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 110,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 6,
+            "name": "enqueue",
+            "range": {
+              "end": {
+                "character": 28,
+                "line": 30368
+              },
+              "start": {
+                "character": 4,
+                "line": 30363
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 30368
+              },
+              "start": {
+                "character": 4,
+                "line": 30368
+              }
+            },
+            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
+          }
+        ]
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -113,244 +455,19 @@
     }
   },
   "language": "typescript",
-  "outgoing_responses": [
-    {
-      "id": 63,
-      "jsonrpc": "2.0",
-      "result": [
-        {
-          "fromRanges": [
-            {
-              "end": {
-                "character": 28,
-                "line": 16
-              },
-              "start": {
-                "character": 10,
-                "line": 16
-              }
-            },
-            {
-              "end": {
-                "character": 28,
-                "line": 16
-              },
-              "start": {
-                "character": 10,
-                "line": 16
-              }
-            },
-            {
-              "end": {
-                "character": 28,
-                "line": 17
-              },
-              "start": {
-                "character": 10,
-                "line": 17
-              }
-            },
-            {
-              "end": {
-                "character": 28,
-                "line": 17
-              },
-              "start": {
-                "character": 10,
-                "line": 17
-              }
-            }
-          ],
-          "to": {
-            "detail": "",
-            "kind": 6,
-            "name": "enqueue",
-            "range": {
-              "end": {
-                "character": 28,
-                "line": 30368
-              },
-              "start": {
-                "character": 4,
-                "line": 30363
-              }
-            },
-            "selectionRange": {
-              "end": {
-                "character": 11,
-                "line": 30368
-              },
-              "start": {
-                "character": 4,
-                "line": 30368
-              }
-            },
-            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
-          }
-        },
-        {
-          "fromRanges": [
-            {
-              "end": {
-                "character": 53,
-                "line": 16
-              },
-              "start": {
-                "character": 29,
-                "line": 16
-              }
-            },
-            {
-              "end": {
-                "character": 53,
-                "line": 16
-              },
-              "start": {
-                "character": 29,
-                "line": 16
-              }
-            },
-            {
-              "end": {
-                "character": 53,
-                "line": 17
-              },
-              "start": {
-                "character": 29,
-                "line": 17
-              }
-            },
-            {
-              "end": {
-                "character": 53,
-                "line": 17
-              },
-              "start": {
-                "character": 29,
-                "line": 17
-              }
-            }
-          ],
-          "to": {
-            "detail": "",
-            "kind": 6,
-            "name": "encode",
-            "range": {
-              "end": {
-                "character": 52,
-                "line": 36489
-              },
-              "start": {
-                "character": 4,
-                "line": 36484
-              }
-            },
-            "selectionRange": {
-              "end": {
-                "character": 10,
-                "line": 36489
-              },
-              "start": {
-                "character": 4,
-                "line": 36489
-              }
-            },
-            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
-          }
-        },
-        {
-          "fromRanges": [
-            {
-              "end": {
-                "character": 26,
-                "line": 18
-              },
-              "start": {
-                "character": 10,
-                "line": 18
-              }
-            },
-            {
-              "end": {
-                "character": 26,
-                "line": 18
-              },
-              "start": {
-                "character": 10,
-                "line": 18
-              }
-            }
-          ],
-          "to": {
-            "detail": "",
-            "kind": 6,
-            "name": "close",
-            "range": {
-              "end": {
-                "character": 18,
-                "line": 30362
-              },
-              "start": {
-                "character": 4,
-                "line": 30357
-              }
-            },
-            "selectionRange": {
-              "end": {
-                "character": 9,
-                "line": 30362
-              },
-              "start": {
-                "character": 4,
-                "line": 30362
-              }
-            },
-            "uri": "file:///opt/homebrew/lib/node_modules/typescript/lib/lib.dom.d.ts"
-          }
-        }
-      ]
-    }
-  ],
-  "prepare_params": {
-    "position": {
-      "character": 8,
-      "line": 15
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 0,
+    "duration_seconds": 5.023139,
+    "notification_methods": {
+      "$/progress": 2,
+      "$/typescriptVersion": 1,
+      "window/logMessage": 1
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
-    }
-  },
-  "prepare_response": {
-    "id": 62,
-    "jsonrpc": "2.0",
-    "result": [
-      {
-        "detail": "",
-        "kind": 6,
-        "name": "start",
-        "range": {
-          "end": {
-            "character": 9,
-            "line": 19
-          },
-          "start": {
-            "character": 8,
-            "line": 15
-          }
-        },
-        "selectionRange": {
-          "end": {
-            "character": 13,
-            "line": 15
-          },
-          "start": {
-            "character": 8,
-            "line": 15
-          }
-        },
-        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/progress.smoke.test.ts"
-      }
-    ]
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
   },
   "repo": "typescript-axios",
   "sample": {

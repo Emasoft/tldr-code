@@ -1,0 +1,237 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 47,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 69
+                },
+                "start": {
+                  "character": 18,
+                  "line": 69
+                }
+              }
+            ],
+            "to": {
+              "kind": 5,
+              "name": "Session",
+              "range": {
+                "end": {
+                  "character": 13,
+                  "line": 394
+                },
+                "start": {
+                  "character": 6,
+                  "line": 394
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 13,
+                  "line": 394
+                },
+                "start": {
+                  "character": 6,
+                  "line": 394
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/sessions.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 30,
+                  "line": 70
+                },
+                "start": {
+                  "character": 23,
+                  "line": 70
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "request",
+              "range": {
+                "end": {
+                  "character": 15,
+                  "line": 556
+                },
+                "start": {
+                  "character": 8,
+                  "line": 556
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 15,
+                  "line": 556
+                },
+                "start": {
+                  "character": 8,
+                  "line": 556
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/sessions.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 4,
+          "line": 23
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/api.py"
+        }
+      },
+      "prepare_response": {
+        "id": 46,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "request",
+            "range": {
+              "end": {
+                "character": 11,
+                "line": 23
+              },
+              "start": {
+                "character": 4,
+                "line": 23
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 11,
+                "line": 23
+              },
+              "start": {
+                "character": 4,
+                "line": 23
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-requests/src/requests/api.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [
+      "2af34b88-2ac0-478b-b074-76769f732a9c"
+    ],
+    "diagnostics": 38,
+    "duration_seconds": 180.005092,
+    "notification_methods": {
+      "$/progress": 7,
+      "textDocument/publishDiagnostics": 38,
+      "window/logMessage": 9
+    },
+    "progress_begin": 1,
+    "progress_end": 0,
+    "status": "timeout",
+    "status_messages": []
+  },
+  "repo": "python-requests",
+  "sample": {
+    "call_character": 9,
+    "call_line": 69,
+    "call_text": "with sessions.Session() as session:",
+    "character": 4,
+    "end_line": 70,
+    "line": 23,
+    "name": "request",
+    "pattern_priority": 0,
+    "rel_file": "src/requests/api.py"
+  },
+  "sample_index": 22
+}

@@ -1,4 +1,42 @@
 {
+  "attempts": [
+    {
+      "call_response": null,
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 22,
+          "line": 9
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/error.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 120,
+        "jsonrpc": "2.0",
+        "result": null
+      }
+    },
+    {
+      "call_response": null,
+      "mode": "callee_incoming",
+      "prepare_params": {
+        "position": {
+          "character": 2,
+          "line": 10
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/error.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 121,
+        "jsonrpc": "2.0",
+        "result": null
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -113,20 +151,19 @@
     }
   },
   "language": "typescript",
-  "outgoing_responses": [],
-  "prepare_params": {
-    "position": {
-      "character": 22,
-      "line": 9
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 0,
+    "duration_seconds": 5.023139,
+    "notification_methods": {
+      "$/progress": 2,
+      "$/typescriptVersion": 1,
+      "window/logMessage": 1
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/error.smoke.test.ts"
-    }
-  },
-  "prepare_response": {
-    "id": 68,
-    "jsonrpc": "2.0",
-    "result": null
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
   },
   "repo": "typescript-axios",
   "sample": {

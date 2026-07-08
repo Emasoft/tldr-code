@@ -28,7 +28,7 @@
   "language": "java",
   "lsp_errors": [
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 32,
@@ -37,11 +37,12 @@
         "end_line": 33,
         "line": 31,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 8,
         "call_line": 28,
@@ -50,11 +51,12 @@
         "end_line": 35,
         "line": 27,
         "name": "registerHints",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/PetClinicRuntimeHints.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 21,
         "call_line": 46,
@@ -63,11 +65,12 @@
         "end_line": 48,
         "line": 45,
         "name": "toString",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/model/NamedEntity.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 10,
         "call_line": 97,
@@ -76,11 +79,12 @@
         "end_line": 100,
         "line": 96,
         "name": "addPet",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 17,
         "call_line": 117,
@@ -89,11 +93,12 @@
         "end_line": 126,
         "line": 116,
         "name": "getPet",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 17,
         "call_line": 135,
@@ -102,11 +107,12 @@
         "end_line": 144,
         "line": 134,
         "name": "getPet",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 148,
@@ -115,11 +121,12 @@
         "end_line": 156,
         "line": 147,
         "name": "toString",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 9,
         "call_line": 165,
@@ -128,11 +135,12 @@
         "end_line": 173,
         "line": 163,
         "name": "addVisit",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 60,
@@ -141,11 +149,12 @@
         "end_line": 61,
         "line": 59,
         "name": "setAllowedFields",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 31,
         "call_line": 65,
@@ -154,11 +163,12 @@
         "end_line": 69,
         "line": 64,
         "name": "findOwner",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 78,
@@ -167,11 +177,12 @@
         "end_line": 86,
         "line": 77,
         "name": "processCreationForm",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 37,
         "call_line": 121,
@@ -180,11 +191,12 @@
         "end_line": 127,
         "line": 120,
         "name": "addPaginationModel",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 34,
         "call_line": 131,
@@ -193,11 +205,12 @@
         "end_line": 133,
         "line": 129,
         "name": "findPaginatedForOwnersLastName",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 25,
         "call_line": 167,
@@ -206,11 +219,12 @@
         "end_line": 173,
         "line": 166,
         "name": "showOwner",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 2,
         "call_line": 81,
@@ -219,11 +233,12 @@
         "end_line": 82,
         "line": 80,
         "name": "addVisit",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Pet.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 62,
@@ -232,11 +247,12 @@
         "end_line": 63,
         "line": 61,
         "name": "populatePetTypes",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 46,
         "call_line": 67,
@@ -245,11 +261,12 @@
         "end_line": 71,
         "line": 66,
         "name": "findOwner",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 89,
@@ -258,11 +275,12 @@
         "end_line": 90,
         "line": 88,
         "name": "initOwnerBinder",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 94,
@@ -271,11 +289,12 @@
         "end_line": 96,
         "line": 93,
         "name": "initPetBinder",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 16,
         "call_line": 100,
@@ -284,11 +303,12 @@
         "end_line": 103,
         "line": 99,
         "name": "initCreationForm",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 19,
         "call_line": 167,
@@ -297,11 +317,12 @@
         "end_line": 180,
         "line": 166,
         "name": "updatePetDetails",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 24,
         "call_line": 46,
@@ -310,11 +331,12 @@
         "end_line": 48,
         "line": 45,
         "name": "print",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetTypeFormatter.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 48,
         "call_line": 52,
@@ -323,11 +345,12 @@
         "end_line": 59,
         "line": 51,
         "name": "parse",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetTypeFormatter.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 38,
@@ -336,11 +359,12 @@
         "end_line": 53,
         "line": 36,
         "name": "validate",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetValidator.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 19,
         "call_line": 60,
@@ -349,11 +373,12 @@
         "end_line": 61,
         "line": 59,
         "name": "supports",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetValidator.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 24,
         "call_line": 48,
@@ -362,11 +387,12 @@
         "end_line": 49,
         "line": 47,
         "name": "Visit",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Visit.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 52,
@@ -375,11 +401,12 @@
         "end_line": 53,
         "line": 51,
         "name": "setAllowedFields",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/VisitController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 19,
         "call_line": 84,
@@ -388,11 +415,12 @@
         "end_line": 85,
         "line": 83,
         "name": "minVisitDate",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/VisitController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 18,
         "call_line": 36,
@@ -401,11 +429,12 @@
         "end_line": 37,
         "line": 35,
         "name": "petclinicCacheConfigurationCustomizer",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/CacheConfiguration.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 38,
         "call_line": 49,
@@ -414,11 +443,12 @@
         "end_line": 50,
         "line": 48,
         "name": "cacheConfiguration",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/CacheConfiguration.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 12,
         "call_line": 32,
@@ -427,11 +457,12 @@
         "end_line": 34,
         "line": 31,
         "name": "triggerException",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/CrashController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 39,
         "call_line": 33,
@@ -440,11 +471,12 @@
         "end_line": 36,
         "line": 32,
         "name": "localeResolver",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/WebConfiguration.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 44,
         "call_line": 45,
@@ -453,11 +485,12 @@
         "end_line": 48,
         "line": 44,
         "name": "localeChangeInterceptor",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/WebConfiguration.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 11,
         "call_line": 56,
@@ -466,11 +499,12 @@
         "end_line": 57,
         "line": 55,
         "name": "addInterceptors",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/WebConfiguration.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 9,
         "call_line": 60,
@@ -479,11 +513,12 @@
         "end_line": 63,
         "line": 59,
         "name": "getSpecialties",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/Vet.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 9,
         "call_line": 66,
@@ -492,11 +527,12 @@
         "end_line": 67,
         "line": 65,
         "name": "getNrOfSpecialties",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/Vet.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 2,
         "call_line": 70,
@@ -505,11 +541,12 @@
         "end_line": 71,
         "line": 69,
         "name": "addSpecialty",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/Vet.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 18,
         "call_line": 47,
@@ -518,11 +555,12 @@
         "end_line": 51,
         "line": 44,
         "name": "showVetList",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 33,
         "call_line": 54,
@@ -531,11 +569,12 @@
         "end_line": 60,
         "line": 53,
         "name": "addPaginationModel",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 34,
         "call_line": 64,
@@ -544,11 +583,12 @@
         "end_line": 66,
         "line": 62,
         "name": "findPaginated",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 18,
         "call_line": 72,
@@ -557,11 +597,12 @@
         "end_line": 75,
         "line": 69,
         "name": "showResourcesVetList",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 34,
         "call_line": 68,
@@ -570,11 +611,12 @@
         "end_line": 71,
         "line": 67,
         "name": "ownerDetails",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/MySqlIntegrationTests.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 13,
         "call_line": 38,
@@ -583,11 +625,12 @@
         "end_line": 39,
         "line": 37,
         "name": "container",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/MysqlTestApplication.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 42,
@@ -596,11 +639,12 @@
         "end_line": 44,
         "line": 41,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/MysqlTestApplication.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 34,
         "call_line": 53,
@@ -609,11 +653,12 @@
         "end_line": 56,
         "line": 52,
         "name": "ownerDetails",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 34,
         "call_line": 60,
@@ -622,11 +667,12 @@
         "end_line": 63,
         "line": 59,
         "name": "ownerList",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 66,
@@ -635,11 +681,12 @@
         "end_line": 67,
         "line": 65,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 2,
         "call_line": 67,
@@ -648,11 +695,12 @@
         "end_line": 68,
         "line": 66,
         "name": "available",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 6,
         "call_line": 71,
@@ -661,11 +709,12 @@
         "end_line": 78,
         "line": 70,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
       }
     },
     {
-      "error": "empty prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 34,
         "call_line": 88,
@@ -674,10 +723,43 @@
         "end_line": 91,
         "line": 87,
         "name": "ownerDetails",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
       }
     }
   ],
+  "lsp_readiness": {
+    "active_progress": [],
+    "diagnostics": 6,
+    "duration_seconds": 60.212054,
+    "notification_methods": {
+      "$/progress": 26,
+      "language/eventNotification": 2,
+      "language/status": 15,
+      "textDocument/publishDiagnostics": 6,
+      "window/logMessage": 3
+    },
+    "progress_begin": 9,
+    "progress_end": 9,
+    "status": "settled",
+    "status_messages": [
+      "{\"message\": \"Init...\", \"type\": \"Starting\"}",
+      "{\"message\": \"0% Starting Java Language Server\", \"type\": \"Starting\"}",
+      "{\"message\": \"45% Starting Java Language Server - Deleting '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"70% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"WARNING\", \"type\": \"ProjectStatus\"}",
+      "{\"message\": \"100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1000% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1005% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1010% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"Ready\", \"type\": \"Started\"}",
+      "{\"message\": \"1100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"ServiceReady\", \"type\": \"ServiceReady\"}",
+      "{\"message\": \"1100% Starting Java Language Server\", \"type\": \"Starting\"}"
+    ]
+  },
   "negative_edges": [],
   "sampling": {
     "max_sites": 50,
@@ -692,6 +774,7 @@
         "end_line": 33,
         "line": 31,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java"
       },
       {
@@ -702,6 +785,7 @@
         "end_line": 35,
         "line": 27,
         "name": "registerHints",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/PetClinicRuntimeHints.java"
       },
       {
@@ -712,6 +796,7 @@
         "end_line": 48,
         "line": 45,
         "name": "toString",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/model/NamedEntity.java"
       },
       {
@@ -722,6 +807,7 @@
         "end_line": 100,
         "line": 96,
         "name": "addPet",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       },
       {
@@ -732,6 +818,7 @@
         "end_line": 126,
         "line": 116,
         "name": "getPet",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       },
       {
@@ -742,6 +829,7 @@
         "end_line": 144,
         "line": 134,
         "name": "getPet",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       },
       {
@@ -752,6 +840,7 @@
         "end_line": 156,
         "line": 147,
         "name": "toString",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       },
       {
@@ -762,6 +851,7 @@
         "end_line": 173,
         "line": 163,
         "name": "addVisit",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Owner.java"
       },
       {
@@ -772,6 +862,7 @@
         "end_line": 61,
         "line": 59,
         "name": "setAllowedFields",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       },
       {
@@ -782,6 +873,7 @@
         "end_line": 69,
         "line": 64,
         "name": "findOwner",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       },
       {
@@ -792,6 +884,7 @@
         "end_line": 86,
         "line": 77,
         "name": "processCreationForm",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       },
       {
@@ -802,6 +895,7 @@
         "end_line": 127,
         "line": 120,
         "name": "addPaginationModel",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       },
       {
@@ -812,6 +906,7 @@
         "end_line": 133,
         "line": 129,
         "name": "findPaginatedForOwnersLastName",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       },
       {
@@ -822,6 +917,7 @@
         "end_line": 173,
         "line": 166,
         "name": "showOwner",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java"
       },
       {
@@ -832,6 +928,7 @@
         "end_line": 82,
         "line": 80,
         "name": "addVisit",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Pet.java"
       },
       {
@@ -842,6 +939,7 @@
         "end_line": 63,
         "line": 61,
         "name": "populatePetTypes",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       },
       {
@@ -852,6 +950,7 @@
         "end_line": 71,
         "line": 66,
         "name": "findOwner",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       },
       {
@@ -862,6 +961,7 @@
         "end_line": 90,
         "line": 88,
         "name": "initOwnerBinder",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       },
       {
@@ -872,6 +972,7 @@
         "end_line": 96,
         "line": 93,
         "name": "initPetBinder",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       },
       {
@@ -882,6 +983,7 @@
         "end_line": 103,
         "line": 99,
         "name": "initCreationForm",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       },
       {
@@ -892,6 +994,7 @@
         "end_line": 180,
         "line": 166,
         "name": "updatePetDetails",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetController.java"
       },
       {
@@ -902,6 +1005,7 @@
         "end_line": 48,
         "line": 45,
         "name": "print",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetTypeFormatter.java"
       },
       {
@@ -912,6 +1016,7 @@
         "end_line": 59,
         "line": 51,
         "name": "parse",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetTypeFormatter.java"
       },
       {
@@ -922,6 +1027,7 @@
         "end_line": 53,
         "line": 36,
         "name": "validate",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetValidator.java"
       },
       {
@@ -932,6 +1038,7 @@
         "end_line": 61,
         "line": 59,
         "name": "supports",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/PetValidator.java"
       },
       {
@@ -942,6 +1049,7 @@
         "end_line": 49,
         "line": 47,
         "name": "Visit",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/Visit.java"
       },
       {
@@ -952,6 +1060,7 @@
         "end_line": 53,
         "line": 51,
         "name": "setAllowedFields",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/VisitController.java"
       },
       {
@@ -962,6 +1071,7 @@
         "end_line": 85,
         "line": 83,
         "name": "minVisitDate",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/owner/VisitController.java"
       },
       {
@@ -972,6 +1082,7 @@
         "end_line": 37,
         "line": 35,
         "name": "petclinicCacheConfigurationCustomizer",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/CacheConfiguration.java"
       },
       {
@@ -982,6 +1093,7 @@
         "end_line": 50,
         "line": 48,
         "name": "cacheConfiguration",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/CacheConfiguration.java"
       },
       {
@@ -992,6 +1104,7 @@
         "end_line": 34,
         "line": 31,
         "name": "triggerException",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/CrashController.java"
       },
       {
@@ -1002,6 +1115,7 @@
         "end_line": 36,
         "line": 32,
         "name": "localeResolver",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/WebConfiguration.java"
       },
       {
@@ -1012,6 +1126,7 @@
         "end_line": 48,
         "line": 44,
         "name": "localeChangeInterceptor",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/WebConfiguration.java"
       },
       {
@@ -1022,6 +1137,7 @@
         "end_line": 57,
         "line": 55,
         "name": "addInterceptors",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/system/WebConfiguration.java"
       },
       {
@@ -1032,6 +1148,7 @@
         "end_line": 63,
         "line": 59,
         "name": "getSpecialties",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/Vet.java"
       },
       {
@@ -1042,6 +1159,7 @@
         "end_line": 67,
         "line": 65,
         "name": "getNrOfSpecialties",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/Vet.java"
       },
       {
@@ -1052,6 +1170,7 @@
         "end_line": 71,
         "line": 69,
         "name": "addSpecialty",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/Vet.java"
       },
       {
@@ -1062,6 +1181,7 @@
         "end_line": 51,
         "line": 44,
         "name": "showVetList",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       },
       {
@@ -1072,6 +1192,7 @@
         "end_line": 60,
         "line": 53,
         "name": "addPaginationModel",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       },
       {
@@ -1082,6 +1203,7 @@
         "end_line": 66,
         "line": 62,
         "name": "findPaginated",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       },
       {
@@ -1092,6 +1214,7 @@
         "end_line": 75,
         "line": 69,
         "name": "showResourcesVetList",
+        "pattern_priority": 0,
         "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
       },
       {
@@ -1102,6 +1225,7 @@
         "end_line": 71,
         "line": 67,
         "name": "ownerDetails",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/MySqlIntegrationTests.java"
       },
       {
@@ -1112,6 +1236,7 @@
         "end_line": 39,
         "line": 37,
         "name": "container",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/MysqlTestApplication.java"
       },
       {
@@ -1122,6 +1247,7 @@
         "end_line": 44,
         "line": 41,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/MysqlTestApplication.java"
       },
       {
@@ -1132,6 +1258,7 @@
         "end_line": 56,
         "line": 52,
         "name": "ownerDetails",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java"
       },
       {
@@ -1142,6 +1269,7 @@
         "end_line": 63,
         "line": 59,
         "name": "ownerList",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java"
       },
       {
@@ -1152,6 +1280,7 @@
         "end_line": 67,
         "line": 65,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PetClinicIntegrationTests.java"
       },
       {
@@ -1162,6 +1291,7 @@
         "end_line": 68,
         "line": 66,
         "name": "available",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
       },
       {
@@ -1172,6 +1302,7 @@
         "end_line": 78,
         "line": 70,
         "name": "main",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
       },
       {
@@ -1182,11 +1313,13 @@
         "end_line": 91,
         "line": 87,
         "name": "ownerDetails",
+        "pattern_priority": 0,
         "rel_file": "src/test/java/org/springframework/samples/petclinic/PostgresIntegrationTests.java"
       }
     ],
     "seed": "deterministic:path-sort:no-random"
   },
+  "skip_reason": "empty prepareCallHierarchy/outgoingCalls",
   "spot_checks": [],
   "truth_quality_tier": "T1",
   "truth_source_type": "callHierarchy"

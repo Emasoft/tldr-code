@@ -1,0 +1,586 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 89,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 27,
+                  "line": 203
+                },
+                "start": {
+                  "character": 19,
+                  "line": 203
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "realpath",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 130
+                },
+                "start": {
+                  "character": 4,
+                  "line": 130
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 130
+                },
+                "start": {
+                  "character": 4,
+                  "line": 130
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/posixpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 33,
+                  "line": 205
+                },
+                "start": {
+                  "character": 25,
+                  "line": 205
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "splitext",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 148
+                },
+                "start": {
+                  "character": 4,
+                  "line": 148
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 148
+                },
+                "start": {
+                  "character": 4,
+                  "line": 148
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/posixpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 23,
+                  "line": 209
+                },
+                "start": {
+                  "character": 15,
+                  "line": 209
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "basename",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 90
+                },
+                "start": {
+                  "character": 4,
+                  "line": 90
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 90
+                },
+                "start": {
+                  "character": 4,
+                  "line": 90
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/posixpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 30,
+                  "line": 210
+                },
+                "start": {
+                  "character": 23,
+                  "line": 210
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "dirname",
+              "range": {
+                "end": {
+                  "character": 11,
+                  "line": 94
+                },
+                "start": {
+                  "character": 4,
+                  "line": 94
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 11,
+                  "line": 94
+                },
+                "start": {
+                  "character": 4,
+                  "line": 94
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/posixpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 34,
+                  "line": 216
+                },
+                "start": {
+                  "character": 29,
+                  "line": 216
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "split",
+              "range": {
+                "end": {
+                  "character": 9,
+                  "line": 140
+                },
+                "start": {
+                  "character": 4,
+                  "line": 140
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 9,
+                  "line": 140
+                },
+                "start": {
+                  "character": 4,
+                  "line": 140
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/posixpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 26,
+                  "line": 217
+                },
+                "start": {
+                  "character": 20,
+                  "line": 217
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "append",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 1125
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1125
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 1125
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1125
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 29,
+                  "line": 219
+                },
+                "start": {
+                  "character": 23,
+                  "line": 219
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "exists",
+              "range": {
+                "end": {
+                  "character": 10,
+                  "line": 39
+                },
+                "start": {
+                  "character": 4,
+                  "line": 39
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 10,
+                  "line": 39
+                },
+                "start": {
+                  "character": 4,
+                  "line": 39
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/genericpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 42,
+                  "line": 219
+                },
+                "start": {
+                  "character": 38,
+                  "line": 219
+                }
+              }
+            ],
+            "to": {
+              "kind": 12,
+              "name": "join",
+              "range": {
+                "end": {
+                  "character": 8,
+                  "line": 126
+                },
+                "start": {
+                  "character": 4,
+                  "line": 126
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 8,
+                  "line": 126
+                },
+                "start": {
+                  "character": 4,
+                  "line": 126
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/posixpath.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 23,
+                  "line": 223
+                },
+                "start": {
+                  "character": 17,
+                  "line": 223
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "insert",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 1132
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1132
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 1132
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1132
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 19,
+                  "line": 225
+                },
+                "start": {
+                  "character": 15,
+                  "line": 225
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "join",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 525
+                },
+                "start": {
+                  "character": 8,
+                  "line": 525
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 525
+                },
+                "start": {
+                  "character": 8,
+                  "line": 525
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 19,
+                  "line": 225
+                },
+                "start": {
+                  "character": 15,
+                  "line": 225
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "join",
+              "range": {
+                "end": {
+                  "character": 12,
+                  "line": 527
+                },
+                "start": {
+                  "character": 8,
+                  "line": 527
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 12,
+                  "line": 527
+                },
+                "start": {
+                  "character": 8,
+                  "line": 527
+                }
+              },
+              "uri": "file:///Users/cosimo/.local/pipx/venvs/pyright/lib/python3.14/site-packages/pyright/dist/dist/typeshed-fallback/stdlib/builtins.pyi"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 4,
+          "line": 199
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+        }
+      },
+      "prepare_response": {
+        "id": 88,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "prepare_import",
+            "range": {
+              "end": {
+                "character": 18,
+                "line": 199
+              },
+              "start": {
+                "character": 4,
+                "line": 199
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 18,
+                "line": 199
+              },
+              "start": {
+                "character": 4,
+                "line": 199
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 11,
+    "call_line": 203,
+    "call_text": "path = os.path.realpath(path)",
+    "character": 4,
+    "end_line": 225,
+    "line": 199,
+    "name": "prepare_import",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/cli.py"
+  },
+  "sample_index": 43
+}

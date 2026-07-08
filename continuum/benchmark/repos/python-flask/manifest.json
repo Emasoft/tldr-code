@@ -12,7 +12,8 @@
   "name": "python-flask",
   "schema_version": "repo-truth-manifest.v1",
   "truth_files": [
-    "truth.json"
+    "truth.json",
+    "runtime_trace_truth.json"
   ],
   "truth_quality_tier": "T1"
 }

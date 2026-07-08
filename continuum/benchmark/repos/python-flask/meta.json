@@ -10,7 +10,7 @@
   "language": "python",
   "lsp_errors": [
     {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 24,
         "call_line": 73,
@@ -19,11 +19,12 @@
         "end_line": 76,
         "line": 72,
         "name": "_make_timedelta",
+        "pattern_priority": 0,
         "rel_file": "src/flask/app.py"
       }
     },
     {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 86,
@@ -32,11 +33,12 @@
         "end_line": 91,
         "line": 84,
         "name": "remove_ctx",
+        "pattern_priority": 0,
         "rel_file": "src/flask/app.py"
       }
     },
     {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 86,
@@ -45,11 +47,12 @@
         "end_line": 89,
         "line": 85,
         "name": "wrapper",
+        "pattern_priority": 0,
         "rel_file": "src/flask/app.py"
       }
     },
     {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 99,
@@ -58,11 +61,12 @@
         "end_line": 105,
         "line": 96,
         "name": "add_ctx",
+        "pattern_priority": 0,
         "rel_file": "src/flask/app.py"
       }
     },
     {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 20,
         "call_line": 99,
@@ -71,37 +75,12 @@
         "end_line": 103,
         "line": 97,
         "name": "wrapper",
+        "pattern_priority": 0,
         "rel_file": "src/flask/app.py"
       }
     },
     {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
-      "sample": {
-        "call_character": 26,
-        "call_line": 273,
-        "call_text": "base_method = getattr(Flask, method.__name__)",
-        "character": 8,
-        "end_line": 307,
-        "line": 253,
-        "name": "Flask.__init_subclass__",
-        "rel_file": "src/flask/app.py"
-      }
-    },
-    {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
-      "sample": {
-        "call_character": 8,
-        "call_line": 322,
-        "call_text": "super().__init__(",
-        "character": 8,
-        "end_line": 362,
-        "line": 309,
-        "name": "Flask.__init__",
-        "rel_file": "src/flask/app.py"
-      }
-    },
-    {
-      "error": "python-flask: timeout waiting for textDocument/prepareCallHierarchy",
+      "error": "empty prepareCallHierarchy/outgoingCalls",
       "sample": {
         "call_character": 11,
         "call_line": 386,
@@ -110,22 +89,879 @@
         "end_line": 389,
         "line": 364,
         "name": "Flask.get_send_file_max_age",
+        "pattern_priority": 0,
         "rel_file": "src/flask/app.py"
       }
     },
     {
-      "error": "stopped early after 8 consecutive prepareCallHierarchy timeouts"
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 18,
+        "call_line": 437,
+        "call_text": "raise ValueError(\"Resources can only be opened for reading.\")",
+        "character": 8,
+        "end_line": 444,
+        "line": 413,
+        "name": "Flask.open_resource",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 461,
+        "call_text": "path = os.path.join(self.instance_path, resource)",
+        "character": 8,
+        "end_line": 466,
+        "line": 446,
+        "name": "Flask.open_instance_resource",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 18,
+        "call_line": 480,
+        "call_text": "options = dict(self.jinja_options)",
+        "character": 8,
+        "end_line": 506,
+        "line": 468,
+        "name": "Flask.create_jinja_environment",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 27,
+        "call_line": 533,
+        "call_text": "request.host = get_host(request.environ, request.trusted_hosts)  # pyright: ignore",
+        "character": 8,
+        "end_line": 559,
+        "line": 508,
+        "name": "Flask.create_url_adapter",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 19,
+        "call_line": 579,
+        "call_text": "or not isinstance(request.routing_exception, RequestRedirect)",
+        "character": 8,
+        "end_line": 587,
+        "line": 561,
+        "name": "Flask.raise_routing_exception",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 12,
+        "call_line": 628,
+        "call_text": "rv.update(processor())",
+        "character": 8,
+        "end_line": 629,
+        "line": 619,
+        "name": "Flask.make_shell_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 808,
+        "call_text": "return cls(  # type: ignore",
+        "character": 8,
+        "end_line": 810,
+        "line": 754,
+        "name": "Flask.test_client",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 827,
+        "call_text": "return cls(self, **kwargs)  # type: ignore",
+        "character": 8,
+        "end_line": 827,
+        "line": 812,
+        "name": "Flask.test_cli_runner",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 18,
+        "call_line": 1059,
+        "call_text": "methods = ctx.url_adapter.allowed_methods()  # type: ignore[union-attr]",
+        "character": 8,
+        "end_line": 1062,
+        "line": 1052,
+        "name": "Flask.make_default_options_response",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 18,
+        "call_line": 1095,
+        "call_text": "raise RuntimeError(",
+        "character": 8,
+        "end_line": 1099,
+        "line": 1078,
+        "name": "Flask.async_to_sync",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 11,
+        "call_line": 1284,
+        "call_text": "if isinstance(rv, tuple):",
+        "character": 8,
+        "end_line": 1363,
+        "line": 1223,
+        "name": "Flask.make_response",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 1498,
+        "call_text": "return AppContext(self)",
+        "character": 8,
+        "end_line": 1498,
+        "line": 1480,
+        "name": "Flask.app_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 15,
+        "call_line": 1514,
+        "call_text": "return AppContext.from_environ(self, environ)",
+        "character": 8,
+        "end_line": 1514,
+        "line": 1500,
+        "name": "Flask.request_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 9,
+        "call_line": 101,
+        "call_text": "tb = sys.exc_info()[2]",
+        "character": 4,
+        "end_line": 116,
+        "line": 93,
+        "name": "_called_with_wrong_args",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 11,
+        "call_line": 203,
+        "call_text": "path = os.path.realpath(path)",
+        "character": 4,
+        "end_line": 225,
+        "line": 199,
+        "name": "prepare_import",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 20,
+        "call_line": 270,
+        "call_text": "flask_version = importlib.metadata.version(\"flask\")",
+        "character": 4,
+        "end_line": 279,
+        "line": 266,
+        "name": "get_version",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      }
+    },
+    {
+      "error": "empty prepareCallHierarchy/outgoingCalls",
+      "sample": {
+        "call_character": 36,
+        "call_line": 321,
+        "call_text": "self.load_dotenv_defaults = get_load_dotenv(load_dotenv_defaults)",
+        "character": 8,
+        "end_line": 330,
+        "line": 304,
+        "name": "ScriptInfo.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      }
     }
   ],
+  "lsp_readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
   "negative_edges": [],
   "sampling": {
     "max_sites": 50,
     "method": "file path sort, function declaration order, call-site line order; first N",
     "n": 50,
-    "sampled_sites": [],
+    "sampled_sites": [
+      {
+        "call_character": 24,
+        "call_line": 73,
+        "call_text": "if value is None or isinstance(value, timedelta):",
+        "character": 4,
+        "end_line": 76,
+        "line": 72,
+        "name": "_make_timedelta",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 20,
+        "call_line": 86,
+        "call_text": "if args and isinstance(args[0], AppContext):",
+        "character": 4,
+        "end_line": 91,
+        "line": 84,
+        "name": "remove_ctx",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 20,
+        "call_line": 86,
+        "call_text": "if args and isinstance(args[0], AppContext):",
+        "character": 8,
+        "end_line": 89,
+        "line": 85,
+        "name": "wrapper",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 20,
+        "call_line": 99,
+        "call_text": "args = (app_ctx._get_current_object(),)",
+        "character": 4,
+        "end_line": 105,
+        "line": 96,
+        "name": "add_ctx",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 20,
+        "call_line": 99,
+        "call_text": "args = (app_ctx._get_current_object(),)",
+        "character": 8,
+        "end_line": 103,
+        "line": 97,
+        "name": "wrapper",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 26,
+        "call_line": 273,
+        "call_text": "base_method = getattr(Flask, method.__name__)",
+        "character": 8,
+        "end_line": 307,
+        "line": 253,
+        "name": "Flask.__init_subclass__",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 322,
+        "call_text": "super().__init__(",
+        "character": 8,
+        "end_line": 362,
+        "line": 309,
+        "name": "Flask.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 386,
+        "call_text": "if isinstance(value, timedelta):",
+        "character": 8,
+        "end_line": 389,
+        "line": 364,
+        "name": "Flask.get_send_file_max_age",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 404,
+        "call_text": "raise RuntimeError(\"'static_folder' must be set to serve static_files.\")",
+        "character": 8,
+        "end_line": 411,
+        "line": 391,
+        "name": "Flask.send_static_file",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 437,
+        "call_text": "raise ValueError(\"Resources can only be opened for reading.\")",
+        "character": 8,
+        "end_line": 444,
+        "line": 413,
+        "name": "Flask.open_resource",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 461,
+        "call_text": "path = os.path.join(self.instance_path, resource)",
+        "character": 8,
+        "end_line": 466,
+        "line": 446,
+        "name": "Flask.open_instance_resource",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 480,
+        "call_text": "options = dict(self.jinja_options)",
+        "character": 8,
+        "end_line": 506,
+        "line": 468,
+        "name": "Flask.create_jinja_environment",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 27,
+        "call_line": 533,
+        "call_text": "request.host = get_host(request.environ, request.trusted_hosts)  # pyright: ignore",
+        "character": 8,
+        "end_line": 559,
+        "line": 508,
+        "name": "Flask.create_url_adapter",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 579,
+        "call_text": "or not isinstance(request.routing_exception, RequestRedirect)",
+        "character": 8,
+        "end_line": 587,
+        "line": 561,
+        "name": "Flask.raise_routing_exception",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 20,
+        "call_line": 606,
+        "call_text": "names = chain(names, reversed(ctx.request.blueprints))",
+        "character": 8,
+        "end_line": 617,
+        "line": 589,
+        "name": "Flask.update_template_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 12,
+        "call_line": 628,
+        "call_text": "rv.update(processor())",
+        "character": 8,
+        "end_line": 629,
+        "line": 619,
+        "name": "Flask.make_shell_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 696,
+        "call_text": "if os.environ.get(\"FLASK_RUN_FROM_CLI\") == \"true\":",
+        "character": 8,
+        "end_line": 752,
+        "line": 631,
+        "name": "Flask.run",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 808,
+        "call_text": "return cls(  # type: ignore",
+        "character": 8,
+        "end_line": 810,
+        "line": 754,
+        "name": "Flask.test_client",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 827,
+        "call_text": "return cls(self, **kwargs)  # type: ignore",
+        "character": 8,
+        "end_line": 827,
+        "line": 812,
+        "name": "Flask.test_cli_runner",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 856,
+        "call_text": "if isinstance(e, RoutingException):",
+        "character": 8,
+        "end_line": 862,
+        "line": 829,
+        "name": "Flask.handle_http_exception",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 881,
+        "call_text": "if isinstance(e, BadRequestKeyError) and (",
+        "character": 8,
+        "end_line": 894,
+        "line": 864,
+        "name": "Flask.handle_user_exception",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 924,
+        "call_text": "exc_info = sys.exc_info()",
+        "character": 8,
+        "end_line": 947,
+        "line": 896,
+        "name": "Flask.handle_exception",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 961,
+        "call_text": "self.logger.error(",
+        "character": 8,
+        "end_line": 963,
+        "line": 949,
+        "name": "Flask.log_exception",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 12,
+        "call_line": 978,
+        "call_text": "self.raise_routing_exception(req)",
+        "character": 8,
+        "end_line": 989,
+        "line": 965,
+        "name": "Flask.dispatch_request",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 12,
+        "call_line": 1001,
+        "call_text": "warnings.warn(",
+        "character": 8,
+        "end_line": 1018,
+        "line": 991,
+        "name": "Flask.full_dispatch_request",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 1038,
+        "call_text": "response = self.make_response(rv)",
+        "character": 8,
+        "end_line": 1050,
+        "line": 1020,
+        "name": "Flask.finalize_request",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 1059,
+        "call_text": "methods = ctx.url_adapter.allowed_methods()  # type: ignore[union-attr]",
+        "character": 8,
+        "end_line": 1062,
+        "line": 1052,
+        "name": "Flask.make_default_options_response",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 1073,
+        "call_text": "if iscoroutinefunction(func):",
+        "character": 8,
+        "end_line": 1076,
+        "line": 1064,
+        "name": "Flask.ensure_sync",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 1095,
+        "call_text": "raise RuntimeError(",
+        "character": 8,
+        "end_line": 1099,
+        "line": 1078,
+        "name": "Flask.async_to_sync",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 19,
+        "call_line": 1158,
+        "call_text": "if (ctx := _cv_app.get(None)) is not None and ctx.has_request:",
+        "character": 8,
+        "end_line": 1221,
+        "line": 1101,
+        "name": "Flask.url_for",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 1284,
+        "call_text": "if isinstance(rv, tuple):",
+        "character": 8,
+        "end_line": 1363,
+        "line": 1223,
+        "name": "Flask.make_response",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 24,
+        "call_line": 1376,
+        "call_text": "names = (None, *reversed(req.blueprints))",
+        "character": 8,
+        "end_line": 1391,
+        "line": 1365,
+        "name": "Flask.preprocess_request",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 23,
+        "call_line": 1407,
+        "call_text": "response = self.ensure_sync(func)(response)",
+        "character": 8,
+        "end_line": 1417,
+        "line": 1393,
+        "name": "Flask.process_response",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 25,
+        "call_line": 1439,
+        "call_text": "collect_errors = _CollectErrors()",
+        "character": 8,
+        "end_line": 1450,
+        "line": 1419,
+        "name": "Flask.do_teardown_request",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 25,
+        "call_line": 1469,
+        "call_text": "collect_errors = _CollectErrors()",
+        "character": 8,
+        "end_line": 1478,
+        "line": 1452,
+        "name": "Flask.do_teardown_appcontext",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 1498,
+        "call_text": "return AppContext(self)",
+        "character": 8,
+        "end_line": 1498,
+        "line": 1480,
+        "name": "Flask.app_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 1514,
+        "call_text": "return AppContext.from_environ(self, environ)",
+        "character": 8,
+        "end_line": 1514,
+        "line": 1500,
+        "name": "Flask.request_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 1556,
+        "call_text": "builder = EnvironBuilder(self, *args, **kwargs)",
+        "character": 8,
+        "end_line": 1563,
+        "line": 1516,
+        "name": "Flask.test_request_context",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 14,
+        "call_line": 1591,
+        "call_text": "ctx = self.request_context(environ)",
+        "character": 8,
+        "end_line": 1615,
+        "line": 1565,
+        "name": "Flask.wsgi_app",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 1624,
+        "call_text": "return self.wsgi_app(environ, start_response)",
+        "character": 8,
+        "end_line": 1624,
+        "line": 1617,
+        "name": "Flask.__call__",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/app.py"
+      },
+      {
+        "call_character": 14,
+        "call_line": 48,
+        "call_text": "app = getattr(module, attr_name, None)",
+        "character": 4,
+        "end_line": 90,
+        "line": 40,
+        "name": "find_best_app",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 9,
+        "call_line": 101,
+        "call_text": "tb = sys.exc_info()[2]",
+        "character": 4,
+        "end_line": 116,
+        "line": 93,
+        "name": "_called_with_wrong_args",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 15,
+        "call_line": 128,
+        "call_text": "expr = ast.parse(app_name.strip(), mode=\"eval\").body",
+        "character": 4,
+        "end_line": 196,
+        "line": 119,
+        "name": "find_app_by_string",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 11,
+        "call_line": 203,
+        "call_text": "path = os.path.realpath(path)",
+        "character": 4,
+        "end_line": 225,
+        "line": 199,
+        "name": "prepare_import",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 8,
+        "call_line": 244,
+        "call_text": "__import__(module_name)",
+        "character": 4,
+        "end_line": 263,
+        "line": 240,
+        "name": "locate_app",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 20,
+        "call_line": 270,
+        "call_text": "flask_version = importlib.metadata.version(\"flask\")",
+        "character": 4,
+        "end_line": 279,
+        "line": 266,
+        "name": "get_version",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 36,
+        "call_line": 321,
+        "call_text": "self.load_dotenv_defaults = get_load_dotenv(load_dotenv_defaults)",
+        "character": 8,
+        "end_line": 330,
+        "line": 304,
+        "name": "ScriptInfo.__init__",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 341,
+        "call_text": "app = self.create_app()",
+        "character": 8,
+        "end_line": 371,
+        "line": 332,
+        "name": "ScriptInfo.load_app",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 396,
+        "call_text": "app = ctx.ensure_object(ScriptInfo).load_app()",
+        "character": 4,
+        "end_line": 401,
+        "line": 379,
+        "name": "with_appcontext",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      },
+      {
+        "call_character": 18,
+        "call_line": 396,
+        "call_text": "app = ctx.ensure_object(ScriptInfo).load_app()",
+        "character": 8,
+        "end_line": 399,
+        "line": 394,
+        "name": "decorator",
+        "pattern_priority": 0,
+        "rel_file": "src/flask/cli.py"
+      }
+    ],
     "seed": "deterministic:path-sort:no-random"
   },
-  "spot_checks": [],
+  "spot_checks": [
+    {
+      "edge": {
+        "dst_file": "src/flask/app.py",
+        "dst_func": "wsgi_app",
+        "src_file": "src/flask/app.py",
+        "src_func": "__call__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "def wsgi_app(",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/flask/app.py",
+        "dst_func": "send_static_file",
+        "src_file": "src/flask/app.py",
+        "src_func": "__init__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "view_func=lambda **kw: self_ref().send_static_file(**kw),  # type: ignore",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/flask/cli.py",
+        "dst_func": "AppGroup",
+        "src_file": "src/flask/app.py",
+        "src_func": "__init__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "self.cli = cli.AppGroup()",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/flask/sansio/app.py",
+        "dst_func": "__init__",
+        "src_file": "src/flask/app.py",
+        "src_func": "__init__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "an :file:`__init__.py` file inside) or a standard module (just a ``.py`` file).",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "src/flask/sansio/app.py",
+        "dst_func": "add_url_rule",
+        "src_file": "src/flask/app.py",
+        "src_func": "__init__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "self.add_url_rule(",
+      "verdict": "accepted"
+    }
+  ],
   "truth_quality_tier": "T1",
   "truth_source_type": "callHierarchy"
 }

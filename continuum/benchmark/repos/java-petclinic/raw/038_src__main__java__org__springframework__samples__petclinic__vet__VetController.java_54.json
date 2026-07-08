@@ -1,4 +1,24 @@
 {
+  "attempts": [
+    {
+      "call_response": null,
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 16,
+          "line": 53
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-petclinic/src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
+        }
+      },
+      "prepare_response": {
+        "id": 40,
+        "jsonrpc": "2.0",
+        "result": null
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -164,20 +184,37 @@
     }
   },
   "language": "java",
-  "outgoing_responses": [],
-  "prepare_params": {
-    "position": {
-      "character": 16,
-      "line": 53
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 6,
+    "duration_seconds": 60.212054,
+    "notification_methods": {
+      "$/progress": 26,
+      "language/eventNotification": 2,
+      "language/status": 15,
+      "textDocument/publishDiagnostics": 6,
+      "window/logMessage": 3
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/java-petclinic/src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
-    }
-  },
-  "prepare_response": {
-    "id": 40,
-    "jsonrpc": "2.0",
-    "result": null
+    "progress_begin": 9,
+    "progress_end": 9,
+    "status": "settled",
+    "status_messages": [
+      "{\"message\": \"Init...\", \"type\": \"Starting\"}",
+      "{\"message\": \"0% Starting Java Language Server\", \"type\": \"Starting\"}",
+      "{\"message\": \"45% Starting Java Language Server - Deleting '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"70% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"WARNING\", \"type\": \"ProjectStatus\"}",
+      "{\"message\": \"100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1000% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1005% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1010% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"1100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"Ready\", \"type\": \"Started\"}",
+      "{\"message\": \"1100% Starting Java Language Server - Refreshing '/java-petclinic'.\", \"type\": \"Starting\"}",
+      "{\"message\": \"ServiceReady\", \"type\": \"ServiceReady\"}",
+      "{\"message\": \"1100% Starting Java Language Server\", \"type\": \"Starting\"}"
+    ]
   },
   "repo": "java-petclinic",
   "sample": {
@@ -188,6 +225,7 @@
     "end_line": 60,
     "line": 53,
     "name": "addPaginationModel",
+    "pattern_priority": 0,
     "rel_file": "src/main/java/org/springframework/samples/petclinic/vet/VetController.java"
   },
   "sample_index": 38

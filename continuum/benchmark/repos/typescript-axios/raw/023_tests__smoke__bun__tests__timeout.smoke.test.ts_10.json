@@ -1,4 +1,73 @@
 {
+  "attempts": [
+    {
+      "call_response": {
+        "id": 86,
+        "jsonrpc": "2.0",
+        "result": []
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 6,
+          "line": 9
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/timeout.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 85,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 12,
+            "name": "createAbortedError",
+            "range": {
+              "end": {
+                "character": 1,
+                "line": 14
+              },
+              "start": {
+                "character": 27,
+                "line": 9
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 24,
+                "line": 9
+              },
+              "start": {
+                "character": 6,
+                "line": 9
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/timeout.smoke.test.ts"
+          }
+        ]
+      }
+    },
+    {
+      "call_response": null,
+      "mode": "callee_incoming",
+      "prepare_params": {
+        "position": {
+          "character": 20,
+          "line": 10
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/timeout.smoke.test.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 87,
+        "jsonrpc": "2.0",
+        "result": null
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -113,53 +182,19 @@
     }
   },
   "language": "typescript",
-  "outgoing_responses": [
-    {
-      "id": 49,
-      "jsonrpc": "2.0",
-      "result": []
-    }
-  ],
-  "prepare_params": {
-    "position": {
-      "character": 6,
-      "line": 9
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 0,
+    "duration_seconds": 5.023139,
+    "notification_methods": {
+      "$/progress": 2,
+      "$/typescriptVersion": 1,
+      "window/logMessage": 1
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/timeout.smoke.test.ts"
-    }
-  },
-  "prepare_response": {
-    "id": 48,
-    "jsonrpc": "2.0",
-    "result": [
-      {
-        "detail": "",
-        "kind": 12,
-        "name": "createAbortedError",
-        "range": {
-          "end": {
-            "character": 1,
-            "line": 14
-          },
-          "start": {
-            "character": 27,
-            "line": 9
-          }
-        },
-        "selectionRange": {
-          "end": {
-            "character": 24,
-            "line": 9
-          },
-          "start": {
-            "character": 6,
-            "line": 9
-          }
-        },
-        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/tests/smoke/bun/tests/timeout.smoke.test.ts"
-      }
-    ]
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
   },
   "repo": "typescript-axios",
   "sample": {

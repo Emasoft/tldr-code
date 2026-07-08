@@ -1,7 +1,44 @@
 {
   "case_id": "repos/typescript-axios",
   "edge_model": "static-callgraph",
-  "edges": [],
+  "edges": [
+    {
+      "dst_file": "tests/smoke/bun/tests/fetch.smoke.test.ts",
+      "dst_func": "createFetchMock",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4e78a7a1e67ec968c5f0c0b8cb2664819f505a65da6724e427a538e17cf82e83",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "tests/smoke/bun/tests/fetch.smoke.test.ts",
+      "src_func": "fetch.smoke.test.ts",
+      "src_line": null
+    },
+    {
+      "dst_file": "tests/smoke/bun/tests/headers.smoke.test.ts",
+      "dst_func": "createFetchCapture",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fdf9ae4f2638107efde4fa6bfcd64bc34c1cfab12db64a5eef171bdb5ff0d933",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "typescript-language-server",
+        "version": "5.3.0"
+      },
+      "src_file": "tests/smoke/bun/tests/headers.smoke.test.ts",
+      "src_func": "headers.smoke.test.ts",
+      "src_line": null
+    }
+  ],
   "language": "typescript",
   "notes": "Sampled real-repo callHierarchy truth for typescript-axios at fa6a55ef99235074d2c11d80a1064ef02850d598. Scope is the deterministic sampled call sites in meta.json.",
   "schema_version": "truth.v1"

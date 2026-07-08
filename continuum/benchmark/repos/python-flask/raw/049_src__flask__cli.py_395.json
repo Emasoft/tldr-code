@@ -1,0 +1,430 @@
+{
+  "attempts": [
+    {
+      "call_response": {
+        "id": 101,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 56,
+                  "line": 396
+                },
+                "start": {
+                  "character": 48,
+                  "line": 396
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "load_app",
+              "range": {
+                "end": {
+                  "character": 16,
+                  "line": 332
+                },
+                "start": {
+                  "character": 8,
+                  "line": 332
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 16,
+                  "line": 332
+                },
+                "start": {
+                  "character": 8,
+                  "line": 332
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 35,
+                  "line": 396
+                },
+                "start": {
+                  "character": 22,
+                  "line": 396
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "ensure_object",
+              "range": {
+                "end": {
+                  "character": 21,
+                  "line": 678
+                },
+                "start": {
+                  "character": 8,
+                  "line": 678
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 21,
+                  "line": 678
+                },
+                "start": {
+                  "character": 8,
+                  "line": 678
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/core.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 29,
+                  "line": 397
+                },
+                "start": {
+                  "character": 16,
+                  "line": 397
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "with_resource",
+              "range": {
+                "end": {
+                  "character": 21,
+                  "line": 574
+                },
+                "start": {
+                  "character": 8,
+                  "line": 574
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 21,
+                  "line": 574
+                },
+                "start": {
+                  "character": 8,
+                  "line": 574
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/core.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 45,
+                  "line": 397
+                },
+                "start": {
+                  "character": 34,
+                  "line": 397
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "app_context",
+              "range": {
+                "end": {
+                  "character": 19,
+                  "line": 1480
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1480
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 19,
+                  "line": 1480
+                },
+                "start": {
+                  "character": 8,
+                  "line": 1480
+                }
+              },
+              "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/app.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 399
+                },
+                "start": {
+                  "character": 19,
+                  "line": 399
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "invoke",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 760
+                },
+                "start": {
+                  "character": 8,
+                  "line": 760
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 760
+                },
+                "start": {
+                  "character": 8,
+                  "line": 760
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/core.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 399
+                },
+                "start": {
+                  "character": 19,
+                  "line": 399
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "invoke",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 765
+                },
+                "start": {
+                  "character": 8,
+                  "line": 765
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 765
+                },
+                "start": {
+                  "character": 8,
+                  "line": 765
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/core.py"
+            }
+          },
+          {
+            "fromRanges": [
+              {
+                "end": {
+                  "character": 25,
+                  "line": 399
+                },
+                "start": {
+                  "character": 19,
+                  "line": 399
+                }
+              }
+            ],
+            "to": {
+              "kind": 6,
+              "name": "invoke",
+              "range": {
+                "end": {
+                  "character": 14,
+                  "line": 767
+                },
+                "start": {
+                  "character": 8,
+                  "line": 767
+                }
+              },
+              "selectionRange": {
+                "end": {
+                  "character": 14,
+                  "line": 767
+                },
+                "start": {
+                  "character": 8,
+                  "line": 767
+                }
+              },
+              "uri": "file:///opt/homebrew/lib/python3.14/site-packages/click/core.py"
+            }
+          }
+        ]
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 8,
+          "line": 394
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+        }
+      },
+      "prepare_response": {
+        "id": 100,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "kind": 12,
+            "name": "decorator",
+            "range": {
+              "end": {
+                "character": 17,
+                "line": 394
+              },
+              "start": {
+                "character": 8,
+                "line": 394
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 17,
+                "line": 394
+              },
+              "start": {
+                "character": 8,
+                "line": 394
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/python-flask/src/flask/cli.py"
+          }
+        ]
+      }
+    }
+  ],
+  "initialize": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "result": {
+      "capabilities": {
+        "callHierarchyProvider": true,
+        "codeActionProvider": {
+          "codeActionKinds": [
+            "quickfix",
+            "source.organizeImports"
+          ],
+          "workDoneProgress": true
+        },
+        "completionProvider": {
+          "completionItem": {
+            "labelDetailsSupport": true
+          },
+          "resolveProvider": true,
+          "triggerCharacters": [
+            ".",
+            "[",
+            "\"",
+            "'"
+          ],
+          "workDoneProgress": true
+        },
+        "declarationProvider": {
+          "workDoneProgress": true
+        },
+        "definitionProvider": {
+          "workDoneProgress": true
+        },
+        "documentHighlightProvider": {
+          "workDoneProgress": true
+        },
+        "documentSymbolProvider": {
+          "workDoneProgress": true
+        },
+        "executeCommandProvider": {
+          "commands": [],
+          "workDoneProgress": true
+        },
+        "hoverProvider": {
+          "workDoneProgress": true
+        },
+        "referencesProvider": {
+          "workDoneProgress": true
+        },
+        "renameProvider": {
+          "prepareProvider": true,
+          "workDoneProgress": true
+        },
+        "signatureHelpProvider": {
+          "triggerCharacters": [
+            "(",
+            ",",
+            ")"
+          ],
+          "workDoneProgress": true
+        },
+        "textDocumentSync": 2,
+        "typeDefinitionProvider": {
+          "workDoneProgress": true
+        },
+        "workspace": {
+          "workspaceFolders": {
+            "changeNotifications": true,
+            "supported": true
+          }
+        },
+        "workspaceSymbolProvider": {
+          "workDoneProgress": true
+        }
+      }
+    }
+  },
+  "language": "python",
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 5,
+    "duration_seconds": 15.045916,
+    "notification_methods": {
+      "$/progress": 4,
+      "textDocument/publishDiagnostics": 5,
+      "window/logMessage": 8
+    },
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
+  },
+  "repo": "python-flask",
+  "sample": {
+    "call_character": 18,
+    "call_line": 396,
+    "call_text": "app = ctx.ensure_object(ScriptInfo).load_app()",
+    "character": 8,
+    "end_line": 399,
+    "line": 394,
+    "name": "decorator",
+    "pattern_priority": 0,
+    "rel_file": "src/flask/cli.py"
+  },
+  "sample_index": 49
+}

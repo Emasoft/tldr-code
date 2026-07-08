@@ -1,7 +1,1088 @@
 {
   "case_id": "repos/python-flask",
   "edge_model": "static-callgraph",
-  "edges": [],
+  "edges": [
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "wsgi_app",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "44d9abc37675952708482f651cb2c5d9538eb7a93cd71a948923c1cd51af1020",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__call__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "send_static_file",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "22f0674a4b7d654313fe7b18da418a844bf3ee51bcb944e76a3907bb3837e035",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "AppGroup",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "831b36ce9c791a5bf1bd1e427e446bd5ea72b81b7c75674050feae761b8a4f7c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "__init__",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dbdd0f0cd5b5d937d8474dac05d461f832b566fd5f4522dc9dc81c7de110d6e7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "add_url_rule",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "81a015a302a10003a1f022e597de2f329e89d3a13097dea7bc3c3ab4e7519a97",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "name",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a5ab1255477e00e59f4fbe55d08741a5e475fa51c621092bb105e24263f4ef47",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "add_ctx",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dc72388322fafc90934523b07b30b05f1dff7babdbfb9f967ba34b1b6bbe0fda",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init_subclass__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "remove_ctx",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4e5942e4252446434131af6c9b57c6ab5ccde710e2edc2c5cc744e0380f79f42",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "__init_subclass__",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6b4c044d7fcc8fb2bd209c0cf6e1beedb7c5c02a4b9300999bf34547c7fefea3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "make_default_options_response",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "78a42556e0351fdbdf06655e7f6d5d20f6b37f90968b1b7d39def286a4f2a66a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "raise_routing_exception",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bde99bfc29f00b231e24418358704dcf954c91b300596d395d210652d7172ca2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3cfc17adf853c62e14d84e164dedbb8f58ffd4b6fba944baa6ec8f7ca9dcd145",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "do_teardown_appcontext",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bab35bbd153c8c86c0dae361299a1224be131df715d8300d65be8c706b33c2f6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "do_teardown_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "async_to_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "10ce34f182eb74fc941ee43b5756d9ec6a7167cd5cb11f104386a1f7a1b198c0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "ensure_sync",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "make_response",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cbca821506d90b8e6345c87963dc9b41fd1396c3cc1c59c3e303669be498dc82",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "finalize_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "process_response",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8457e1a4e34fe30dec5e3a226684b623cccf2c59252c1be4125e8d026ff31f4a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "finalize_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "logger",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "154efd404ad62009e030f2eee1ca056bee9978d217451ed494350706bad6234b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "finalize_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "dispatch_request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "67660306b54f5bee6358f3f9665c418caa9cb945cd5dc5ddf7f59cb4dae1c3c3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "full_dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "finalize_request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "618b3aa347756430cc9f572af0446d89dd34c8604b68e74852173a4bb4d8c8a2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "full_dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "handle_user_exception",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f458c8e70903a4e9d1c422d25e4d2975166894f5a728289e3fadc49793d47d49",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "full_dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "preprocess_request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "423f042c5a01ca4dac787f36e5aa307ed3ea44e5cf3febe9e125f1d9c70ab743",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "full_dispatch_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9be696c12cf4ee23f77a8c069ace20b7d477c51eba69aacf3f5f83bbef676654",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "finalize_request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "47ddcafca5623af746e926b35f9cd7fbe37ba980cacaa62ff40ed54d848df90a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "log_exception",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3469f07355636e8f1cef9570501b20d2f49f551cad74c3d52ef14e8740aa6102",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "_find_error_handler",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3d30f5d962e3ea1d11452bc1d2d7967ebbdefe452c03443d08ab1d9cd33044ce",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a33f241b1eb41e077ea92af60cfec900a9e96495e90c98efe28b7739a2fc30a8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_http_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "_find_error_handler",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "04591638bff79557d8f1b27dcaf60fad698fada9ddf59d6b4da30ccef5b8b7c8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_http_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "003423b321f9c0fb68d8cd884fb8ba32fa50d09290e9f5971e947da6def71b5e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_user_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "handle_http_exception",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "599b02fc2933b8812ae603b4ee451961a9bcd809dc9ad1391310a698b0d8f71b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_user_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "_find_error_handler",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "99d922608af235fc473169e5f35d52a62b15ef1851fd2cb4419cc9a2664b573b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_user_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "trap_http_exception",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3ef8ca517beb7f06217f2ab03598a19800ecfa3d7b4a9bf407b3801cceb246de",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "handle_user_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "logger",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b69b7eb5405098cfef740347e04175b80de7ceeafa15cd02941df4cbfc71389e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "log_exception",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "91f8252579d20c47723e2a14c09eda6f392a5f95ac9b2684cd3be8c910aa3908",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "preprocess_request",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1311580981d5300b9080cc3e9f7a1766c6eb8a0d061d4c075ce2a48c814c0319",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "process_response",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "load_dotenv",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "146a8e51538bb47922e4d5ee3888f93efb44bae7753591db29e1caa8abcaad27",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "run",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "show_server_banner",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "714419a16baf056a3c0c7153d53a2535ea70014d021ad57848dafdc4f0946a21",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "run",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "name",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "db7e3e98d08ee796495ad18f7e78726311091bd59485f5cc295bf4d2b636dda0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "run",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "get_send_file_max_age",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "093d97e7f3787a1b212ef1597cc4cdf567d6334250bc8aad14d3f4b6d23fbd30",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "send_static_file",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "request_context",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c50531ce6f607ee79ec076b622342dee0d447098d0b7a4b37d6228c36a1bcab7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "test_request_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "ensure_sync",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5bda1d4388e3f99c620a09f15800ab30e350ae32a2c0d503eaaeabac2f402c1b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "update_template_context",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "create_url_adapter",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1ffd8a9d5eea7a1b160bcf658c5b8a3d509eea146d0852d412cc22be9a97980d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "url_for",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "handle_url_build_error",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6bd7883946241069755892ed47f31065879c12367fa683164114eb5f147c221a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "url_for",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/sansio/app.py",
+      "dst_func": "inject_url_defaults",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "586433403eb939eb82aca119d89b66459029bfcd59a55779157bb782814ee9cf",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "url_for",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "full_dispatch_request",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e1a1e0a22ecb2017e8dd5fc53bb7298bb8d5f9ff40d3d52580121dddca5d010f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "wsgi_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "handle_exception",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3b21278ed4ed38e342e6d5fe8f57cd1732bc6d8f1fe8eb0160cf30b70ee70e6f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "wsgi_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "request_context",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d994ccb865d80ca0df6502a0b547c5150dd749b20fe4eb47fb5b0ea3626abfdb",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/app.py",
+      "src_func": "wsgi_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "app_context",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4f8ca5bc1941555af4245edbac3357a3f5b0f3cbc899dfb9a82067e8197c36b1",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "decorator",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "load_app",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "755ba86d8edd321765655d51ae3c858cd181e1c766d19aba758a0eb191c9a9d2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "decorator",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "NoAppException",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ca072e2930dc0a3f695817e95b531e7fa96dd71ef57937ed4c106c265ce3c13a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "find_app_by_string",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "_called_with_wrong_args",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8c04d3f270ec27d86d2e7b9d2cdb6238e613df067b8f460c1100ed9e069bf0de",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "find_app_by_string",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "NoAppException",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4114c780bca16020d3330e88f4f4d9c179b3c7757dd101f85d792ccfba092b71",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "find_best_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "_called_with_wrong_args",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "322d5c70b7efe7d6478a07dc519944448c14bddf45d64f38644175f5fdf7b7e4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "find_best_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "NoAppException",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f136fc23121222b4f40bedf2a6eb5edf5fcd7eeb97096699909d587557c59ea4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "load_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "locate_app",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "42e52f0337df8106b22a52244491fc149bc52a605fb00b42970c4a7440257932",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "load_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "prepare_import",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2f3f57a3ee9b1dc3b0d80ae5dbb07d5f15fc98ae64eb3c7433fca69a3c9a8bb4",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "load_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "NoAppException",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "50d7f8a49a081570e46b22b62d094d0b3ecbb43332138f1f8530d772fa359e53",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "locate_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "find_app_by_string",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "36250637ee11e37dffc3a587ec24d0bb3ab4f2e2bc89508ee72bbc136092a94a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "locate_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "find_best_app",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0722f6968a256caa87a21b03d259ade0f014231293b2ff977feaa69dcb96cef5",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "locate_app",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/app.py",
+      "dst_func": "app_context",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5c978bbf123afa4c842a3b60d5e345d86c9a72a8f49d346898a6b97ee96490f7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "with_appcontext",
+      "src_line": null
+    },
+    {
+      "dst_file": "src/flask/cli.py",
+      "dst_func": "load_app",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ecd14c6fc3f6ae4a463b1691b9361a00ba6da42c406d178979e060ad46f3012b",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "pyright-langserver",
+        "version": "Error: Connection input stream is not set. Use arguments of createConnection or set command line parameters: '--node-ipc', '--stdio' or '--socket={number}'"
+      },
+      "src_file": "src/flask/cli.py",
+      "src_func": "with_appcontext",
+      "src_line": null
+    }
+  ],
   "language": "python",
   "notes": "Sampled real-repo callHierarchy truth for python-flask at 36e4a824f340fdee7ed50937ba8e7f6bc7d17f81. Scope is the deterministic sampled call sites in meta.json.",
   "schema_version": "truth.v1"

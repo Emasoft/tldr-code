@@ -1,0 +1,84 @@
+{
+  "case_id": "repos/python-flask/runtime_trace_partial",
+  "defect_class": null,
+  "description": "Partial sys.settrace caller-to-callee truth captured before pytest failure: pytest exit code 1.",
+  "entrypoints": [
+    "<frozen _collections_abc>",
+    "<frozen abc>",
+    "<frozen codecs>",
+    "<frozen genericpath>",
+    "<frozen importlib._bootstrap>",
+    "<frozen importlib._bootstrap_external>",
+    "<frozen importlib.machinery>",
+    "<frozen importlib.util>",
+    "<frozen os>",
+    "<frozen posixpath>",
+    "<frozen zipimport>",
+    "<string>",
+    "tests/test_basic.py"
+  ],
+  "feature": "real repo partial runtime trace",
+  "language": "python",
+  "negative_edges": [],
+  "pytest_reason": "pytest exit code 1",
+  "pytest_returncode": 2,
+  "spot_checks": [
+    {
+      "edge": {
+        "dst_file": "<frozen _collections_abc>",
+        "dst_func": "__iter__",
+        "src_file": "<frozen _collections_abc>",
+        "src_func": "__contains__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "<frozen os>",
+        "dst_func": "__getitem__",
+        "src_file": "<frozen _collections_abc>",
+        "src_func": "__contains__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "<frozen _collections_abc>",
+        "dst_func": "_is_param_expr",
+        "src_file": "<frozen _collections_abc>",
+        "src_func": "__new__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "<frozen _collections_abc>",
+        "dst_func": "_check_methods",
+        "src_file": "<frozen _collections_abc>",
+        "src_func": "__subclasshook__"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "",
+      "verdict": "accepted"
+    },
+    {
+      "edge": {
+        "dst_file": "<frozen _collections_abc>",
+        "dst_func": "<genexpr>",
+        "src_file": "<frozen _collections_abc>",
+        "src_func": "_is_param_expr"
+      },
+      "note": "Source excerpt was read during harvest review; LSP edge retained as sampled near-truth.",
+      "source_excerpt": "",
+      "verdict": "accepted"
+    }
+  ],
+  "truth_quality_tier": "T2",
+  "truth_source_type": "runtime-trace"
+}

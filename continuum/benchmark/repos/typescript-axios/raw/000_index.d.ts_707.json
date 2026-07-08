@@ -1,4 +1,104 @@
 {
+  "attempts": [
+    {
+      "call_response": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": []
+      },
+      "mode": "caller_outgoing",
+      "prepare_params": {
+        "position": {
+          "character": 16,
+          "line": 706
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/index.d.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 12,
+            "name": "getAdapter",
+            "range": {
+              "end": {
+                "character": 16,
+                "line": 708
+              },
+              "start": {
+                "character": 0,
+                "line": 706
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 26,
+                "line": 706
+              },
+              "start": {
+                "character": 16,
+                "line": 706
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/index.d.ts"
+          }
+        ]
+      }
+    },
+    {
+      "call_response": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": []
+      },
+      "mode": "callee_incoming",
+      "prepare_params": {
+        "position": {
+          "character": 16,
+          "line": 710
+        },
+        "textDocument": {
+          "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/index.d.ts"
+        }
+      },
+      "prepare_response": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": [
+          {
+            "detail": "",
+            "kind": 12,
+            "name": "toFormData",
+            "range": {
+              "end": {
+                "character": 19,
+                "line": 714
+              },
+              "start": {
+                "character": 0,
+                "line": 710
+              }
+            },
+            "selectionRange": {
+              "end": {
+                "character": 26,
+                "line": 710
+              },
+              "start": {
+                "character": 16,
+                "line": 710
+              }
+            },
+            "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/index.d.ts"
+          }
+        ]
+      }
+    }
+  ],
   "initialize": {
     "id": 1,
     "jsonrpc": "2.0",
@@ -113,53 +213,19 @@
     }
   },
   "language": "typescript",
-  "outgoing_responses": [
-    {
-      "id": 3,
-      "jsonrpc": "2.0",
-      "result": []
-    }
-  ],
-  "prepare_params": {
-    "position": {
-      "character": 16,
-      "line": 706
+  "readiness": {
+    "active_progress": [],
+    "diagnostics": 0,
+    "duration_seconds": 5.023139,
+    "notification_methods": {
+      "$/progress": 2,
+      "$/typescriptVersion": 1,
+      "window/logMessage": 1
     },
-    "textDocument": {
-      "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/index.d.ts"
-    }
-  },
-  "prepare_response": {
-    "id": 2,
-    "jsonrpc": "2.0",
-    "result": [
-      {
-        "detail": "",
-        "kind": 12,
-        "name": "getAdapter",
-        "range": {
-          "end": {
-            "character": 16,
-            "line": 708
-          },
-          "start": {
-            "character": 0,
-            "line": 706
-          }
-        },
-        "selectionRange": {
-          "end": {
-            "character": 26,
-            "line": 706
-          },
-          "start": {
-            "character": 16,
-            "line": 706
-          }
-        },
-        "uri": "file:///Users/cosimo/.tldr-audit/corpora/typescript-axios/index.d.ts"
-      }
-    ]
+    "progress_begin": 1,
+    "progress_end": 1,
+    "status": "settled",
+    "status_messages": []
   },
   "repo": "typescript-axios",
   "sample": {

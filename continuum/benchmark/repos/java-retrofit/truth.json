@@ -1,7 +1,1700 @@
 {
   "case_id": "repos/java-retrofit",
   "edge_model": "static-callgraph",
-  "edges": [],
+  "edges": [
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "CallCancelListenableFuture(Call<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "80d8d1444d16c0c6752a27e19c6be73f8d5cc7e444ff9a446594af5429a14db0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : ListenableFuture<R>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "enqueue(Callback<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6eb2c421aa809c9b00fb6f829eed7a9d1c8a4ef9101cb7442ceb5daf099f49ea",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : ListenableFuture<R>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Callback.java",
+      "dst_func": "Callback<T>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "895eae6f77a2b92905933eaebf4d45ea942b2d5c492cd67ae1b397980ee8de0a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : ListenableFuture<R>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "CallCancelListenableFuture(Call<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fa0443bbd7aa8497d9a05bae1b128f364b58e76e99ca3b760b2f71cd0a7cf917",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : ListenableFuture<Response<R>>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "enqueue(Callback<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "10dfde445132c8912cde6ab0c905d70c86f2fe0e38ed855ded75c9f1bdf781e9",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : ListenableFuture<Response<R>>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Callback.java",
+      "dst_func": "Callback<T>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2f3ba494f21c74ae537a861a7e34e9c0b0bbba6fdfec99d3f5ca1393ae092474",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : ListenableFuture<Response<R>>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "GuavaCallAdapterFactory()",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "85b1dd8b0e450530b0652ed26c3ea1e3e7d02d835834a2ec6432cadae2dca90f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "create() : GuavaCallAdapterFactory",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "cancel() : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "54eac07de1023dcbcad12c4ee4e13a0f31525c547e7479f15ef7faf0daa54623",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "interruptTask() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "setException(Throwable) : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9bc096fc9f9bbbe10c41c82492d9fc20c66e3ef4a5d11034160783b7fb126ac5",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "onFailure(Call<R>, Throwable) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "set(T) : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9cd8c60f9228d70bb7cb108cec33f136e40d254f236d8829294411662878f5c0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "setException(Throwable) : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b5b4b8cd6f8e5bd8027e90617f36ae61693cfbf913d7c8f6fe64640ff96ffb27",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/HttpException.java",
+      "dst_func": "HttpException(Response<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "63b1d8c8dabf99d5674dbb23b26639b0b9ac80f13e02388cca61de16e00cc94e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "body() : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "399772a1978cd9a77bdcfa875a86a8dc50fd0389b784c5324743edc91a731f0a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "124f186f386cdcb1deb3a41f440945d5b195ed96232f85f7831c3ebad484b019",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/HttpException.java",
+      "dst_func": "HttpException(Response<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c27f6320cad4f30a570c849e8747bacb5556ab3d0ee044dd532642fa6a0292aa",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/HttpException.java",
+      "src_func": "HttpException(Response<?>)",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "31cb817dc249f89f7414c8e67f4ee239299619df497ecacc37035b25d2374bfc",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "nonListenableFutureReturnsNull() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cfc325e57ac9e2585a0f2414d1e5b3fa87a96cb25a923b810640700e2d8f98a2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "rawResponseTypeThrows() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "f07c24138e5823dd6604147b72c17fd41ba1a2db25bc8c6f0934a3639d09b2d8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "rawTypeThrows() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7bff7f2c5b90313edbf13eb554d0ff3cbb3f06e3ae81595897985b80bb4bf07a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "responseType() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "responseType() : Type",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1898d7b930df4e328fa56dc342aac8b0b924c5a3698cf2c8314c3ad38728fdaf",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "responseType() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/StringConverterFactory.java",
+      "dst_func": "StringConverterFactory",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c273ca334edfcd80449fa0ce090817d91563f7345603937c60889f8e7026b3c0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "Builder()",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "df7cf0bdfac802e0b23e1d38d5acf26a228aad9e888caf4044abc03e5264d33d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addCallAdapterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0d5b225dd44771d8ca17f42239163aabe324f239371ce84ea160f64e8343d2df",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addConverterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2e9b57322ff1d3f5bc96fba3b908d11fd5aedac04a5cc367a07fd854424f63cd",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "baseUrl(HttpUrl) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "13fb133a66192b4b5581cd4acc86d5872ea04f929e93d2ebb5463825f1c1bbec",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "build() : Retrofit",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "05b533f34d372d398db9a440c1c372df39e02346d093e534d84d5c4b6993b58a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/GuavaCallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "dst_func": "body() : ListenableFuture<String>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "01a185b05f6318ff00887ce4770fdf1d2ede58f0c9a1529c7403ffd5fe10fa37",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "bodyFailure() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "dst_func": "body() : ListenableFuture<String>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "19e2dcf7fc8317e0fa0fbb0642008faed1d451fd3461e5d11ee92ee809353d33",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "bodySuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "dst_func": "body() : ListenableFuture<String>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "345ccc0ebd4c5552cab056c9d149f24e33a37227bf869e74fc633b33ff0f3d7a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "bodySuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "dst_func": "response() : ListenableFuture<Response<String>>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8530e23b727214ec449f5535e70c9cbb449795fe8a4d180af65b692ef003f967",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseFailure() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "dst_func": "response() : ListenableFuture<Response<String>>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9d86e0d4da49299c7ebbd4609ecb5e5c18628973551d3b50660e1a6a8915bdca",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseSuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "body() : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a76f49aa5423fb3c529280232c41c59f498347632096c040971f9c77c5e9513a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseSuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "84823a0a7c8d007f91451bd31dc17bba51ffc24b90502297d3727cd972b9e4fd",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseSuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "dst_func": "response() : ListenableFuture<Response<String>>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dbafb5231b1926e3834fbabcec3ca44bf4ffecca36b8d6d9999f301861e874fb",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseSuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "errorBody() : ResponseBody",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "fcc204caa3e910165c25bf5f3b5196a97e1715e34be215629acf50d7c8f7cbe8",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseSuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "538a4d373c2e0eeb958eafb930ebb3d9fc29b39cc7cf2137c12e96bde006e4a3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "responseSuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/main/java/retrofit2/adapter/guava/GuavaCallAdapterFactory.java",
+      "dst_func": "create() : GuavaCallAdapterFactory",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "01b1cb83055843983af211b5231999d6ec53cd069ffbe9b53cf2e90421a4af12",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/StringConverterFactory.java",
+      "dst_func": "StringConverterFactory",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "dbe02305dafa26a655f141a4834bf376c47a7a9ce5be5fbb8d1e16cae7cb345e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "Builder()",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "179cf6f2c693d06c46a2260b46945917f4b410e97b705cc55e24c7be54c49722",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addCallAdapterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "1f730048d3d1a6716b7072a5441fe7fe3dc6e8447105abb67c6a4118f9e18bb7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addConverterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "46cc32cd01d1f7fc490ea007d740c4ac8c14b01660e28eaa06504ac851db8d04",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "baseUrl(HttpUrl) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7680a3c0a463940fb09c1ea1ed932c2f6eb58384f6cefae412489956d92a919c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "build() : Retrofit",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cd85a08a247160a9eac42291aeb8a3826a168424b650ae5be6cca829f43ad9a6",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "create(Class<T>) <T> : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9c49dbec4b16e167225369fc76a7f99acbc133010b1e4e62652a48193f8c6d82",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/guava/src/test/java/retrofit2/adapter/guava/ListenableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/HttpException.java",
+      "dst_func": "HttpException(Response<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "8ff38a2cd9fc809dfc26c3cfaf5e93f39bf5bc96f238a4a6f50d65d2782304e2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/HttpException.java",
+      "src_func": "HttpException(Response<?>)",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "enqueue(Callback<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "62af89f147d8e877143335165a599fa9b86b4ef3763cbb96941efbdaf4ae4628",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : CompletableFuture<R>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Callback.java",
+      "dst_func": "Callback<T>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e6df99d5785c1d946ed8554db984ee1882ea38672f1c8f5bf8b4dd0e63aac14c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : CompletableFuture<R>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "enqueue(Callback<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "60a03c1f5c16522c8a3cece19cd8aad283aef2403c6784d9677102c2b7149c05",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : CompletableFuture<Response<R>>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Callback.java",
+      "dst_func": "Callback<T>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "20c544fc2d4f2787c37785fbcb6af42c92e8d76411ce2c7b0e1291cb221b46f0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "adapt(Call<R>) : CompletableFuture<Response<R>>",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "dst_func": "Java8CallAdapterFactory()",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "69445279d96122e283cb413aad87c46471a958d7428650c03158ace79032edde",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "create() : Java8CallAdapterFactory",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/HttpException.java",
+      "dst_func": "HttpException(Response<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a0752b234207395fe9f3eaf065c7d550d8f0ee2e1a18b6ba65c628643ed9780e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "body() : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e7e7d01fc255c4080c6c790eb25d99b57a903f69177e0d2d1c0f98fa20b41c80",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "7a560a4f5df95f4fdc84b93028b5fb4d8a7c60f8e4af046b22a4994e06706dab",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "src_func": "onResponse(Call<R>, Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "dst_func": "body() : CompletableFuture<String>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e8b14497fbc0f26fec3668c6495006996a450cf1c30db1d8b548740959e4519c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "bodyFailure() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "dst_func": "body() : CompletableFuture<String>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a8bc6d0486deb7ae249e7a152d11d196728e48d1002d8f8aeadd7b82736e7f6e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "bodySuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "dst_func": "body() : CompletableFuture<String>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c8c65d7c3797e2cfd81349f06a68cc1dc2d49aebc702a98697e93cd4d1376646",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "bodySuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "dst_func": "response() : CompletableFuture<Response<String>>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "a3dd29273b303d45eb560f9f309b23422411c3cdfa384c6e644ee0a4de6c025c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseFailure() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "dst_func": "response() : CompletableFuture<Response<String>>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0d73142fd76e7d7574f31fd291718814ab6a2a02a9fd4fa5863a5d2886bddf64",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseSuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "body() : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "03a6c927fe1ad8b95a973b03c91f57b79de9d5154e5a3326026575accd78734c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseSuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3dce9ee99f3c3feb798562708fbb2e4f8b84afee57630e05e06e84c976f5aa98",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseSuccess200() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "dst_func": "response() : CompletableFuture<Response<String>>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b760b8f79d3c01ac1a1225186b0ea306013bda3dbcfc6a84494864fb0b79cfde",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseSuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "errorBody() : ResponseBody",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "c2b7d1623e54b3feaf804ca92ccfa24d96be8cef47d13282b9a0bd6a4fb3a0d0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseSuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "611b5630b1ed44b08793fdcca337da7a0467a496f96d37fb1ec6834bd3bcaa38",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "responseSuccess404() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/main/java/retrofit2/adapter/java8/Java8CallAdapterFactory.java",
+      "dst_func": "create() : Java8CallAdapterFactory",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ca8e884a89d86ed56a2feacacb76259e8fe032f6752dde69ab91588b7934242a",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/StringConverterFactory.java",
+      "dst_func": "StringConverterFactory",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "24f660a1c3b4ae7d6dde6fdb933c630bc890d96eae5a8fa1ca1d02c14bbf7f69",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "Builder()",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "097f92ec5209bb3300f2810ba878c85b59a55597282fc195455af9bf39ff2637",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addCallAdapterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5db65bab9a373e9b3798035344ef61e68767c0753028e246728bd36186ccef60",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addConverterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "0a30d0e91b5a5831969f66aa8a6fda4da2e0c102bbc57c72707bc7fc59ee0789",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "baseUrl(HttpUrl) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "9800079ec9382ab5bebe36fdb9d85b607c59d556331e5c6f92909c4f371b4bd5",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "build() : Retrofit",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6c04b063d420b1c0f318f600ae3a0dcdedd7913f848d2fc48575a554f05eb201",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "create(Class<T>) <T> : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "225796300e1d05619d1b324f6b2e53aae4f1e26200d322f6cc5678e46df41bef",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/CompletableFutureTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2575f2b6d9f3f9117a4e8bd571132833a95dc6d6941f0e2871985a0c3778948e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "nonListenableFutureReturnsNull() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "3631b181a2d332c3fdba1b7814339972ece579b96cef09e78771a723cd37df80",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "rawResponseTypeThrows() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b03c0f95454d20ec47fb63db2aabb1ae66a7db302d963542bd4bb4aa4256298c",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "rawTypeThrows() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "get(Type, Annotation[], Retrofit) : CallAdapter<?, ?>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5d0164745ec853451b91dfc9720a867baaaee6ef11d3301caa331844363d0b4f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "responseType() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/CallAdapter.java",
+      "dst_func": "responseType() : Type",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d0c7726133a4486ed53f2bf16adf673393b458d2765cf54c815d7882190a9cd9",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "responseType() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/StringConverterFactory.java",
+      "dst_func": "StringConverterFactory",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "6db15777a45c677583782ac0feba394f884349330d8b7b1db34f947bd1ff7ca2",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "Builder()",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "cf3c98e6cc538d62457676d8b4a1c2d07cbadb121970892969eed42f1a7c0d61",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addCallAdapterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "abdd91cf3865c018cd48d5877c330b47a4de82837d78532b05659c3b5db30984",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "addConverterFactory(Factory) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "642dea0e5ab251712a7a4bd1b74cc0c5687381e91a9ebf2c7ed9facdc5ab1f2e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "baseUrl(HttpUrl) : Builder",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "ab1615159075d46e81e5b7abfeb07e679227e13397998e6884575ffa83e7aef7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Retrofit.java",
+      "dst_func": "build() : Retrofit",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "b650aa83975c7e3de3c38fabc1355a1390bab975a8a5bcd2e1f6cf437d149763",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/java8/src/test/java/retrofit2/adapter/java8/Java8CallAdapterFactoryTest.java",
+      "src_func": "setUp() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/HttpException.java",
+      "dst_func": "HttpException(Response<?>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "4e343ab80eaccc332a2d03439fb6a53d8879e78193f1cab9bf524e646638b26f",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/BodyOnSubscribe.java",
+      "src_func": "onNext(Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "body() : T",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "83e1967e05f8e8d2c95cab52b17611c81fb30b4bed0ce053763dddfc2ae1f4fe",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/BodyOnSubscribe.java",
+      "src_func": "onNext(Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Response.java",
+      "dst_func": "isSuccessful() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "bd7be02f23a96c6fe28525c0b18641625d65bdaf77c92b1d80baae53ec44366d",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/BodyOnSubscribe.java",
+      "src_func": "onNext(Response<R>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "dst_func": "isUnsubscribed() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "66fc51157b2ccfadae76f28e24b0b93acced0c27356213e1a47b7974d02a19f3",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "src_func": "deliverResponse(Response<T>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "dst_func": "isUnsubscribed() : boolean",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "eaab6aaa8e904ab2e0198f8709ec3b4b039bc5220c5a8ac1169667d32aae11fc",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "src_func": "emitError(Throwable) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "dst_func": "deliverResponse(Response<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "d18fce765252abaf49332d041cfa4faa1b9903c89b0e050e338f3ade0ccfb878",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "src_func": "emitResponse(Response<T>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "dst_func": "deliverResponse(Response<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "be62242d12a88c814c480fb55736f8b2d7f320281d3b1b162e5366aef92a6fb0",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "src_func": "request(long) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "cancel() : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "280ec22bd3680d51490cf9386ecbefda2bd6bf58a884cb40dc9816bac784dc74",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "src_func": "unsubscribe() : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallArbiter.java",
+      "dst_func": "CallArbiter(Call<T>, Subscriber<? super Response<T>>)",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "471952cba7a56285d4e00ffb022312212f8f82698d0c3463c27fd0741ac0aff7",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallEnqueueOnSubscribe.java",
+      "src_func": "call(Subscriber<? super Response<T>>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "clone() : Call<T>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "2fa38cea783a6e24a57fbee6a88491e07b401fd7d3d5d919b8bd613f25e3f37e",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallEnqueueOnSubscribe.java",
+      "src_func": "call(Subscriber<? super Response<T>>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Call.java",
+      "dst_func": "enqueue(Callback<T>) : void",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "e578dfd5c2feb53456869c249fc85b1985dad83f434a64cc9882ab9442171465",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallEnqueueOnSubscribe.java",
+      "src_func": "call(Subscriber<? super Response<T>>) : void",
+      "src_line": null
+    },
+    {
+      "dst_file": "retrofit/src/main/java/retrofit2/Callback.java",
+      "dst_func": "Callback<T>",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "content_hash": "5ccb7ce89cb2acfef0bf84ced4b2c1823f80db5c4f3598d1262fa781cb130140",
+        "harvested_at": "2026-07-08",
+        "source": "lsp-callHierarchy",
+        "staleness": "sampled real-repo truth; refresh when corpus commit or LSP version changes",
+        "tier": "T1",
+        "tool": "jdtls",
+        "version": "unknown"
+      },
+      "src_file": "retrofit-adapters/rxjava/src/main/java/retrofit2/adapter/rxjava/CallEnqueueOnSubscribe.java",
+      "src_func": "call(Subscriber<? super Response<T>>) : void",
+      "src_line": null
+    }
+  ],
   "language": "java",
   "notes": "Sampled real-repo callHierarchy truth for java-retrofit at 8e83a242eac1afc22a13c52098eddb27421353ff. Scope is the deterministic sampled call sites in meta.json.",
   "schema_version": "truth.v1"
