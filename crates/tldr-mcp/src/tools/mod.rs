@@ -26,6 +26,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use tldr_core::callgraph::{confidence_tier, ResolutionRung};
 
 /// Tool handler function type
 pub type ToolHandler = fn(Value) -> ToolsCallResult;
@@ -283,7 +284,7 @@ impl ToolRegistry {
             ToolDefinition {
                 name: "tldr_calls".to_string(),
                 description:
-                    "Build cross-file call graph for a project. Shows which functions call which."
+                    "Build cross-file call graph for a project. Emits calls.v2 confidence tiers, provenance rungs, staleness, and unresolved calls."
                         .to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -295,6 +296,11 @@ impl ToolRegistry {
                         "language": {
                             "type": "string",
                             "description": "Programming language"
+                        },
+                        "min_confidence": {
+                            "type": "string",
+                            "enum": ["T0", "T1", "T2"],
+                            "description": "Minimum confidence tier to emit: T2 includes all edges, T1 drops T2 guesses, T0 is reserved and emits no resolved edges"
                         }
                     },
                     "required": ["path", "language"]
@@ -307,7 +313,7 @@ impl ToolRegistry {
         self.register(
             ToolDefinition {
                 name: "tldr_impact".to_string(),
-                description: "Find all callers of a function (reverse call graph traversal). Useful for understanding the impact of changes.".to_string(),
+                description: "Find all callers of a function. Default output separates T2 guesses into approximate_callers; approximate=true merges them.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -330,6 +336,10 @@ impl ToolRegistry {
                         "file": {
                             "type": "string",
                             "description": "Filter to specific file"
+                        },
+                        "approximate": {
+                            "type": "boolean",
+                            "description": "Include lower-confidence T2 approximate callers in the main caller tree"
                         }
                     },
                     "required": ["path", "function", "language"]
@@ -342,7 +352,7 @@ impl ToolRegistry {
         self.register(
             ToolDefinition {
                 name: "tldr_dead".to_string(),
-                description: "Find dead code (functions that are never called). Helps identify code that can be safely removed.".to_string(),
+                description: "Find dead code. Emits dead.v2 with possibly_dead separated unless approximate=true promotes weak findings.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -358,6 +368,10 @@ impl ToolRegistry {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Custom entry point patterns to exclude"
+                        },
+                        "approximate": {
+                            "type": "boolean",
+                            "description": "Treat weak possibly_dead findings as dead"
                         }
                     },
                     "required": ["path", "language"]
@@ -685,7 +699,7 @@ impl ToolRegistry {
         self.register(
             ToolDefinition {
                 name: "tldr_context".to_string(),
-                description: "Get token-efficient LLM context from an entry point. Achieves ~95% token savings compared to reading full files.".to_string(),
+                description: "Get token-efficient LLM context from an entry point. Includes confidence tiers/provenance on call edges and honors min_confidence.".to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -708,6 +722,11 @@ impl ToolRegistry {
                         "include_docstrings": {
                             "type": "boolean",
                             "description": "Include docstrings in output"
+                        },
+                        "min_confidence": {
+                            "type": "string",
+                            "enum": ["T0", "T1", "T2"],
+                            "description": "Minimum confidence tier to traverse: T2 includes all edges, T1 drops T2 guesses, T0 is reserved"
                         }
                     },
                     "required": ["path", "entry_point", "language"]
@@ -1080,6 +1099,46 @@ pub fn get_optional_string_array(args: &Value, key: &str) -> Option<Vec<String>>
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect()
     })
+}
+
+/// Minimum confidence tier accepted by MCP callgraph/context tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinConfidence {
+    T0,
+    T1,
+    T2,
+}
+
+impl MinConfidence {
+    pub(crate) fn includes_rung(self, rung: ResolutionRung) -> bool {
+        match self {
+            Self::T2 => true,
+            Self::T1 => confidence_tier(rung).as_str() == "T1",
+            Self::T0 => false,
+        }
+    }
+
+    pub(crate) fn includes_optional_rung(self, rung: Option<ResolutionRung>) -> bool {
+        match rung {
+            Some(rung) => self.includes_rung(rung),
+            None => self == Self::T2,
+        }
+    }
+}
+
+/// Parse optional `min_confidence` from MCP input arguments.
+pub(crate) fn parse_min_confidence_arg(args: &Value) -> Result<MinConfidence, String> {
+    match get_optional_string(args, "min_confidence")
+        .unwrap_or_else(|| "T2".to_string())
+        .as_str()
+    {
+        "T0" | "t0" => Ok(MinConfidence::T0),
+        "T1" | "t1" => Ok(MinConfidence::T1),
+        "T2" | "t2" => Ok(MinConfidence::T2),
+        other => Err(format!(
+            "invalid min_confidence '{other}'; expected T0, T1, or T2"
+        )),
+    }
 }
 
 /// Helper to convert path string to PathBuf

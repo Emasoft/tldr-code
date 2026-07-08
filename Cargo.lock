@@ -3594,8 +3594,10 @@ name = "tldr-mcp"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tldr-core",
  "tokio",
