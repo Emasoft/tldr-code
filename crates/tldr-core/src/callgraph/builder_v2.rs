@@ -63,8 +63,8 @@ use super::resolution::{
     resolve_constructor_target, resolve_method_in_bases, resolve_method_in_class,
 };
 use super::scanner::{is_supported_language, normalize_language_string};
-use super::types::PYTHON_BUILTINS;
 use super::var_types::FileParseResult;
+use crate::language_policy::policy_for;
 
 // =============================================================================
 // Parallel Index Building (Spec Section 14.5)
@@ -316,8 +316,8 @@ pub fn extract_and_resolve_calls(
             ) {
                 CallSiteResolution::Handled => {}
                 CallSiteResolution::Resolved(target) => {
-                    if builder_context.resolution_context.language.eq_ignore_ascii_case("python")
-                        && PYTHON_BUILTINS.contains(&target.name.as_str())
+                    if language_policy_builtins(builder_context.resolution_context.language)
+                        .contains(&target.name.as_str())
                     {
                         continue;
                     }
@@ -342,6 +342,12 @@ pub fn extract_and_resolve_calls(
     }
 
     result
+}
+
+fn language_policy_builtins(language: &str) -> &'static [&'static str] {
+    Language::from_str(language)
+        .map(|lang| policy_for(lang).builtins)
+        .unwrap_or(&[])
 }
 
 enum CallSiteResolution {
@@ -1363,6 +1369,89 @@ def main():
         assert!(
             result.warnings.iter().any(|w| w.target == "__import__"),
             "Should generate warning for dynamic import"
+        );
+    }
+
+    /// Test: policy-routed builtins keep the old Python-only denylist behavior.
+    /// A Python call to `dict()` is dropped, but a Lua project function named
+    /// `dict` still resolves because Lua's policy has an empty builtin list.
+    #[test]
+    fn test_policy_builtin_denylist_drops_python_and_keeps_lua_project_function() {
+        assert!(language_policy_builtins("python").contains(&"dict"));
+        assert!(!language_policy_builtins("lua").contains(&"dict"));
+        assert!(language_policy_builtins("unknown-language").is_empty());
+
+        let mut python_file_ir = FileIR::new(PathBuf::from("main.py"));
+        python_file_ir.add_call("main", CallSite::direct("main", "dict", Some(5)));
+
+        let mut python_func_index = FuncIndex::new();
+        python_func_index.insert(
+            "main",
+            "dict",
+            FuncEntry::function(PathBuf::from("main.py"), 10, 20),
+        );
+
+        let python_class_index = ClassIndex::new();
+        let python_import_map = ImportMap::new();
+        let python_module_imports = ModuleImports::new();
+        let python_module_index = ModuleIndex::new(PathBuf::from("."), "python");
+        let mut python_reexport_tracer = ReExportTracer::new(&python_module_index);
+
+        let mut python_resolution_context = ResolutionContext {
+            import_map: &python_import_map,
+            module_imports: &python_module_imports,
+            func_index: &python_func_index,
+            class_index: &python_class_index,
+            reexport_tracer: &mut python_reexport_tracer,
+            current_file: &python_file_ir.path,
+            root: Path::new("/project"),
+            language: "python",
+        };
+        let python_result =
+            extract_and_resolve_calls(&python_file_ir, &mut python_resolution_context);
+
+        assert!(
+            python_result
+                .resolved
+                .iter()
+                .all(|(cs, _)| cs.target != "dict"),
+            "dict() call should be dropped for Python"
+        );
+
+        let mut lua_file_ir = FileIR::new(PathBuf::from("main.lua"));
+        lua_file_ir.add_call("main", CallSite::direct("main", "dict", Some(5)));
+
+        let mut lua_func_index = FuncIndex::new();
+        lua_func_index.insert(
+            "main",
+            "dict",
+            FuncEntry::function(PathBuf::from("main.lua"), 10, 20),
+        );
+
+        let lua_class_index = ClassIndex::new();
+        let lua_import_map = ImportMap::new();
+        let lua_module_imports = ModuleImports::new();
+        let lua_module_index = ModuleIndex::new(PathBuf::from("."), "lua");
+        let mut lua_reexport_tracer = ReExportTracer::new(&lua_module_index);
+
+        let mut lua_resolution_context = ResolutionContext {
+            import_map: &lua_import_map,
+            module_imports: &lua_module_imports,
+            func_index: &lua_func_index,
+            class_index: &lua_class_index,
+            reexport_tracer: &mut lua_reexport_tracer,
+            current_file: &lua_file_ir.path,
+            root: Path::new("/project"),
+            language: "lua",
+        };
+        let lua_result = extract_and_resolve_calls(&lua_file_ir, &mut lua_resolution_context);
+
+        assert!(
+            lua_result
+                .resolved
+                .iter()
+                .any(|(cs, target)| cs.target == "dict" && target.name == "dict"),
+            "dict() project function should be retained for Lua"
         );
     }
 
