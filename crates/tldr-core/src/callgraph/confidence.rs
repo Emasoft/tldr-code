@@ -153,13 +153,11 @@ pub fn confidence_tier(rung: ResolutionRung) -> ConfidenceTier {
         | ResolutionRung::ImportMapExact
         | ResolutionRung::ReExportTrace
         | ResolutionRung::RefImport
-        | ResolutionRung::RefLocal
         | ResolutionRung::StaticQualified
         | ResolutionRung::MethodInClass
         | ResolutionRung::MethodInBase
         | ResolutionRung::CppOutOfLineMethod
         | ResolutionRung::PhpMagicCall
-        | ResolutionRung::ReceiverType
         | ResolutionRung::SelfReceiver
         | ResolutionRung::ModuleImportReceiver
         | ResolutionRung::ImportMapReceiver
@@ -169,7 +167,9 @@ pub fn confidence_tier(rung: ResolutionRung) -> ConfidenceTier {
 
         ResolutionRung::ConstructorClassFallback
         | ResolutionRung::ImportMapAlias
+        | ResolutionRung::RefLocal // VAL-032b: measured 1 TP / 34 FP, precision 0.029 on 35 samples.
         | ResolutionRung::GlobalFreeFunction
+        | ResolutionRung::ReceiverType // VAL-032b: measured 34 TP / 37 FP, precision 0.479 on 71 samples.
         | ResolutionRung::CapitalizedReceiverGuess
         | ResolutionRung::LocalFuzzyMatch
         | ResolutionRung::GlobalFuzzyMatch

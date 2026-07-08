@@ -43,6 +43,21 @@ function _unused() {\n\
     .expect("write app");
 }
 
+fn write_typescript_typed_receiver_fixture(dir: &TempDir) {
+    std::fs::write(
+        dir.path().join("app.ts"),
+        "class User {\n\
+  save() { return 1; }\n\
+}\n\
+\n\
+function caller() {\n\
+  const user: User = new User();\n\
+  return user.save();\n\
+}\n",
+    )
+    .expect("write app");
+}
+
 #[test]
 fn impact_separates_t2_callers_by_default_and_merges_with_approximate() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -108,6 +123,84 @@ fn impact_separates_t2_callers_by_default_and_merges_with_approximate() {
             .iter()
             .any(|caller| caller["function"] == "caller"),
         "approximate caller was not merged into callers: {tree:#?}"
+    );
+}
+
+#[test]
+fn impact_separates_rebinned_receiver_type_callers() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_typescript_typed_receiver_fixture(&dir);
+    let root = dir.path().to_str().expect("utf-8 temp path");
+
+    let value = run_tldr(&[
+        "impact",
+        "save",
+        root,
+        "--lang",
+        "typescript",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(value["schema"], "impact.v2");
+
+    let targets = value["targets"].as_object().expect("targets object");
+    let tree = targets
+        .values()
+        .find(|target| target["function"] == "User.save")
+        .unwrap_or_else(|| panic!("User.save target missing: {targets:#?}"));
+
+    assert_eq!(tree["caller_count"], 0);
+    assert!(tree["callers"]
+        .as_array()
+        .expect("callers array")
+        .is_empty());
+    let approximate = tree["approximate_callers"]
+        .as_array()
+        .expect("approximate_callers array");
+    assert!(
+        approximate
+            .iter()
+            .any(|caller| caller["function"] == "caller"
+                && caller["confidence"] == "T2"
+                && caller["rung"] == "receiver_type"),
+        "rebinned caller missing: {approximate:#?}"
+    );
+
+    let approximate_value = run_tldr(&[
+        "impact",
+        "save",
+        root,
+        "--lang",
+        "typescript",
+        "--format",
+        "json",
+        "--approximate",
+    ]);
+    let targets = approximate_value["targets"]
+        .as_object()
+        .expect("targets object");
+    let tree = targets
+        .values()
+        .find(|target| target["function"] == "User.save")
+        .unwrap_or_else(|| panic!("User.save target missing: {targets:#?}"));
+    assert_eq!(tree["caller_count"], 1);
+    assert!(
+        tree["callers"]
+            .as_array()
+            .expect("callers array")
+            .iter()
+            .any(|caller| caller["function"] == "caller"),
+        "approximate receiver_type caller was not merged into callers: {tree:#?}"
+    );
+    assert!(
+        tree["approximate_callers"]
+            .as_array()
+            .expect("approximate_callers array")
+            .iter()
+            .any(|caller| caller["function"] == "caller"
+                && caller["confidence"] == "T2"
+                && caller["rung"] == "receiver_type"),
+        "approximate evidence lost receiver_type rung: {tree:#?}"
     );
 }
 

@@ -156,6 +156,63 @@ class Counts:
         )
 
 
+class RungCounts:
+    def __init__(self) -> None:
+        self.true_positives = 0
+        self.false_positives = 0
+        self.samples = 0
+        self.cases: Set[str] = set()
+        self.languages: Set[str] = set()
+        self.examples: List[Dict[str, Any]] = []
+
+    def add_event(self, event: Dict[str, Any]) -> None:
+        outcome = event.get("outcome")
+        if outcome == "tp":
+            self.true_positives += 1
+        elif outcome == "fp":
+            self.false_positives += 1
+        else:
+            return
+        self.samples += 1
+        if isinstance(event.get("case_id"), str):
+            self.cases.add(event["case_id"])
+        if isinstance(event.get("language"), str):
+            self.languages.add(event["language"])
+        if len(self.examples) < 12:
+            self.examples.append(
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key
+                    in {
+                        "case_id",
+                        "command",
+                        "language",
+                        "outcome",
+                        "rung",
+                        "target",
+                        "caller",
+                        "edge",
+                        "reason",
+                    }
+                }
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        precision = None
+        if self.samples > 0:
+            precision = round(self.true_positives / self.samples, 6)
+        return {
+            "true_positives": self.true_positives,
+            "false_positives": self.false_positives,
+            "samples": self.samples,
+            "precision": precision,
+            "case_count": len(self.cases),
+            "languages": sorted(self.languages),
+            "examples": self.examples,
+        }
+
+
 def load_json(path: Path) -> Dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -480,6 +537,12 @@ def edge_dict_from_key(key: EdgeKey, reason: Optional[str] = None) -> Dict[str, 
     return data
 
 
+def edge_dict_with_rung(key: EdgeKey, rung: Optional[str], reason: Optional[str] = None) -> Dict[str, Any]:
+    data = edge_dict_from_key(key, reason)
+    data["rung"] = rung
+    return data
+
+
 def unique_edge_keys(edges: Sequence[Dict[str, Any]]) -> Set[EdgeKey]:
     return {edge_key(edge) for edge in edges}
 
@@ -736,7 +799,8 @@ def command_output_to_edges(output: Dict[str, Any]) -> Tuple[List[Dict[str, Any]
             continue
         normalized = key.as_dict()
         normalized["call_type"] = edge.get("call_type")
-        normalized["rung"] = None
+        provenance = edge.get("provenance")
+        normalized["rung"] = provenance.get("rung") if isinstance(provenance, dict) else None
         edges.append(normalized)
     return edges, warnings
 
@@ -830,6 +894,11 @@ def score_calls_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[s
 
     truth_keys = unique_edge_keys(case.truth.get("edges", []))
     forbidden_keys = forbidden_edges(case)
+    rung_by_key: Dict[EdgeKey, Optional[str]] = {}
+    for edge in reported_edges:
+        key = report_edge_key(edge)
+        if key is not None:
+            rung_by_key.setdefault(key, edge.get("rung") if isinstance(edge.get("rung"), str) else None)
     reported_keys = {report_edge_key(edge) for edge in reported_edges}
     reported_keys = {key for key in reported_keys if key is not None}
 
@@ -854,6 +923,31 @@ def score_calls_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[s
 
     false_positive_keys = forbidden_reported | wrong_owner
     true_negative_keys = forbidden_keys - reported_keys
+    rung_events = []
+    for key in sorted(matched):
+        rung_events.append(
+            {
+                "command": CALLS_COMMAND,
+                "language": case.language,
+                "case_id": case.case_id,
+                "outcome": "tp",
+                "rung": rung_by_key.get(key),
+                "edge": edge_dict_with_rung(key, rung_by_key.get(key)),
+            }
+        )
+    for key in sorted(false_positive_keys):
+        reason = "matched negative edge" if key in forbidden_reported else "wrong-owner contradiction"
+        rung_events.append(
+            {
+                "command": CALLS_COMMAND,
+                "language": case.language,
+                "case_id": case.case_id,
+                "outcome": "fp",
+                "rung": rung_by_key.get(key),
+                "reason": reason,
+                "edge": edge_dict_with_rung(key, rung_by_key.get(key), reason),
+            }
+        )
     counts = {
         "truth_edges": len(truth_keys),
         "reported_edges": len(reported_edges),
@@ -872,13 +966,19 @@ def score_calls_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[s
             "status": "ok",
             "stderr": stderr,
             "warnings": warnings,
+            "rung_supported": True,
+            "rung_events": rung_events,
             "tldr": summarize_tldr(output),
             "counts": counts,
             "metrics": metrics(counts["true_positives"], counts["false_positives"], counts["false_negatives"]),
-            "matched_edges": [edge_dict_from_key(key) for key in sorted(matched)],
+            "matched_edges": [edge_dict_with_rung(key, rung_by_key.get(key)) for key in sorted(matched)],
             "missed_truth_edges": [edge_dict_from_key(key) for key in sorted(missed)],
             "false_positive_edges": [
-                edge_dict_from_key(key, "matched negative edge" if key in forbidden_reported else "wrong-owner contradiction")
+                edge_dict_with_rung(
+                    key,
+                    rung_by_key.get(key),
+                    "matched negative edge" if key in forbidden_reported else "wrong-owner contradiction",
+                )
                 for key in sorted(false_positive_keys)
             ],
             "true_negative_edges": [edge_dict_from_key(key) for key in sorted(true_negative_keys)],
@@ -1132,24 +1232,65 @@ def score_definition_case(case: Case, binary: Path, timeout_seconds: float, inde
     return base
 
 
-def impact_callers(output: Dict[str, Any], case: Case) -> Set[FunctionKey]:
-    callers: Set[FunctionKey] = set()
+def calls_rung_map(case: Case, binary: Path, timeout_seconds: float) -> Tuple[Dict[EdgeKey, Optional[str]], List[str]]:
+    status, output, stderr, _duration = run_tldr_calls(binary, case.execution_dir, timeout_seconds)
+    warnings: List[str] = []
+    if stderr:
+        warnings.append(stderr)
+    if status != "ok":
+        warnings.append(f"calls rung attribution {status}")
+        return {}, warnings
+    try:
+        reported_edges, parse_warnings = command_output_to_edges(output)
+    except ValueError as exc:
+        warnings.append(str(exc))
+        return {}, warnings
+    warnings.extend(parse_warnings)
+    rung_by_edge: Dict[EdgeKey, Optional[str]] = {}
+    for edge in reported_edges:
+        key = report_edge_key(edge)
+        if key is not None:
+            rung_by_edge.setdefault(key, edge.get("rung") if isinstance(edge.get("rung"), str) else None)
+    return rung_by_edge, warnings
+
+
+def impact_callers_with_rungs(
+    output: Dict[str, Any], case: Case, rung_by_edge: Dict[EdgeKey, Optional[str]]
+) -> Dict[FunctionKey, Optional[str]]:
+    callers: Dict[FunctionKey, Optional[str]] = {}
     targets = output.get("targets")
     if not isinstance(targets, dict):
         return callers
-    stack: List[Dict[str, Any]] = []
+    stack: List[Tuple[FunctionKey, Dict[str, Any]]] = []
     for target in targets.values():
-        if isinstance(target, dict) and isinstance(target.get("callers"), list):
-            stack.extend(item for item in target["callers"] if isinstance(item, dict))
+        if not isinstance(target, dict):
+            continue
+        file_value = target.get("file")
+        func_value = target.get("function")
+        if not isinstance(file_value, str) or not isinstance(func_value, str):
+            continue
+        parent = function_key(relative_to_case(file_value, case), func_value)
+        if isinstance(target.get("callers"), list):
+            stack.extend((parent, item) for item in target["callers"] if isinstance(item, dict))
     while stack:
-        item = stack.pop()
+        parent, item = stack.pop()
         file_value = item.get("file")
         func_value = item.get("function")
         if isinstance(file_value, str) and isinstance(func_value, str):
-            callers.add(function_key(relative_to_case(file_value, case), func_value))
+            caller = function_key(relative_to_case(file_value, case), func_value)
+            edge = EdgeKey(
+                src_file=caller.file,
+                src_func=caller.func,
+                dst_file=parent.file,
+                dst_func=parent.func,
+            )
+            callers.setdefault(caller, rung_by_edge.get(edge))
+            next_parent = caller
+        else:
+            next_parent = parent
         nested = item.get("callers")
         if isinstance(nested, list):
-            stack.extend(child for child in nested if isinstance(child, dict))
+            stack.extend((next_parent, child) for child in nested if isinstance(child, dict))
     return callers
 
 
@@ -1165,8 +1306,12 @@ def score_impact_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[
     matched: Set[Tuple[FunctionKey, FunctionKey]] = set()
     missed: Set[Tuple[FunctionKey, FunctionKey]] = set()
     false_positive: Set[Tuple[FunctionKey, FunctionKey]] = set()
+    rung_by_pair: Dict[Tuple[FunctionKey, FunctionKey], Optional[str]] = {}
     reported_count = 0
     details: List[Dict[str, Any]] = []
+    rung_events: List[Dict[str, Any]] = []
+    rung_by_edge, rung_warnings = calls_rung_map(case, binary, timeout_seconds)
+    warnings.extend(rung_warnings)
 
     for dst, expected_callers in sorted(by_destination.items()):
         query_func = dst.func
@@ -1184,23 +1329,54 @@ def score_impact_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[
                 missed.add((dst, caller))
             details.append({"target": dst.as_dict(), "status": status, "expected_callers": [caller.as_dict() for caller in sorted(expected_callers)]})
             continue
-        reported_callers = impact_callers(output, case)
+        reported_callers_with_rungs = impact_callers_with_rungs(output, case, rung_by_edge)
+        reported_callers = set(reported_callers_with_rungs)
         reported_count += len(reported_callers)
         target_matched = expected_callers & reported_callers
         target_missed = expected_callers - reported_callers
         target_false_positive = reported_callers - expected_callers
         for caller in target_matched:
             matched.add((dst, caller))
+            rung = reported_callers_with_rungs.get(caller)
+            rung_by_pair[(dst, caller)] = rung
+            rung_events.append(
+                {
+                    "command": "impact",
+                    "language": case.language,
+                    "case_id": case.case_id,
+                    "outcome": "tp",
+                    "rung": rung,
+                    "target": dst.as_dict(),
+                    "caller": caller.as_dict(),
+                }
+            )
         for caller in target_missed:
             missed.add((dst, caller))
         for caller in target_false_positive:
             false_positive.add((dst, caller))
+            rung = reported_callers_with_rungs.get(caller)
+            rung_by_pair[(dst, caller)] = rung
+            rung_events.append(
+                {
+                    "command": "impact",
+                    "language": case.language,
+                    "case_id": case.case_id,
+                    "outcome": "fp",
+                    "rung": rung,
+                    "target": dst.as_dict(),
+                    "caller": caller.as_dict(),
+                    "reason": "caller not in truth caller set",
+                }
+            )
         details.append(
             {
                 "target": dst.as_dict(),
                 "status": "ok",
                 "expected_callers": [caller.as_dict() for caller in sorted(expected_callers)],
-                "reported_callers": [caller.as_dict() for caller in sorted(reported_callers)],
+                "reported_callers": [
+                    {**caller.as_dict(), "rung": reported_callers_with_rungs.get(caller)}
+                    for caller in sorted(reported_callers)
+                ],
             }
         )
 
@@ -1223,12 +1399,28 @@ def score_impact_case(case: Case, binary: Path, timeout_seconds: float) -> Dict[
             "status": "ok",
             "stderr": "\n".join(stderr_parts),
             "warnings": warnings,
+            "rung_supported": True,
+            "rung_events": rung_events,
             "derivation": "For each unique truth destination, query `tldr impact <dst_func> CASE_DIR --file <dst_file>`; the --file filter disambiguates same-name targets.",
             "counts": counts,
             "metrics": metrics(counts["true_positives"], counts["false_positives"], counts["false_negatives"]),
-            "matched_callers": [{"target": dst.as_dict(), "caller": caller.as_dict()} for dst, caller in sorted(matched)],
+            "matched_callers": [
+                {
+                    "target": dst.as_dict(),
+                    "caller": caller.as_dict(),
+                    "rung": rung_by_pair.get((dst, caller)),
+                }
+                for dst, caller in sorted(matched)
+            ],
             "missed_callers": [{"target": dst.as_dict(), "caller": caller.as_dict()} for dst, caller in sorted(missed)],
-            "false_positive_callers": [{"target": dst.as_dict(), "caller": caller.as_dict()} for dst, caller in sorted(false_positive)],
+            "false_positive_callers": [
+                {
+                    "target": dst.as_dict(),
+                    "caller": caller.as_dict(),
+                    "rung": rung_by_pair.get((dst, caller)),
+                }
+                for dst, caller in sorted(false_positive)
+            ],
             "impact_targets": details,
         }
     )
@@ -1462,6 +1654,9 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     by_defect_class: Dict[str, Counts] = defaultdict(Counts)
     by_command: Dict[str, Counts] = defaultdict(Counts)
     by_command_language: Dict[str, Counts] = defaultdict(Counts)
+    rung_totals: Dict[str, RungCounts] = defaultdict(RungCounts)
+    rung_by_command: Dict[str, Dict[str, RungCounts]] = defaultdict(lambda: defaultdict(RungCounts))
+    rung_by_command_language: Dict[str, RungCounts] = defaultdict(RungCounts)
     for result in results:
         total.add_case(result)
         by_language[result["language"]].add_case(result)
@@ -1470,6 +1665,15 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         by_defect_class[result["defect_class"]].add_case(result)
         by_command[result["command"]].add_case(result)
         by_command_language[f"{result['command']}:{result['language']}"].add_case(result)
+        for event in result.get("rung_events", []):
+            if not isinstance(event, dict):
+                continue
+            rung = event.get("rung") if isinstance(event.get("rung"), str) else "<missing>"
+            command = event.get("command") if isinstance(event.get("command"), str) else result["command"]
+            language = event.get("language") if isinstance(event.get("language"), str) else result["language"]
+            rung_totals[rung].add_event(event)
+            rung_by_command[command][rung].add_event(event)
+            rung_by_command_language[f"{command}:{language}:{rung}"].add_event(event)
     return {
         "totals": total.to_dict(),
         "by_language": counts_map(by_language),
@@ -1478,6 +1682,13 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         "by_defect_class": counts_map(by_defect_class),
         "by_command": counts_map(by_command),
         "by_command_language": counts_map(by_command_language),
+        "by_rung": {
+            "totals": rung_counts_map(rung_totals),
+            "by_command": {
+                command: rung_counts_map(rungs) for command, rungs in sorted(rung_by_command.items())
+            },
+            "by_command_language": rung_counts_map(rung_by_command_language),
+        },
         "command_scope": {
             "calls": "all discovered cases, including real-repo truth sets",
             "definition": "micro-suites only; real-repo truth is sampled/incomplete for per-call-site definition recall",
@@ -1488,6 +1699,10 @@ def aggregate(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def counts_map(groups: Dict[str, Counts]) -> Dict[str, Any]:
+    return {key: groups[key].to_dict() for key in sorted(groups)}
+
+
+def rung_counts_map(groups: Dict[str, RungCounts]) -> Dict[str, Any]:
     return {key: groups[key].to_dict() for key in sorted(groups)}
 
 
@@ -1548,7 +1763,7 @@ def build_report(
             "result_count": len(results),
             "runtime_seconds": round(runtime_seconds, 6),
         },
-        "rung_supported": False,
+        "rung_supported": True,
         "scoring": {
             "schema": "scoring.v2",
             "edge_key": ["src_file", "src_func", "dst_file", "dst_func"],
@@ -1563,7 +1778,7 @@ def build_report(
             "false_positive": "Only a reported normalized edge that matches a negative edge or contradicts a covered call by same source and destination leaf name with the wrong owner is a false positive.",
             "unscored": "Reported edges outside truth coverage and outside negative/wrong-owner rules are counted separately and excluded from precision.",
             "expected_unresolved": "Expected-unresolved missing_edge values are treated as forbidden edges; reporting them is a false positive and not reporting them is a true negative.",
-            "rung_attribution": "Unsupported by current tldr calls output; emitted as rung:null with rung_supported:false.",
+            "rung_attribution": "calls.v2 provenance.rung is preserved for calls scoring; impact attribution joins each emitted caller edge back to calls.v2 edge provenance.",
             "definition": "Micro-suite only. For each truth edge, the harness locates the destination identifier inside the source function span and runs `tldr definition FILE LINE COLUMN --project CASE_DIR`; wrong returned source locations count as both FP and FN.",
             "impact": "Micro-suite only. For each unique truth destination, the harness runs `tldr impact <dst_func> CASE_DIR --file <dst_file>` and scores the returned caller set against truth callers.",
             "dead": "Micro-suite only. Expected-dead functions are source definitions that are not truth destinations and are not truth-graph roots; reported reachable functions are false positives.",
@@ -1604,6 +1819,22 @@ def print_table(report: Dict[str, Any]) -> None:
     skipped = report["aggregates"]["totals"]["skipped_by_reason"]
     skipped_text = ", ".join(f"{key}={value}" for key, value in skipped.items()) if skipped else "none"
     print(f"\nruntime_seconds={runtime:.3f} skipped={skipped_text} out={report.get('out_path', '-')}")
+    offenders = []
+    for rung, data in report["aggregates"].get("by_rung", {}).get("totals", {}).items():
+        if data["samples"] >= 5 and data["false_positives"] > 0:
+            precision = data["precision"] if data["precision"] is not None else 0.0
+            offenders.append((precision, -data["false_positives"], rung, data))
+    if offenders:
+        print("\nby_rung top offenders       samples  TP   FP   P")
+        print("--------------------------  ------- ---- ---- ------")
+        for precision, _neg_fp, rung, data in sorted(offenders)[:10]:
+            print(
+                f"{rung[:26]:26}  "
+                f"{data['samples']:7d} "
+                f"{data['true_positives']:4d} "
+                f"{data['false_positives']:4d} "
+                f"{precision:6.3f}"
+            )
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:

@@ -653,24 +653,42 @@ pub fn impact_analysis_with_ast_fallback_options(
 /// Remove callers from the main caller tree when the same caller is already
 /// represented as a lower-confidence approximate caller on that target node.
 pub fn exclude_approximate_callers_from_report(report: &mut ImpactReport) {
+    let approximate_by_target: Vec<(String, ApproximateCaller)> = report
+        .targets
+        .values()
+        .flat_map(|tree| {
+            tree.approximate_callers
+                .iter()
+                .cloned()
+                .map(|approx| (tree.function.clone(), approx))
+        })
+        .collect();
+
     for tree in report.targets.values_mut() {
-        exclude_approximate_callers_from_tree(tree);
+        exclude_approximate_callers_from_tree(tree, &approximate_by_target);
     }
 }
 
-fn exclude_approximate_callers_from_tree(tree: &mut CallerTree) {
+fn exclude_approximate_callers_from_tree(
+    tree: &mut CallerTree,
+    approximate_by_target: &[(String, ApproximateCaller)],
+) {
     for child in &mut tree.callers {
-        exclude_approximate_callers_from_tree(child);
+        exclude_approximate_callers_from_tree(child, approximate_by_target);
     }
 
-    if tree.approximate_callers.is_empty() {
+    if approximate_by_target.is_empty() {
         tree.caller_count = tree.callers.len();
         return;
     }
 
     tree.callers.retain(|caller| {
-        !tree.approximate_callers.iter().any(|approx| {
-            approx.function == caller.function && paths_match(&approx.file, &caller.file)
+        !approximate_by_target.iter().any(|(target, approx)| {
+            names_match(target, &tree.function)
+                && paths_match(&approx.file, &caller.file)
+                && (approx.function == caller.function
+                    || last_segment_eq_pub(&approx.function, &caller.function)
+                    || last_segment_eq_pub(&caller.function, &approx.function))
         })
     });
     tree.caller_count = tree.callers.len();
@@ -4569,9 +4587,10 @@ mod tests {
     fn b5_python_class_collision_preserves_caller_count_one() {
         // f69904c REGRESSION GUARD: two same-named `Service` classes in two
         // files; `Runner.go` constructs `Service()` in a.py and calls
-        // `s.handle()`. The call graph disambiguates to a.py:Service.handle
-        // (caller_count 1). The fix must NOT spray that resolved call onto the
-        // b.py:Service.handle sibling (caller_count must stay 0).
+        // `s.handle()`. After VAL-032b, that receiver_type evidence is T2:
+        // default impact must NOT report it as a definitive caller, and must
+        // not spray it onto the b.py:Service.handle sibling. The genuine
+        // a.py target keeps the evidence in approximate_callers.
         let root = std::env::temp_dir().join("tldr_b5_py_classcollision");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -4586,35 +4605,59 @@ mod tests {
         )
         .unwrap();
 
-        let targets = b5_resolve(&root, "handle", crate::Language::Python);
-        let a_target = targets
-            .iter()
-            .find(|(f, _, callers)| {
-                f.ends_with(".handle") && callers.iter().any(|c| c.contains("go"))
+        use crate::callgraph::builder::build_project_call_graph;
+        let graph = build_project_call_graph(&root, crate::Language::Python, None, true).unwrap();
+        let mut report = impact_analysis_with_ast_fallback(
+            &graph,
+            "handle",
+            3,
+            None,
+            &root,
+            crate::Language::Python,
+        )
+        .expect("impact analysis should succeed");
+        enrich_impact_with_references(&mut report, &root, "handle", crate::Language::Python);
+        exclude_approximate_callers_from_report(&mut report);
+
+        let targets: Vec<(String, usize, Vec<String>, Vec<String>, PathBuf)> = report
+            .targets
+            .values()
+            .map(|t| {
+                (
+                    t.function.clone(),
+                    t.caller_count,
+                    t.callers.iter().map(|c| c.function.clone()).collect(),
+                    t.approximate_callers
+                        .iter()
+                        .map(|c| format!("{}:{}", c.function, c.rung))
+                        .collect(),
+                    t.file.clone(),
+                )
             })
-            .or_else(|| targets.iter().find(|(_, cc, _)| *cc == 1));
+            .collect();
         assert!(
-            a_target.is_some(),
-            "B5: python class-collision must resolve the genuine caller (count 1); targets: {:?}",
+            targets
+                .iter()
+                .all(|(_, cc, callers, _, _)| *cc == 0 && callers.is_empty()),
+            "B5: python class-collision must not report T2 callers as definitive; targets: {:?}",
             targets
         );
-        assert_eq!(
-            a_target.unwrap().1,
-            1,
-            "B5: genuine python class-collision target must have caller_count 1; targets: {:?}",
-            targets
-        );
-        // No target may over-count: the resolved `s.handle()` must not be
-        // sprayed onto the sibling Service.handle definition.
         assert!(
-            targets.iter().all(|(_, cc, _)| *cc <= 1),
-            "B5: python class-collision sibling over-counted (resolved edge sprayed); targets: {:?}",
+            targets.iter().any(|(_, _, _, approximate, file)| {
+                file.ends_with("a.py")
+                    && approximate
+                        .iter()
+                        .any(|caller| caller == "Runner.go:receiver_type")
+            }),
+            "B5: genuine python class-collision target must keep receiver_type evidence approximate; targets: {:?}",
             targets
         );
-        let total: usize = targets.iter().map(|(_, cc, _)| *cc).sum();
-        assert_eq!(
-            total, 1,
-            "B5: exactly one resolved caller expected across both Service.handle defs; targets: {:?}",
+        assert!(
+            targets
+                .iter()
+                .filter(|(_, _, _, approximate, _)| !approximate.is_empty())
+                .all(|(_, _, _, _, file)| file.ends_with("a.py")),
+            "B5: approximate receiver_type evidence must not be sprayed onto sibling target; targets: {:?}",
             targets
         );
 
