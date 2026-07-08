@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/typescript/imports/type_only_import_distinction",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "builder.ts",
+      "dst_func": "build",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.ts",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "A type-only import must not create a value-call target.",
+  "schema_version": "truth.v1"
+}

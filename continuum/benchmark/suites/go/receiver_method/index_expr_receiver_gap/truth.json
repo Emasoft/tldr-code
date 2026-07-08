@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/go/receiver_method/index_expr_receiver_gap",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "repo.go",
+      "dst_func": "Tree.GetValue",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "repo.go",
+      "src_func": "Repo.Run",
+      "src_line": null
+    },
+    {
+      "dst_file": "repo.go",
+      "dst_func": "Repo.Run",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.go",
+      "src_func": "Entry",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "A method call on an index-expression receiver resolves to the element receiver type.",
+  "schema_version": "truth.v1"
+}

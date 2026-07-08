@@ -1,0 +1,27 @@
+{
+  "case_id": "suites/java/overload/overload_arity",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "confidence_note": "The truth schema has no arity field, so arity is encoded in dst_func for this case.",
+      "dst_file": "Overload.java",
+      "dst_func": "Overload.handle(int)",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "Overload.java",
+      "src_func": "Overload.run",
+      "src_line": null
+    }
+  ],
+  "language": "java",
+  "notes": "Overload arity should select handle(int), not handle(String).",
+  "schema_version": "truth.v1"
+}

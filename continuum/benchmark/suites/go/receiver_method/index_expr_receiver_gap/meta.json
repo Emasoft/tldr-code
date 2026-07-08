@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/receiver_method/index_expr_receiver_gap",
+  "defect_class": "CORRECTNESS#6",
+  "description": "A method call on an index-expression receiver resolves to the element receiver type.",
+  "entrypoints": [
+    "main.go",
+    "repo.go"
+  ],
+  "feature": "receiver method",
+  "language": "go",
+  "negative_edges": []
+}

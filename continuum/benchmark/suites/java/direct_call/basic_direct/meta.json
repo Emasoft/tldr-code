@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/direct_call/basic_direct",
+  "defect_class": null,
+  "description": "A static call to another Java class resolves to the helper method.",
+  "entrypoints": [
+    "Helper.java",
+    "Main.java"
+  ],
+  "feature": "direct call",
+  "language": "java",
+  "negative_edges": []
+}

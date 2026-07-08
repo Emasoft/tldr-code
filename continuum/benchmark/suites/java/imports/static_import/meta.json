@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/imports/static_import",
+  "defect_class": null,
+  "description": "A static import resolves an unqualified call to the imported static method.",
+  "entrypoints": [
+    "app/Main.java",
+    "util/Tools.java"
+  ],
+  "feature": "imports",
+  "language": "java",
+  "negative_edges": []
+}

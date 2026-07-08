@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/go/builtin_shadowing/project_len_shadow",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "shadow.go",
+      "dst_func": "len",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.go",
+      "src_func": "Run",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "A project function named len shadows the Go predeclared builtin name.",
+  "schema_version": "truth.v1"
+}

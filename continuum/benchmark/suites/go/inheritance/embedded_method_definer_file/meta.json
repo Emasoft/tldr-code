@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/inheritance/embedded_method_definer_file",
+  "defect_class": "CORRECTNESS#7",
+  "description": "A promoted method call resolves to the embedded Base method definer.",
+  "entrypoints": [
+    "base.go",
+    "child.go"
+  ],
+  "feature": "inheritance",
+  "language": "go",
+  "negative_edges": []
+}

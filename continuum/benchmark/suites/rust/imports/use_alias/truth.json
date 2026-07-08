@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/rust/imports/use_alias",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "math.rs",
+      "dst_func": "add",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "A use alias resolves to the aliased function.",
+  "schema_version": "truth.v1"
+}

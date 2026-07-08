@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/rust/impl_method/inherent_impl",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "lib.rs",
+      "dst_func": "Service.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "Service.run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "An inherent impl self-call resolves to the same impl method.",
+  "schema_version": "truth.v1"
+}

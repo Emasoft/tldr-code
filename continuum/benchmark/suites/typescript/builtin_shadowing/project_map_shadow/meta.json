@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/builtin_shadowing/project_map_shadow",
+  "defect_class": "CORRECTNESS#3",
+  "description": "A project function named map must not be filtered as a builtin collision.",
+  "entrypoints": [
+    "main.ts",
+    "map.ts"
+  ],
+  "feature": "builtin shadowing",
+  "language": "typescript",
+  "negative_edges": []
+}

@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/go/receiver_method/pointer_receiver",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "store.go",
+      "dst_func": "Store.Save",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "store.go",
+      "src_func": "Store.Run",
+      "src_line": null
+    },
+    {
+      "dst_file": "store.go",
+      "dst_func": "Store.Run",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.go",
+      "src_func": "Entry",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "A pointer receiver call resolves to the pointer receiver method.",
+  "schema_version": "truth.v1"
+}

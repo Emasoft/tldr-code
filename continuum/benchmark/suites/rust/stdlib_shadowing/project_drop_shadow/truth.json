@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/rust/stdlib_shadowing/project_drop_shadow",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "lib.rs",
+      "dst_func": "drop",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "A project function named drop shadows the std/prelude name in this call position.",
+  "schema_version": "truth.v1"
+}

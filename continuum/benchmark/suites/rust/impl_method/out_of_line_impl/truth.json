@@ -1,0 +1,27 @@
+{
+  "case_id": "suites/rust/impl_method/out_of_line_impl",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "confidence_note": "Out-of-line impl truth points each method at its definer file.",
+      "dst_file": "model.rs",
+      "dst_func": "Widget.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "Widget.run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "An out-of-line impl method can call a method defined in another impl block/file.",
+  "schema_version": "truth.v1"
+}

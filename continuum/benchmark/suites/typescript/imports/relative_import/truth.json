@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/typescript/imports/relative_import",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "worker.ts",
+      "dst_func": "work",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.ts",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "A relative named import resolves to the imported module function.",
+  "schema_version": "truth.v1"
+}

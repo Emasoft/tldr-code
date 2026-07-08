@@ -17,7 +17,11 @@ Do not vendor repository source into this tree. Add a manifest under `repos/` pi
 ## Current corpus
 
 - `vendored/pycg/cases/`: upstream PyCG micro-benchmark call graphs converted into `truth.v1`; Apache-2.0 `LICENCE` preserved.
-- `suites/python/`: hand-written Python micro-cases covering direct calls, import forms, receiver and class resolution, constructors, same-name disambiguation, builtin shadowing, decorators, local scope collisions, `@overload` cohesion behavior, and an expected-unresolved higher-order callback.
+- `suites/python/`: 15 hand-written Python micro-cases covering direct calls, import forms, receiver and class resolution, constructors, same-name disambiguation, builtin shadowing, decorators, local scope collisions, `@overload` cohesion behavior, and an expected-unresolved higher-order callback.
+- `suites/typescript/`: 12 hand-written TypeScript micro-cases covering relative imports, index files, type-only import distinction, class and inherited methods, constructors, same-name disambiguation, builtin-name shadowing, dynamic import as expected-unresolved, and await/generic member calls.
+- `suites/go/`: 12 hand-written Go micro-cases covering package imports and aliases, receiver methods, interface dispatch as expected-unresolved, factory construction, same-name packages, builtin-name shadowing, embedded inherited methods, reflection as expected-unresolved, and index-expression receivers.
+- `suites/rust/`: 12 hand-written Rust micro-cases covering module and `crate::` paths, `use` aliases, inherent impls, trait methods, dyn trait dispatch as expected-unresolved, out-of-line impls, constructors, same-name modules, std/prelude shadowing, and associated functions.
+- `suites/java/`: 12 hand-written Java micro-cases covering package and static imports, class methods, inherited and overridden methods, constructors, overload arity, same-name packages, stdlib-name shadowing, reflection as expected-unresolved, and interface dispatch as expected-unresolved.
 
 VAL-021 will implement scoring. For now, a smoke check is enough: `~/.cargo/bin/tldr calls CASE_DIR --format json` should produce parseable JSON for representative cases.
 

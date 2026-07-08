@@ -1,0 +1,31 @@
+{
+  "case_id": "suites/java/overload/overload_arity",
+  "defect_class": null,
+  "description": "Overload arity should select handle(int), not handle(String).",
+  "entrypoints": [
+    "Main.java",
+    "Overload.java"
+  ],
+  "feature": "overload",
+  "language": "java",
+  "negative_edges": [
+    {
+      "dst_file": "Overload.java",
+      "dst_func": "Overload.handle(String)",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "The integer argument selects handle(int), not handle(String).",
+      "src_file": "Overload.java",
+      "src_func": "Overload.run",
+      "src_line": null
+    }
+  ]
+}

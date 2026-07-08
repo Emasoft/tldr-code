@@ -1,0 +1,32 @@
+{
+  "case_id": "suites/typescript/disambiguation/same_name_modules",
+  "defect_class": null,
+  "description": "A same-named function imported from beta must not bind alpha.",
+  "entrypoints": [
+    "alpha.ts",
+    "beta.ts",
+    "main.ts"
+  ],
+  "feature": "disambiguation",
+  "language": "typescript",
+  "negative_edges": [
+    {
+      "dst_file": "alpha.ts",
+      "dst_func": "target",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "main imports target from beta, not alpha.",
+      "src_file": "main.ts",
+      "src_func": "run",
+      "src_line": null
+    }
+  ]
+}

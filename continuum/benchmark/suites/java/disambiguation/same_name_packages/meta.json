@@ -1,0 +1,32 @@
+{
+  "case_id": "suites/java/disambiguation/same_name_packages",
+  "defect_class": null,
+  "description": "A package-qualified class call resolves beta.Target.go, not alpha.Target.go.",
+  "entrypoints": [
+    "Main.java",
+    "alpha/Target.java",
+    "beta/Target.java"
+  ],
+  "feature": "disambiguation",
+  "language": "java",
+  "negative_edges": [
+    {
+      "dst_file": "alpha/Target.java",
+      "dst_func": "Target.go",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Main qualifies the call with beta.Target.",
+      "src_file": "Main.java",
+      "src_func": "Main.run",
+      "src_line": null
+    }
+  ]
+}

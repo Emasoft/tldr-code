@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/java/dynamic/reflection_expected_unresolved",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "expected_unresolved": [
+    {
+      "expression": "Class.forName(\"Plugin\").getMethod(\"start\").invoke(null)",
+      "location": {
+        "file": "Main.java",
+        "line": 3
+      },
+      "missing_edge": {
+        "dst_file": "Plugin.java",
+        "dst_func": "Plugin.start",
+        "dst_line": null,
+        "kind": "call",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "Main.java",
+        "src_func": "Main.run",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Requires reflection string analysis and invoke target binding."
+    }
+  ],
+  "language": "java",
+  "notes": "Reflection Class.forName dispatch is expected-unresolved.",
+  "schema_version": "truth.v1"
+}

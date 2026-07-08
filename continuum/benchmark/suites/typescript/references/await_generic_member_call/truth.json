@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/typescript/references/await_generic_member_call",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "client.ts",
+      "dst_func": "Client.m",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "client.ts",
+      "src_func": "Client.run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "Await plus a generic member call is still a call edge.",
+  "schema_version": "truth.v1"
+}

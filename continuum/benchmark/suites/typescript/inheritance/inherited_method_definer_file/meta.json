@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/inheritance/inherited_method_definer_file",
+  "defect_class": null,
+  "description": "An inherited method call resolves to the base-class definer file.",
+  "entrypoints": [
+    "base.ts",
+    "child.ts"
+  ],
+  "feature": "inheritance",
+  "language": "typescript",
+  "negative_edges": []
+}

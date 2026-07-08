@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/imports/index_file_import",
+  "defect_class": null,
+  "description": "A directory import resolves through index.ts.",
+  "entrypoints": [
+    "main.ts",
+    "services/index.ts"
+  ],
+  "feature": "imports",
+  "language": "typescript",
+  "negative_edges": []
+}

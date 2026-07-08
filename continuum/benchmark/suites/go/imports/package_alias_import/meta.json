@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/imports/package_alias_import",
+  "defect_class": null,
+  "description": "A Go import alias resolves to the aliased package function.",
+  "entrypoints": [
+    "lib/lib.go",
+    "main.go"
+  ],
+  "feature": "imports",
+  "language": "go",
+  "negative_edges": []
+}

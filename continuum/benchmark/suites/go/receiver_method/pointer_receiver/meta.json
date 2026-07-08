@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/receiver_method/pointer_receiver",
+  "defect_class": null,
+  "description": "A pointer receiver call resolves to the pointer receiver method.",
+  "entrypoints": [
+    "main.go",
+    "store.go"
+  ],
+  "feature": "receiver method",
+  "language": "go",
+  "negative_edges": []
+}

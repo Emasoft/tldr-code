@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/impl_method/out_of_line_impl",
+  "defect_class": null,
+  "description": "An out-of-line impl method can call a method defined in another impl block/file.",
+  "entrypoints": [
+    "lib.rs",
+    "model.rs"
+  ],
+  "feature": "impl method",
+  "language": "rust",
+  "negative_edges": []
+}

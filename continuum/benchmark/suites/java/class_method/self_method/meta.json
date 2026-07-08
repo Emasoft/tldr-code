@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/class_method/self_method",
+  "defect_class": null,
+  "description": "A this.receiver call resolves to the method on the same class.",
+  "entrypoints": [
+    "Main.java",
+    "Service.java"
+  ],
+  "feature": "class method",
+  "language": "java",
+  "negative_edges": []
+}

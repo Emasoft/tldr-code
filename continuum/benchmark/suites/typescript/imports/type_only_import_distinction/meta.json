@@ -1,0 +1,32 @@
+{
+  "case_id": "suites/typescript/imports/type_only_import_distinction",
+  "defect_class": "CORRECTNESS#32",
+  "description": "A type-only import must not create a value-call target.",
+  "entrypoints": [
+    "builder.ts",
+    "main.ts",
+    "types.ts"
+  ],
+  "feature": "imports",
+  "language": "typescript",
+  "negative_edges": [
+    {
+      "dst_file": "types.ts",
+      "dst_func": "build",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "types.ts is imported only for types; the value call is builder.build.",
+      "src_file": "main.ts",
+      "src_func": "run",
+      "src_line": null
+    }
+  ]
+}

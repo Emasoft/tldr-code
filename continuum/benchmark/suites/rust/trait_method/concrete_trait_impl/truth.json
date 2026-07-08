@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/rust/trait_method/concrete_trait_impl",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "lib.rs",
+      "dst_func": "Job.work",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "A trait method call on a concrete receiver resolves to the impl method.",
+  "schema_version": "truth.v1"
+}

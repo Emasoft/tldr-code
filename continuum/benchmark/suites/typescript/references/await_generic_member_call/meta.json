@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/references/await_generic_member_call",
+  "defect_class": "CORRECTNESS#32",
+  "description": "Await plus a generic member call is still a call edge.",
+  "entrypoints": [
+    "client.ts",
+    "main.ts"
+  ],
+  "feature": "references",
+  "language": "typescript",
+  "negative_edges": []
+}

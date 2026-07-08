@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/imports/use_alias",
+  "defect_class": null,
+  "description": "A use alias resolves to the aliased function.",
+  "entrypoints": [
+    "lib.rs",
+    "math.rs"
+  ],
+  "feature": "imports",
+  "language": "rust",
+  "negative_edges": []
+}

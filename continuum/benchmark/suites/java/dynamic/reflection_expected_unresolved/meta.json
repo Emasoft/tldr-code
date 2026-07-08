@@ -1,0 +1,66 @@
+{
+  "case_id": "suites/java/dynamic/reflection_expected_unresolved",
+  "defect_class": null,
+  "description": "Reflection Class.forName dispatch is expected-unresolved.",
+  "entrypoints": [
+    "Main.java",
+    "Plugin.java"
+  ],
+  "expected_unresolved": [
+    {
+      "expression": "Class.forName(\"Plugin\").getMethod(\"start\").invoke(null)",
+      "location": {
+        "file": "Main.java",
+        "line": 3
+      },
+      "missing_edge": {
+        "dst_file": "Plugin.java",
+        "dst_func": "Plugin.start",
+        "dst_line": null,
+        "kind": "call",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "Main.java",
+        "src_func": "Main.run",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Requires reflection string analysis and invoke target binding."
+    }
+  ],
+  "feature": "dynamic",
+  "language": "java",
+  "negative_edges": [
+    {
+      "dst_file": "Plugin.java",
+      "dst_func": "Plugin.start",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Reflection target is forbidden until Class.forName string flow is modeled.",
+      "src_file": "Main.java",
+      "src_func": "Main.run",
+      "src_line": null
+    }
+  ]
+}

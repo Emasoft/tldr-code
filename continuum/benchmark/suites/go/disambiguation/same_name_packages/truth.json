@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/go/disambiguation/same_name_packages",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "beta/beta.go",
+      "dst_func": "Target",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.go",
+      "src_func": "Run",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "A package-qualified call resolves beta.Target, not alpha.Target.",
+  "schema_version": "truth.v1"
+}

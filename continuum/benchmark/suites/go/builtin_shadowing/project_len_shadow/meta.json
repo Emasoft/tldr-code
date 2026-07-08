@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/builtin_shadowing/project_len_shadow",
+  "defect_class": null,
+  "description": "A project function named len shadows the Go predeclared builtin name.",
+  "entrypoints": [
+    "main.go",
+    "shadow.go"
+  ],
+  "feature": "builtin shadowing",
+  "language": "go",
+  "negative_edges": []
+}

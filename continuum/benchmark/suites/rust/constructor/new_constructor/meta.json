@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/constructor/new_constructor",
+  "defect_class": null,
+  "description": "A Rust new associated function is modeled as construction, followed by init.",
+  "entrypoints": [
+    "lib.rs",
+    "main.rs"
+  ],
+  "feature": "constructor",
+  "language": "rust",
+  "negative_edges": []
+}

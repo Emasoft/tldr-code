@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/direct_call/basic_direct",
+  "defect_class": null,
+  "description": "A same-package function call resolves across Go files.",
+  "entrypoints": [
+    "helper.go",
+    "main.go"
+  ],
+  "feature": "direct call",
+  "language": "go",
+  "negative_edges": []
+}

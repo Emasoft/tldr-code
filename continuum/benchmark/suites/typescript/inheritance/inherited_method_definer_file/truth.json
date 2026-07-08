@@ -1,0 +1,27 @@
+{
+  "case_id": "suites/typescript/inheritance/inherited_method_definer_file",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "confidence_note": "Inherited method truth points at the definer file, not the subclass use site.",
+      "dst_file": "base.ts",
+      "dst_func": "Base.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "child.ts",
+      "src_func": "Child.run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "An inherited method call resolves to the base-class definer file.",
+  "schema_version": "truth.v1"
+}

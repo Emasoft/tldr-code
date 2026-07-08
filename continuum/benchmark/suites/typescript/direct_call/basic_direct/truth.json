@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/typescript/direct_call/basic_direct",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "main.ts",
+      "dst_func": "helper",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.ts",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "A local TypeScript function call resolves inside the same file.",
+  "schema_version": "truth.v1"
+}

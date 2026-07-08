@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/rust/constructor/new_constructor",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "lib.rs",
+      "dst_func": "Widget.new",
+      "dst_line": null,
+      "kind": "constructor",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "build",
+      "src_line": null
+    },
+    {
+      "dst_file": "lib.rs",
+      "dst_func": "Widget.init",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "build",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "A Rust new associated function is modeled as construction, followed by init.",
+  "schema_version": "truth.v1"
+}

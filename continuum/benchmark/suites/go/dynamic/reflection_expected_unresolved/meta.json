@@ -1,0 +1,66 @@
+{
+  "case_id": "suites/go/dynamic/reflection_expected_unresolved",
+  "defect_class": null,
+  "description": "Reflection MethodByName dispatch is expected-unresolved.",
+  "entrypoints": [
+    "main.go",
+    "worker.go"
+  ],
+  "expected_unresolved": [
+    {
+      "expression": "MethodByName(name).Call(nil)",
+      "location": {
+        "file": "main.go",
+        "line": 7
+      },
+      "missing_edge": {
+        "dst_file": "worker.go",
+        "dst_func": "Worker.Start",
+        "dst_line": null,
+        "kind": "method",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "main.go",
+        "src_func": "Run",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Requires reflection string/value analysis."
+    }
+  ],
+  "feature": "dynamic",
+  "language": "go",
+  "negative_edges": [
+    {
+      "dst_file": "worker.go",
+      "dst_func": "Worker.Start",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Reflection target is forbidden until MethodByName value flow is modeled.",
+      "src_file": "main.go",
+      "src_func": "Run",
+      "src_line": null
+    }
+  ]
+}

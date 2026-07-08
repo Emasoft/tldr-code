@@ -1,0 +1,27 @@
+{
+  "case_id": "suites/go/inheritance/embedded_method_definer_file",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "confidence_note": "Embedded method truth points at the Base method definer file.",
+      "dst_file": "base.go",
+      "dst_func": "Base.Helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "child.go",
+      "src_func": "Child.Run",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "A promoted method call resolves to the embedded Base method definer.",
+  "schema_version": "truth.v1"
+}

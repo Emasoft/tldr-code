@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/typescript/class_method/self_method",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "service.ts",
+      "dst_func": "Service.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "service.ts",
+      "src_func": "Service.run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "A this.receiver method call resolves to the method on the same class.",
+  "schema_version": "truth.v1"
+}

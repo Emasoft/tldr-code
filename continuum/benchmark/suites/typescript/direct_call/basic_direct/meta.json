@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/direct_call/basic_direct",
+  "defect_class": null,
+  "description": "A local TypeScript function call resolves inside the same file.",
+  "entrypoints": [
+    "main.ts",
+    "unused.ts"
+  ],
+  "feature": "direct call",
+  "language": "typescript",
+  "negative_edges": []
+}

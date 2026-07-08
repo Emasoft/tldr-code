@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/constructor/new_constructor",
+  "defect_class": null,
+  "description": "A Java new expression calls the constructor, and the constructor calls init.",
+  "entrypoints": [
+    "Main.java",
+    "Widget.java"
+  ],
+  "feature": "constructor",
+  "language": "java",
+  "negative_edges": []
+}

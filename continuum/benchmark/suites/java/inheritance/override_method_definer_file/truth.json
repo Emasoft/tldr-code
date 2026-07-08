@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/java/inheritance/override_method_definer_file",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "Child.java",
+      "dst_func": "Child.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "Child.java",
+      "src_func": "Child.run",
+      "src_line": null
+    }
+  ],
+  "language": "java",
+  "notes": "An overridden Java method call resolves to the overriding method definer.",
+  "schema_version": "truth.v1"
+}

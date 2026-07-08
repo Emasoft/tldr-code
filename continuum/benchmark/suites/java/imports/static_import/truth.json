@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/java/imports/static_import",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "util/Tools.java",
+      "dst_func": "Tools.work",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "app/Main.java",
+      "src_func": "Main.run",
+      "src_line": null
+    }
+  ],
+  "language": "java",
+  "notes": "A static import resolves an unqualified call to the imported static method.",
+  "schema_version": "truth.v1"
+}

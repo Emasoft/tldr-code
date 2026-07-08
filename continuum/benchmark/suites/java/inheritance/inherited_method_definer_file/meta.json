@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/inheritance/inherited_method_definer_file",
+  "defect_class": "CORRECTNESS#2",
+  "description": "An inherited Java method call resolves to the base-class definer.",
+  "entrypoints": [
+    "Base.java",
+    "Child.java"
+  ],
+  "feature": "inheritance",
+  "language": "java",
+  "negative_edges": []
+}

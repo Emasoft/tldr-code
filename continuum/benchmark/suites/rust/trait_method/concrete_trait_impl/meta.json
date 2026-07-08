@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/trait_method/concrete_trait_impl",
+  "defect_class": null,
+  "description": "A trait method call on a concrete receiver resolves to the impl method.",
+  "entrypoints": [
+    "lib.rs",
+    "main.rs"
+  ],
+  "feature": "trait method",
+  "language": "rust",
+  "negative_edges": []
+}

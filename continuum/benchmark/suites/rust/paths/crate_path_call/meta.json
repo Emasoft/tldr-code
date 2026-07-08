@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/paths/crate_path_call",
+  "defect_class": "CORRECTNESS#4",
+  "description": "A crate:: path resolves to the module function.",
+  "entrypoints": [
+    "lib.rs",
+    "util.rs"
+  ],
+  "feature": "paths",
+  "language": "rust",
+  "negative_edges": []
+}

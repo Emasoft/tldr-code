@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/typescript/constructor/new_constructor",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "widget.ts",
+      "dst_func": "Widget.constructor",
+      "dst_line": null,
+      "kind": "constructor",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.ts",
+      "src_func": "build",
+      "src_line": null
+    },
+    {
+      "dst_file": "widget.ts",
+      "dst_func": "Widget.ready",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "widget.ts",
+      "src_func": "Widget.constructor",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "A new expression calls the class constructor, and the constructor calls ready.",
+  "schema_version": "truth.v1"
+}

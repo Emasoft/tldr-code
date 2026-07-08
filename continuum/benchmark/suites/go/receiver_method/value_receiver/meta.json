@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/receiver_method/value_receiver",
+  "defect_class": null,
+  "description": "A value receiver call resolves to the receiver method.",
+  "entrypoints": [
+    "main.go",
+    "service.go"
+  ],
+  "feature": "receiver method",
+  "language": "go",
+  "negative_edges": []
+}

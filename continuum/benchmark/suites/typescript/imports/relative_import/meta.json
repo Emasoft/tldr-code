@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/imports/relative_import",
+  "defect_class": null,
+  "description": "A relative named import resolves to the imported module function.",
+  "entrypoints": [
+    "main.ts",
+    "worker.ts"
+  ],
+  "feature": "imports",
+  "language": "typescript",
+  "negative_edges": []
+}

@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/impl_method/inherent_impl",
+  "defect_class": null,
+  "description": "An inherent impl self-call resolves to the same impl method.",
+  "entrypoints": [
+    "lib.rs",
+    "main.rs"
+  ],
+  "feature": "impl method",
+  "language": "rust",
+  "negative_edges": []
+}

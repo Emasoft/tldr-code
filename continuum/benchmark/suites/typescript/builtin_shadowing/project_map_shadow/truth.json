@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/typescript/builtin_shadowing/project_map_shadow",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "map.ts",
+      "dst_func": "map",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.ts",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "typescript",
+  "notes": "A project function named map must not be filtered as a builtin collision.",
+  "schema_version": "truth.v1"
+}

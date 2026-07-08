@@ -1,0 +1,61 @@
+{
+  "case_id": "suites/go/interface_dispatch/interface_expected_unresolved",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "iface.go",
+      "dst_func": "exec",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.go",
+      "src_func": "Entry",
+      "src_line": null
+    }
+  ],
+  "expected_unresolved": [
+    {
+      "expression": "r.Run()",
+      "location": {
+        "file": "iface.go",
+        "line": 8
+      },
+      "missing_edge": {
+        "dst_file": "worker.go",
+        "dst_func": "Worker.Run",
+        "dst_line": null,
+        "kind": "method",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "iface.go",
+        "src_func": "exec",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Requires binding the interface receiver to the concrete Worker implementation."
+    }
+  ],
+  "language": "go",
+  "notes": "Interface dispatch through Runner is expected-unresolved for the concrete Worker target.",
+  "schema_version": "truth.v1"
+}

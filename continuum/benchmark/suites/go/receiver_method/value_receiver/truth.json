@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/go/receiver_method/value_receiver",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "service.go",
+      "dst_func": "Service.helper",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "service.go",
+      "src_func": "Service.Run",
+      "src_line": null
+    },
+    {
+      "dst_file": "service.go",
+      "dst_func": "Service.Run",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "main.go",
+      "src_func": "Entry",
+      "src_line": null
+    }
+  ],
+  "language": "go",
+  "notes": "A value receiver call resolves to the receiver method.",
+  "schema_version": "truth.v1"
+}

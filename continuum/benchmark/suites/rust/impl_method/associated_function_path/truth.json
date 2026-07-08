@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/rust/impl_method/associated_function_path",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "lib.rs",
+      "dst_func": "Tool.make",
+      "dst_line": null,
+      "kind": "constructor",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "An associated function path resolves to the impl definer.",
+  "schema_version": "truth.v1"
+}

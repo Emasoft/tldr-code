@@ -1,0 +1,32 @@
+{
+  "case_id": "suites/rust/disambiguation/same_name_modules",
+  "defect_class": null,
+  "description": "A module-qualified call resolves beta::target, not alpha::target.",
+  "entrypoints": [
+    "alpha.rs",
+    "beta.rs",
+    "lib.rs"
+  ],
+  "feature": "disambiguation",
+  "language": "rust",
+  "negative_edges": [
+    {
+      "dst_file": "alpha.rs",
+      "dst_func": "target",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "run calls beta::target, not alpha::target.",
+      "src_file": "lib.rs",
+      "src_func": "run",
+      "src_line": null
+    }
+  ]
+}

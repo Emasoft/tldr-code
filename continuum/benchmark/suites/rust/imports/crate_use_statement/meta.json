@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/imports/crate_use_statement",
+  "defect_class": "CORRECTNESS#24",
+  "description": "A use crate::module::function import resolves to the module function.",
+  "entrypoints": [
+    "counter.rs",
+    "lib.rs"
+  ],
+  "feature": "imports",
+  "language": "rust",
+  "negative_edges": []
+}

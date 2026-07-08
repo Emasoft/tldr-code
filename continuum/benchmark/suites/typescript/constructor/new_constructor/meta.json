@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/constructor/new_constructor",
+  "defect_class": null,
+  "description": "A new expression calls the class constructor, and the constructor calls ready.",
+  "entrypoints": [
+    "main.ts",
+    "widget.ts"
+  ],
+  "feature": "constructor",
+  "language": "typescript",
+  "negative_edges": []
+}

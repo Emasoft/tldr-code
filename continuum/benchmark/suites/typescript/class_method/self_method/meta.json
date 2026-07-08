@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/typescript/class_method/self_method",
+  "defect_class": null,
+  "description": "A this.receiver method call resolves to the method on the same class.",
+  "entrypoints": [
+    "main.ts",
+    "service.ts"
+  ],
+  "feature": "class method",
+  "language": "typescript",
+  "negative_edges": []
+}

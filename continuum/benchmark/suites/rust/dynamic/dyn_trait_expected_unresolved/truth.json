@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/rust/dynamic/dyn_trait_expected_unresolved",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "expected_unresolved": [
+    {
+      "expression": "worker.work()",
+      "location": {
+        "file": "lib.rs",
+        "line": 14
+      },
+      "missing_edge": {
+        "dst_file": "lib.rs",
+        "dst_func": "Job.work",
+        "dst_line": null,
+        "kind": "method",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "lib.rs",
+        "src_func": "run_dyn",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "The concrete implementor behind dyn Worker is not statically known here."
+    }
+  ],
+  "language": "rust",
+  "notes": "A dyn Trait object method call is expected-unresolved for the concrete Job impl.",
+  "schema_version": "truth.v1"
+}

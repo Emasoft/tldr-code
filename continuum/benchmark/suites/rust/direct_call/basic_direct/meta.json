@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/direct_call/basic_direct",
+  "defect_class": null,
+  "description": "A module-qualified Rust function call resolves to the module function.",
+  "entrypoints": [
+    "helper.rs",
+    "lib.rs"
+  ],
+  "feature": "direct call",
+  "language": "rust",
+  "negative_edges": []
+}

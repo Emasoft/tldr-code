@@ -1,0 +1,26 @@
+{
+  "case_id": "suites/rust/disambiguation/same_name_modules",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "beta.rs",
+      "dst_func": "target",
+      "dst_line": null,
+      "kind": "call",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "lib.rs",
+      "src_func": "run",
+      "src_line": null
+    }
+  ],
+  "language": "rust",
+  "notes": "A module-qualified call resolves beta::target, not alpha::target.",
+  "schema_version": "truth.v1"
+}

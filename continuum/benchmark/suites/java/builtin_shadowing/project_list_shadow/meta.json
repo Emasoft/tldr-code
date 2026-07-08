@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/builtin_shadowing/project_list_shadow",
+  "defect_class": "CORRECTNESS#3",
+  "description": "A project class named List shadows the common java.util.List name for this call.",
+  "entrypoints": [
+    "List.java",
+    "Main.java"
+  ],
+  "feature": "builtin shadowing",
+  "language": "java",
+  "negative_edges": []
+}

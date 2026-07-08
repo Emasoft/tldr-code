@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/constructor/factory_constructor",
+  "defect_class": null,
+  "description": "A Go factory function models construction and calls the receiver initializer.",
+  "entrypoints": [
+    "main.go",
+    "widget.go"
+  ],
+  "feature": "constructor",
+  "language": "go",
+  "negative_edges": []
+}

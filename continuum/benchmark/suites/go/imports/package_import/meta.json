@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/go/imports/package_import",
+  "defect_class": null,
+  "description": "A package-qualified import resolves to the imported package function.",
+  "entrypoints": [
+    "lib/lib.go",
+    "main.go"
+  ],
+  "feature": "imports",
+  "language": "go",
+  "negative_edges": []
+}

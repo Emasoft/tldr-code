@@ -1,0 +1,67 @@
+{
+  "case_id": "suites/java/interface_dispatch/interface_expected_unresolved",
+  "defect_class": null,
+  "description": "Interface dispatch through Worker is expected-unresolved for the concrete Job target.",
+  "entrypoints": [
+    "Job.java",
+    "Main.java",
+    "Worker.java"
+  ],
+  "expected_unresolved": [
+    {
+      "expression": "worker.work()",
+      "location": {
+        "file": "Main.java",
+        "line": 3
+      },
+      "missing_edge": {
+        "dst_file": "Job.java",
+        "dst_func": "Job.work",
+        "dst_line": null,
+        "kind": "method",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "Main.java",
+        "src_func": "Main.dispatch",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Requires binding an interface receiver to a concrete implementation."
+    }
+  ],
+  "feature": "interface dispatch",
+  "language": "java",
+  "negative_edges": [
+    {
+      "dst_file": "Job.java",
+      "dst_func": "Job.work",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "The concrete interface implementor is not known at the dispatch site.",
+      "src_file": "Main.java",
+      "src_func": "Main.dispatch",
+      "src_line": null
+    }
+  ]
+}

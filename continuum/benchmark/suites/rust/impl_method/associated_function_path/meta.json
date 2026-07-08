@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/impl_method/associated_function_path",
+  "defect_class": null,
+  "description": "An associated function path resolves to the impl definer.",
+  "entrypoints": [
+    "lib.rs",
+    "main.rs"
+  ],
+  "feature": "impl method",
+  "language": "rust",
+  "negative_edges": []
+}

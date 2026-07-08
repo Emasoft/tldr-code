@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/typescript/dynamic/dynamic_import_expected_unresolved",
+  "edge_model": "static-callgraph",
+  "edges": [],
+  "expected_unresolved": [
+    {
+      "expression": "mod.activate()",
+      "location": {
+        "file": "main.ts",
+        "line": 3
+      },
+      "missing_edge": {
+        "dst_file": "plugin.ts",
+        "dst_func": "activate",
+        "dst_line": null,
+        "kind": "call",
+        "provenance": {
+          "harvested_at": "2026-07-08",
+          "source": "manual",
+          "staleness": "source-local; update only when case source changes",
+          "tier": "T0",
+          "tool": "human-audited-source",
+          "version": "VAL-020b"
+        },
+        "src_file": "main.ts",
+        "src_func": "run",
+        "src_line": null
+      },
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "reason": "Requires resolving the runtime value returned by dynamic import()."
+    }
+  ],
+  "language": "typescript",
+  "notes": "A dynamic import member call is expected-unresolved until import() value flow is modeled.",
+  "schema_version": "truth.v1"
+}

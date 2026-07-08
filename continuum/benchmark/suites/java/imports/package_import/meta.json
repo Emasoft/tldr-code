@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/java/imports/package_import",
+  "defect_class": null,
+  "description": "A package import resolves to the imported class static method.",
+  "entrypoints": [
+    "app/Main.java",
+    "lib/Worker.java"
+  ],
+  "feature": "imports",
+  "language": "java",
+  "negative_edges": []
+}

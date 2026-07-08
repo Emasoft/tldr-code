@@ -1,0 +1,43 @@
+{
+  "case_id": "suites/java/constructor/new_constructor",
+  "edge_model": "static-callgraph",
+  "edges": [
+    {
+      "dst_file": "Widget.java",
+      "dst_func": "Widget.Widget",
+      "dst_line": null,
+      "kind": "constructor",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "Main.java",
+      "src_func": "Main.build",
+      "src_line": null
+    },
+    {
+      "dst_file": "Widget.java",
+      "dst_func": "Widget.init",
+      "dst_line": null,
+      "kind": "method",
+      "provenance": {
+        "harvested_at": "2026-07-08",
+        "source": "manual",
+        "staleness": "source-local; update only when case source changes",
+        "tier": "T0",
+        "tool": "human-audited-source",
+        "version": "VAL-020b"
+      },
+      "src_file": "Widget.java",
+      "src_func": "Widget.Widget",
+      "src_line": null
+    }
+  ],
+  "language": "java",
+  "notes": "A Java new expression calls the constructor, and the constructor calls init.",
+  "schema_version": "truth.v1"
+}

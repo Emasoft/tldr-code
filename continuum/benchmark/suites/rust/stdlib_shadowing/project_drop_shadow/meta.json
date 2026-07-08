@@ -1,0 +1,12 @@
+{
+  "case_id": "suites/rust/stdlib_shadowing/project_drop_shadow",
+  "defect_class": null,
+  "description": "A project function named drop shadows the std/prelude name in this call position.",
+  "entrypoints": [
+    "lib.rs",
+    "main.rs"
+  ],
+  "feature": "stdlib shadowing",
+  "language": "rust",
+  "negative_edges": []
+}

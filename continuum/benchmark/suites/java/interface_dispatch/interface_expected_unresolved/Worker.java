@@ -1,0 +1,3 @@
+interface Worker {
+    String work();
+}
