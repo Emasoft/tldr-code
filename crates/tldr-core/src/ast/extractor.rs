@@ -2647,35 +2647,27 @@ pub(crate) fn try_callback_call_definition(
         }
     }
 
-    // Emit ONCE PER CALL, from the outermost callable only. Some grammars nest the form inside
-    // itself — tree-sitter-python parses `key=lambda a: a.b` as a `lambda` containing a second
-    // `lambda` node — and without this guard the same call is emitted twice with the same name and
-    // the same range, which then collides in every name-keyed consumer downstream.
-    {
-        let callable_kinds = anonymous_callable_kinds(language);
-        let mut ancestor = node.parent();
-        let mut hops = 0;
-        while let Some(a) = ancestor {
-            if callable_kinds.contains(&a.kind()) {
-                return None;
-            }
-            if hops >= MAX_CALL_ANCESTOR_DEPTH {
-                break;
-            }
-            hops += 1;
-            ancestor = a.parent();
-        }
-    }
-
     // Walk up to the enclosing call. The intermediate nodes differ per grammar (`arguments`,
     // `argument_list`, `argument`, `annotated_lambda`, `call_suffix`, `keyword_argument`,
     // `parenthesized_expression`), so match on the destination instead of enumerating the path.
+    //
+    // Whichever comes FIRST decides, and that ordering is the whole subtlety:
+    //   • a CALL first  ⇒ this callable is that call's argument. Emit — even when the call is
+    //     itself nested inside another callback, which is exactly `describe do … it do … end end`
+    //     and the single most useful case in any test file.
+    //   • a CALLABLE first ⇒ this node is nested inside another callable with no call between
+    //     them, which is how tree-sitter-python represents `key=lambda a: a.b` (a `lambda` holding
+    //     a second `lambda`). Both would resolve to the same call and emit one region twice.
     let calls = call_like_kinds(language);
+    let callables = anonymous_callable_kinds(language);
     let mut call = node.parent();
     let mut depth = 0;
     while let Some(candidate) = call {
         if calls.contains(&candidate.kind()) {
             break;
+        }
+        if callables.contains(&candidate.kind()) {
+            return None;
         }
         if depth >= MAX_CALL_ANCESTOR_DEPTH {
             return None;
@@ -4422,5 +4414,128 @@ interface IFace {
                 methods
             );
         }
+    }
+
+    // =========================================================================
+    // anonymous-callback-definitions-v1
+    // =========================================================================
+
+    /// Every `kind == "call"` definition, as `(name, line_start, line_end)`.
+    fn call_defs(source: &str, lang: Language) -> Vec<(String, u32, u32)> {
+        let tree = parse(source, lang).expect("parse");
+        extract_definitions(&tree, source, lang)
+            .into_iter()
+            .filter(|d| d.kind == "call")
+            .map(|d| (d.name, d.line_start, d.line_end))
+            .collect()
+    }
+
+    #[test]
+    fn test_anon_callback_named_from_its_call_js() {
+        // The motivating case: mocha's setup hook. Before this, the whole block was invisible —
+        // classified as a function, then dropped for having no name.
+        let source = "suiteSetup(async function () {\n  const a = 1;\n  return a;\n});\n";
+        let defs = call_defs(source, Language::JavaScript);
+        assert_eq!(
+            defs,
+            vec![("suiteSetup".to_string(), 1, 4)],
+            "the call's FULL range must be mapped (the unit a reader opens and an editor replaces)"
+        );
+    }
+
+    #[test]
+    fn test_anon_callback_title_slug_disambiguates_siblings() {
+        // Two `test(…)` calls: the callee alone would name both identically, and a name-keyed
+        // consumer (fastedit --replace) resolves first-match-wins — it would edit the wrong one.
+        let source = "test('first case', () => {\n  a();\n});\ntest('second case', () => {\n  b();\n});\n";
+        let defs = call_defs(source, Language::TypeScript);
+        assert_eq!(
+            defs,
+            vec![
+                ("test:first-case".to_string(), 1, 3),
+                ("test:second-case".to_string(), 4, 6),
+            ],
+            "titles make sibling calls distinguishable AND stable against inserting a sibling"
+        );
+    }
+
+    #[test]
+    fn test_anon_callback_member_callee_is_dot_free() {
+        // `fastedit --replace` splits a name on its FIRST dot to mean Class.method, so a name
+        // like `http.HandleFunc` could never resolve. Last segment only; full text in signature.
+        let source = "func main() {\n\thttp.HandleFunc(\"/api\", func(w int, r int) {\n\t\tprintln(w)\n\t})\n}\n";
+        let tree = parse(source, Language::Go).unwrap();
+        let def = extract_definitions(&tree, source, Language::Go)
+            .into_iter()
+            .find(|d| d.kind == "call")
+            .expect("Go func_literal argument must be mapped");
+        assert!(!def.name.contains('.'), "name must be dot-free, got {}", def.name);
+        assert!(def.name.starts_with("HandleFunc"), "got {}", def.name);
+        assert!(
+            def.signature.contains("http.HandleFunc"),
+            "the full callee belongs in signature, got {}",
+            def.signature
+        );
+    }
+
+    #[test]
+    fn test_anon_callback_collisions_get_stable_ordinals() {
+        // Real code from this project's own test suite: two DIFFERENT `.then(…)` calls on one
+        // line. Same derived name, same range — only an ordinal separates them.
+        let source = "const r = Promise.race([closed.then(() => true), sleep(5).then(() => false)]);\n";
+        let names: Vec<String> = call_defs(source, Language::TypeScript)
+            .into_iter()
+            .map(|(n, _, _)| n)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["then".to_string(), "then#2".to_string()],
+            "same-named calls must be separable; numbering follows source order"
+        );
+    }
+
+    #[test]
+    fn test_anon_callback_emitted_once_per_call_not_per_nested_callable() {
+        // tree-sitter-python nests a `lambda` inside the `lambda` node. Emitting per callable
+        // would produce the same call twice, with the same name and range.
+        let source = "sorted(items, key=lambda a:\n    a.b\n)\n";
+        let defs = call_defs(source, Language::Python);
+        assert_eq!(defs.len(), 1, "one call ⇒ one definition, got {defs:?}");
+        assert_eq!(defs[0].0, "sorted");
+    }
+
+    #[test]
+    fn test_anon_callback_ruby_block_and_nesting() {
+        // RSpec is the same shape as mocha, via `do … end`. Nested blocks must BOTH appear:
+        // the outer describe is the region you read, the inner it is the region you edit.
+        let source = "describe 'a widget' do\n  it 'works' do\n    expect(1).to eq(1)\n  end\nend\n";
+        let defs = call_defs(source, Language::Ruby);
+        assert_eq!(
+            defs,
+            vec![
+                ("describe:a-widget".to_string(), 1, 5),
+                ("it:works".to_string(), 2, 4),
+            ],
+            "nested callback regions are strictly contained, and both are mapped"
+        );
+    }
+
+    #[test]
+    fn test_named_callable_is_left_to_the_generic_path() {
+        // A closure bound to a name is NOT anonymous — the generic path already names it from the
+        // declarator. Emitting it here too would double-count it under two different kinds.
+        let source = "const handler = () => {\n  return 1;\n};\n";
+        assert!(
+            call_defs(source, Language::TypeScript).is_empty(),
+            "a variable-bound arrow must not be re-emitted as a call"
+        );
+    }
+
+    #[test]
+    fn test_c_has_no_anonymous_callable_form() {
+        // Not an oversight — C has no lambda, so there is nothing to name. Asserted so a future
+        // table edit cannot quietly start inventing entries for it.
+        let source = "int main(void) {\n  return 0;\n}\n";
+        assert!(call_defs(source, Language::C).is_empty());
     }
 }
