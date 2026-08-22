@@ -39,13 +39,16 @@ catalog, argument shapes that surprise people, the performance envelope, and the
 reaching for. Install it from **this checkout** with the open skills CLI:
 
 ```bash
-npx skills add ./skills/tldr-code      # or: make install-skill
+make install-skill                          # npx skills add -g --all ./skills/tldr-code
 ```
 
 The local-path source is the point: it installs the skill matching the binary you just built, so
 an agent never reads docs for a `tldr` you do not have. `skills add` writes to every supported
 agent it finds (Claude Code, Codex, Cursor, OpenCode, and [73 more](https://github.com/vercel-labs/skills))
-and is idempotent.
+and is idempotent. `-g` puts it at user level, next to the binary — the default is project-level,
+which would install it into this repo and nowhere you actually work.
+
+`tldr doctor` tells you whether it took.
 
 ### With fastedit — the WRITE companion
 

@@ -18,16 +18,20 @@
   - The per-language node-kind tables were read off the actual grammars at their pinned versions
     rather than recalled, because kinds differ between grammars that look alike.
 - **The agent skill ships in-repo** at `skills/tldr-code/`, installable from a checkout with
-  `npx skills add ./skills/tldr-code` (or `make install-skill`) via the open skills CLI. Local
-  path on purpose: it installs the skill matching the binary you just built.
+  `make install-skill` (`npx skills add -g --all ./skills/tldr-code`) via the open skills CLI.
+  Local path on purpose: it installs the skill matching the binary you just built. `-g` is
+  load-bearing — without it the CLI installs project-level, into this repo, the one project
+  where nobody needs it.
 - **`make install-fastedit` / `make install-full`** — optional bundle for
   [fastedit](https://github.com/parcadei/fastedit), the AST-scoped WRITE companion. Not a
   manifest dependency: fastedit is a Python package and `cargo install` has no post-install hook.
   Idempotent, platform-detected, and does **not** pull the ~3 GB merge model (it prints the
   command).
 - **`tldr doctor` reports the companions**, since the common install path never runs the
-  Makefile and would otherwise never mention them. Text output only — `-f json` serializes the
-  per-language map directly, and wrapping it would break existing consumers.
+  Makefile and would otherwise never mention them. Both rows are **detected**, not assumed: the
+  skill row searches the four agent roots the skills CLI writes to and degrades to "not
+  detected" plus the install hint rather than making a false claim. Text output only — `-f json`
+  serializes the per-language map directly, and wrapping it would break existing consumers.
 
 ## v0.4.0 — 2026-05-10
 
