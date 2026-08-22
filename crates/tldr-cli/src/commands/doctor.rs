@@ -449,10 +449,42 @@ fn format_companions_text() -> String {
         }
     }
 
-    out.push_str(&format!(
-        "  {} agent skill - install from a checkout: npx skills add ./skills/tldr-code\n",
-        "[--]".yellow()
-    ));
+    // Detected, not assumed. An unconditional "[--] not installed" line reads as a fact and is
+    // wrong the moment anyone runs `make install-skill`; a doctor that lies about one row makes
+    // the reader distrust the rows that are right. `skills add -g` writes
+    // `<agent-root>/skills/tldr-code/SKILL.md`, so that file's presence IS the install.
+    match installed_skill_path() {
+        Some(p) => out.push_str(&format!(
+            "  {} agent skill - {}\n",
+            "[OK]".green(),
+            p.display()
+        )),
+        None => {
+            out.push_str(&format!(
+                "  {} agent skill - not detected (teaches an agent what tldr can answer)\n",
+                "[--]".yellow()
+            ));
+            out.push_str("    -> make install-skill   (from a checkout of this repo)\n");
+        }
+    }
 
     out
+}
+
+/// Where the skills CLI puts a globally-installed skill, for the agents it supports.
+///
+/// A short explicit list rather than a filesystem crawl: these paths are the CLI's own
+/// convention, and a crawl of `$HOME` to answer an advisory line would cost more than the
+/// advice is worth. A miss degrades to "not detected", never to a false claim.
+fn installed_skill_path() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    [
+        ".claude/skills",
+        ".codex/skills",
+        ".cursor/skills",
+        ".config/opencode/skills",
+    ]
+    .iter()
+    .map(|d| home.join(d).join("tldr-code"))
+    .find(|p| p.join("SKILL.md").exists())
 }

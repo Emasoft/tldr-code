@@ -24,8 +24,12 @@ install: build
 # skill that matches the binary you just built, so an agent never reads docs for a tldr you do
 # not have. `skills add` writes to every supported agent it finds (Claude Code, Codex, Cursor,
 # OpenCode, …) and is idempotent, so re-running is safe.
+# `-g` is load-bearing: without it `skills add` installs project-level, i.e. into THIS repo's
+# .claude/skills — the one project where nobody needs it. The skill documents a binary that lives
+# on $PATH, so it belongs at user level alongside it. `--all` = every skill, every detected agent,
+# no prompts, which is what makes the target usable from `install-full` and safe to re-run.
 install-skill:
-	npx --yes skills add ./skills/tldr-code
+	npx --yes skills add -g --all ./skills/tldr-code
 
 # fastedit — the AST-scoped WRITE companion (https://github.com/parcadei/fastedit). tldr READS
 # code; fastedit EDITS it by symbol name, so an agent never repeats old lines to say where an
