@@ -411,5 +411,48 @@ fn format_doctor_text(results: &BTreeMap<String, LangStatus>) -> String {
         output.push_str("All diagnostic tools installed!\n");
     }
 
+    output.push('\n');
+    output.push_str(&format_companions_text());
+
     output
+}
+
+/// The optional companions, reported so they are DISCOVERABLE.
+///
+/// Text only, on purpose: `-f json` currently serializes the per-language map directly, and
+/// wrapping it to make room for a `companions` key would break every existing consumer of
+/// `tldr doctor -f json`. Doctor's own doc comment calls text its primary surface; an advisory
+/// belongs there.
+///
+/// Neither is required by tldr. They are easy to miss precisely because the common install
+/// (`cargo install tldr-cli`) never runs this repo's Makefile, so nothing else would ever
+/// mention them.
+fn format_companions_text() -> String {
+    use colored::Colorize;
+
+    let mut out = String::new();
+    out.push_str(&"Companions (optional)\n".bold().to_string());
+    out.push_str("==================================================\n");
+
+    match which::which("fastedit") {
+        Ok(p) => out.push_str(&format!(
+            "  {} fastedit - {}\n",
+            "[OK]".green(),
+            p.display()
+        )),
+        Err(_) => {
+            out.push_str(&format!(
+                "  {} fastedit - not found (AST-scoped editing; tldr reads, fastedit writes)\n",
+                "[--]".yellow()
+            ));
+            out.push_str("    -> make install-fastedit   (or: uv tool install 'fastedits[mcp]')\n");
+        }
+    }
+
+    out.push_str(&format!(
+        "  {} agent skill - install from a checkout: npx skills add ./skills/tldr-code\n",
+        "[--]".yellow()
+    ));
+
+    out
 }

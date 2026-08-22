@@ -1,8 +1,16 @@
-//! TEMPORARY PROBE — verifies the new `kind: "call"` definitions appear for every language that
-//! has an anonymous-callable form, through the PUBLIC path (`get_code_structure` on a real file),
-//! which is what the CLI, the daemon, and fastedit all consume.
+//! The cross-language contract for anonymous-callback definitions: a `kind: "call"` definition
+//! appears for EVERY language that has an anonymous-callable form, and for none that doesn't.
 //!
-//! Run: cargo test -p tldr-core --test anon_callback_coverage_probe -- --nocapture
+//! Asserted through the PUBLIC path (`get_code_structure` on a real file) rather than against the
+//! extractor's internals, because that is what the CLI, the daemon, and fastedit all consume — a
+//! test against the private helper could pass while the shipped surface emitted nothing.
+//!
+//! Each sample is written in the idiom that language's own test framework or stdlib actually
+//! uses, so a grammar change that breaks the REAL shape fails here rather than passing against a
+//! synthetic one. C is present deliberately, expecting none: without a negative case the suite
+//! would still pass if every language started emitting a callback for every call.
+//!
+//! Run: cargo test -p tldr-core --test anon_callback_coverage -- --nocapture
 
 use std::fs;
 use tldr_core::{get_code_structure, IgnoreSpec, Language};
@@ -32,12 +40,14 @@ fn samples() -> Vec<(Language, &'static str, &'static str, &'static str)> {
 }
 
 #[test]
-fn probe_call_definitions_per_language() {
-    let dir = std::env::temp_dir().join("tldr-anon-probe");
+fn call_definitions_cover_every_language_that_has_anonymous_callables() {
+    // PID-scoped: cargo runs tests as parallel threads in ONE process, and a shared fixed path
+    // would let a concurrent run of this binary overwrite the sample another case is reading.
+    let dir = std::env::temp_dir().join(format!("tldr-anon-coverage-{}", std::process::id()));
     let _ = fs::create_dir_all(&dir);
     let mut missing: Vec<String> = Vec::new();
 
-    println!("\n{:<12} {:<28} {}", "LANG", "EXPECTED", "EMITTED kind=call");
+    println!("\n{:<12} {:<28} EMITTED kind=call", "LANG", "EXPECTED");
     println!("{}", "-".repeat(100));
     for (lang, ext, src, expected) in samples() {
         let path = dir.join(format!("probe.{ext}"));

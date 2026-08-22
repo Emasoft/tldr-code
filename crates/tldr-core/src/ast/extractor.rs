@@ -2484,9 +2484,12 @@ fn try_field_definition(
 }
 
 /// Node kinds that are an ANONYMOUS callable in this language — a function literal with no name of
-/// its own. Every entry was read off the grammar with a probe harness, not recalled: the same
-/// concept is `do_block` in Ruby, `func_literal` in Go, `lambda_literal` in Kotlin, and plain
-/// `function_definition` in Lua (where anonymous and named share one kind).
+/// its own. Every entry was read off the grammar at its pinned version with a throwaway probe
+/// harness, not recalled: the same concept is `do_block` in Ruby, `func_literal` in Go,
+/// `lambda_literal` in Kotlin, and plain `function_definition` in Lua (where anonymous and named
+/// share one kind). The harness lived at `crates/tldr-core/tests/anon_callback_kinds_probe.rs`
+/// and was removed once these tables were filled; `git log` recovers it if a grammar bump makes
+/// a kind stale and the names have to be re-read rather than guessed.
 ///
 /// C is deliberately absent — it has no lambda form, so there is nothing to name.
 fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
