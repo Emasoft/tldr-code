@@ -4450,7 +4450,8 @@ interface IFace {
     fn test_anon_callback_title_slug_disambiguates_siblings() {
         // Two `test(…)` calls: the callee alone would name both identically, and a name-keyed
         // consumer (fastedit --replace) resolves first-match-wins — it would edit the wrong one.
-        let source = "test('first case', () => {\n  a();\n});\ntest('second case', () => {\n  b();\n});\n";
+        let source =
+            "test('first case', () => {\n  a();\n});\ntest('second case', () => {\n  b();\n});\n";
         let defs = call_defs(source, Language::TypeScript);
         assert_eq!(
             defs,
@@ -4472,7 +4473,11 @@ interface IFace {
             .into_iter()
             .find(|d| d.kind == "call")
             .expect("Go func_literal argument must be mapped");
-        assert!(!def.name.contains('.'), "name must be dot-free, got {}", def.name);
+        assert!(
+            !def.name.contains('.'),
+            "name must be dot-free, got {}",
+            def.name
+        );
         assert!(def.name.starts_with("HandleFunc"), "got {}", def.name);
         assert!(
             def.signature.contains("http.HandleFunc"),
@@ -4485,7 +4490,8 @@ interface IFace {
     fn test_anon_callback_collisions_get_stable_ordinals() {
         // Real code from this project's own test suite: two DIFFERENT `.then(…)` calls on one
         // line. Same derived name, same range — only an ordinal separates them.
-        let source = "const r = Promise.race([closed.then(() => true), sleep(5).then(() => false)]);\n";
+        let source =
+            "const r = Promise.race([closed.then(() => true), sleep(5).then(() => false)]);\n";
         let names: Vec<String> = call_defs(source, Language::TypeScript)
             .into_iter()
             .map(|(n, _, _)| n)
@@ -4511,7 +4517,8 @@ interface IFace {
     fn test_anon_callback_ruby_block_and_nesting() {
         // RSpec is the same shape as mocha, via `do … end`. Nested blocks must BOTH appear:
         // the outer describe is the region you read, the inner it is the region you edit.
-        let source = "describe 'a widget' do\n  it 'works' do\n    expect(1).to eq(1)\n  end\nend\n";
+        let source =
+            "describe 'a widget' do\n  it 'works' do\n    expect(1).to eq(1)\n  end\nend\n";
         let defs = call_defs(source, Language::Ruby);
         assert_eq!(
             defs,

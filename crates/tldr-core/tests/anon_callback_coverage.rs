@@ -52,7 +52,8 @@ fn call_definitions_cover_every_language_that_has_anonymous_callables() {
     for (lang, ext, src, expected) in samples() {
         let path = dir.join(format!("probe.{ext}"));
         fs::write(&path, src).expect("write sample");
-        let st = get_code_structure(&path, lang, 0, Some(&IgnoreSpec::default())).expect("structure");
+        let st =
+            get_code_structure(&path, lang, 0, Some(&IgnoreSpec::default())).expect("structure");
         let calls: Vec<String> = st
             .files
             .iter()
@@ -60,7 +61,12 @@ fn call_definitions_cover_every_language_that_has_anonymous_callables() {
             .filter(|d| d.kind == "call")
             .map(|d| format!("{} (L{}-{})", d.name, d.line_start, d.line_end))
             .collect();
-        println!("{:<12} {:<28} {}", format!("{lang:?}"), expected, calls.join(" | "));
+        println!(
+            "{:<12} {:<28} {}",
+            format!("{lang:?}"),
+            expected,
+            calls.join(" | ")
+        );
         if !expected.is_empty() && !calls.iter().any(|c| c.starts_with(expected)) {
             missing.push(format!("{lang:?} (wanted {expected})"));
         }
