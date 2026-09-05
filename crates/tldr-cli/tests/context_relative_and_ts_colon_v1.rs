@@ -34,14 +34,13 @@ use std::path::Path;
 use std::process::Command;
 
 fn tldr_bin() -> std::path::PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR must be set under cargo test");
-    std::path::PathBuf::from(manifest)
-        .join("..")
-        .join("..")
-        .join("target")
-        .join("release")
-        .join("tldr")
+    // why: hardcoding target/release/tldr made every test in this file
+    // fail under a plain `cargo test` (debug profile, no release binary
+    // built) even when the gated /tmp/repos fixtures were present.
+    // cargo_bin! resolves via the CARGO_BIN_EXE_<name> env var cargo
+    // test sets for the profile actually being run, matching the other
+    // CLI test files in this crate.
+    std::path::PathBuf::from(assert_cmd::cargo::cargo_bin!("tldr"))
 }
 
 /// Run tldr with explicit working directory so we can pass relative

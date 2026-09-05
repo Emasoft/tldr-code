@@ -698,11 +698,20 @@ impl<'a> TypeAwareCallResolver<'a> {
             }
         }
 
-        // Also check class_defs for classes that have this method
-        for (class_name, class_def) in &self.class_defs {
-            if class_def.has_method(func) {
-                return Some(class_name.clone());
-            }
+        // Also check class_defs for classes that have this method.
+        // why: class_defs is a HashMap, so iterating it directly makes the
+        // choice among multiple matching classes depend on hash iteration
+        // order (non-deterministic across runs). Sort candidates first so
+        // the result is stable and reproducible.
+        let mut candidates: Vec<&str> = self
+            .class_defs
+            .iter()
+            .filter(|(_, class_def)| class_def.has_method(func))
+            .map(|(class_name, _)| class_name.as_str())
+            .collect();
+        candidates.sort_unstable();
+        if let Some(class_name) = candidates.first() {
+            return Some((*class_name).to_string());
         }
 
         None

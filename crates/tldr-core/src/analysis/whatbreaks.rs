@@ -290,7 +290,15 @@ pub fn detect_target_type(target: &str, project_path: &Path) -> (TargetType, Str
     }
 
     // Check for file extensions
-    let file_extensions = [".py", ".ts", ".js", ".tsx", ".jsx", ".go", ".rs"];
+    // why: this list only covered 7 of the 18 languages the tool supports
+    // (see Language::extensions in types.rs), so a non-existent target like
+    // "Foo.java" or "bar.rb" fell through to the qualified-name heuristic
+    // below and was misdetected as TargetType::Function instead of File.
+    let file_extensions = [
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c", ".h",
+        ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt", ".kts",
+        ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml", ".mli",
+    ];
     for ext in &file_extensions {
         if target.ends_with(ext) {
             return (
@@ -503,7 +511,17 @@ fn derive_module_name(target: &str) -> String {
     // Remove file extension if present
     let without_ext = if let Some(idx) = target.rfind('.') {
         let ext = &target[idx..];
-        if [".py", ".ts", ".js", ".go", ".rs"].contains(&ext) {
+        // why: kept in sync with the file_extensions list in detect_target_type
+        // above (same under-coverage bug) so module-name derivation strips the
+        // extension for every language the tool supports, not just 5 of them.
+        if [
+            ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c",
+            ".h", ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt",
+            ".kts", ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml",
+            ".mli",
+        ]
+        .contains(&ext)
+        {
             &target[..idx]
         } else {
             target

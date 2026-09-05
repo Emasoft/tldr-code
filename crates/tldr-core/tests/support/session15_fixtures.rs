@@ -8,10 +8,12 @@
 // =============================================================================
 
 /// Python file with known line counts:
-/// - 10 code lines
+/// - 7 code lines
 /// - 5 comment lines (including docstring lines)
-/// - 3 blank lines
-///   Total: 18 lines
+/// - 2 blank lines
+///   Total: 14 lines
+// why: doc counts were stale (didn't match the literal below or the
+// fixtures_python_loc_line_count test's asserted len() == 14).
 pub const PYTHON_LOC_SAMPLE: &str = r#"# Module comment
 """Module docstring"""
 

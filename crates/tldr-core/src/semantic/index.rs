@@ -62,10 +62,8 @@ use crate::{TldrError, TldrResult};
 /// users should filter by language or directory.
 pub const MAX_INDEX_SIZE: usize = 100_000;
 
-/// Estimated memory per chunk in bytes
-///
-/// Calculation: 768 dims * 4 bytes per f32 + ~500 bytes metadata
-const BYTES_PER_CHUNK: usize = 768 * 4 + 500;
+/// Fixed metadata overhead per chunk in bytes (file path, content, hashes, etc.)
+const CHUNK_METADATA_BYTES: usize = 500;
 
 /// Maximum memory usage in bytes (500MB)
 const MAX_MEMORY_BYTES: usize = 500 * 1024 * 1024;
@@ -244,7 +242,13 @@ impl SemanticIndex {
         }
 
         // P0: Memory estimate
-        let estimated_memory = chunk_result.chunks.len() * BYTES_PER_CHUNK;
+        // why: BYTES_PER_CHUNK used to be hardcoded to 768 (ArcticM/MLong)
+        // dims, so building with ArcticL (1024 dims) underestimated real
+        // memory usage by ~33% and could let a build through that then
+        // exceeded MAX_MEMORY_BYTES at runtime. Derive the per-embedding
+        // size from the model actually selected for this build.
+        let bytes_per_chunk = options.model.dimensions() * 4 + CHUNK_METADATA_BYTES;
+        let estimated_memory = chunk_result.chunks.len() * bytes_per_chunk;
         if estimated_memory > MAX_MEMORY_BYTES {
             return Err(TldrError::MemoryLimitExceeded {
                 estimated_mb: estimated_memory / (1024 * 1024),

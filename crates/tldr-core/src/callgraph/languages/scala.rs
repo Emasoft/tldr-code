@@ -120,6 +120,17 @@ impl ScalaHandler {
                             &mut has_wildcard,
                         );
                     }
+                    // why: Scala 3's brace-less rename (`import scala.util.Try as ScalaTry`)
+                    // is a direct child of import_declaration in tree-sitter-scala's grammar
+                    // (verified via node-types.json), distinct from the braced form handled
+                    // by namespace_selectors above. It was previously unmatched and fell
+                    // through to `_ => {}`, silently dropping the whole import statement.
+                    "as_renamed_identifier" | "arrow_renamed_identifier" => {
+                        let (orig, alias) = self.parse_renamed_identifier(&child, source);
+                        if let Some(name) = orig {
+                            selectors.push((name, alias));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -132,7 +143,15 @@ impl ScalaHandler {
             let mut imp = ImportDef::wildcard_import(&base_path);
             imp.is_namespace = true;
             results.push(imp);
-        } else if !selectors.is_empty() {
+        }
+
+        // why: `{Bar, _}` carries BOTH a named selector and a wildcard (e.g.
+        // `import foo.{Bar, _}`). The previous `if/else if` treated
+        // has_wildcard and selectors as mutually exclusive, so the explicit
+        // `Bar` selector was silently dropped whenever a wildcard was also
+        // present. Selectors are now always emitted; the wildcard branch
+        // above is independent and still fires exactly once.
+        if !selectors.is_empty() {
             // Selective imports: import scala.collection.{mutable, immutable}
             for (name, alias) in selectors {
                 let full_module = if base_path.is_empty() {
@@ -147,7 +166,7 @@ impl ScalaHandler {
                 }
                 results.push(imp);
             }
-        } else if !base_path.is_empty() {
+        } else if !has_wildcard && !base_path.is_empty() {
             // Simple import: import scala.collection.mutable
             results.push(ImportDef::simple_import(&base_path));
         }
@@ -187,8 +206,11 @@ impl ScalaHandler {
                         let name = get_node_text(&child, source).to_string();
                         selectors.push((name, None));
                     }
-                    "arrow_renamed_identifier" | "renamed_identifier" | "import_selector" => {
-                        // Handle renamed imports: List => JList
+                    "arrow_renamed_identifier"
+                    | "as_renamed_identifier"
+                    | "renamed_identifier"
+                    | "import_selector" => {
+                        // Handle renamed imports: List => JList (Scala 2) or List as JList (Scala 3)
                         let (orig, alias) = self.parse_renamed_identifier(&child, source);
                         if let Some(name) = orig {
                             selectors.push((name, alias));

@@ -980,20 +980,19 @@ fn is_in_invalid_context(node: &Node, language: Language) -> bool {
 
         match language {
             Language::Python => {
-                // Python string types
-                if matches!(
-                    kind,
-                    "string" | "string_content" | "concatenated_string" | "comment"
-                ) {
+                // Python string types. NOTE: "string" is intentionally excluded
+                // from this generic check (and handled separately below) —
+                // why: including it here made the S7-R22 f-string exception
+                // below unreachable dead code, since this arm already
+                // returned `true` for every "string" ancestor before the
+                // format-expression check ever ran.
+                if matches!(kind, "string_content" | "concatenated_string" | "comment") {
                     return true;
                 }
                 // S7-R22: f-string interpolation is OK - the code inside is real
                 // formatted_string contains format_expression which should be verified
-                if kind == "string" {
-                    // Check if we're NOT inside a format_expression
-                    if !is_inside_format_expression(node) {
-                        return true;
-                    }
+                if kind == "string" && !is_inside_format_expression(node) {
+                    return true;
                 }
             }
             Language::TypeScript | Language::JavaScript => {
@@ -2977,15 +2976,20 @@ fn check_ts_definition(
         "variable_declarator" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 if name_node.utf8_text(source).unwrap_or("") == symbol {
-                    // Determine if const (constant) or let/var (variable)
+                    // Determine if const (constant) or let/var (variable).
+                    // why: `node` here is the `variable_declarator` itself, so
+                    // `node.parent()` IS the enclosing `lexical_declaration`
+                    // ("const x = 1;") whose text starts with the keyword.
+                    // The previous code went one level further
+                    // (`parent.parent()`) and read the *lexical_declaration's*
+                    // parent (e.g. the enclosing block/program), whose text
+                    // only starts with "const" by accident (when the const
+                    // declaration happens to be the first statement) —
+                    // silently misclassifying every other `const` as Variable.
                     let kind = if let Some(parent) = node.parent() {
-                        if let Some(gp) = parent.parent() {
-                            let decl_text = gp.utf8_text(source).unwrap_or("");
-                            if decl_text.starts_with("const") {
-                                DefinitionKind::Constant
-                            } else {
-                                DefinitionKind::Variable
-                            }
+                        let decl_text = parent.utf8_text(source).unwrap_or("");
+                        if decl_text.starts_with("const") {
+                            DefinitionKind::Constant
                         } else {
                             DefinitionKind::Variable
                         }
@@ -3208,9 +3212,14 @@ fn extract_signature(node: &Node, source: &[u8], _language: Language) -> Option<
     // Get the first line of the definition
     let first_line = node_text.lines().next()?;
 
-    // Truncate if too long
+    // Truncate if too long. why: byte-slicing `first_line[..N]` panics
+    // ("byte index is not a char boundary") whenever the cut point lands
+    // inside a multi-byte UTF-8 character (e.g. a non-ASCII identifier or
+    // comment on the signature line). Truncate by chars instead, matching
+    // `truncate_context`'s approach.
     let signature = if first_line.len() > MAX_CONTEXT_LENGTH {
-        format!("{}...", &first_line[..MAX_CONTEXT_LENGTH - 3])
+        let truncated: String = first_line.chars().take(MAX_CONTEXT_LENGTH - 3).collect();
+        format!("{}...", truncated)
     } else {
         first_line.to_string()
     };
@@ -3598,19 +3607,29 @@ pub fn get_outgoing_calls(file: &Path, function: &str) -> TldrResult<Vec<String>
 
     // Find the function node and extract calls in one pass
     let root = tree.root_node();
-    let calls = find_and_extract_calls(&root, function, source_bytes, language);
+    let calls = find_and_extract_calls(&root, function, source_bytes, language).unwrap_or_default();
     Ok(calls)
 }
 
 /// Find a function by name and extract all calls from it
 ///
 /// Combines function finding and call extraction to avoid lifetime issues.
+///
+/// Returns `None` when no function named `function_name` is found anywhere
+/// in the subtree, and `Some(calls)` (possibly empty) once the function is
+/// found — the two must stay distinguishable. why: an earlier version
+/// returned a bare `Vec<String>` and used "is the vec empty" as the
+/// not-found sentinel; that conflated "found the function but it makes no
+/// calls" with "haven't found it yet, keep searching", so a same-named
+/// call-free function earlier in the tree caused the search to keep going
+/// and misattribute a later same-named function's calls to the original
+/// target (e.g. two impls' methods sharing a name).
 fn find_and_extract_calls(
     node: &tree_sitter::Node,
     function_name: &str,
     source: &[u8],
     language: Language,
-) -> Vec<String> {
+) -> Option<Vec<String>> {
     let node_kind = node.kind();
 
     // Check if this is a function definition with matching name
@@ -3622,7 +3641,7 @@ fn find_and_extract_calls(
                 // Found the function, extract all calls from it
                 let mut calls = Vec::new();
                 extract_calls_recursive(node, source, language, &mut calls);
-                return calls;
+                return Some(calls);
             }
         }
     }
@@ -3630,13 +3649,12 @@ fn find_and_extract_calls(
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        let calls = find_and_extract_calls(&child, function_name, source, language);
-        if !calls.is_empty() {
-            return calls;
+        if let Some(calls) = find_and_extract_calls(&child, function_name, source, language) {
+            return Some(calls);
         }
     }
 
-    Vec::new()
+    None
 }
 
 /// Recursively extract call expressions from a node

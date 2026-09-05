@@ -111,8 +111,15 @@ pub fn validate_file_path(path: &Path) -> ContractsResult<PathBuf> {
         path: path.to_path_buf(),
     })?;
 
-    // Check for system directories
-    let canonical_str = canonical.to_string_lossy();
+    // Check for system directories.
+    // why: on Windows, `fs::canonicalize` returns a `\\?\`-prefixed verbatim
+    // path (e.g. `\\?\C:\Windows\System32\...`), which never starts with the
+    // plain `C:\Windows\` entries below — the whole block-list would be
+    // silently bypassed on Windows without stripping this prefix first.
+    let canonical_str_full = canonical.to_string_lossy();
+    let canonical_str = canonical_str_full
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical_str_full);
     for blocked in BLOCKED_PREFIXES {
         // Check with trailing slash for directories, or exact match for files
         if canonical_str.starts_with(blocked) || canonical_str == blocked.trim_end_matches('/') {

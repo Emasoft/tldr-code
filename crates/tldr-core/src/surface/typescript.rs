@@ -486,6 +486,7 @@ fn parse_ts_reexports(
         if let Some(specifiers) = trimmed
             .strip_prefix("export {")
             .or_else(|| trimmed.strip_prefix("export{"))
+            .or_else(|| trimmed.strip_prefix("export type {"))
         {
             let Some((specifiers, rest)) = specifiers.split_once('}') else {
                 continue;
@@ -505,6 +506,11 @@ fn parse_ts_reexports(
                 if specifier.is_empty() {
                     continue;
                 }
+                // why: inline type-only specifiers (`export { type Foo }`)
+                // carry a `type ` keyword before the name; without stripping
+                // it the alias name became the literal "type Foo" instead
+                // of "Foo", so the reexport never matched a real API.
+                let specifier = specifier.strip_prefix("type ").unwrap_or(specifier).trim();
 
                 let (original, exported_as) = specifier
                     .split_once(" as ")
@@ -719,6 +725,11 @@ fn is_readonly_property(source: &str, line_number: usize) -> bool {
         return false;
     }
     let line = lines[line_number - 1].trim();
+    // why: `static readonly FOO: string` starts with "static ", not
+    // "readonly " -- strip the static modifier first so static readonly
+    // members are still classified as Property instead of falling through
+    // to Method/StaticMethod.
+    let line = line.strip_prefix("static ").unwrap_or(line).trim_start();
     line.starts_with("readonly ")
 }
 
@@ -739,6 +750,10 @@ fn is_getter_property(source: &str, line_number: usize) -> bool {
         return false;
     }
     let line = lines[line_number - 1].trim();
+    // why: `static get foo()` starts with "static ", not "get " -- without
+    // stripping the modifier, static getters were misclassified as
+    // StaticMethod instead of Property.
+    let line = line.strip_prefix("static ").unwrap_or(line).trim_start();
     line.starts_with("get ")
 }
 
@@ -977,8 +992,14 @@ fn extract_const_declarators(
     let mut cursor = decl_node.walk();
     for child in decl_node.children(&mut cursor) {
         if child.kind() == "variable_declarator" {
+            // why: the `name` field can be an array_pattern/object_pattern
+            // for destructuring (`export const { a, b } = x;`); only plain
+            // identifiers are valid API names -- without this filter a
+            // destructured const emitted a garbage qualified name like
+            // "module.{ a, b }".
             let name = child
                 .child_by_field_name("name")
+                .filter(|n| n.kind() == "identifier")
                 .map(|n| node_text(&n, source));
             if let Some(name) = name {
                 if !name.is_empty() {

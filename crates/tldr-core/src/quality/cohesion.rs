@@ -1820,15 +1820,21 @@ fn extract_field_from_pattern(
             "call_expression",
             "function",
         ),
-        Language::Java => extract_field_with_named_receiver(
-            node,
-            source,
-            "object",
-            "field",
-            "this",
-            "method_invocation",
-            "object",
-        ),
+        // why: Java's `method_invocation` uses an "object" field that holds
+        // the receiver as `this` directly for a plain call (`this.foo()` --
+        // no `field_access` node is ever created for that case), but holds a
+        // nested `field_access` node for a chained call (`this.list.add(x)`).
+        // Excluding a `field_access` whenever it is the "object" of a
+        // `method_invocation` therefore never fires for the case it was
+        // meant to guard and instead drops every real field access that is
+        // followed by a method call (`this.logger.info(...)`,
+        // `this.items.add(...)`), systematically undercounting field usage
+        // and skewing LCOM4. Java has no equivalent false-positive case to
+        // guard against, so the exclusion is disabled by passing a parent
+        // kind that never matches.
+        Language::Java => {
+            extract_field_with_named_receiver(node, source, "object", "field", "this", "", "")
+        }
         Language::CSharp => extract_field_with_positional_receiver(
             node,
             source,

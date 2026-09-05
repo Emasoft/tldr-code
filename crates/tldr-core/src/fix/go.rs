@@ -99,7 +99,11 @@ static GO_TYPE_CONVERSIONS: &[(&str, &str, &str)] = &[
     ("string", "[]rune", "[]rune({expr})"),
     ("[]rune", "string", "string({expr})"),
     ("int", "string", "strconv.Itoa({expr})"),
-    ("string", "int", "strconv.Atoi({expr})"),
+    // "string" -> "int" via strconv.Atoi is deliberately omitted: Atoi
+    // returns (int, error), so wrapping it directly in a single-value
+    // context (e.g. `var x int = strconv.Atoi(s)`) does not compile.
+    // Falling through to the "unrecognized type pair" path (no auto-fix)
+    // is the honest behaviour here.
 ];
 
 // ============================================================================
@@ -381,10 +385,19 @@ fn analyze_type_mismatch(error: &ParsedError, source: &str) -> Option<Diagnosis>
                 let old_line = lines[line_no - 1];
                 let converted = template.replace("{expr}", expr_name);
 
-                // Replace the expression on the offending line
-                if old_line.contains(expr_name) {
+                // Replace the expression on the offending line. Use a
+                // word-boundary regex, not a plain substring replace: a
+                // naive `replacen(expr_name, ...)` matches the FIRST
+                // occurrence of `expr_name` anywhere on the line, which can
+                // land inside an unrelated identifier that merely contains
+                // it as a substring (e.g. expr_name "s" inside "bytes").
+                let expr_word_re =
+                    Regex::new(&format!(r"\b{}\b", regex::escape(expr_name))).ok()?;
+                if expr_word_re.is_match(old_line) {
                     // Find the assignment: replace just the RHS expression
-                    let new_line = old_line.replacen(expr_name, &converted, 1);
+                    let new_line = expr_word_re
+                        .replacen(old_line, 1, converted.as_str())
+                        .to_string();
 
                     if new_line != old_line {
                         return Some(Diagnosis {

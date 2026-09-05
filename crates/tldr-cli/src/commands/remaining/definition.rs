@@ -3567,9 +3567,17 @@ fn find_definition_recursive(
             }
         }
         "assignment" => {
-            // Check for variable assignments at module level
+            // Check for variable assignments at module level.
+            // why: this recursive DFS visits every node in the file, so
+            // without the `is_inside_function` guard an assignment to a
+            // same-named *local* variable inside an earlier function body
+            // would win over the real module-level definition (DFS is
+            // preorder / document order, first match returned). That is
+            // observably wrong for cross-file resolution: resolving an
+            // imported symbol could land on an unrelated local variable
+            // instead of the module-level one other files actually see.
             if let Some(left) = node.child_by_field_name("left") {
-                if left.kind() == "identifier" {
+                if left.kind() == "identifier" && !is_inside_function(node) {
                     if let Ok(name) = left.utf8_text(source.as_bytes()) {
                         if name == target_name {
                             let location = Location::with_column(
@@ -3603,6 +3611,20 @@ fn is_inside_class(node: Node) -> bool {
     let mut current = node.parent();
     while let Some(n) = current {
         if n.kind() == "class_definition" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// Check if a node is inside a function definition (i.e. a local scope).
+/// Used to keep `find_definition_recursive`'s "assignment" match limited
+/// to module/class level, per its documented intent.
+fn is_inside_function(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "function_definition" {
             return true;
         }
         current = n.parent();

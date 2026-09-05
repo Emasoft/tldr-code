@@ -573,7 +573,10 @@ fn ruby_visibility_for_range(
 ) -> RubyVisibility {
     let lines: Vec<&str> = source.lines().collect();
     let start = start_line.saturating_sub(1).min(lines.len());
-    let end = target_line.saturating_sub(1).min(lines.len());
+    // why: clamp end >= start so `&lines[start..end]` can never panic when a
+    // method's line number is not strictly after its class's (malformed or
+    // unusual parse output).
+    let end = target_line.saturating_sub(1).min(lines.len()).max(start);
     let mut visibility = RubyVisibility::Public;
 
     for line in &lines[start..end] {

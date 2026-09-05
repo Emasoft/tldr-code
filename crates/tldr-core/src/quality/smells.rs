@@ -847,8 +847,14 @@ fn estimate_class_loc(class: &crate::types::ClassInfo) -> usize {
         .max()
         .unwrap_or(min_line);
 
-    // Rough estimate: last method line + some buffer
-    (max_line - min_line + 20) as usize
+    // Rough estimate: last method line + some buffer.
+    // why: a method can be defined at a line number *before* the class's own
+    // line_number (e.g. Rust allows an `impl` block to appear above the
+    // `struct` it implements), so max_line - min_line can underflow a u32
+    // and either panic (debug) or wrap to a huge value (release), producing
+    // a bogus God-Class LOC finding. saturating_sub keeps the estimate at
+    // the "no extra lines" floor instead.
+    (max_line.saturating_sub(min_line) + 20) as usize
 }
 
 /// Calculate severity (1-3) based on how much the threshold is exceeded
@@ -1654,8 +1660,15 @@ fn find_message_chains(
         if chain_length > 3 && !visited_lines.contains(&line) {
             visited_lines.insert(line);
             let chain_text = &source[node.byte_range()];
+            // why: slicing at a fixed byte offset panics if it falls inside a
+            // multi-byte UTF-8 char (e.g. a chain containing a unicode string
+            // literal or identifier). Walk back to the nearest char boundary.
             let truncated = if chain_text.len() > 60 {
-                format!("{}...", &chain_text[..57])
+                let mut end = 57.min(chain_text.len());
+                while end > 0 && !chain_text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &chain_text[..end])
             } else {
                 chain_text.to_string()
             };

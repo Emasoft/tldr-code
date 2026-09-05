@@ -4036,9 +4036,14 @@ fn extract_swift_docstring_before(node: &Node, source: &str) -> Option<String> {
             if let Some(rest) = stripped.strip_prefix("///") {
                 return rest.trim().to_string();
             }
-            // Handle /** */ block comments
-            if stripped.starts_with("/**") && stripped.ends_with("*/") {
-                let inner = &stripped[3..stripped.len() - 2];
+            // Handle /** */ block comments.
+            // why: `stripped[3..stripped.len()-2]` panics (slice index starts
+            // at 3 but ends at 2) for the degenerate 4-byte comment "/**/",
+            // since starts_with("/**") and ends_with("*/") both match on
+            // overlapping bytes. strip_prefix/strip_suffix compose safely:
+            // if the suffix strip fails after the prefix is removed, we just
+            // fall through to the raw-text fallback below instead of crashing.
+            if let Some(inner) = stripped.strip_prefix("/**").and_then(|s| s.strip_suffix("*/")) {
                 return inner.trim().to_string();
             }
             stripped.to_string()
@@ -4639,9 +4644,11 @@ fn get_node_text(node: &Node, source: &str) -> String {
 
 fn extract_string_content(node: &Node, source: &str) -> String {
     let text = get_node_text(node, source);
-    // Remove string delimiters
+    // Remove string delimiters.
+    // why: `trim_matches` already strips every leading/trailing char in the
+    // set (including '"'), so the previous second `.trim_matches('"')` call
+    // was a dead no-op left over from an earlier edit.
     text.trim_matches(|c| c == '"' || c == '\'' || c == '`')
-        .trim_matches('"')
         .to_string()
 }
 

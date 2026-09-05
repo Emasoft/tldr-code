@@ -1490,7 +1490,10 @@ fn normalize_single_token(token: NormalizedToken, mode: NormalizationMode) -> No
 /// - Vendor: files in vendor/, node_modules/, __pycache__/
 /// - Build: files in dist/, build/, target/
 pub fn is_generated_file(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
+    // why: directory patterns below are forward-slash literals, but on Windows
+    // path separators are backslashes -- without normalizing, --exclude-generated
+    // silently never matches any directory pattern on that platform.
+    let path_str = path.to_string_lossy().replace('\\', "/");
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // Check directory patterns (vendor, build artifacts, etc.)

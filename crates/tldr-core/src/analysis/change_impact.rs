@@ -16,7 +16,7 @@
 //! - Go: `*_test.go`
 //! - Rust: `tests/*.rs`, `src/**/tests.rs`
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -903,15 +903,22 @@ fn find_affected_functions_with_depth(
     max_depth: usize,
 ) -> Vec<FunctionRef> {
     let mut affected = HashSet::new();
-    // Track (function, current_depth)
-    let mut to_visit: Vec<(FunctionRef, usize)> =
+    // Track (function, current_depth). BFS via a FIFO queue -- not a stack --
+    // is required here: a node's first visit must be via its *shortest*
+    // path from the changed set, because that's the depth the max_depth
+    // cutoff is checked against. A LIFO stack (Vec::pop) can visit a node
+    // through a longer path first, wrongly cut traversal short there, and
+    // silently drop functions a true shortest-path BFS would still reach
+    // within max_depth (real bug: verified by tracing a diamond-shaped
+    // caller graph where the long branch is pushed last and popped first).
+    let mut to_visit: VecDeque<(FunctionRef, usize)> =
         changed_functions.iter().map(|f| (f.clone(), 0)).collect();
     let mut visited: HashSet<FunctionRef> = HashSet::new();
 
     // Build reverse graph for traversal
     let reverse_graph = build_reverse_call_graph(call_graph);
 
-    while let Some((func, depth)) = to_visit.pop() {
+    while let Some((func, depth)) = to_visit.pop_front() {
         if visited.contains(&func) {
             continue;
         }
@@ -927,7 +934,7 @@ fn find_affected_functions_with_depth(
         if let Some(callers) = reverse_graph.get(&func) {
             for caller in callers {
                 if !visited.contains(caller) {
-                    to_visit.push((caller.clone(), depth + 1));
+                    to_visit.push_back((caller.clone(), depth + 1));
                 }
             }
         }
@@ -972,17 +979,23 @@ fn get_all_project_files(project: &Path, language: Language) -> TldrResult<Vec<P
 /// Check if a file is a test file based on language conventions
 fn is_test_file(path: &Path, language: Language) -> bool {
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let path_str = path.to_string_lossy();
 
-    // Helper to check if path contains a test directory
+    // Helper to check if path contains a test directory. Compares path
+    // *components*, not the raw string, so this matches on Windows too:
+    // `path.to_string_lossy()` yields backslash-separated strings there,
+    // which would never contain the hardcoded "/tests/" literal (real
+    // bug -- test files under a `tests\` dir were silently invisible to
+    // change-impact analysis on Windows). `get_all_project_files` (and
+    // callers passing filesystem paths) can hand us native-separator
+    // PathBufs, so this must not assume '/'.
     let in_tests_dir = || {
-        path_str.contains("/tests/")
-            || path_str.starts_with("tests/")
-            || path_str.contains("/test/")
-            || path_str.starts_with("test/")
+        path.components().any(|c| {
+            matches!(c.as_os_str().to_str(), Some("tests") | Some("test"))
+        })
     };
 
-    let in_dunder_tests = || path_str.contains("/__tests__/") || path_str.starts_with("__tests__/");
+    let in_dunder_tests =
+        || path.components().any(|c| c.as_os_str().to_str() == Some("__tests__"));
 
     match language {
         Language::Python => {

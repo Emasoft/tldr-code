@@ -231,7 +231,12 @@ fn collect_source_files(path: &Path, lang: Option<Language>) -> Vec<PathBuf> {
 
     if path.is_file() {
         // Single file
-        if let Some(file_lang) = Language::from_path(path) {
+        // why: use sibling-aware detection (matches the extraction loop below)
+        // so a lone `.h` filtered with `--lang cpp` isn't dropped here before
+        // it ever reaches the C++ extractor.
+        if let Some(file_lang) =
+            Language::from_path_with_siblings(path).or_else(|| Language::from_path(path))
+        {
             if lang.is_none() || lang == Some(file_lang) {
                 files.push(path.to_path_buf());
             }
@@ -262,7 +267,12 @@ fn collect_source_files(path: &Path, lang: Option<Language>) -> Vec<PathBuf> {
         }
 
         // Check language
-        if let Some(file_lang) = Language::from_path(entry_path) {
+        // why: sibling-aware detection so `--lang cpp` doesn't drop a `.h`
+        // header at collection time when it would later be classified as
+        // C++ by the extraction loop's own `from_path_with_siblings` call.
+        if let Some(file_lang) =
+            Language::from_path_with_siblings(entry_path).or_else(|| Language::from_path(entry_path))
+        {
             if lang.is_none() || lang == Some(file_lang) {
                 files.push(entry_path.to_path_buf());
             }

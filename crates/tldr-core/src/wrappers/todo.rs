@@ -293,11 +293,22 @@ fn run_equivalence_sweep(path: &str) -> TldrResult<Vec<serde_json::Value>> {
     let mut results: Vec<serde_json::Value> = Vec::new();
 
     if target.is_file() {
-        // Single file
-        if let Ok(source) = fs::read_to_string(target) {
-            let reports = compute_gvn(&source, None);
-            for r in reports {
-                results.push(r.to_dict());
+        // Single file. `compute_gvn` is Python-only (hardcoded
+        // `Language::Python` parse internally), so honor the same `.py`
+        // filter the directory branch below applies — without this check
+        // a non-Python single file was fed straight into the Python
+        // tree-sitter parser, producing bogus/empty reports instead of
+        // skipping the file as the doc comment above promises.
+        let is_python = target
+            .extension()
+            .map(|ext| ext == "py")
+            .unwrap_or(false);
+        if is_python {
+            if let Ok(source) = fs::read_to_string(target) {
+                let reports = compute_gvn(&source, None);
+                for r in reports {
+                    results.push(r.to_dict());
+                }
             }
         }
     } else {

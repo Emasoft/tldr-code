@@ -212,8 +212,9 @@ impl Bound for i64 {
         if self == i64::MIN || other == i64::MIN {
             return i64::MIN;
         }
-        // Saturating arithmetic: overflow -> i64::MAX (treated as +infinity)
-        // TODO: implement properly
+        // Saturating arithmetic: overflow -> i64::MAX (treated as +infinity).
+        // why: saturating_add already gives the documented behavior; the
+        // stale TODO contradicted the (correct, tested) implementation below.
         self.saturating_add(other)
     }
 

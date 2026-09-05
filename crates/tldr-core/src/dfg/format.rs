@@ -316,110 +316,19 @@ pub fn format_reaching_defs_text_with_options(
 /// println!("{}", text);
 /// ```
 pub fn format_reaching_defs_text(report: &ReachingDefsReport) -> String {
-    let mut output = String::new();
-
-    // Header
-    output.push_str(&format!(
-        "Reaching Definitions for: {} in {}\n\n",
-        report.function,
-        report.file.display()
-    ));
-
-    // Blocks with GEN/KILL/IN/OUT sets
-    for block in &report.blocks {
-        output.push_str(&format!(
-            "Block {} (lines {}-{}):\n",
-            block.id, block.lines.0, block.lines.1
-        ));
-
-        output.push_str(&format!("    GEN:  {{{}}}\n", format_def_set(&block.gen)));
-        output.push_str(&format!("    KILL: {{{}}}\n", format_def_set(&block.kill)));
-        output.push_str(&format!(
-            "    IN:   {{{}}}\n",
-            format_def_set(&block.in_set)
-        ));
-        output.push_str(&format!("    OUT:  {{{}}}\n", format_def_set(&block.out)));
-        output.push('\n');
-    }
-
-    // Def-Use Chains
-    output.push_str("Def-Use Chains:\n");
-    if report.def_use_chains.is_empty() {
-        output.push_str("    (none)\n");
-    } else {
-        for chain in &report.def_use_chains {
-            let uses: Vec<String> = chain
-                .uses
-                .iter()
-                .map(|u| format!("line {}", u.line))
-                .collect();
-            let uses_str = if uses.is_empty() {
-                "(unused)".to_string()
-            } else {
-                uses.join(", ")
-            };
-            output.push_str(&format!(
-                "    {}@{} -> used at: {}\n",
-                chain.definition.var, chain.definition.line, uses_str
-            ));
-        }
-    }
-    output.push('\n');
-
-    // Use-Def Chains
-    output.push_str("Use-Def Chains:\n");
-    if report.use_def_chains.is_empty() {
-        output.push_str("    (none)\n");
-    } else {
-        for chain in &report.use_def_chains {
-            let defs: Vec<String> = chain
-                .reaching_defs
-                .iter()
-                .map(|d| format!("line {}", d.line))
-                .collect();
-            let defs_str = if defs.is_empty() {
-                "(no reaching definition)".to_string()
-            } else {
-                defs.join(", ")
-            };
-            output.push_str(&format!(
-                "    {}@{} <- defined at: {}\n",
-                chain.var, chain.use_site.line, defs_str
-            ));
-        }
-    }
-    output.push('\n');
-
-    // Uninitialized Variables
-    output.push_str("Potentially Uninitialized:\n");
-    if report.uninitialized.is_empty() {
-        output.push_str("    (none detected)\n");
-    } else {
-        for uninit in &report.uninitialized {
-            output.push_str(&format!(
-                "    {} at line {} ({}): {}\n",
-                uninit.var, uninit.line, uninit.severity, uninit.reason
-            ));
-        }
-    }
-    output.push('\n');
-
-    // Statistics
-    output.push_str("---\n");
-    output.push_str(&format!("Definitions: {}\n", report.stats.definitions));
-    output.push_str(&format!("Uses: {}\n", report.stats.uses));
-    output.push_str(&format!("Blocks: {}\n", report.stats.blocks));
-    if report.stats.iterations > 0 {
-        output.push_str(&format!("Iterations: {}\n", report.stats.iterations));
-    }
-    if report.stats.uninitialized_count > 0 {
-        output.push_str(&format!(
-            "Uninitialized: {}\n",
-            report.stats.uninitialized_count
-        ));
-    }
-
-    output
+    // why: this used to duplicate format_reaching_defs_text_with_options's
+    // whole body (200+ lines kept in lockstep by hand); "always show
+    // everything" is just that function called with all sections enabled.
+    format_reaching_defs_text_with_options(
+        report,
+        &ReachingDefsFormatOptions {
+            show_blocks: true,
+            show_chains: true,
+            show_uninitialized: true,
+            show_header: true,
+            show_stats: true,
+        },
+    )
 }
 
 /// Format a set of definitions as "var@line, var@line, ..."

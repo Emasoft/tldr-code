@@ -544,6 +544,19 @@ impl CallGraphLanguageSupport for KotlinHandler {
                                         || gp.kind() == "object_declaration"
                                     {
                                         class_name = self.get_identifier(&gp, source_bytes);
+                                    } else if gp.kind() == "companion_object" {
+                                        // why: `companion_object` is a distinct tree-sitter
+                                        // node kind (not `object_declaration`), so without
+                                        // this arm its methods fell through as unclassed
+                                        // top-level functions, contradicting this module's
+                                        // documented "Companion object method tracking".
+                                        // Attribute companion methods to the enclosing class.
+                                        if let Some(outer_class) =
+                                            gp.parent().and_then(|b| b.parent())
+                                        {
+                                            class_name =
+                                                self.get_identifier(&outer_class, source_bytes);
+                                        }
                                     }
                                 }
                                 break;

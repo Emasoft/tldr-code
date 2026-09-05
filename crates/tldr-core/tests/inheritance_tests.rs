@@ -1110,8 +1110,13 @@ fn test_extract_inheritance_nonexistent_path() {
     let options = InheritanceOptions::default();
     let result = extract_inheritance(PathBuf::from("/nonexistent/path").as_path(), None, &options);
 
-    // Should handle gracefully
-    assert!(result.is_ok() || result.is_err());
+    // why: `result.is_ok() || result.is_err()` is a tautology that can never
+    // fail (every Result is one or the other), so it verified nothing.
+    // WalkDir silently drops the unreadable root (filter_map(|e| e.ok())),
+    // so collect_source_files returns an empty file list and extract_inheritance
+    // short-circuits to Ok(empty report) — assert that real, reachable behavior.
+    let report = result.expect("nonexistent path should yield an empty report, not an error");
+    assert_eq!(report.count, 0);
 }
 
 /// Test to document behavior: extract_inheritance with binary file

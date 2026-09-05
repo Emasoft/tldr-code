@@ -173,15 +173,15 @@ impl HealthArgs {
         let language = lang;
 
         // Build options
-        let mut options = HealthOptions {
+        // why: max_items/summary were already set in the struct literal above;
+        // re-assigning them here was dead duplicate code.
+        let options = HealthOptions {
             quick: self.quick,
             preset: self.preset.into(),
             max_items: self.max_items,
             summary: self.summary,
             ..HealthOptions::with_preset(self.preset.into())
         };
-        options.max_items = self.max_items;
-        options.summary = self.summary;
 
         // Run health analysis
         let report = run_health(&self.path, language, options)?;

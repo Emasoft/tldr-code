@@ -242,24 +242,30 @@ impl QueryCache {
 
         let revision = self.revision.load(Ordering::Acquire);
         let entry = CacheEntry::new(serialized, revision, input_hashes.clone());
+        let new_bytes = entry.estimated_bytes() as u64;
 
         // Track dependencies for invalidation
         for &hash in &input_hashes {
             self.dependents.entry(hash).or_default().insert(key.clone());
         }
 
-        // Track bytes: subtract old entry if replacing
-        if let Some(old) = self.entries.get(&key) {
+        // why: DashMap::insert() atomically swaps and returns the prior value
+        // under the same per-shard lock. The previous code did a separate
+        // `entries.get(&key)` read followed by `entries.insert(key, entry)`,
+        // which is a check-then-modify race: connections are handled via
+        // `tokio::spawn` per-connection (see `TLDRDaemon::run`), so two
+        // concurrent cache misses for the same query key both compute a
+        // fresh value and race to `insert()` here. Each could read the same
+        // "old" snapshot and double-subtract/double-add into `current_bytes`,
+        // corrupting the byte-based OOM-eviction accounting this cache
+        // exists to enforce. Using the atomic swap's own return value ties
+        // each insert's byte adjustment to the value it actually replaced.
+        let old = self.entries.insert(key, entry);
+        if let Some(old) = old {
             self.current_bytes
                 .fetch_sub(old.estimated_bytes() as u64, Ordering::Relaxed);
         }
-
-        // Track bytes for new entry
-        self.current_bytes
-            .fetch_add(entry.estimated_bytes() as u64, Ordering::Relaxed);
-
-        // Insert the entry
-        self.entries.insert(key, entry);
+        self.current_bytes.fetch_add(new_bytes, Ordering::Relaxed);
 
         // Evict if over entry count OR byte limit
         self.maybe_evict();

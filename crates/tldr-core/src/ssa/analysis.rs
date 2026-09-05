@@ -651,9 +651,13 @@ pub fn run_sccp(ssa: &SsaFunction) -> TldrResult<SccpResult> {
 
         // Process CFG worklist
         while let Some(block_id) = cfg_worklist.pop_front() {
-            if !executable_blocks.insert(block_id) {
-                continue; // Already processed
-            }
+            // why: `insert` returns false on every re-visit after the first, so the previous
+            // `continue` on that case skipped re-evaluating this block's phis/instructions
+            // whenever it was re-queued by the SSA worklist (operand value changed). That
+            // silently broke the fixed-point iteration the algorithm doc above requires --
+            // constants failed to propagate past a block's first visit. Blocks must be
+            // re-evaluated every time they are popped from the worklist.
+            executable_blocks.insert(block_id);
 
             let Some(&block_idx) = block_index.get(&block_id) else {
                 continue;

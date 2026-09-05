@@ -228,11 +228,13 @@ fn test_search_dot_format() {
         .output()
         .expect("Failed to execute tldr search");
 
-    // DOT format may or may not be implemented for search
-    // The command should at least not crash
+    // DOT format may or may not be implemented for search, but either way
+    // the process must exit cleanly (not be killed by a signal, e.g. a
+    // panic that aborts). The previous assertion (`success() ||
+    // !success()`) was a tautology that could never fail.
     assert!(
-        output.status.success() || !output.status.success(),
-        "DOT format behavior is documented"
+        output.status.code().is_some(),
+        "search -f dot should exit normally, not be terminated by a signal"
     );
 }
 

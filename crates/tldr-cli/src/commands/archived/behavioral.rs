@@ -1194,7 +1194,12 @@ fn extract_docstring_exceptions(docstring: &str, style: DocstringStyle, exceptio
                     let mut current_desc = String::new();
 
                     for line in raises_text.lines() {
-                        if !line.starts_with("    ") || line.starts_with("        ") {
+                        // why: this condition was inverted (matched continuation lines as new
+                        // entries and vice versa), swapping exception names with their
+                        // descriptions. Mirror the working pattern from
+                        // extract_numpy_docstring_preconditions above: a new item starts at
+                        // exactly 4-space indent, a continuation is 8-space indent.
+                        if line.starts_with("    ") && !line.starts_with("        ") {
                             if let Some(ref exc) = current_exc {
                                 if !seen.contains(exc) {
                                     seen.insert(exc.clone());
@@ -1206,7 +1211,7 @@ fn extract_docstring_exceptions(docstring: &str, style: DocstringStyle, exceptio
                             }
                             current_exc = Some(line.trim().to_string());
                             current_desc = String::new();
-                        } else {
+                        } else if line.starts_with("        ") && current_exc.is_some() {
                             current_desc.push_str(line.trim());
                             current_desc.push(' ');
                         }

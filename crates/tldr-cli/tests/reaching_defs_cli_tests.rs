@@ -404,9 +404,22 @@ fn test_reaching_defs_filter_by_line() {
 
     assert!(output.status.success());
 
-    // Should show what definitions reach line 5
+    // why: `def_use_chains` is always present (no skip_if_empty on that
+    // field — see tldr-core dfg::chains::ReachingDefsReport), so the old
+    // `.is_some() || .is_some()` check was a tautology that could never
+    // fail and never verified the `--line` filter actually did anything.
+    // Line 5 ("z = y") uses `y`, whose only reaching definition is
+    // "y = x" on line 4, so the filtered report must contain exactly
+    // that one def-use chain.
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json.get("reaching_at_line").is_some() || json.get("def_use_chains").is_some());
+    let chains = json["def_use_chains"].as_array().unwrap();
+    assert_eq!(
+        chains.len(),
+        1,
+        "filtering by line 5 should keep only the chain for the reaching def of `y`"
+    );
+    assert_eq!(chains[0]["definition"]["var"].as_str().unwrap(), "y");
+    assert_eq!(chains[0]["definition"]["line"].as_u64().unwrap(), 4);
 }
 
 #[test]
@@ -724,12 +737,32 @@ fn test_reaching_defs_killed_definition() {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
-    // Only the second definition (x = 2) should reach the return
-    // The first (x = 1) should be killed
-    let _chains = json["def_use_chains"].as_array().unwrap();
+    // why: this test used to bind `_chains` and never assert anything
+    // (a conceptual test that could never fail). Only the second
+    // definition (x = 2) should reach the return; the first (x = 1) is
+    // killed by the reassignment and must have no uses.
+    let chains = json["def_use_chains"].as_array().unwrap();
+    let x_chains: Vec<_> = chains
+        .iter()
+        .filter(|c| c["definition"]["var"].as_str().unwrap() == "x")
+        .collect();
+    assert_eq!(x_chains.len(), 2, "should have a chain for each x definition");
 
-    // Find chain for the definition that reaches return
-    // Should be x=2, not x=1
+    let last_def_line = x_chains
+        .iter()
+        .map(|c| c["definition"]["line"].as_u64().unwrap())
+        .max()
+        .unwrap();
+
+    for chain in &x_chains {
+        let line = chain["definition"]["line"].as_u64().unwrap();
+        let uses = chain["uses"].as_array().unwrap();
+        if line == last_def_line {
+            assert!(!uses.is_empty(), "x = 2 (last def) should reach the return");
+        } else {
+            assert!(uses.is_empty(), "x = 1 should be killed and reach nothing");
+        }
+    }
 }
 
 #[test]

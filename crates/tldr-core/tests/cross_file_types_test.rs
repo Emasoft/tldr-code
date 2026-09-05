@@ -655,14 +655,16 @@ mod project_call_graph_v2_tests {
 
         graph.add_edge(edge);
 
-        // Verify paths use forward slashes (POSIX format)
+        // ProjectCallGraphV2::add_edge stores the PathBuf verbatim (no
+        // separator rewriting), so the stored path must round-trip exactly.
+        // why: the old `.contains("src")` / `.contains("main.py")` checks
+        // passed for any path containing those substrings anywhere (even
+        // "other-src/main.pyc"), so they never caught a real normalization
+        // regression; assert the exact stored value instead.
         let edges: Vec<_> = graph.edges().collect();
         assert_eq!(edges.len(), 1);
 
-        let path_str = edges[0].src_file.to_string_lossy();
-        // On all platforms, PathBuf should handle paths correctly
-        assert!(path_str.contains("src"));
-        assert!(path_str.contains("main.py"));
+        assert_eq!(edges[0].src_file, PathBuf::from("src/main.py"));
     }
 
     #[test]

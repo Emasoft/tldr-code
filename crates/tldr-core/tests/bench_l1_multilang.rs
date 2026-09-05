@@ -31,7 +31,9 @@ mod tree_tests {
 
     #[test]
     fn test_tree_extractor_directory_non_empty() {
-        // GIVEN: The extractor fixtures directory with 18 language files
+        // GIVEN: The extractor fixtures directory with 17 language files
+        // why: comment previously said 18, but test_tree_contains_all_fixture_languages
+        // below (the source of truth for this count) lists exactly 17 fixtures
         let dir = extractor_fixtures_dir();
 
         // WHEN: We get the file tree

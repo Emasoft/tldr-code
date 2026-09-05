@@ -158,8 +158,15 @@ fn derive_module_names(rel_path: &Path) -> Vec<String> {
         return names;
     }
 
-    // Bare module name (e.g., "helpers")
-    names.push(stem.to_string());
+    // Bare module name (e.g., "helpers").
+    // why: "mod.rs"/"__init__.py" take their module name from the parent
+    // directory, not the literal filename -- pushing "mod"/"__init__" here
+    // produced a bogus importer-search candidate that can never match a
+    // real `use`/`import` statement (the qualified-name branch below
+    // already excludes these stems for the same reason).
+    if stem != "mod" && stem != "__init__" {
+        names.push(stem.to_string());
+    }
 
     // Build path-based module name, stripping src/ prefix and extension
     let components: Vec<&str> = rel_path
@@ -255,7 +262,16 @@ pub fn compose_born_dead_with_refcounts(
         }
 
         // Not rescued => born dead
-        let is_public = new_text.contains("pub fn ") || new_text.contains("pub async fn ");
+        // why: the original check only matched "pub fn "/"pub async fn ",
+        // missing common combos like "pub unsafe fn "/"pub const fn " --
+        // those are genuinely public API and were being under-reported as
+        // low severity instead of medium.
+        let is_public = new_text.contains("pub fn ")
+            || new_text.contains("pub async fn ")
+            || new_text.contains("pub unsafe fn ")
+            || new_text.contains("pub const fn ")
+            || new_text.contains("pub async unsafe fn ")
+            || new_text.contains("pub unsafe async fn ");
         let ref_count = lookup_ref_count(name, ref_counts);
 
         let line = change

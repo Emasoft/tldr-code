@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (17 variants as per spec Section 1.2)
+/// Supported programming languages (18 variants — see `test_language_all_18_variants`)
+// why: comment said 17, but OCaml (added later) brings the enum to 18,
+// as the enum's own variant list and Language::all() below confirm.
 ///
 /// Priority levels:
 /// - P0: Python, TypeScript, JavaScript, Go (full support)

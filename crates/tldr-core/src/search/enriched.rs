@@ -222,14 +222,19 @@ const NAME_BOOST_TEST_FILE_DEMOTION: f64 = 0.5;
 /// test-style file name? Mirrors the broader codebase's test-file
 /// suppression patterns (vuln, secure).
 fn is_test_path(path: &Path) -> bool {
-    let s = path.to_string_lossy();
-    let s_lc = s.to_lowercase();
-    // Path component-style checks ("/tests/", "/test/").
-    if s_lc.contains("/tests/")
-        || s_lc.contains("/test/")
-        || s_lc.starts_with("tests/")
-        || s_lc.starts_with("test/")
-    {
+    // why: the old check matched only "/tests/" / "/test/" as literal
+    // substrings, which never matches on Windows where components are
+    // separated by '\'. Walking `Path::components()` is separator-agnostic
+    // on every platform this project targets.
+    if path.components().any(|c| {
+        c.as_os_str()
+            .to_str()
+            .map(|s| {
+                let s_lc = s.to_lowercase();
+                s_lc == "tests" || s_lc == "test"
+            })
+            .unwrap_or(false)
+    }) {
         return true;
     }
     // File-name prefix/suffix checks: test_*.py, *_test.go, *.test.ts.
@@ -1560,13 +1565,18 @@ fn extract_code_preview(
     let node_text = &source[node.start_byte()..node.end_byte()];
     let mut lines: Vec<&str> = Vec::new();
     let mut found_sig = false;
+    // why: `signature[..n]` on a raw byte index can slice mid-codepoint and
+    // panic when the signature contains multi-byte UTF-8 (non-ASCII
+    // identifiers/strings are valid in every supported language). Truncating
+    // by `chars()` count instead is always a valid boundary.
+    let sig_prefix: String = signature.chars().take(20).collect();
 
     for line in node_text.lines() {
         let trimmed = line.trim();
         // Skip until we find the signature line
         if !found_sig {
             if trimmed == signature
-                || (trimmed.starts_with(&signature[..signature.len().min(20)])
+                || (trimmed.starts_with(&sig_prefix)
                     && !trimmed.starts_with("///")
                     && !trimmed.starts_with("//!"))
             {
@@ -1621,6 +1631,25 @@ fn find_enclosing_entry(entries: &[StructureEntry], line: u32) -> Option<&Struct
     best
 }
 
+/// Compare two path-like strings for a caller/callee cross-reference match.
+///
+/// `a.ends_with(b)` alone is unsound for path comparison: "core/reauth.py"
+/// ends with "auth.py" as a plain string even though they are different
+/// files. Require that the shorter string's suffix in the longer one starts
+/// right after a path separator (or that the two are equal), so "auth.py"
+/// only matches paths whose LAST component is exactly "auth.py".
+fn path_suffix_matches(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (longer, shorter) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    if shorter.is_empty() || !longer.ends_with(shorter) {
+        return false;
+    }
+    let boundary_idx = longer.len() - shorter.len();
+    boundary_idx == 0 || matches!(longer.as_bytes()[boundary_idx - 1], b'/' | b'\\')
+}
+
 /// Best-effort enrichment with call graph data.
 /// If building the call graph fails, returns the results unchanged.
 fn try_enrich_with_callgraph(
@@ -1655,8 +1684,7 @@ fn try_enrich_with_callgraph(
             if func_ref.name == result.name
                 && (ref_file.is_empty()
                     || result_file.is_empty()
-                    || ref_file.ends_with(result_file.as_ref())
-                    || result_file.ends_with(ref_file.as_ref()))
+                    || path_suffix_matches(&ref_file, &result_file))
             {
                 result.callees = callees.iter().map(|f| f.name.clone()).collect();
                 result.callees.sort();
@@ -1664,14 +1692,20 @@ fn try_enrich_with_callgraph(
                 break;
             }
         }
-        // Fallback: name-only match (first hit)
+        // Fallback: name-only match. why: picking the "first hit" from a
+        // HashMap iteration is non-deterministic (iteration order varies
+        // run to run), so ambiguous same-named functions across files got a
+        // random caller/callee list. Sort candidates by file path first so
+        // the choice is stable and reproducible.
         if !found_callees {
-            for (func_ref, callees) in &forward {
-                if func_ref.name == result.name {
-                    result.callees = callees.iter().map(|f| f.name.clone()).collect();
-                    result.callees.sort();
-                    break;
-                }
+            let mut candidates: Vec<_> = forward
+                .iter()
+                .filter(|(func_ref, _)| func_ref.name == result.name)
+                .collect();
+            candidates.sort_by(|a, b| a.0.file.cmp(&b.0.file));
+            if let Some((_, callees)) = candidates.first() {
+                result.callees = callees.iter().map(|f| f.name.clone()).collect();
+                result.callees.sort();
             }
         }
 
@@ -1682,8 +1716,7 @@ fn try_enrich_with_callgraph(
             if func_ref.name == result.name
                 && (ref_file.is_empty()
                     || result_file.is_empty()
-                    || ref_file.ends_with(result_file.as_ref())
-                    || result_file.ends_with(ref_file.as_ref()))
+                    || path_suffix_matches(&ref_file, &result_file))
             {
                 result.callers = callers.iter().map(|f| f.name.clone()).collect();
                 result.callers.sort();
@@ -1692,12 +1725,14 @@ fn try_enrich_with_callgraph(
             }
         }
         if !found_callers {
-            for (func_ref, callers) in &reverse {
-                if func_ref.name == result.name {
-                    result.callers = callers.iter().map(|f| f.name.clone()).collect();
-                    result.callers.sort();
-                    break;
-                }
+            let mut candidates: Vec<_> = reverse
+                .iter()
+                .filter(|(func_ref, _)| func_ref.name == result.name)
+                .collect();
+            candidates.sort_by(|a, b| a.0.file.cmp(&b.0.file));
+            if let Some((_, callers)) = candidates.first() {
+                result.callers = callers.iter().map(|f| f.name.clone()).collect();
+                result.callers.sort();
             }
         }
     }

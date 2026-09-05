@@ -1036,7 +1036,10 @@ mod interface {
     fn test_interface_python() {
         let (_dir, path) = write_fixture(
             "module.py",
-            r#"\"\"\"A sample module.\"\"\"
+            // why: this is a raw string (r#"..."#), so `\"` is NOT an
+            // escape -- it was writing a literal backslash before each
+            // quote, making the fixture's own docstring invalid Python.
+            r#""""A sample module."""
 
 PUBLIC_CONST = 42
 _PRIVATE_CONST = 99

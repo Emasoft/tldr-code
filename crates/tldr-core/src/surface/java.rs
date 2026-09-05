@@ -173,7 +173,11 @@ fn extract_from_java_file(
 
         for field in &class.fields {
             let is_public = field.visibility.as_deref() == Some("public");
-            if !include_private && !is_public {
+            // Interface fields are implicitly `public static final` — no
+            // modifier needed, so `is_public` is never set for them. Bypass
+            // the visibility check for interface fields, mirroring the
+            // interface-method bypass above (rust_lang.rs:L174-L180 pattern).
+            if !include_private && !is_interface && !is_public {
                 continue;
             }
 

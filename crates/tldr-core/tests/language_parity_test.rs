@@ -1296,17 +1296,23 @@ mod function_tests {
         // Should find methods like "new" and "greet" from impl blocks
     }
 
-    /// Test Java function/method extraction
-    /// Expected: Greeter.greet, Greeter.hello (static), SimpleGreeter.greet
+    /// Test Java function extraction
+    /// why: Java has no free functions, so `extract_functions` must be empty
+    /// for any Java source; every method (class, interface, enum, record)
+    /// belongs to `extract_methods`. The previous body was `let _ = functions;`
+    /// and asserted nothing, which hid that `is_inside_class` did not treat
+    /// `interface_body` as class scope and let `Greetable.greet` leak through.
     #[test]
     fn test_java_extract_functions() {
         let pool = ParserPool::new();
         let tree = pool.parse(SAMPLE_JAVA_CODE, Language::Java).unwrap();
         let functions = extract_functions(&tree, SAMPLE_JAVA_CODE, Language::Java);
 
-        // In Java, we extract methods from classes
-        // Functions here means methods at class level (not nested)
-        let _ = functions;
+        assert!(
+            functions.is_empty(),
+            "extract_functions should not return class or interface methods for Java, got {:?}",
+            functions
+        );
     }
 
     /// Test Java class extraction
@@ -1412,11 +1418,10 @@ mod function_tests {
         let tree = pool.parse(SAMPLE_CSHARP_CODE, Language::CSharp).unwrap();
         let functions = extract_functions(&tree, SAMPLE_CSHARP_CODE, Language::CSharp);
 
-        // C# has methods, not standalone functions
-        assert!(
-            functions.is_empty() || !functions.is_empty(),
-            "C# uses methods"
-        );
+        // why: extract_functions has an explicit `Language::CSharp => {}` arm
+        // (C# has no free functions), so the real contract is "always empty".
+        // The previous assertion `a || !a` is a tautology that can never fail.
+        assert!(functions.is_empty(), "C# has no free functions, only methods");
     }
 
     /// Test Scala function extraction (P2 - currently stubbed)

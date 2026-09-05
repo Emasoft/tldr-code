@@ -210,8 +210,15 @@ fn path_to_module_typescript(path: &Path) -> String {
 
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-    // Handle index.ts/index.tsx/index.js -> parent directory
-    if file_name == "index.ts" || file_name == "index.tsx" || file_name == "index.js" {
+    // Handle index.ts/tsx/js/jsx/mjs/cjs -> parent directory. why: this must
+    // stay in sync with `ModuleIndex::is_ts_index_file()` / `compute_typescript_module_name()`
+    // (see the module-level doc comment above) — leaving out .jsx/.mjs/.cjs
+    // made this function's module name for those files diverge from
+    // ModuleIndex's, breaking cross-file call resolution for those files.
+    if matches!(
+        file_name,
+        "index.ts" | "index.tsx" | "index.js" | "index.jsx" | "index.mjs" | "index.cjs"
+    ) {
         let parent = path.parent().unwrap_or(Path::new(""));
         let parent_str = parent.to_string_lossy().replace('\\', "/");
         return format!("./{}", parent_str);

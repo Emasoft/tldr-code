@@ -1059,9 +1059,21 @@ fn detect_async(func_node: Node, source: &[u8], lang: Language) -> bool {
             false
         }
         Language::TypeScript | Language::JavaScript => {
-            // Check for async keyword
-            let func_text = node_text(func_node, source);
-            func_text.starts_with("async ")
+            // why: a plain `text.starts_with("async ")` check missed any
+            // method with a modifier before `async` (e.g. `static async
+            // foo()`, `public async foo()`) since the modifier keyword,
+            // not "async", is the first token of the node's text. Walk
+            // direct children instead — tree-sitter emits `async` as its
+            // own literal child regardless of modifier order, mirroring
+            // the Rust branch above.
+            for i in 0..func_node.child_count() {
+                if let Some(child) = func_node.child(i) {
+                    if node_text(child, source) == "async" {
+                        return true;
+                    }
+                }
+            }
+            false
         }
         Language::CSharp => {
             // Check modifiers for "async"
@@ -1813,29 +1825,14 @@ fn flatten_class_methods_to_functions(
 /// this file's interface and surfacing them with the trait/type name as a
 /// "class" was misleading.
 fn merge_rust_impl_entries(classes: &mut Vec<ClassInfo>) {
-    use std::collections::HashSet;
-
-    // Step 1: index the lineno of every non-impl class entry so we keep
-    // their stable ordering when re-inserting methods.
-    let mut struct_like_indices: HashSet<String> = HashSet::new();
-    for c in classes.iter() {
-        // We treat any entry whose name doesn't carry generic / for-clause
-        // syntax as struct-like. impl entries carry the impl'd type name
-        // verbatim (which may include generics like `Foo<T>`), so we
-        // strip generics on lookup keys.
-        let key = strip_generics(&c.name);
-        struct_like_indices.insert(key);
-    }
-    let _ = struct_like_indices; // (only used implicitly via the merge)
-
-    // Step 2: separate impl entries from struct/enum/trait entries by
-    // lineno - we don't have a `kind` discriminator, so we re-scan: any
-    // entry whose name appears more than once is an impl-block duplicate.
-    let mut name_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for c in classes.iter() {
-        *name_counts.entry(strip_generics(&c.name)).or_insert(0) += 1;
-    }
+    // why: `struct_like_indices` and `name_counts` were computed here but
+    // never read for any decision — both ended in a bare `let _ = ...;`
+    // to silence the unused-variable warning. They were the leftover
+    // scaffolding for the "drop impl blocks with no local struct/enum/
+    // trait counterpart" behavior described below (Step 4), which was
+    // never actually implemented against them. Removed as dead code;
+    // the real gap (Step 4 below) is tracked separately since fixing it
+    // requires a kind discriminator this function doesn't have.
 
     // Step 3: walk classes in order. For each entry whose name is a
     // duplicate, fold its methods into the FIRST entry with the same
@@ -1887,14 +1884,12 @@ fn merge_rust_impl_entries(classes: &mut Vec<ClassInfo>) {
         classes.remove(idx);
     }
 
-    // Step 4: drop any remaining entries whose name count was originally
-    // > 1 but which are now empty placeholders (this happens for
-    // `impl Trait for ExternalType` where ExternalType has no
-    // struct/enum/trait declaration in the same file — the impl entry
-    // was folded into the canonical, leaving the canonical entry as a
-    // duplicate-of-self; nothing to drop in that case). Reserved for
-    // future expansion.
-    let _ = name_counts;
+    // NOTE: `impl Trait for ExternalType` (no local struct/enum/trait
+    // declaration for `ExternalType`) is NOT dropped here — it has no
+    // duplicate name to fold into, so it survives as its own `ClassInfo`
+    // entry. This contradicts this function's doc comment above, which
+    // claims such impls are "dropped entirely". See interface.rs scan
+    // report for the batch this was found in.
 }
 
 /// Strip generic / lifetime parameters from a Rust type name.

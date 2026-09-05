@@ -444,6 +444,25 @@ pub fn validate_cfg(cfg: &CfgInfo) -> Result<(), TldrError> {
         });
     }
 
+    // Check every block's line range is well-formed (start <= end). A block
+    // with lines.0 > lines.1 would underflow `end - start + 1` in
+    // build_line_to_block's size computation (panics in debug, wraps to a
+    // bogus huge size in release, silently corrupting the "prefer larger
+    // block" tie-break). Reject it here instead, per the fail-fast policy.
+    for block in &cfg.blocks {
+        let (start, end) = block.lines;
+        if start > end {
+            return Err(TldrError::InvalidArgs {
+                arg: "cfg".to_string(),
+                message: format!(
+                    "Block {} has inverted line range: start {} > end {}",
+                    block.id, start, end
+                ),
+                suggestion: None,
+            });
+        }
+    }
+
     // Collect all valid block IDs
     let block_ids: HashSet<usize> = cfg.blocks.iter().map(|b| b.id).collect();
 

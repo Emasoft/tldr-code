@@ -2,11 +2,8 @@
 //!
 //! Tests for tldr-cli remaining analysis commands:
 //! - available: Available expressions analysis
-//! - dominators: Dominator tree and dominance frontier
 //! - reaching_defs: Reaching definitions analysis
-//! - live_vars: Live variable analysis
 //! - taint: Taint flow analysis
-//! - alias: Alias analysis
 //! - slice: Program slicing
 //! - change_impact: Find tests affected by changes
 //! - whatbreaks: Unified impact analysis
@@ -392,13 +389,8 @@ fn test_available_nonexistent_file() {
     );
 }
 
-// =============================================================================
-// Dominators Tests
-// =============================================================================
-
-
-
-
+// Note: dominators tests were removed; no coverage exists for that command.
+// why: avoid a dead "Dominators Tests" section header with zero tests under it.
 
 
 
@@ -534,13 +526,8 @@ fn test_reaching_defs_help() {
     );
 }
 
-// =============================================================================
-// Live Variables Tests
-// =============================================================================
-
-
-
-
+// Note: live_vars tests were removed; no coverage exists for that command.
+// why: avoid a dead "Live Variables Tests" section header with zero tests under it.
 
 
 // =============================================================================
@@ -632,14 +619,8 @@ fn test_taint_help() {
     );
 }
 
-// =============================================================================
-// Alias Analysis Tests
-// =============================================================================
-
-
-
-
-
+// Note: alias tests were removed; no coverage exists for that command.
+// why: avoid a dead "Alias Analysis Tests" section header with zero tests under it.
 
 
 // =============================================================================

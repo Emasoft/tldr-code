@@ -659,21 +659,41 @@ impl CallGraphLanguageSupport for PhpHandler {
             self,
         );
 
-        // Extract module-level calls into synthetic <module> function
-        let mut module_calls = Vec::new();
-        for node in tree.root_node().children(&mut tree.root_node().walk()) {
-            // Skip class, trait, interface, and function definitions
-            if matches!(
-                node.kind(),
-                "class_declaration"
+        // Extract module-level calls into synthetic <module> function.
+        //
+        // why: bracketed `namespace Foo { ... }` wraps the whole file body in a
+        // single top-level `namespace_definition` node. That node's kind isn't
+        // in the skip list below, so without recursing into it, the entire
+        // subtree (including every function/method body already attributed
+        // correctly by process_node above) would be walked again and every
+        // call inside it double-counted under "<module>". Recursing into the
+        // namespace's compound_statement body and re-applying the same skip
+        // filter avoids the duplication; the semicolon form (`namespace Foo;`)
+        // has no compound_statement body, so it is a no-op there.
+        fn collect_module_call_nodes<'a>(node: Node<'a>, out: &mut Vec<Node<'a>>) {
+            for child in node.children(&mut node.walk()) {
+                match child.kind() {
+                    "class_declaration"
                     | "trait_declaration"
                     | "interface_declaration"
                     | "function_definition"
-                    | "namespace_use_declaration"
-            ) {
-                continue;
+                    | "namespace_use_declaration" => {}
+                    "namespace_definition" => {
+                        if let Some(body) = child.child_by_field_name("body") {
+                            if body.kind() == "compound_statement" {
+                                collect_module_call_nodes(body, out);
+                            }
+                        }
+                    }
+                    _ => out.push(child),
+                }
             }
+        }
 
+        let mut module_calls = Vec::new();
+        let mut module_nodes = Vec::new();
+        collect_module_call_nodes(tree.root_node(), &mut module_nodes);
+        for node in module_nodes {
             let calls = self.extract_calls_from_node(
                 &node,
                 source_bytes,

@@ -587,10 +587,17 @@ fn collect_js_export_statements(source: &str) -> Vec<(String, usize)> {
         index += 1;
 
         while index < lines.len()
+            && !statement.contains('}')
             && !(statement.contains(" from ")
                 || statement.contains(" from'")
                 || statement.contains(" from\""))
         {
+            // why: a local `export { x };` (no `from` clause) never contains
+            // "from", so without the `}` check this loop ran to EOF looking
+            // for a clause that doesn't exist, swallowing every later export
+            // statement in the file into one bogus blob (sibling
+            // `collect_js_import_statements` already guards the analogous
+            // case with `statement.ends_with(';')`).
             let next = strip_js_line_comment(lines[index]).trim();
             if !next.is_empty() {
                 if !statement.is_empty() {

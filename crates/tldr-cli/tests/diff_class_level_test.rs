@@ -1,10 +1,11 @@
 //! L5 Class-Level Diff Tests
 //!
-//! These tests define the expected behavior for `--granularity class` in the
-//! `tldr diff` command. They reference types and functions that DO NOT EXIST
-//! yet (DiffGranularity, BaseChanges, ASTChange.children, NodeKind::Field,
-//! run_class_diff). They are designed to fail at compilation until the L5
-//! implementation is complete.
+//! Regression tests for `--granularity class` in the `tldr diff` command
+//! (DiffGranularity, BaseChanges, ASTChange.children, NodeKind::Field,
+//! run_class_diff). The L5 implementation landed; these are now real
+//! behavioural assertions, not compile-fail placeholders.
+//! why: the previous "DOES NOT EXIST yet / designed to fail at compilation"
+//! wording was stale and contradicted the working code below.
 //!
 //! Spec: thoughts/shared/plans/multi-level-diff-spec.md, Section 4.1
 //!

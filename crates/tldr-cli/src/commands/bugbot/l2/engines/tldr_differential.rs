@@ -253,9 +253,19 @@ impl TldrDifferentialEngine {
         let child_id = child.id();
         let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let timed_out_clone = timed_out.clone();
+        // why: without this flag the watchdog thread always sleeps the full
+        // `timeout` and then unconditionally SIGKILLs `child_id`, even when
+        // the child already exited normally within the timeout. PIDs are
+        // reused by the OS, so a late-firing kill can hit an unrelated
+        // process that happens to have been assigned the same PID by then.
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_clone = done.clone();
 
         let _watchdog = std::thread::spawn(move || {
             std::thread::sleep(timeout);
+            if done_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             timed_out_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             #[cfg(unix)]
             unsafe {
@@ -278,6 +288,7 @@ impl TldrDifferentialEngine {
         let output = child
             .wait_with_output()
             .map_err(|e| format!("Failed to read tldr output: {}", e))?;
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
 
         if timed_out.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(format!("Timeout after {}s", self.timeout_secs));
@@ -362,9 +373,24 @@ impl TldrDifferentialEngine {
 
         // === File-level commands: cognitive, smells ===
         // These accept a path and return all functions or smells.
+        //
+        // `cognitive` is run once here and reused below for function-name
+        // discovery (why: it used to be run a second time per side just to
+        // discover function names, doubling `tldr` subprocess spawns --
+        // the most expensive part of this per-file hot path -- for every
+        // changed file).
+        let baseline_cognitive = self.run_tldr_command(&["cognitive"], &baseline_file);
+        let current_cognitive = self.run_tldr_command(&["cognitive"], &current_file);
+
         for cmd_name in &["cognitive", "smells"] {
-            let baseline_result = self.run_tldr_command(&[cmd_name], &baseline_file);
-            let current_result = self.run_tldr_command(&[cmd_name], &current_file);
+            let (baseline_result, current_result) = if *cmd_name == "cognitive" {
+                (baseline_cognitive.clone(), current_cognitive.clone())
+            } else {
+                (
+                    self.run_tldr_command(&[cmd_name], &baseline_file),
+                    self.run_tldr_command(&[cmd_name], &current_file),
+                )
+            };
 
             match (baseline_result, current_result) {
                 (Ok(baseline_json), Ok(current_json)) => {
@@ -385,12 +411,8 @@ impl TldrDifferentialEngine {
 
         // === Per-function commands: complexity, contracts ===
         // Discover function names from the cognitive output (which lists all functions).
-        let baseline_funcs = Self::discover_function_names_from_cognitive(
-            &self.run_tldr_command(&["cognitive"], &baseline_file),
-        );
-        let current_funcs = Self::discover_function_names_from_cognitive(
-            &self.run_tldr_command(&["cognitive"], &current_file),
-        );
+        let baseline_funcs = Self::discover_function_names_from_cognitive(&baseline_cognitive);
+        let current_funcs = Self::discover_function_names_from_cognitive(&current_cognitive);
 
         // --- complexity: per-function ---
         {
@@ -2136,19 +2158,35 @@ impl TldrDifferentialEngine {
     /// The actual output uses `"dead_functions"` and `"possibly_dead"` arrays,
     /// plus a `"total_count"` field for convenience.
     fn count_dead_code_entries(json: &serde_json::Value) -> usize {
-        // Try the summary field first
+        // why: `tldr dead --format json` (DeadCodeReport in tldr-core)
+        // actually emits `total_dead` + `total_possibly_dead`, never
+        // `total_count`. The old `total_count` check never matched real
+        // output, so this always fell through to the array fallback below
+        // and returned only `dead_functions.len()`, silently dropping every
+        // `possibly_dead` entry from the count.
+        if let (Some(dead), Some(possibly)) = (
+            json.get("total_dead").and_then(|v| v.as_u64()),
+            json.get("total_possibly_dead").and_then(|v| v.as_u64()),
+        ) {
+            return (dead + possibly) as usize;
+        }
+        // Legacy/alternate summary field, kept for other schema shapes.
         if let Some(total) = json.get("total_count").and_then(|v| v.as_u64()) {
             return total as usize;
         }
-        // Fallback: count array entries
-        for key in &[
-            "dead_functions",
-            "possibly_dead",
-            "dead_code",
-            "unreachable",
-            "functions",
-            "results",
-        ] {
+        // Fallback: sum both dead-code arrays when either is present.
+        let dead_len = json
+            .get("dead_functions")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len());
+        let possibly_len = json
+            .get("possibly_dead")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len());
+        if dead_len.is_some() || possibly_len.is_some() {
+            return dead_len.unwrap_or(0) + possibly_len.unwrap_or(0);
+        }
+        for key in &["dead_code", "unreachable", "functions", "results"] {
             if let Some(arr) = json.get(key).and_then(|v| v.as_array()) {
                 return arr.len();
             }

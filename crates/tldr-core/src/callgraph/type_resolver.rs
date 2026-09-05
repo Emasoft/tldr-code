@@ -293,10 +293,15 @@ fn find_type_annotation(source: &str, var_name: &str, call_line: u32) -> Option<
         // Pattern: `var_name: Type = ` or `var_name: Type`
         let pattern = format!("{}: ", var_name);
         if let Some(idx) = line.find(&pattern) {
-            let after_colon = &line[idx + pattern.len()..];
-            // Extract type name (ends at '=' or end of significant content)
-            let type_name = extract_type_from_annotation(after_colon)?;
-            return Some(type_name);
+            // why: a plain substring match also matches "userid: " when var_name is
+            // "id", silently attributing another variable's annotation. Require a
+            // real identifier boundary before the match.
+            if is_boundary(line.as_bytes(), idx, var_name.len()) {
+                let after_colon = &line[idx + pattern.len()..];
+                // Extract type name (ends at '=' or end of significant content)
+                let type_name = extract_type_from_annotation(after_colon)?;
+                return Some(type_name);
+            }
         }
     }
 
@@ -540,9 +545,15 @@ fn find_typescript_annotation(source: &str, var_name: &str, call_line: u32) -> O
         for prefix in &["const ", "let ", "var ", ""] {
             let pattern = format!("{}{}: ", prefix, var_name);
             if let Some(idx) = line.find(&pattern) {
-                let after_colon = &line[idx + pattern.len()..];
-                if let Some(type_name) = extract_typescript_type(after_colon) {
-                    return Some(type_name);
+                // why: the "" prefix case makes this a bare substring search, so
+                // var_name "id" would wrongly match inside "userid: Type". Require
+                // a real identifier boundary at the variable name position.
+                let var_start = idx + prefix.len();
+                if is_boundary(line.as_bytes(), var_start, var_name.len()) {
+                    let after_colon = &line[idx + pattern.len()..];
+                    if let Some(type_name) = extract_typescript_type(after_colon) {
+                        return Some(type_name);
+                    }
                 }
             }
         }
@@ -587,11 +598,17 @@ fn find_typescript_constructor(source: &str, var_name: &str, call_line: u32) -> 
         for prefix in &["const ", "let ", "var ", ""] {
             let pattern = format!("{}{} = new ", prefix, var_name);
             if let Some(idx) = line.find(&pattern) {
-                let after_new = &line[idx + pattern.len()..];
-                let type_end = after_new.find(['(', '<']).unwrap_or(after_new.len());
-                let type_name = after_new[..type_end].trim();
-                if let Some(normalized) = normalize_type_name(type_name) {
-                    return Some(normalized);
+                // why: the "" prefix case makes this a bare substring search, so
+                // var_name "id" would wrongly match inside "userid = new Type()".
+                // Require a real identifier boundary at the variable name position.
+                let var_start = idx + prefix.len();
+                if is_boundary(line.as_bytes(), var_start, var_name.len()) {
+                    let after_new = &line[idx + pattern.len()..];
+                    let type_end = after_new.find(['(', '<']).unwrap_or(after_new.len());
+                    let type_name = after_new[..type_end].trim();
+                    if let Some(normalized) = normalize_type_name(type_name) {
+                        return Some(normalized);
+                    }
                 }
             }
         }

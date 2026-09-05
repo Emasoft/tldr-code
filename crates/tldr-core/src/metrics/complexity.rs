@@ -311,7 +311,13 @@ impl<'a> ComplexityCalculator<'a> {
             _ => {}
         }
 
-        // Logical operators in conditions
+        // Logical operators in conditions. Only check the parent
+        // boolean_operator/binary_expression node via its `operator`
+        // field text — the operator keyword/token (`and`/`or`/`&&`/`||`)
+        // is also visited as its own child node during the DFS walk, so a
+        // second, unconditional match on `kind == "&&" | "||" | "and" |
+        // "or"` here double-counted every logical operator (e.g. `a and
+        // b` added 2 instead of 1 to cyclomatic complexity).
         if kind == "boolean_operator" || kind == "binary_expression" {
             if let Some(op) = node.child_by_field_name("operator") {
                 let op_text = op.utf8_text(self.source.as_bytes()).unwrap_or("");
@@ -319,11 +325,6 @@ impl<'a> ComplexityCalculator<'a> {
                     self.cyclomatic += 1;
                 }
             }
-        }
-
-        // Also check for && and || as direct node kinds
-        if kind == "&&" || kind == "||" || kind == "and" || kind == "or" {
-            self.cyclomatic += 1;
         }
     }
 

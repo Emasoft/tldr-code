@@ -87,11 +87,13 @@ fn detect_grouping_style(groupings: &[super::signals::ImportGrouping]) -> Import
     let mut third_party_first_count = 0;
 
     for grouping in groupings {
-        // Determine which type appears first (non-empty)
+        // Determine which type appears first (non-empty).
+        // why: the old condition only counted a stdlib-only-or-with-local
+        // grouping; a file with stdlib+third-party imports and no local
+        // imports (a very common shape) matched neither branch and was
+        // silently dropped from every bucket, undercounting stdlib usage.
         if !grouping.stdlib_imports.is_empty() {
-            if grouping.third_party_imports.is_empty() || !grouping.local_imports.is_empty() {
-                stdlib_first_count += 1;
-            }
+            stdlib_first_count += 1;
         } else if !grouping.third_party_imports.is_empty() {
             third_party_first_count += 1;
         } else if !grouping.local_imports.is_empty() {

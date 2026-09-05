@@ -1779,10 +1779,16 @@ fn body_contains_throw(if_stmt: Node, source: &[u8], config: &LanguageConfig) ->
             return true;
         }
         // Check inside blocks/compound statements
-        if child.kind() == "block"
+        // why: `&&` binds tighter than `||` in Rust, so the previous form
+        // `A || B || C || D && E` returned true on kind A/B/C alone,
+        // without ever checking whether the nested block actually
+        // contains a throw. Parenthesize the kind-check so the recursive
+        // call is required for every kind in the list.
+        if (child.kind() == "block"
             || child.kind() == "compound_statement"
             || child.kind() == "function_body"
-            || child.kind() == "statements" && node_tree_contains_throw(child, source, config)
+            || child.kind() == "statements")
+            && node_tree_contains_throw(child, source, config)
         {
             return true;
         }
@@ -1845,10 +1851,14 @@ fn node_tree_contains_throw(node: Node, source: &[u8], config: &LanguageConfig) 
             }
         }
         // Recurse into blocks, statements, and other containers
-        if child.kind() == "block"
+        // why: same `&&`/`||` precedence bug as body_contains_throw above —
+        // parenthesize so the recursive check actually gates the result
+        // for every listed kind, not just "statements".
+        if (child.kind() == "block"
             || child.kind() == "compound_statement"
             || child.kind() == "function_body"
-            || child.kind() == "statements" && node_tree_contains_throw(child, source, config)
+            || child.kind() == "statements")
+            && node_tree_contains_throw(child, source, config)
         {
             return true;
         }

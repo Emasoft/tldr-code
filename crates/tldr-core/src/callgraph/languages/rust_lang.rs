@@ -30,8 +30,17 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 use tree_sitter::{Node, Parser, Tree};
+
+lazy_static! {
+    // why: was `Regex::new(...)` inside `extract_calls_from_macro_body`,
+    // recompiling the same pattern on every macro invocation in the file
+    // (a hot path for macro-heavy code). Compile it once.
+    static ref MACRO_CALL_PATTERN: Regex =
+        Regex::new(r"([a-zA-Z_][\w]*(?:::[a-zA-Z_][\w]*)*)\s*\(").unwrap();
+}
 
 use super::base::{get_node_text, walk_tree};
 use super::common::{extend_calls_if_any, insert_calls_if_any};
@@ -233,6 +242,28 @@ impl RustLangHandler {
         None
     }
 
+    /// Extract the base type-identifier name from an impl/type node,
+    /// unwrapping a `generic_type` wrapper (e.g. `Foo<T>` -> "Foo").
+    ///
+    /// why: shared by every impl-type lookup below so the fix for the
+    /// `impl Trait for Type` ambiguity (see call sites) lives in one place.
+    fn extract_type_identifier_name(&self, node: &Node, source: &[u8]) -> Option<String> {
+        match node.kind() {
+            "type_identifier" => Some(get_node_text(node, source).to_string()),
+            "generic_type" => {
+                for i in 0..node.child_count() {
+                    if let Some(child) = node.child(i) {
+                        if child.kind() == "type_identifier" {
+                            return Some(get_node_text(&child, source).to_string());
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Collect all function, struct, enum, and trait definitions.
     fn collect_definitions(
         &self,
@@ -271,29 +302,21 @@ impl RustLangHandler {
                     }
                 }
                 "impl_item" => {
-                    // Collect methods from impl blocks
-                    let mut type_name: Option<String> = None;
+                    // Collect methods from impl blocks.
+                    // why: use the grammar's `type` field (the implementing type),
+                    // not the first type_identifier/generic_type child encountered.
+                    // For `impl Trait for Type { .. }` that first child is the
+                    // TRAIT name, so methods were mis-qualified as "Trait::method"
+                    // instead of "Type::method".
+                    let type_name: Option<String> = node
+                        .child_by_field_name("type")
+                        .and_then(|type_node| {
+                            self.extract_type_identifier_name(&type_node, source)
+                        });
 
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
                             match child.kind() {
-                                "type_identifier" | "generic_type" => {
-                                    // Get the base type name
-                                    if child.kind() == "generic_type" {
-                                        for j in 0..child.child_count() {
-                                            if let Some(tc) = child.child(j) {
-                                                if tc.kind() == "type_identifier" {
-                                                    type_name = Some(
-                                                        get_node_text(&tc, source).to_string(),
-                                                    );
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        type_name = Some(get_node_text(&child, source).to_string());
-                                    }
-                                }
                                 "declaration_list" => {
                                     // Index methods
                                     for j in 0..child.named_child_count() {
@@ -360,7 +383,7 @@ impl RustLangHandler {
 
         // Match patterns: `identifier(` or `path::identifier(`
         // The regex captures: (optional_path::)identifier followed by (
-        let re = Regex::new(r"([a-zA-Z_][\w]*(?:::[a-zA-Z_][\w]*)*)\s*\(").unwrap();
+        let re = &*MACRO_CALL_PATTERN;
 
         for cap in re.captures_iter(text) {
             let full_match = cap.get(1).unwrap().as_str();
@@ -426,33 +449,20 @@ impl RustLangHandler {
                             if let Some(container) = decl_list.parent() {
                                 match container.kind() {
                                     "impl_item" => {
-                                        // Find the type name
-                                        for i in 0..container.child_count() {
-                                            if let Some(child) = container.child(i) {
-                                                match child.kind() {
-                                                    "type_identifier" => {
-                                                        return format!(
-                                                            "{}::{}",
-                                                            get_node_text(&child, source),
-                                                            func_name
-                                                        );
-                                                    }
-                                                    "generic_type" => {
-                                                        for j in 0..child.child_count() {
-                                                            if let Some(tc) = child.child(j) {
-                                                                if tc.kind() == "type_identifier" {
-                                                                    return format!(
-                                                                        "{}::{}",
-                                                                        get_node_text(&tc, source),
-                                                                        func_name
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
+                                        // Find the implementing type via the grammar's
+                                        // `type` field, not the first type_identifier/
+                                        // generic_type child — for `impl Trait for Type`
+                                        // that child is the TRAIT name (see
+                                        // extract_type_identifier_name doc comment).
+                                        if let Some(type_name) = container
+                                            .child_by_field_name("type")
+                                            .and_then(|type_node| {
+                                                self.extract_type_identifier_name(
+                                                    &type_node, source,
+                                                )
+                                            })
+                                        {
+                                            return format!("{}::{}", type_name, func_name);
                                         }
                                     }
                                     "trait_item" => {
@@ -499,6 +509,19 @@ impl RustLangHandler {
 
                 // Get the function being called
                 if let Some(func_node) = child.child(0) {
+                    // why: turbofish calls (`parse::<i32>()`, `Vec::<T>::new()`,
+                    // `iter.collect::<Vec<_>>()`) parse the callee as a
+                    // `generic_function` wrapping the real identifier/
+                    // scoped_identifier/field_expression node. Without
+                    // unwrapping it, every turbofish call fell into the
+                    // catch-all `_ => {}` arm below and was silently dropped.
+                    let func_node = if func_node.kind() == "generic_function" {
+                        func_node
+                            .child_by_field_name("function")
+                            .unwrap_or(func_node)
+                    } else {
+                        func_node
+                    };
                     match func_node.kind() {
                         "identifier" => {
                             // Direct call: func()
@@ -656,54 +679,44 @@ impl RustLangHandler {
         defined_funcs: &HashSet<String>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
     ) {
-        let mut type_name: Option<String> = None;
+        // why: use the grammar's `type` field (the implementing type), not the
+        // first type_identifier/generic_type child encountered — for
+        // `impl Trait for Type { .. }` that child is the TRAIT name, so
+        // callers were mis-qualified as "Trait::method" instead of
+        // "Type::method" (see extract_type_identifier_name doc comment).
+        let type_name: Option<String> = node
+            .child_by_field_name("type")
+            .and_then(|type_node| self.extract_type_identifier_name(&type_node, source));
 
         for i in 0..node.child_count() {
             let Some(child) = node.child(i) else {
                 continue;
             };
-            match child.kind() {
-                "type_identifier" | "generic_type" => {
-                    if child.kind() == "generic_type" {
-                        for j in 0..child.child_count() {
-                            if let Some(type_child) = child.child(j) {
-                                if type_child.kind() == "type_identifier" {
-                                    type_name =
-                                        Some(get_node_text(&type_child, source).to_string());
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        type_name = Some(get_node_text(&child, source).to_string());
-                    }
+            if child.kind() != "declaration_list" {
+                continue;
+            }
+            for j in 0..child.named_child_count() {
+                let Some(item) = child.named_child(j) else {
+                    continue;
+                };
+                if item.kind() != "function_item" {
+                    continue;
                 }
-                "declaration_list" => {
-                    for j in 0..child.named_child_count() {
-                        let Some(item) = child.named_child(j) else {
-                            continue;
-                        };
-                        if item.kind() != "function_item" {
-                            continue;
-                        }
-                        let Some(name_node) = item.child_by_field_name("name") else {
-                            continue;
-                        };
-                        let method_name = get_node_text(&name_node, source).to_string();
-                        let full_name = if let Some(type_name) = type_name.as_deref() {
-                            format!("{type_name}::{method_name}")
-                        } else {
-                            method_name
-                        };
-                        let Some(body) = item.child_by_field_name("body") else {
-                            continue;
-                        };
-                        let calls =
-                            self.extract_calls_from_node(&body, source, defined_funcs, &full_name);
-                        insert_calls_if_any(calls_by_func, full_name, calls);
-                    }
-                }
-                _ => {}
+                let Some(name_node) = item.child_by_field_name("name") else {
+                    continue;
+                };
+                let method_name = get_node_text(&name_node, source).to_string();
+                let full_name = if let Some(type_name) = type_name.as_deref() {
+                    format!("{type_name}::{method_name}")
+                } else {
+                    method_name
+                };
+                let Some(body) = item.child_by_field_name("body") else {
+                    continue;
+                };
+                let calls =
+                    self.extract_calls_from_node(&body, source, defined_funcs, &full_name);
+                insert_calls_if_any(calls_by_func, full_name, calls);
             }
         }
     }
@@ -948,44 +961,20 @@ impl CallGraphLanguageSupport for RustLangHandler {
                                 if let Some(gp) = p.parent() {
                                     match gp.kind() {
                                         "impl_item" => {
-                                            // Find the type name (impl block).
-                                            for i in 0..gp.child_count() {
-                                                if let Some(child) = gp.child(i) {
-                                                    match child.kind() {
-                                                        "type_identifier" => {
-                                                            method_owner = Some(
-                                                                get_node_text(
-                                                                    &child,
-                                                                    source_bytes,
-                                                                )
-                                                                .to_string(),
-                                                            );
-                                                        }
-                                                        "generic_type" => {
-                                                            for j in 0..child.child_count() {
-                                                                if let Some(tc) = child.child(j) {
-                                                                    if tc.kind()
-                                                                        == "type_identifier"
-                                                                    {
-                                                                        method_owner = Some(
-                                                                            get_node_text(
-                                                                                &tc,
-                                                                                source_bytes,
-                                                                            )
-                                                                            .to_string(),
-                                                                        );
-                                                                        break;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        _ => {}
-                                                    }
-                                                    if method_owner.is_some() {
-                                                        break;
-                                                    }
-                                                }
-                                            }
+                                            // Find the implementing type via the
+                                            // grammar's `type` field, not the first
+                                            // type_identifier/generic_type child —
+                                            // for `impl Trait for Type` that child is
+                                            // the TRAIT name (see
+                                            // extract_type_identifier_name doc comment).
+                                            method_owner = gp
+                                                .child_by_field_name("type")
+                                                .and_then(|type_node| {
+                                                    self.extract_type_identifier_name(
+                                                        &type_node,
+                                                        source_bytes,
+                                                    )
+                                                });
                                         }
                                         "trait_item" => {
                                             // Find the trait name. trait_item carries

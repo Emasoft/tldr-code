@@ -145,7 +145,14 @@ impl CoverageArgs {
         // Apply sorting if requested
         if let Some(sort_order) = self.sort {
             report.files.sort_by(|a, b| {
-                let cmp = a.line_coverage.partial_cmp(&b.line_coverage).unwrap();
+                // why: a file with 0 total lines yields a 0/0 coverage ratio
+                // (NaN), and `partial_cmp` on NaN returns None — `.unwrap()`
+                // would panic on real-world reports with empty files. Treat
+                // incomparable values as equal instead of crashing the sort.
+                let cmp = a
+                    .line_coverage
+                    .partial_cmp(&b.line_coverage)
+                    .unwrap_or(std::cmp::Ordering::Equal);
                 match sort_order {
                     SortOrder::Asc => cmp,
                     SortOrder::Desc => cmp.reverse(),

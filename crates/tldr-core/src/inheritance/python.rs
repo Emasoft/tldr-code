@@ -37,25 +37,26 @@ fn extract_classes_from_tree(
     classes: &mut Vec<InheritanceNode>,
 ) {
     let root = tree.root_node();
-    let mut cursor = root.walk();
+    visit_node(&root, source, file_path, classes);
+}
 
-    // Walk all children looking for class definitions
-    for child in root.children(&mut cursor) {
-        if child.kind() == "class_definition" {
-            if let Some(class) = extract_class_def(&child, source, file_path) {
-                classes.push(class);
-            }
+/// why: the previous version only scanned the module's direct children (plus
+/// one level into `decorated_definition`), so a class nested inside another
+/// class or inside a function body was silently dropped — unlike every other
+/// language extractor in this module (java/kotlin/php/...), which recurses
+/// into the whole tree. Full recursion also makes the old decorated_definition
+/// special-case unnecessary: a decorated nested class is still reached
+/// because we walk every descendant node.
+fn visit_node(node: &Node, source: &str, file_path: &Path, classes: &mut Vec<InheritanceNode>) {
+    if node.kind() == "class_definition" {
+        if let Some(class) = extract_class_def(node, source, file_path) {
+            classes.push(class);
         }
-        // Recurse into decorated definitions
-        if child.kind() == "decorated_definition" {
-            for inner in child.children(&mut child.walk()) {
-                if inner.kind() == "class_definition" {
-                    if let Some(class) = extract_class_def(&inner, source, file_path) {
-                        classes.push(class);
-                    }
-                }
-            }
-        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_node(&child, source, file_path, classes);
     }
 }
 

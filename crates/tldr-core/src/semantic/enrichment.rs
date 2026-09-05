@@ -176,10 +176,14 @@ pub fn build_embedding_text(unit: &EmbeddingUnit) -> String {
 
     // L1: Signature (truncate to 200 chars if needed)
     if !unit.signature.is_empty() {
-        let sig = if unit.signature.len() > 200 {
-            &unit.signature[..200]
+        // why: byte-slicing `..200` panics when byte 200 falls inside a
+        // multi-byte UTF-8 char (e.g. non-ASCII identifiers/comments).
+        // Truncate on a char boundary instead, matching the safe pattern
+        // used in chunker.rs::truncate_if_needed.
+        let sig: String = if unit.signature.len() > 200 {
+            unit.signature.chars().take(200).collect()
         } else {
-            &unit.signature
+            unit.signature.clone()
         };
         parts.push(format!("Signature: {}", sig));
     }
@@ -218,9 +222,11 @@ pub fn build_embedding_text(unit: &EmbeddingUnit) -> String {
 
     let text = parts.join("\n");
 
-    // Truncate to 2000 chars if needed (~512 tokens)
+    // Truncate to 2000 chars if needed (~512 tokens).
+    // why: byte-slicing `..2000` panics when byte 2000 falls inside a
+    // multi-byte UTF-8 char; truncate on a char boundary instead.
     if text.len() > 2000 {
-        text[..2000].to_string()
+        text.chars().take(2000).collect()
     } else {
         text
     }

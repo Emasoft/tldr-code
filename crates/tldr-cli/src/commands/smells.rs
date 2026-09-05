@@ -229,24 +229,51 @@ impl SmellsArgs {
         // injection when `--quiet`, when the user asked for a single
         // smell type via `--smell-type` (warning would be misleading),
         // or when `--deep` is set (the analyzers ARE running).
-        let deep_only_warning: Option<String> =
-            (!self.deep && !quiet && self.smell_type.is_none()).then(|| {
-                const DEEP_ONLY_SMELLS: &[&str] = &[
-                    "low_cohesion",
-                    "tight_coupling",
-                    "dead_code",
-                    "code_clone",
-                    "high_cognitive_complexity",
-                    "middle_man",
-                    "refused_bequest",
-                    "inappropriate_intimacy",
-                ];
-                format!(
-                    "Note: {} smell analyzers require --deep flag. Run with --deep for: {}",
-                    DEEP_ONLY_SMELLS.len(),
-                    DEEP_ONLY_SMELLS.join(", ")
-                )
-            });
+        // why: the original condition suppressed the warning whenever
+        // `--smell-type` was set, on the theory that a per-type warning would
+        // be "misleading" -- but that suppressed it in exactly the one case
+        // where it is guaranteed useful: requesting a deep-only smell type
+        // without `--deep` always yields zero results, and the user got no
+        // explanation at all (a silent empty report). Detect that specific
+        // case and still warn; only suppress for non-deep-only types.
+        let requested_is_deep_only = matches!(
+            self.smell_type,
+            Some(
+                SmellTypeArg::LowCohesion
+                    | SmellTypeArg::TightCoupling
+                    | SmellTypeArg::DeadCode
+                    | SmellTypeArg::CodeClone
+                    | SmellTypeArg::HighCognitiveComplexity
+                    | SmellTypeArg::MiddleMan
+                    | SmellTypeArg::RefusedBequest
+                    | SmellTypeArg::InappropriateIntimacy
+            )
+        );
+        let deep_only_warning: Option<String> = if self.deep || quiet {
+            None
+        } else if requested_is_deep_only {
+            Some(
+                "Note: the requested smell type requires --deep flag and yields no results without it.".to_string(),
+            )
+        } else if self.smell_type.is_none() {
+            const DEEP_ONLY_SMELLS: &[&str] = &[
+                "low_cohesion",
+                "tight_coupling",
+                "dead_code",
+                "code_clone",
+                "high_cognitive_complexity",
+                "middle_man",
+                "refused_bequest",
+                "inappropriate_intimacy",
+            ];
+            Some(format!(
+                "Note: {} smell analyzers require --deep flag. Run with --deep for: {}",
+                DEEP_ONLY_SMELLS.len(),
+                DEEP_ONLY_SMELLS.join(", ")
+            ))
+        } else {
+            None
+        };
 
         // Fallback to direct compute
         writer.progress(&format!(

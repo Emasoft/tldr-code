@@ -5,9 +5,17 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 
 use tldr_core::fs::tree::{collect_files, get_file_tree};
 use tldr_core::types::{FileTree, IgnoreSpec, NodeType};
+
+// why: `cargo test` runs tests in parallel threads within one binary, and
+// `std::env::set_current_dir` mutates process-wide state. Without this lock,
+// `test_relative_path_handling` flipping the cwd mid-run could race with
+// `test_path_traversal_protection`, which resolves a relative path against
+// whatever the cwd happens to be at that instant, making both tests flaky.
+static CWD_MUTEX: Mutex<()> = Mutex::new(());
 
 // =============================================================================
 // Basic get_file_tree tests
@@ -604,6 +612,9 @@ fn test_directories_before_files_sorting() {
 
 #[test]
 fn test_path_traversal_protection() {
+    // why: this test's outcome depends on the process cwd, which
+    // test_relative_path_handling mutates; take the same lock to avoid a race.
+    let _guard = CWD_MUTEX.lock().unwrap();
     // Attempt path traversal - should be handled safely
     let result = get_file_tree(Path::new("../../../etc"), None, true, None);
     assert!(result.is_err());
@@ -611,6 +622,8 @@ fn test_path_traversal_protection() {
 
 #[test]
 fn test_relative_path_handling() {
+    // why: serialize with other tests that read/rely on the process cwd.
+    let _guard = CWD_MUTEX.lock().unwrap();
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(temp_dir.path().join("file.py"), "# file").unwrap();
 

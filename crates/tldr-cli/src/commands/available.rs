@@ -86,19 +86,21 @@ impl AvailableArgs {
         let source = std::fs::read_to_string(&self.file)?;
         let source_lines: Vec<String> = source.lines().map(|s| s.to_string()).collect();
 
+        // why: get_cfg_context/get_dfg_context treat a "" argument as inline source
+        // text (not a missing path) because they check `Path::new(s).exists()` --
+        // silently swallowing a non-UTF-8 path here would misroute it into that
+        // branch and fail with a confusing "function not found" error instead of a
+        // clear path error.
+        let file_str = self
+            .file
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("File path is not valid UTF-8: {}", self.file.display()))?;
+
         // Get CFG for the function
-        let cfg = get_cfg_context(
-            self.file.to_str().unwrap_or_default(),
-            &self.function,
-            language,
-        )?;
+        let cfg = get_cfg_context(file_str, &self.function, language)?;
 
         // Get DFG for expression extraction
-        let dfg = get_dfg_context(
-            self.file.to_str().unwrap_or_default(),
-            &self.function,
-            language,
-        )?;
+        let dfg = get_dfg_context(file_str, &self.function, language)?;
 
         // Compute available expressions (with AST-based extraction for multi-language support)
         let result = compute_available_exprs_with_source_and_lang(

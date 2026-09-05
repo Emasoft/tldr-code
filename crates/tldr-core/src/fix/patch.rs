@@ -60,8 +60,19 @@ pub fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
             EditKind::ReplaceRange { start_col, end_col } => {
                 if idx < lines.len() {
                     let line = &lines[idx];
-                    let start = (*start_col).min(line.len());
-                    let end = (*end_col).min(line.len());
+                    // why: start_col/end_col can land mid-character on a line
+                    // with multi-byte UTF-8 (e.g. non-ASCII identifiers/strings).
+                    // Byte-slicing at a non-boundary index panics, so snap each
+                    // bound down to the nearest valid char boundary first.
+                    let clamp_to_char_boundary = |col: usize| {
+                        let mut i = col.min(line.len());
+                        while i > 0 && !line.is_char_boundary(i) {
+                            i -= 1;
+                        }
+                        i
+                    };
+                    let start = clamp_to_char_boundary(*start_col);
+                    let end = clamp_to_char_boundary(*end_col);
                     let mut new_line = String::new();
                     new_line.push_str(&line[..start]);
                     new_line.push_str(&edit.new_text);

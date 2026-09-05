@@ -99,12 +99,15 @@ pub fn read_source_safely(path: &Path) -> Result<String, io::Error> {
     let bytes = fs::read(path)?;
 
     // Try UTF-8 first
-    match String::from_utf8(bytes.clone()) {
+    // why: recover the bytes from the Utf8Error instead of cloning the
+    // whole buffer up front just to keep a copy for the fallback path -
+    // this is a hot path (called per source file).
+    match String::from_utf8(bytes) {
         Ok(s) => Ok(s),
-        Err(_) => {
+        Err(e) => {
             // Fall back to Latin-1 (ISO-8859-1)
             // Every byte is valid in Latin-1, so this always succeeds
-            Ok(bytes.iter().map(|&b| b as char).collect())
+            Ok(e.into_bytes().iter().map(|&b| b as char).collect())
         }
     }
 }

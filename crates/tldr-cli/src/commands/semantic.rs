@@ -107,7 +107,7 @@ impl SemanticArgs {
 
         // Output based on format
         if writer.is_text() {
-            let text = format_semantic_text(&report);
+            let text = format_semantic_text(&report, self.threshold);
             writer.write_text(&text)?;
         } else {
             writer.write(&report)?;
@@ -133,7 +133,10 @@ fn parse_model(model_str: &str) -> Result<EmbeddingModel> {
 }
 
 /// Format semantic search report for text output
-fn format_semantic_text(report: &tldr_core::semantic::SemanticSearchReport) -> String {
+fn format_semantic_text(
+    report: &tldr_core::semantic::SemanticSearchReport,
+    threshold: f64,
+) -> String {
     use colored::Colorize;
 
     let mut output = String::new();
@@ -146,7 +149,10 @@ fn format_semantic_text(report: &tldr_core::semantic::SemanticSearchReport) -> S
     output.push_str(&format!(
         "Model: {} | Threshold: {:.2} | Searched: {} chunks\n\n",
         format!("{:?}", report.model).yellow(),
-        0.5, // threshold from options
+        // why: was hardcoded 0.5, ignoring the user's --threshold flag,
+        // so the printed value lied whenever --threshold differed from
+        // the default (tldr-code batch b045 scan).
+        threshold,
         report.total_chunks
     ));
 

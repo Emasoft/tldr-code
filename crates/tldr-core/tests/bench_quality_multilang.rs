@@ -1220,7 +1220,10 @@ mod loc_tests {
     #[test]
     fn test_loc_exact_count() {
         let dir = TempDir::new().unwrap();
-        // 5 code lines, 2 comment lines, 3 blank lines = 10 total
+        // why: comment previously claimed "5 code, 2 comment, 3 blank" but the
+        // literal content below actually has 4 code lines (def foo/return 1/def
+        // bar/return 2), 2 comment lines, and 4 blank lines (10 total) -- fixed
+        // to match reality so the comment doesn't mislead future edits.
         let content = "# Comment 1\n# Comment 2\n\ndef foo():\n    return 1\n\ndef bar():\n    return 2\n\n\n";
         let path = temp_file(&dir, "exact.py", content);
         let options = LocOptions::new();

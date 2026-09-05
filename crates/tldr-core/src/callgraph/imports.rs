@@ -398,9 +398,16 @@ pub fn resolve_imports_for_file<'a>(
                 let resolved_canonical: Option<PathBuf> = resolved_file.canonicalize().ok();
                 let current_canonical: Option<PathBuf> = current_file.canonicalize().ok();
 
-                if resolved_canonical == current_canonical {
-                    // Self-import detected - skip it
-                    continue;
+                // why: only treat as self-import when BOTH canonicalize
+                // successfully and match. Comparing the Options directly
+                // made `None == None` (both failed to canonicalize, e.g.
+                // a resolved path that doesn't exist on disk) look like a
+                // match, silently dropping a legitimate resolved import.
+                if let (Some(r), Some(c)) = (&resolved_canonical, &current_canonical) {
+                    if r == c {
+                        // Self-import detected - skip it
+                        continue;
+                    }
                 }
             }
 

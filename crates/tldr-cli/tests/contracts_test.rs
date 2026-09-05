@@ -494,8 +494,10 @@ mod contracts_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report: ContractsReport = serde_json::from_str(&stdout).unwrap();
 
-        // Empty vectors are valid when no contracts detected
-        assert!(report.preconditions.is_empty() || !report.preconditions.is_empty());
+        // why: `is_empty() || !is_empty()` is a tautology that can never fail;
+        // assert the actual field we know for a single-expression function body.
+        assert_eq!(report.function, "simple");
+        assert!(report.preconditions.is_empty(), "simple() has no guard clauses");
     }
 
     #[test]

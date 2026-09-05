@@ -174,8 +174,18 @@ pub fn analyze_churn(
     let total_unique_commits = count_unique_commits(path, days)?;
 
     // Sort files by commit_count descending and take top_k
+    // why: file_stats is a HashMap, so its iteration order is
+    // nondeterministic across runs. Sorting by commit_count alone left
+    // tied files (equal commit_count, common for small repos) in
+    // whatever arbitrary order the HashMap produced, making `top`
+    // output non-reproducible. Break ties by file path for a stable,
+    // deterministic ordering.
     let mut files: Vec<_> = file_stats.values().cloned().collect();
-    files.sort_by(|a, b| b.commit_count.cmp(&a.commit_count));
+    files.sort_by(|a, b| {
+        b.commit_count
+            .cmp(&a.commit_count)
+            .then_with(|| a.file.cmp(&b.file))
+    });
     files.truncate(top_k);
 
     // Get author stats if requested
@@ -216,9 +226,13 @@ pub fn analyze_churn(
         summary.avg_commits_per_file = 0.0;
         // Repick most_churned_file by lines_changed (descending),
         // since commit_count is degenerate (all == 1).
+        // why: max_by_key over a HashMap's values() picks the *last*
+        // maximal element in iteration order, which is nondeterministic
+        // for a HashMap. Tie-break by file path so the degenerate-shallow
+        // fallback is reproducible across runs.
         if let Some(top) = file_stats
             .values()
-            .max_by_key(|f| f.lines_changed)
+            .max_by_key(|f| (f.lines_changed, std::cmp::Reverse(&f.file)))
         {
             summary.most_churned_file = top.file.clone();
         }

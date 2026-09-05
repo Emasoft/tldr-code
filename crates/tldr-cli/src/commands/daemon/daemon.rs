@@ -364,8 +364,23 @@ impl TLDRDaemon {
             } => self.handle_track(hook, success, metrics).await,
 
             DaemonCommand::Warm { language } => {
-                let parsed = language.as_deref().and_then(|l| l.parse::<Language>().ok());
-                let lang = resolve_language(parsed);
+                // why: every other language-taking handler (Structure, Cfg, Dfg,
+                // Slice, Imports, ...) reports an unparseable language string as
+                // an error. This arm used to swallow the parse failure via
+                // `.ok()` and silently warm caches under the default language
+                // instead, hiding a bad client request (fail-fast violation).
+                let lang = match language.as_deref() {
+                    Some(l) => match l.parse::<Language>() {
+                        Ok(lang) => lang,
+                        Err(_) => {
+                            return DaemonResponse::Error {
+                                status: "error".to_string(),
+                                error: format!("unknown language: {}", l),
+                            };
+                        }
+                    },
+                    None => resolve_language(None),
+                };
 
                 let mut warmed = Vec::new();
                 let mut errors = Vec::new();

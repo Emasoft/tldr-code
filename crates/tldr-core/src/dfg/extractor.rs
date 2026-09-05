@@ -600,7 +600,7 @@ impl<'a> DfgBuilder<'a> {
 
             // Python augmented assignment: x += 1
             "augmented_assignment" => {
-                self.process_augmented_assignment(node)?;
+                self.process_augmented_assignment(node, depth)?;
             }
 
             // =================================================================
@@ -680,7 +680,7 @@ impl<'a> DfgBuilder<'a> {
             // =================================================================
             // Ruby operator_assignment: x += ...
             "operator_assignment" => {
-                self.process_augmented_assignment(node)?;
+                self.process_augmented_assignment(node, depth)?;
             }
 
             // =================================================================
@@ -1001,7 +1001,7 @@ impl<'a> DfgBuilder<'a> {
     }
 
     /// Process augmented assignment (x += ...)
-    fn process_augmented_assignment(&mut self, node: Node) -> TldrResult<()> {
+    fn process_augmented_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
                 self.add_ref_from_node(left, RefType::Update);
@@ -1010,7 +1010,10 @@ impl<'a> DfgBuilder<'a> {
 
         // The right side contains uses
         if let Some(right) = node.child_by_field_name("right") {
-            self.extract_refs_from_node(right, 1)?;
+            // why: was hardcoded to depth=1 regardless of actual nesting depth,
+            // resetting the MAX_DEPTH recursion guard on every augmented
+            // assignment and letting deeply nested/malicious input bypass it.
+            self.extract_refs_from_node(right, depth + 1)?;
         }
 
         Ok(())

@@ -492,7 +492,16 @@ impl HealthReport {
         // Header
         let path_str = self.path.display().to_string();
         let truncated_path = if path_str.len() > 60 {
-            format!("...{}", &path_str[path_str.len() - 57..])
+            // why: slicing by raw byte offset can land mid-codepoint for a
+            // path containing multi-byte UTF-8 characters and panic; find
+            // the nearest char boundary instead of assuming ASCII.
+            let boundary = path_str
+                .char_indices()
+                .rev()
+                .nth(56)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            format!("...{}", &path_str[boundary..])
         } else {
             path_str
         };

@@ -30,12 +30,27 @@ pub fn parse_checkstyle_output(stdout: &str) -> Result<Vec<L1Finding>, ParseErro
 
         // Format: /path/File.java:10:5: message [RuleName]
         // or:     /path/File.java:10: message [RuleName]
-        let parts: Vec<&str> = rest.splitn(4, ':').collect();
+        //
+        // why: on Windows the path itself starts with a drive letter
+        // (e.g. "C:\Users\...:10:5: msg"), whose colon would otherwise be
+        // mistaken for the file/line separator and corrupt every field.
+        // Split the drive prefix off first so it rides along with the path
+        // instead of being consumed as part 0.
+        let (drive_prefix, search_str) = if rest.len() > 2
+            && rest.as_bytes()[0].is_ascii_alphabetic()
+            && rest.as_bytes()[1] == b':'
+            && matches!(rest.as_bytes()[2], b'\\' | b'/')
+        {
+            rest.split_at(2)
+        } else {
+            ("", rest)
+        };
+        let parts: Vec<&str> = search_str.splitn(4, ':').collect();
         if parts.len() < 3 {
             continue;
         }
 
-        let file = parts[0];
+        let file = format!("{}{}", drive_prefix, parts[0]);
         let line_num: u32 = parts[1].trim().parse().unwrap_or(0);
 
         // parts[2] could be column or start of message

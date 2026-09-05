@@ -368,9 +368,30 @@ fn is_self_param(param: &str) -> bool {
     matches!(trimmed, "self" | "&self" | "&mut self" | "mut self")
 }
 
-/// Extract the content between the first `(` and its matching `)`.
+/// Find the first `(` that is not nested inside angle brackets (`<...>`).
+///
+/// why: naively taking the very first `(` in a signature breaks on generic
+/// closure-trait bounds such as `fn foo<F: Fn(i32) -> bool>(f: F)` -- the
+/// `Fn(i32)` bound's own parenthesis appears before the real parameter
+/// list's `(`, so callers that used `sig.find('(')` were extracting the
+/// bound's inner text as if it were the parameter list (or, for
+/// `parse_generics`, truncating the generics clause before its closing `>`).
+fn find_top_level_open_paren(text: &str) -> Option<usize> {
+    let mut angle_depth: i32 = 0;
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '<' => angle_depth += 1,
+            '>' if angle_depth > 0 => angle_depth -= 1,
+            '(' if angle_depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract the content between the first top-level `(` and its matching `)`.
 fn extract_paren_content(sig: &str) -> Option<String> {
-    let open = sig.find('(')?;
+    let open = find_top_level_open_paren(sig)?;
     let mut depth: i32 = 0;
     for (i, ch) in sig[open..].char_indices() {
         match ch {
@@ -411,9 +432,9 @@ pub fn parse_return_type(sig: &str) -> Option<String> {
     }
 }
 
-/// Find the position of the closing `)` matching the first `(` in the signature.
+/// Find the position of the closing `)` matching the first top-level `(` in the signature.
 fn find_matching_close_paren(sig: &str) -> Option<usize> {
-    let open = sig.find('(')?;
+    let open = find_top_level_open_paren(sig)?;
     let mut depth: i32 = 0;
     for (i, ch) in sig[open..].char_indices() {
         match ch {
@@ -438,7 +459,7 @@ pub fn parse_generics(sig: &str) -> Option<String> {
     // Find the fn keyword and name, then look for `<` before `(`
     let fn_pos = sig.find("fn ")?;
     let after_fn = &sig[fn_pos + 3..];
-    let paren_pos = after_fn.find('(')?;
+    let paren_pos = find_top_level_open_paren(after_fn)?;
     let before_paren = &after_fn[..paren_pos];
 
     // Look for generics: the part between < and > in the name section

@@ -211,8 +211,16 @@ fn format_loc_text(report: &LocReport) -> String {
 
             for entry in by_file.iter().take(display_count) {
                 let rel = strip_prefix_display(&entry.path, &prefix);
-                let display_path = if rel.len() > 50 {
-                    format!("...{}", &rel[rel.len() - 47..])
+                // why: byte-index slicing (`&rel[rel.len()-47..]`) panics with
+                // "byte index N is not a char boundary" on paths containing
+                // multi-byte UTF-8 characters. Truncate by char count instead.
+                let display_path = if rel.chars().count() > 50 {
+                    let suffix: String = {
+                        let mut chars: Vec<char> = rel.chars().collect();
+                        let start = chars.len().saturating_sub(47);
+                        chars.split_off(start).into_iter().collect()
+                    };
+                    format!("...{}", suffix)
                 } else {
                     rel
                 };

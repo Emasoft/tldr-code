@@ -183,11 +183,23 @@ fn extract_from_lua_file(
 
 fn compute_module_path(file_path: &Path, root_dir: &Path, package_name: &str) -> String {
     let relative = file_path.strip_prefix(root_dir).unwrap_or(file_path);
-    let parent = relative.parent().unwrap_or_else(|| Path::new(""));
-    let parts: Vec<String> = parent
+    let mut parts: Vec<String> = relative
         .iter()
         .map(|part| part.to_string_lossy().to_string())
         .collect();
+    // why: dropping the filename here (keeping only the parent dir) collapsed
+    // the module path for every file in a directory to the same value, so
+    // exported names from different files could collide into one qualified
+    // name. Keep the file stem as the last module segment, matching luau.rs.
+    if let Some(last) = parts.pop() {
+        let stem = Path::new(&last)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(last);
+        if !stem.is_empty() {
+            parts.push(stem);
+        }
+    }
     if parts.is_empty() {
         package_name.to_string()
     } else {

@@ -347,17 +347,25 @@ impl TypeScriptHandler {
         if parent.kind() != "expression_statement" {
             return false;
         }
-        match parent.parent().map(|p| p.kind()) {
-            Some("program") => true,
-            // Module-level wrappers in TS files may add namespace
-            // declarations around top-level statements; treat those as
-            // module-scope too.
-            Some("module") | Some("internal_module") | Some("statement_block") => {
-                // statement_block can be the body of a function — only
-                // accept it when its parent is `program` (i.e. an IIFE
-                // pattern is intentionally still local).
-                false
-            }
+        let Some(grandparent) = parent.parent() else {
+            return false;
+        };
+        match grandparent.kind() {
+            "program" => true,
+            // why: a namespace body (`module Foo { ... }` /
+            // `namespace Foo { ... }`) is itself a `statement_block`
+            // whose *parent* is `module`/`internal_module` — the
+            // previous code compared `parent.parent()` directly against
+            // `"module"`/`"internal_module"`, which tree-sitter never
+            // produces at that depth (those arms were dead), so every
+            // top-level assignment inside a TS namespace was silently
+            // treated as local. A function body is also a
+            // `statement_block`, so only promote it to module-scope
+            // when the block's own parent is a namespace.
+            "statement_block" => matches!(
+                grandparent.parent().map(|p| p.kind()),
+                Some("module") | Some("internal_module")
+            ),
             _ => false,
         }
     }
@@ -1301,6 +1309,41 @@ impl TypeScriptHandler {
                     }
                 }
             }
+            // why: `const foo = () => { ... }` at module scope is already
+            // walked (and attributed to caller "foo") by
+            // `extract_calls_for_variable_declaration`. Without this skip,
+            // every call inside such an arrow body was *also* attributed
+            // to "<module>" here, double-counting it. A non-arrow
+            // declarator (`const x = doSomething();`) is NOT extracted by
+            // that function (it only handles arrow initializers), so it
+            // must still be walked here — hence per-declarator filtering
+            // instead of skipping the whole statement.
+            if matches!(child.kind(), "lexical_declaration" | "variable_declaration") {
+                for i in 0..child.named_child_count() {
+                    let Some(decl) = child.named_child(i) else {
+                        continue;
+                    };
+                    if decl.kind() != "variable_declarator" {
+                        continue;
+                    }
+                    let has_arrow = (0..decl.child_count()).any(|j| {
+                        decl.child(j)
+                            .map(|c| c.kind() == "arrow_function")
+                            .unwrap_or(false)
+                    });
+                    if has_arrow {
+                        continue;
+                    }
+                    module_calls.extend(self.extract_calls_from_node(
+                        &decl,
+                        source,
+                        defined_funcs,
+                        defined_classes,
+                        "<module>",
+                    ));
+                }
+                continue;
+            }
             module_calls.extend(self.extract_calls_from_node(
                 &child,
                 source,
@@ -1367,16 +1410,10 @@ impl TypeScriptHandler {
                         ));
                     }
                 }
-                if member.kind() == "constructor" {
-                    let ctor_name = "constructor".to_string();
-                    methods.push(ctor_name.clone());
-                    funcs.push(FuncDef::method(
-                        ctor_name,
-                        &class_name,
-                        member.start_position().row as u32 + 1,
-                        member.end_position().row as u32 + 1,
-                    ));
-                }
+                // why: tree-sitter-typescript's `class_body` grammar never
+                // produces a "constructor" node kind — a constructor is a
+                // `method_definition` whose name text is "constructor",
+                // already captured by the branch above. This arm was dead.
             }
         }
 

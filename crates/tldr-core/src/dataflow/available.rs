@@ -1183,8 +1183,17 @@ pub fn parse_expression_from_line(line: &str) -> Option<(String, String, String)
 }
 
 /// Find operator in expression, avoiding operators inside parentheses or strings.
+///
+/// Returns a **byte** offset into `expr` (not a char count), since callers use
+/// it directly for `str` slicing (`expr[..idx]`), which requires byte indices.
+// why: the previous version indexed a `Vec<char>` and returned that char
+// count as the offset. For any non-ASCII text before the operator (unicode
+// identifiers, string literals with multi-byte characters), the char count
+// no longer matches the byte offset `str` slicing needs, causing either a
+// panic ("byte index is not a char boundary") or a silently wrong split.
 fn find_operator_in_expr(expr: &str, op: &str) -> Option<usize> {
-    let chars: Vec<char> = expr.chars().collect();
+    let indices: Vec<(usize, char)> = expr.char_indices().collect();
+    let chars: Vec<char> = indices.iter().map(|&(_, c)| c).collect();
     let op_chars: Vec<char> = op.chars().collect();
     let mut paren_depth: usize = 0;
     let mut in_string = false;
@@ -1239,10 +1248,10 @@ fn find_operator_in_expr(expr: &str, op: &str) -> Option<usize> {
                         let after_ok =
                             i + op.len() >= chars.len() || !chars[i + op.len()].is_alphanumeric();
                         if before_ok && after_ok {
-                            return Some(i);
+                            return Some(indices[i].0);
                         }
                     } else {
-                        return Some(i);
+                        return Some(indices[i].0);
                     }
                 }
             }

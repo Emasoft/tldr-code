@@ -314,13 +314,13 @@ impl ConstraintExtractor {
         phi: &PhiFunction,
         block: &SsaBlock,
     ) -> Result<(), AliasError> {
-        // TIGER-14: Validate phi source count
-        // Note: This is a warning, not an error - some SSA forms may have
-        // different source counts due to unreachable predecessors
-        if phi.sources.len() != block.predecessors.len() && !block.predecessors.is_empty() {
-            // Log warning but continue - this is acceptable in some SSA variants
-            // In strict mode, this could return an error
-        }
+        // TIGER-14: Phi source count is deliberately NOT validated here as an
+        // error - some SSA forms legitimately have a source count that
+        // differs from the predecessor count (e.g. unreachable predecessors).
+        // why: the previous code had an `if` guard whose body was empty (no
+        // logging, no error) - a no-op that looked like the mitigation had a
+        // deliberate warning path when in fact it silently did nothing. That
+        // false impression was removed together with the dead branch.
 
         // Get target name
         let target =

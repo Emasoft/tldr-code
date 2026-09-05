@@ -37,6 +37,13 @@ pub fn architecture_analysis(call_graph: &ProjectCallGraph) -> TldrResult<Archit
     let mut dir_functions: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     let mut func_calls_out: HashMap<FunctionRef, usize> = HashMap::new();
     let mut func_calls_in: HashMap<FunctionRef, usize> = HashMap::new();
+    // why: precompute per-directory totals here (one pass over edges) instead of
+    // re-scanning all edges per (dir, function) below - avoids an O(dirs * funcs *
+    // edges) blowup on large call graphs while producing the identical counts
+    // (every edge's src_func/dst_func is by construction a member of its own
+    // directory's function set, so it is counted exactly once either way).
+    let mut dir_calls_out: HashMap<PathBuf, usize> = HashMap::new();
+    let mut dir_calls_in: HashMap<PathBuf, usize> = HashMap::new();
 
     // Build call counts
     for edge in call_graph.edges() {
@@ -52,12 +59,14 @@ pub fn architecture_analysis(call_graph: &ProjectCallGraph) -> TldrResult<Archit
                 .entry(dir.to_path_buf())
                 .or_default()
                 .insert(edge.src_func.clone());
+            *dir_calls_out.entry(dir.to_path_buf()).or_insert(0) += 1;
         }
         if let Some(dir) = edge.dst_file.parent() {
             dir_functions
                 .entry(dir.to_path_buf())
                 .or_default()
                 .insert(edge.dst_func.clone());
+            *dir_calls_in.entry(dir.to_path_buf()).or_insert(0) += 1;
         }
     }
 
@@ -93,20 +102,8 @@ pub fn architecture_analysis(call_graph: &ProjectCallGraph) -> TldrResult<Archit
     let mut directories: HashMap<PathBuf, DirStats> = HashMap::new();
 
     for (dir, functions) in &dir_functions {
-        let mut total_calls_out = 0;
-        let mut total_calls_in = 0;
-
-        for func_name in functions {
-            // Find all files in this directory with this function
-            for edge in call_graph.edges() {
-                if edge.src_file.parent() == Some(dir.as_path()) && &edge.src_func == func_name {
-                    total_calls_out += 1;
-                }
-                if edge.dst_file.parent() == Some(dir.as_path()) && &edge.dst_func == func_name {
-                    total_calls_in += 1;
-                }
-            }
-        }
+        let total_calls_out = dir_calls_out.get(dir).copied().unwrap_or(0);
+        let total_calls_in = dir_calls_in.get(dir).copied().unwrap_or(0);
 
         directories.insert(
             dir.clone(),

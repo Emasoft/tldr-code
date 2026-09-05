@@ -411,6 +411,16 @@ fn enrich_imports_from_qualified_calls(info: &mut ModuleInfo) {
         if info.imports.contains_key(callee) {
             continue;
         }
+        // why: a call to a name this module DEFINES itself (a local/sibling
+        // function, or a recursive call) is never a qualified `pkg.Func()`
+        // reference — it's a plain intra-module call. Without this guard
+        // every such call got registered as a self-mapped "import", so
+        // `find_cross_calls` later flagged ordinary local calls as
+        // cross-module coupling whenever another file happened to define a
+        // function with the same name (e.g. two unrelated `Helper()`s).
+        if info.defined_names.contains(callee) {
+            continue;
+        }
         // Add it as an import reference (the callee name maps to itself as module)
         // This enables cross-call detection: if the other module defines this function,
         // it will be detected as a cross-call.
@@ -1693,10 +1703,19 @@ pub fn format_martin_text(report: &tldr_core::quality::coupling::MartinMetricsRe
     for m in &report.metrics {
         let path_display = m.module.to_string_lossy();
         let truncated_path = if path_display.len() > max_path_len {
-            format!(
-                "...{}",
-                &path_display[path_display.len() - (max_path_len - 3)..]
-            )
+            // why: byte-index slicing on `path_display.len() - N` can land
+            // mid-codepoint for a non-ASCII path (e.g. an accented dir name)
+            // and panic with "byte index is not a char boundary". Take the
+            // last N *chars* instead, which is always a valid boundary.
+            let suffix: String = path_display
+                .chars()
+                .rev()
+                .take(max_path_len.saturating_sub(3))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!("...{}", suffix)
         } else {
             path_display.to_string()
         };

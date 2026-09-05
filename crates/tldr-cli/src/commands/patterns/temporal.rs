@@ -976,10 +976,13 @@ fn analyze_temporal_directory(
                     if start_time.elapsed() > timeout {
                         break;
                     }
-                    files_analyzed += 1;
-                    if files_analyzed > args.max_files {
+                    // why: check the limit before counting the file as analyzed,
+                    // otherwise the file that trips the limit gets counted but
+                    // never processed, inflating metadata.files_analyzed by one.
+                    if files_analyzed >= args.max_files {
                         break;
                     }
+                    files_analyzed += 1;
                     check_directory_file_count(files_analyzed as usize)?;
 
                     // FileIR.path is relative to project root; rejoin.
@@ -1039,11 +1042,14 @@ fn analyze_temporal_directory(
                 }
             }
 
-            // Check file count limit
-            files_analyzed += 1;
-            if files_analyzed > args.max_files {
+            // Check file count limit.
+            // why: check before counting, otherwise the file that trips the
+            // limit is counted as analyzed but never processed, inflating
+            // metadata.files_analyzed by one (see the matching fix above).
+            if files_analyzed >= args.max_files {
                 break;
             }
+            files_analyzed += 1;
             check_directory_file_count(files_analyzed as usize)?;
 
             // Analyze file

@@ -346,17 +346,20 @@ pub fn run_tool(
 
     // Wait with timeout
     let timeout = Duration::from_secs(timeout_secs);
+    // why: `Box::leak` permanently leaked one string per wait-error, for the
+    // lifetime of the process. A `String` carries the same information
+    // without leaking memory on every failed `try_wait`.
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
-                    break Err("Timeout");
+                    break Err("Timeout".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            Err(e) => break Err(Box::leak(format!("{}", e).into_boxed_str()) as &str),
+            Err(e) => break Err(e.to_string()),
         }
     };
 

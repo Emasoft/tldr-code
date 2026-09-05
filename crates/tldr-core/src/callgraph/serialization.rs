@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::PathBuf;
 
@@ -94,8 +94,13 @@ struct CallGraphIRJson {
     /// Primary language of the project
     language: String,
 
-    /// Files in the project, keyed by normalized path
-    files: HashMap<String, FileIRJson>,
+    // why: was `HashMap`, whose iteration order is randomized per-process (a fresh
+    // random hash-seed per `RandomState`), contradicting the doc comment above
+    // ("Deterministic output (sorted keys via BTreeMap-like iteration)") and this
+    // struct's own field doc below. `BTreeMap` actually sorts keys and serde_json
+    // serializes it in that order, so the promised determinism is real.
+    /// Files in the project, keyed by normalized path (sorted for deterministic output)
+    files: BTreeMap<String, FileIRJson>,
 }
 
 /// JSON representation of FileIR.
@@ -172,8 +177,13 @@ impl CallGraphIR {
     /// - `Json` for serde_json parsing errors
     pub fn from_json(json: &str) -> Result<Self, SerializationError> {
         // First parse as generic Value to check version
+        // why: previously also treated the input as InvalidFormat whenever it
+        // literally contained the substring "not valid" -- a hack that happened to
+        // match this file's own test fixture (`"{ not valid json }"`) rather than a
+        // real signal, and would misclassify unrelated JSON containing that text
+        // (e.g. a string field with that exact phrase). Only judge by shape.
         let value: Value = serde_json::from_str(json).map_err(|e| {
-            if json.contains("not valid") || !json.trim().starts_with('{') {
+            if !json.trim_start().starts_with('{') {
                 SerializationError::InvalidFormat(e.to_string())
             } else {
                 SerializationError::Json(e)
@@ -212,7 +222,7 @@ impl CallGraphIR {
 
     /// Convert to JSON representation struct.
     fn to_json_representation(&self) -> CallGraphIRJson {
-        let mut files = HashMap::new();
+        let mut files = BTreeMap::new();
 
         for (path, file_ir) in &self.files {
             let path_str = normalize_path_string(&path.to_string_lossy());

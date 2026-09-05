@@ -129,10 +129,21 @@ pub fn validate_file_path(path: &Path) -> PatternsResult<PathBuf> {
     })?;
 
     // Check for system directories
+    // why: `fs::canonicalize` on Windows prepends the `\\?\` verbatim-path
+    // prefix and Windows paths are case-insensitive, so comparing the raw
+    // canonicalized string against the (lowercase, non-prefixed)
+    // BLOCKED_PREFIXES entries silently never matched on Windows, defeating
+    // the T01 path-traversal protection there.
     let canonical_str = canonical.to_string_lossy();
+    let normalized = canonical_str
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical_str)
+        .to_lowercase();
     for blocked in BLOCKED_PREFIXES {
+        let blocked_lower = blocked.to_lowercase();
+        let blocked_trimmed = blocked_lower.trim_end_matches(['/', '\\']);
         // Check with trailing slash for directories, or exact match for files
-        if canonical_str.starts_with(blocked) || canonical_str == blocked.trim_end_matches('/') {
+        if normalized.starts_with(&blocked_lower) || normalized == blocked_trimmed {
             return Err(PatternsError::PathTraversal {
                 path: path.to_path_buf(),
             });

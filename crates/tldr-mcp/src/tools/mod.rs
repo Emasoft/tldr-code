@@ -1,6 +1,6 @@
 //! MCP Tool definitions and registry
 //!
-//! This module defines all 27 MCP tools for the TLDR code analysis system.
+//! This module defines all 30 MCP tools for the TLDR code analysis system.
 //! Tools are organized by category:
 //!
 //! - **Navigation**: tree, structure, extract, imports
@@ -604,6 +604,10 @@ impl ToolRegistry {
                         "max_results": {
                             "type": "integer",
                             "description": "Maximum results (default: 100)"
+                        },
+                        "max_files": {
+                            "type": "integer",
+                            "description": "Maximum files to scan (default: 1000)"
                         }
                     },
                     "required": ["pattern", "path"]

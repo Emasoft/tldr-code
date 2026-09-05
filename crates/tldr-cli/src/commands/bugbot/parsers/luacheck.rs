@@ -20,12 +20,27 @@ pub fn parse_luacheck_output(stdout: &str) -> Result<Vec<L1Finding>, ParseError>
         }
 
         // Format: file.lua:10:5: (W211) message
-        let parts: Vec<&str> = line.splitn(4, ':').collect();
+        //
+        // why: on Windows the path itself starts with a drive letter
+        // (e.g. "C:\file.lua:10:5: msg"), whose colon would otherwise be
+        // mistaken for the file/line separator and corrupt every field.
+        // Split the drive prefix off first so it rides along with the path
+        // instead of being consumed as part 0.
+        let (drive_prefix, search_str) = if line.len() > 2
+            && line.as_bytes()[0].is_ascii_alphabetic()
+            && line.as_bytes()[1] == b':'
+            && matches!(line.as_bytes()[2], b'\\' | b'/')
+        {
+            line.split_at(2)
+        } else {
+            ("", line)
+        };
+        let parts: Vec<&str> = search_str.splitn(4, ':').collect();
         if parts.len() < 4 {
             continue;
         }
 
-        let file = parts[0].trim();
+        let file = format!("{}{}", drive_prefix, parts[0].trim());
         let line_num: u32 = parts[1].trim().parse().unwrap_or(0);
         let column: u32 = parts[2].trim().parse().unwrap_or(0);
         let rest = parts[3].trim();

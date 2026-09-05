@@ -198,7 +198,9 @@ impl CHandler {
                         _ => {
                             // Other patterns - try to get the text
                             let target = get_node_text(&func_node, source).to_string();
-                            if !target.is_empty() {
+                            // why: reject multi-token text (e.g. a comma/cast expression) so we
+                            // don't record a garbage call target; mirrors cpp.rs's same guard.
+                            if !target.is_empty() && !target.contains(' ') {
                                 calls.push(CallSite::new(
                                     caller.to_string(),
                                     target,

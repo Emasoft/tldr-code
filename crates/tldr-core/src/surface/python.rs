@@ -229,8 +229,16 @@ fn parse_python_package_exports(init_file: &Path) -> Option<PythonPackageExports
         record_python_export_name(&mut names, &mut export_order, name);
     }
 
-    for line in source.lines() {
-        if let Some((module, imported)) = parse_python_reexport_line(line) {
+    // why: a real `__init__.py` commonly wraps re-exports across multiple
+    // lines (`from .core import (\n    Command as Command,\n    ...\n)`).
+    // Iterating `source.lines()` directly only ever sees the opening line
+    // "from .core import (" -- `parse_python_reexport_line` then reads an
+    // empty import list and every name inside the parens is silently
+    // dropped from the package's exports, so `rewrite_and_filter_python_
+    // package_exports` throws away the whole re-exported API. Join the
+    // parenthesized statement into one logical line first.
+    for line in join_python_reexport_statements(&source) {
+        if let Some((module, imported)) = parse_python_reexport_line(&line) {
             for (source_name, alias_name) in imported {
                 record_python_export_name(&mut names, &mut export_order, alias_name.clone());
                 import_aliases.insert(
@@ -300,6 +308,44 @@ fn parse_python_reexport_line(line: &str) -> Option<PythonReexport> {
     }
 
     (!imports.is_empty()).then_some((module, imports))
+}
+
+/// Collapse a multi-line, parenthesized `from .x import (...)` statement
+/// into a single logical line so `parse_python_reexport_line` can parse it.
+/// Every other line passes through unchanged.
+fn join_python_reexport_statements(source: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("from .") && trimmed.ends_with('(') {
+            // Keep commas as item separators -- `parse_python_reexport_line`
+            // splits the import list on them, and a trailing comma produces
+            // a harmless empty item it already skips.
+            let mut joined = trimmed.trim_end_matches('(').to_string();
+            for cont in lines.by_ref() {
+                let cont_trimmed = cont.trim();
+                if let Some(before_close) = cont_trimmed.strip_suffix(')') {
+                    let before_close = before_close.trim();
+                    if !before_close.is_empty() {
+                        joined.push_str(before_close);
+                        joined.push(',');
+                    }
+                    break;
+                }
+                if !cont_trimmed.is_empty() {
+                    joined.push_str(cont_trimmed);
+                    if !joined.ends_with(',') {
+                        joined.push(',');
+                    }
+                }
+            }
+            statements.push(joined);
+        } else {
+            statements.push(line.to_string());
+        }
+    }
+    statements
 }
 
 fn rewrite_and_filter_python_package_exports(
@@ -461,7 +507,10 @@ fn extract_from_python_file(
         }
 
         let qualified_name = format!("{}.{}", module_path, func.name);
-        let params = extract_rich_params_from_source(&tree, &source, &func.name, false);
+        // why: disambiguate by line number, not just name -- two top-level
+        // functions (or methods in different classes) can share a name.
+        let params =
+            extract_rich_params_from_source(&tree, &source, &func.name, false, func.line_number);
         let kind = determine_function_kind(func);
         let return_type = func.return_type.clone();
 
@@ -469,7 +518,7 @@ fn extract_from_python_file(
             params: params.clone(),
             return_type: return_type.clone(),
             is_async: func.is_async,
-            is_generator: is_generator_function(&tree, &source, &func.name),
+            is_generator: is_generator_function(&tree, &source, &func.name, func.line_number),
         });
 
         let example = generate_example(&module_path, &func.name, kind, &params, None);
@@ -509,7 +558,12 @@ fn extract_from_python_file(
             .methods
             .iter()
             .find(|m| m.name == "__init__")
-            .map(|_init| extract_rich_params_from_source(&tree, &source, "__init__", true))
+            // why: match by line number too -- another class earlier in the
+            // file may also define `__init__`, and name-only lookup would
+            // silently steal its parameters instead of this class's.
+            .map(|init| {
+                extract_rich_params_from_source(&tree, &source, "__init__", true, init.line_number)
+            })
             .unwrap_or_default();
 
         let class_docstring = class.docstring.as_ref().map(|d| truncate_docstring(d));
@@ -621,7 +675,14 @@ fn extract_class_methods(ctx: &MethodExtractionCtx, apis: &mut Vec<ApiEntry>) {
         let qualified_name = format!("{}.{}", ctx.class_qualified, method.name);
         let kind = determine_method_kind(method);
         let is_prop = kind == ApiKind::Property;
-        let params = extract_rich_params_from_source(ctx.tree, ctx.source, &method.name, true);
+        // why: same-named methods in other classes must not donate their params.
+        let params = extract_rich_params_from_source(
+            ctx.tree,
+            ctx.source,
+            &method.name,
+            true,
+            method.line_number,
+        );
         let return_type = method.return_type.clone();
 
         let signature = if is_prop {
@@ -704,21 +765,30 @@ fn extract_rich_params_from_source(
     source: &str,
     func_name: &str,
     _is_method: bool,
+    line_number: u32,
 ) -> Vec<Param> {
     let root = tree.root_node();
     let mut params = Vec::new();
 
     // Extract params by traversing to the function and collecting directly
-    collect_params_for_function(&root, source, func_name, &mut params);
+    collect_params_for_function(&root, source, func_name, line_number, &mut params);
 
     params
 }
 
-/// Traverse the tree to find a function by name and collect its parameters.
+/// Traverse the tree to find a function by name AND declaration line, and
+/// collect its parameters.
+///
+/// why: matching by name alone is wrong whenever two functions/methods share
+/// a name (e.g. `__init__` or `run` defined in more than one class in the
+/// same file) -- the first DFS match would silently donate its parameters to
+/// every other same-named callee. `line_number` (the `def` line, as computed
+/// by `ast::extract`) disambiguates them.
 fn collect_params_for_function(
     node: &tree_sitter::Node,
     source: &str,
     func_name: &str,
+    line_number: u32,
     params: &mut Vec<Param>,
 ) -> bool {
     let mut cursor = node.walk();
@@ -726,7 +796,9 @@ fn collect_params_for_function(
         match child.kind() {
             "function_definition" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
-                    if node_text(&name_node, source) == func_name {
+                    if node_text(&name_node, source) == func_name
+                        && child.start_position().row as u32 + 1 == line_number
+                    {
                         if let Some(params_node) = child.child_by_field_name("parameters") {
                             let mut pcursor = params_node.walk();
                             for pchild in params_node.children(&mut pcursor) {
@@ -743,7 +815,9 @@ fn collect_params_for_function(
                 if let Some(def) = child.child_by_field_name("definition") {
                     if def.kind() == "function_definition" {
                         if let Some(name_node) = def.child_by_field_name("name") {
-                            if node_text(&name_node, source) == func_name {
+                            if node_text(&name_node, source) == func_name
+                                && def.start_position().row as u32 + 1 == line_number
+                            {
                                 if let Some(params_node) = def.child_by_field_name("parameters") {
                                     let mut pcursor = params_node.walk();
                                     for pchild in params_node.children(&mut pcursor) {
@@ -759,7 +833,7 @@ fn collect_params_for_function(
                 }
             }
             _ => {
-                if collect_params_for_function(&child, source, func_name, params) {
+                if collect_params_for_function(&child, source, func_name, line_number, params) {
                     return true;
                 }
             }
@@ -895,19 +969,33 @@ fn determine_method_kind(method: &FunctionInfo) -> ApiKind {
 }
 
 /// Check if a function contains yield/yield from (is a generator).
-fn is_generator_function(tree: &tree_sitter::Tree, source: &str, func_name: &str) -> bool {
+fn is_generator_function(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    func_name: &str,
+    line_number: u32,
+) -> bool {
     let root = tree.root_node();
-    check_generator_recursive(&root, source, func_name)
+    check_generator_recursive(&root, source, func_name, line_number)
 }
 
-/// Recursively search for a function and check if it contains yield.
-fn check_generator_recursive(node: &tree_sitter::Node, source: &str, func_name: &str) -> bool {
+/// Recursively search for a function (by name AND declaration line -- see
+/// `collect_params_for_function` for why name alone is not enough) and check
+/// if it contains yield.
+fn check_generator_recursive(
+    node: &tree_sitter::Node,
+    source: &str,
+    func_name: &str,
+    line_number: u32,
+) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "function_definition" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
-                    if node_text(&name_node, source) == func_name {
+                    if node_text(&name_node, source) == func_name
+                        && child.start_position().row as u32 + 1 == line_number
+                    {
                         if let Some(body) = child.child_by_field_name("body") {
                             return contains_yield(&body);
                         }
@@ -919,7 +1007,9 @@ fn check_generator_recursive(node: &tree_sitter::Node, source: &str, func_name: 
                 if let Some(def) = child.child_by_field_name("definition") {
                     if def.kind() == "function_definition" {
                         if let Some(name_node) = def.child_by_field_name("name") {
-                            if node_text(&name_node, source) == func_name {
+                            if node_text(&name_node, source) == func_name
+                                && def.start_position().row as u32 + 1 == line_number
+                            {
                                 if let Some(body) = def.child_by_field_name("body") {
                                     return contains_yield(&body);
                                 }
@@ -930,7 +1020,7 @@ fn check_generator_recursive(node: &tree_sitter::Node, source: &str, func_name: 
                 }
             }
             _ => {
-                if check_generator_recursive(&child, source, func_name) {
+                if check_generator_recursive(&child, source, func_name, line_number) {
                     return true;
                 }
             }
@@ -1339,7 +1429,8 @@ def greet(name: str, greeting: str = "Hello", *args, **kwargs) -> str:
     return f"{greeting}, {name}!"
 "#;
         let tree = parse(source, Language::Python).unwrap();
-        let params = extract_rich_params_from_source(&tree, source, "greet", false);
+        // "def greet(...)" is on line 2 (line 1 is the leading blank line).
+        let params = extract_rich_params_from_source(&tree, source, "greet", false, 2);
 
         assert_eq!(params.len(), 4);
         assert_eq!(params[0].name, "name");
@@ -1474,8 +1565,9 @@ def not_a_generator(n: int) -> int:
     return n * 2
 "#;
         let tree = parse(source, Language::Python).unwrap();
-        assert!(is_generator_function(&tree, source, "gen_numbers"));
-        assert!(!is_generator_function(&tree, source, "not_a_generator"));
+        // "def gen_numbers(...)" is line 2, "def not_a_generator(...)" is line 7.
+        assert!(is_generator_function(&tree, source, "gen_numbers", 2));
+        assert!(!is_generator_function(&tree, source, "not_a_generator", 7));
     }
 
     #[test]

@@ -342,6 +342,11 @@ fn run_git(args: &[&str], cwd: &Path) -> Result<String, ChurnError> {
                 stderr: format!("Failed to spawn git: {}", e),
                 exit_code: None,
             })?;
+        // why: `child` is moved into the wait thread below, so we lose the
+        // handle needed to kill it if we hit the timeout branch. Capture the
+        // PID now so a timed-out git process (e.g. hung on a credential
+        // prompt) can be reaped instead of leaking as an orphan.
+        let child_id = child.id();
 
         // Use wait_with_output which handles the child process
         // For timeout, we use a simple approach with threads
@@ -365,7 +370,19 @@ fn run_git(args: &[&str], cwd: &Path) -> Result<String, ChurnError> {
                 })?
             }
             Err(_) => {
-                // Timeout - the thread will eventually complete but we don't wait
+                // Timeout - kill the orphaned git process so it doesn't keep
+                // running (or hold a lock/handle) after we give up on it.
+                // why: without this, a hung `git` (e.g. blocked on a
+                // credential prompt) leaks as a background process forever.
+                #[cfg(unix)]
+                let _ = Command::new("kill")
+                    .arg("-9")
+                    .arg(child_id.to_string())
+                    .status();
+                #[cfg(windows)]
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &child_id.to_string()])
+                    .status();
                 return Err(ChurnError::GitError {
                     command: format!("git {}", args.join(" ")),
                     stderr: format!("Git command timed out after {} seconds", GIT_TIMEOUT_SECS),
@@ -1380,7 +1397,13 @@ fn truncate_path(path: &str, max_len: usize) -> String {
     } else {
         // Keep the rightmost part (filename is most important)
         let keep_len = max_len.saturating_sub(3); // Reserve space for "..."
-        let start = path.len().saturating_sub(keep_len);
+        let mut start = path.len().saturating_sub(keep_len);
+        // why: `start` is a byte offset computed from byte lengths; if it lands
+        // inside a multi-byte UTF-8 sequence (unicode file/dir names are valid
+        // git paths), `&path[start..]` panics. Advance to the next char boundary.
+        while start < path.len() && !path.is_char_boundary(start) {
+            start += 1;
+        }
         format!("...{}", &path[start..])
     }
 }

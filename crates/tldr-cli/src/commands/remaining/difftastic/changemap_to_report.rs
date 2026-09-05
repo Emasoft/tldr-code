@@ -743,10 +743,14 @@ fn truncate_name(content: &str) -> String {
         .chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .collect();
-    if cleaned.len() <= 80 {
+    if cleaned.chars().count() <= 80 {
         cleaned
     } else {
-        let mut s = cleaned[..80].to_string();
+        // why: slicing by byte index (cleaned[..80]) panics with "byte index
+        // is not a char boundary" whenever a multi-byte UTF-8 char (common in
+        // non-ASCII identifiers, comments, or string literals) straddles
+        // byte 80. Truncate by char count instead.
+        let mut s: String = cleaned.chars().take(80).collect();
         s.push_str("...");
         s
     }

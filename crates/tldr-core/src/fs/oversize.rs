@@ -198,15 +198,6 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Round bytes up to the nearest MB for human-readable warnings.
-///
-/// We round up so that an 11 MB + 1 byte file reads as "12MB
-/// exceeds 10MB" rather than the misleading "11MB exceeds 10MB".
-/// Sub-MB sizes round up to `1MB`.
-fn bytes_to_mb_ceil(bytes: u64) -> u64 {
-    bytes.div_ceil(1024 * 1024)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

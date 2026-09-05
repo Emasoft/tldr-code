@@ -178,10 +178,15 @@ fn m14_smells_no_note_with_deep() {
 // =============================================================================
 //
 // We can't reliably create a *shallow* clone in a unit test (git clone
-// --depth=1 needs a real remote), so we simulate the format-time
-// behavior by exercising format_churn_text directly via a small
-// fixture. The CLI integration is a thin wrapper over this formatter
-// (see tldr-cli/src/commands/churn.rs::format_churn_text).
+// --depth=1 needs a real remote). `format_churn_text` and its
+// `DEGENERATE_SHALLOW_WARN_PREFIX` constant are private to
+// tldr-cli/src/commands/churn.rs, so this integration test cannot call
+// them directly; it only pins the literal prefix string this test file
+// hardcodes against itself as a placeholder reminder to keep the two
+// hardcoded copies in sync by hand until the constant is exported.
+// why: previous wording claimed this test "exercises format_churn_text
+// directly", which is false — it never calls the formatter, so the
+// comment was corrected to describe what the assertion actually checks.
 #[test]
 fn m15_churn_text_suppress_warning_string_present() {
     // Verify the well-known sentinel prefix in the churn formatter is

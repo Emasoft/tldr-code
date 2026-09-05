@@ -478,10 +478,11 @@ pub fn analyze_coupling_with_graph(
     // Build import maps for each module
     let import_maps = build_import_maps(&module_infos);
 
-    // Find all cross-file call pairs
-    let call_pairs = extract_call_pairs(call_graph);
-
-    // Group calls by module pair
+    // Group calls by module pair. This single pass also gives us the count
+    // of unique cross-file pairs (pair_calls.len()), so we no longer need a
+    // separate extract_call_pairs() pass over the same edges.
+    // why: extract_call_pairs() used to duplicate this exact walk+normalize
+    // just to produce a count that pair_calls.len() already provides.
     let mut pair_calls: HashMap<(PathBuf, PathBuf), Vec<CallEdge>> = HashMap::new();
     for edge in call_graph.edges() {
         if edge.src_file != edge.dst_file {
@@ -527,7 +528,7 @@ pub fn analyze_coupling_with_graph(
     Ok(CouplingReport {
         modules_analyzed: module_infos.len(),
         pairs_analyzed: total_pairs,
-        total_cross_file_pairs: call_pairs.len(),
+        total_cross_file_pairs: pair_calls.len(),
         avg_coupling_score: avg_score,
         tight_coupling_count: tight_count,
         top_pairs: couplings,
@@ -627,20 +628,6 @@ fn build_import_maps(
     }
 
     maps
-}
-
-/// Extract unique call pairs from the call graph
-fn extract_call_pairs(call_graph: &ProjectCallGraph) -> HashSet<(PathBuf, PathBuf)> {
-    let mut pairs = HashSet::new();
-
-    for edge in call_graph.edges() {
-        if edge.src_file != edge.dst_file {
-            let (a, b) = normalize_pair(&edge.src_file, &edge.dst_file);
-            pairs.insert((a, b));
-        }
-    }
-
-    pairs
 }
 
 /// Normalize a pair of paths for consistent ordering

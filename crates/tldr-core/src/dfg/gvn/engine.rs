@@ -661,6 +661,18 @@ impl GVNEngine {
                     let right_line = right.start_position().row + 1;
                     self.number_expression(&right, right_line);
                 }
+                // Kill/reassign the loop target(s) with a fresh value number:
+                // each iteration produces a value unrelated to whatever the
+                // same name held before the loop. The `left` field was
+                // previously never inspected here, so a loop variable that
+                // reused an outer name kept its stale VN inside the body,
+                // making BC-GVN-2 alias propagation treat loop-body uses as
+                // equal to a pre-loop expression they do not equal.
+                // why: prevents false alias/redundancy across loop iterations.
+                if let Some(left) = stmt.child_by_field_name("left") {
+                    let fresh = self.fresh_vn();
+                    self.assign_targets(&left, fresh);
+                }
                 // Walk body
                 if let Some(body) = stmt.child_by_field_name("body") {
                     self.walk_block(&body);
@@ -947,6 +959,16 @@ impl GVNEngine {
 
     /// Walk an except clause.
     fn walk_except_clause(&mut self, clause: &Node) {
+        // `except E as name:` binds a fresh value each time the handler
+        // runs; kill any stale VN the same name held before the try block
+        // so body uses don't alias to a pre-except expression.
+        // why: same alias-leak class as the for-loop target fix above.
+        if let Some(alias) = clause.child_by_field_name("alias") {
+            if alias.kind() == "identifier" {
+                let name = self.get_node_text(&alias);
+                self.kill_variable(&name);
+            }
+        }
         // Walk body
         for i in 0..clause.named_child_count() {
             if let Some(child) = clause.named_child(i) {
@@ -1024,8 +1046,16 @@ impl GVNEngine {
         report.total_expressions = self.expressions.len();
         report.unique_values = unique_vns.len();
 
-        // Build equivalence classes and redundancies
-        for (vn, exprs) in vn_to_exprs {
+        // Build equivalence classes and redundancies in a deterministic
+        // order. HashMap iteration order is randomized per-process, so
+        // iterating `vn_to_exprs` directly made the report's equivalence
+        // and redundancy ordering (and thus its JSON/text output) differ
+        // between runs on identical input.
+        // why: deterministic output is required for stable diffs and tests.
+        let mut sorted_vns: Vec<usize> = vn_to_exprs.keys().copied().collect();
+        sorted_vns.sort_unstable();
+        for vn in sorted_vns {
+            let exprs = vn_to_exprs.remove(&vn).unwrap_or_default();
             if exprs.len() >= 2 {
                 // Determine reason
                 let reason = if self.is_commutative_vn(vn) {

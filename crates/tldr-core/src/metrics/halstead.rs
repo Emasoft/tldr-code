@@ -922,25 +922,35 @@ fn is_operator_node(kind: &str, text: &str, language: Language) -> bool {
         return true;
     }
 
-    // Node types that are operators
+    // Node types that are operators.
+    //
+    // why: composite wrapper kinds like `binary_operator`/`comparison_operator`/
+    // `boolean_operator`/`unary_operator`/`assignment`/`augmented_assignment`/
+    // `not_operator` (verified against tree-sitter-python's node-types.json)
+    // always carry the real operator symbol as a separate anonymous child
+    // token (e.g. "+", "==", "not") that this same DFS traversal visits on
+    // its own. Matching the wrapper kind here double-counted every such
+    // operator (inflating N1), and for `binary_operator`/`unary_operator`/
+    // `comparison_operator`/`boolean_operator`/`assignment` the old
+    // `normalize_operator` branch used the *whole subexpression text* as the
+    // "operator" string, so every distinct expression minted a brand new
+    // "distinct operator" — silently exploding n1/vocabulary. Only the leaf
+    // tokens below are real operators; the wrappers are structural.
     matches!(
         kind,
         // Arithmetic and binary operators
         "+" | "-" | "*" | "/" | "%" | "**" | "//" | "@"
-        | "binary_operator" | "unary_operator" | "augmented_assignment"
 
         // Comparison operators
         | "==" | "!=" | "<" | ">" | "<=" | ">=" | "<=>" | "===" | "!=="
-        | "comparison_operator"
 
         // Assignment operators
         | "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "//=" | "@="
         | "&=" | "|=" | "^=" | "<<=" | ">>=" | "&&=" | "||=" | "??="
-        | "assignment" | "assignment_expression"
+        | "assignment_expression"
 
         // Logical operators
         | "&&" | "||" | "!" | "and" | "or" | "not"
-        | "boolean_operator" | "not_operator"
 
         // Bitwise operators
         | "&" | "|" | "^" | "~" | "<<" | ">>"
@@ -962,21 +972,15 @@ fn is_operator_node(kind: &str, text: &str, language: Language) -> bool {
 
 /// Normalize operator representation
 fn normalize_operator(kind: &str, text: &str, _language: Language) -> String {
-    // For node types that represent operators, use the kind
-    // For actual operator tokens, use the text
-    match kind {
-        "binary_operator"
-        | "unary_operator"
-        | "comparison_operator"
-        | "boolean_operator"
-        | "assignment" => text.to_string(),
-        _ => {
-            if text.len() <= 3 || is_keyword(text) {
-                text.to_string()
-            } else {
-                kind.to_string()
-            }
-        }
+    // why: the composite wrapper kinds this used to special-case
+    // (binary_operator/unary_operator/comparison_operator/boolean_operator/
+    // assignment) are no longer classified as operators at all (see
+    // `is_operator_node`) — only their leaf operator tokens reach this
+    // function now, so a single fallback rule is correct for every kind.
+    if text.len() <= 3 || is_keyword(text) {
+        text.to_string()
+    } else {
+        kind.to_string()
     }
 }
 

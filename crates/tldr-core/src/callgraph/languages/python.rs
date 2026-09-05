@@ -290,7 +290,10 @@ impl PythonHandler {
         line_offset: u32,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
-        let mut refs = HashSet::new();
+        // why: store the line of first occurrence per ref name (was a HashSet<String>,
+        // which discarded the actual reference site and made every Ref call site
+        // report the enclosing scope's start line instead of where it was used).
+        let mut refs: HashMap<String, u32> = HashMap::new();
 
         // Walk the node tree
         for child in walk_tree(*node) {
@@ -364,12 +367,22 @@ impl PythonHandler {
                     // Check for function references (not in calls, but used as values)
                     let name = get_node_text(&child, source);
                     if defined_funcs.contains(name) {
-                        // Check if this identifier is NOT the function part of a call
+                        // Check if this identifier is NOT the function part of a call,
+                        // and NOT the attribute-name part of `obj.method` (that name is
+                        // already emitted as part of the qualified Attr call target above;
+                        // treating it as a standalone Ref would falsely link an unrelated
+                        // top-level function that happens to share the same name).
+                        // why: fixes spurious Ref edges, e.g. `super().shell_complete(...)`
+                        // wrongly adding a Ref to any top-level `shell_complete` function.
                         if let Some(parent) = child.parent() {
-                            if parent.kind() != "call"
-                                && parent.child_by_field_name("function").as_ref() != Some(&child)
-                            {
-                                refs.insert(name.to_string());
+                            let is_call_function = parent.kind() == "call"
+                                && parent.child_by_field_name("function").as_ref() == Some(&child);
+                            let is_attribute_name = parent.kind() == "attribute"
+                                && parent.child_by_field_name("attribute").as_ref()
+                                    == Some(&child);
+                            if !is_call_function && !is_attribute_name {
+                                let line = child.start_position().row as u32 + 1 + line_offset;
+                                refs.entry(name.to_string()).or_insert(line);
                             }
                         }
                     }
@@ -379,8 +392,7 @@ impl PythonHandler {
         }
 
         // Add function references
-        for ref_name in refs {
-            let line = node.start_position().row as u32 + 1;
+        for (ref_name, line) in refs {
             calls.push(CallSite::new(
                 caller.to_string(),
                 ref_name,
@@ -572,8 +584,18 @@ impl CallGraphLanguageSupport for PythonHandler {
         // Extract module-level calls into synthetic <module> function
         let mut module_calls = Vec::new();
         for node in tree.root_node().children(&mut tree.root_node().walk()) {
-            // Skip function and class definitions
-            if matches!(node.kind(), "function_definition" | "class_definition") {
+            // Skip function and class definitions.
+            // why: a decorated top-level def/class (`@app.route(...)\ndef f(): ...`) is
+            // wrapped by tree-sitter in a `decorated_definition` node, not a bare
+            // `function_definition`/`class_definition` (see the comment above at the
+            // decorator-extraction site). Without this arm, walk_tree recursed into the
+            // whole decorated_definition subtree here, re-extracting every call already
+            // attributed to the function/class itself (and its decorator) a second time
+            // under the synthetic "<module>" bucket.
+            if matches!(
+                node.kind(),
+                "function_definition" | "class_definition" | "decorated_definition"
+            ) {
                 continue;
             }
 

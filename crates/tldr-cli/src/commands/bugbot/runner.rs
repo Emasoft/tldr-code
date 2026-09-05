@@ -62,6 +62,18 @@ fn kill_process_by_id(pid: u32) {
     }
 }
 
+/// Largest byte index `<= max` that lands on a UTF-8 char boundary of `s`.
+///
+/// `str`/`String` truncation panics unless the index is a char boundary;
+/// this is the stable equivalent of the nightly-only `str::floor_char_boundary`.
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    let mut idx = max.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 /// Maximum bytes of stdout/stderr to retain from a tool subprocess.
 ///
 /// This is a safety valve: clippy on a large project can produce megabytes
@@ -124,16 +136,37 @@ impl ToolRunner {
         };
 
         // Set up timeout watchdog thread.
-        // The watchdog sleeps for timeout_secs, then kills the process via SIGKILL.
-        // Meanwhile the main thread calls wait_with_output() which blocks until
-        // the child exits (either naturally or via the kill signal).
+        // The watchdog polls in short increments up to timeout_secs, then kills
+        // the process via SIGKILL. Meanwhile the main thread calls
+        // wait_with_output() which blocks until the child exits (either
+        // naturally or via the kill signal).
+        //
+        // why: a single unconditional `sleep(timeout)` here would keep the
+        // watchdog alive long after a fast-exiting child (e.g. `echo`) has
+        // already been reaped by the OS. Once reaped, the PID can be recycled
+        // by the kernel for an unrelated process; the watchdog would then
+        // SIGKILL that innocent process when it eventually wakes up. Polling
+        // a `done` flag lets the watchdog exit as soon as the main thread
+        // observes the child has exited, closing that PID-reuse race.
         let timeout = Duration::from_secs(self.timeout_secs);
         let child_id = child.id();
         let timed_out = Arc::new(AtomicBool::new(false));
         let timed_out_clone = timed_out.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let done_clone = done.clone();
 
         let _watchdog = std::thread::spawn(move || {
-            std::thread::sleep(timeout);
+            const POLL_INTERVAL: Duration = Duration::from_millis(50);
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if done_clone.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            if done_clone.load(Ordering::SeqCst) {
+                return;
+            }
             timed_out_clone.store(true, Ordering::SeqCst);
             // Kill the child process. Platform-specific because we only have
             // the PID (the Child handle is consumed by wait_with_output).
@@ -142,6 +175,7 @@ impl ToolRunner {
 
         // Block until child exits (naturally or killed by watchdog)
         let output = child.wait_with_output();
+        done.store(true, Ordering::SeqCst);
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Check if watchdog triggered
@@ -168,7 +202,12 @@ impl ToolRunner {
                 let raw_stderr = String::from_utf8_lossy(&o.stderr).to_string();
                 let stdout = if raw_stdout.len() > MAX_OUTPUT_BYTES {
                     let mut truncated = raw_stdout;
-                    truncated.truncate(MAX_OUTPUT_BYTES);
+                    // why: String::truncate panics unless the index lands on a
+                    // char boundary. Tool output can contain multi-byte UTF-8
+                    // (unicode in file paths, messages, or the replacement
+                    // char inserted by from_utf8_lossy); truncating at a raw
+                    // byte offset can split one of those and crash the CLI.
+                    truncated.truncate(floor_char_boundary(&truncated, MAX_OUTPUT_BYTES));
                     // Trim to last complete line to avoid breaking JSON parsing
                     if let Some(last_newline) = truncated.rfind('\n') {
                         truncated.truncate(last_newline + 1);
@@ -179,7 +218,7 @@ impl ToolRunner {
                 };
                 let stderr = if raw_stderr.len() > MAX_OUTPUT_BYTES {
                     let mut truncated = raw_stderr;
-                    truncated.truncate(MAX_OUTPUT_BYTES);
+                    truncated.truncate(floor_char_boundary(&truncated, MAX_OUTPUT_BYTES));
                     truncated
                 } else {
                     raw_stderr
@@ -228,8 +267,11 @@ impl ToolRunner {
                 let error_msg = if stderr.is_empty() {
                     format!("Parse error: {}", e)
                 } else {
+                    // why: same char-boundary hazard as the MAX_OUTPUT_BYTES
+                    // truncation above — a raw byte slice can split a
+                    // multi-byte UTF-8 char and panic.
                     let truncated = if stderr.len() > 200 {
-                        &stderr[..200]
+                        &stderr[..floor_char_boundary(&stderr, 200)]
                     } else {
                         &stderr
                     };

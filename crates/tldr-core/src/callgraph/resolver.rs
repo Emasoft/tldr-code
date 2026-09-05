@@ -15,6 +15,22 @@ use std::path::{Path, PathBuf};
 
 use crate::types::{ImportInfo, Language};
 
+/// Lexically normalize a path (resolve `.` and `..` components) without touching the
+/// filesystem, so it works for paths that don't exist yet (unlike `canonicalize`).
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => result.push(other.as_os_str()),
+        }
+    }
+    result
+}
+
 /// Module resolver for import tracking
 #[derive(Debug, Default)]
 pub struct ModuleResolver {
@@ -211,12 +227,21 @@ impl ModuleResolver {
                     }
                 }
             }
-            // Check for module.function pattern
+            // Check for module.function pattern (`import module` then `module.func()`)
+            //
+            // why: this used to build a "module.func" string and look it up in
+            // `function_index`, but that index is always keyed by the bare function
+            // name (see `index_function`), never a dotted "module.func" name -- so
+            // the lookup could never hit and this whole branch was dead. Instead
+            // look up the bare function name and check whether any of its recorded
+            // locations belongs to the imported module (same pattern as
+            // `get_module_functions` below).
             if !import.is_from {
-                let qualified_name = format!("{}.{}", import.module, func_name);
-                if self.function_index.contains_key(&qualified_name) {
-                    if let Some(module_path) = self.module_index.get(&import.module) {
-                        return Some(module_path.clone());
+                if let Some(locations) = self.function_index.get(func_name) {
+                    if locations.iter().any(|(_, m)| m == &import.module) {
+                        if let Some(module_path) = self.module_index.get(&import.module) {
+                            return Some(module_path.clone());
+                        }
                     }
                 }
             }
@@ -296,8 +321,11 @@ impl ModuleResolver {
 
         // Handle relative imports
         if module.starts_with('.') {
-            let target = from_dir.join(module);
-            let target = dunce::canonicalize(&target).ok()?;
+            // why: dunce::canonicalize requires the joined path to exist on disk, but a
+            // relative import like "./utils" never exists as-is (only "utils.ts" does),
+            // so canonicalize always failed here and the extension/index-file lookups
+            // below never ran for ordinary file imports. Normalize lexically instead.
+            let target = normalize_lexical(&from_dir.join(module));
 
             // Try with extensions
             for ext in &[".ts", ".tsx", ".js", ".jsx"] {

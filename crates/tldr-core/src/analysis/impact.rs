@@ -863,6 +863,28 @@ fn build_caller_tree(
     max_depth: usize,
 ) -> CallerTree {
     let key = (file.to_path_buf(), func.to_string());
+    let mut visited: HashSet<FunctionKey> = HashSet::new();
+    visited.insert(key);
+    build_caller_tree_visited(file, func, reverse_graph, max_depth, visited)
+}
+
+// why: the original `build_caller_tree` created a *fresh* `visited` set on
+// every recursive call instead of threading the ancestor path down, so
+// cycle detection only ever caught a caller equal to the *current* node
+// (or a duplicate within the same sibling list) — a genuine indirect
+// cycle (A <- B <- A) was invisible to `visited` and re-expanded the same
+// subtree at every depth level until `max_depth` bottomed out, doing
+// exponential, mislabeled work on cyclic call graphs. Threading the path
+// (`visited`) through the recursion restores real path-based cycle
+// detection while keeping the existing same-level duplicate-caller dedup.
+fn build_caller_tree_visited(
+    file: &Path,
+    func: &str,
+    reverse_graph: &HashMap<FunctionKey, Vec<FunctionKey>>,
+    max_depth: usize,
+    mut visited: HashSet<FunctionKey>,
+) -> CallerTree {
+    let key = (file.to_path_buf(), func.to_string());
 
     // Get direct callers
     let callers = reverse_graph.get(&key);
@@ -882,10 +904,6 @@ fn build_caller_tree(
         };
     }
 
-    // BFS traversal with depth tracking
-    let mut visited: HashSet<FunctionKey> = HashSet::new();
-    visited.insert(key.clone());
-
     let mut child_trees = Vec::new();
 
     if max_depth > 0 {
@@ -893,7 +911,7 @@ fn build_caller_tree(
             for (caller_file, caller_func) in callers {
                 let caller_key = (caller_file.clone(), caller_func.clone());
 
-                // Cycle detection
+                // Cycle detection (path- and sibling-aware, see fn doc above)
                 if visited.contains(&caller_key) {
                     child_trees.push(CallerTree {
                         function: caller_func.clone(),
@@ -910,9 +928,15 @@ fn build_caller_tree(
 
                 visited.insert(caller_key);
 
-                // Recursively build subtree with reduced depth
-                let subtree =
-                    build_caller_tree(caller_file, caller_func, reverse_graph, max_depth - 1);
+                // Recursively build subtree with reduced depth, carrying the
+                // full ancestor path forward so descendants see it too.
+                let subtree = build_caller_tree_visited(
+                    caller_file,
+                    caller_func,
+                    reverse_graph,
+                    max_depth - 1,
+                    visited.clone(),
+                );
                 child_trees.push(subtree);
             }
         }

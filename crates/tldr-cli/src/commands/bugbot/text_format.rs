@@ -179,10 +179,12 @@ pub fn format_bugbot_text(report: &BugbotCheckReport) -> String {
     trimmed.to_string()
 }
 
-/// Format severity counts as "N high, M medium, L low", omitting zeroes.
+/// Format severity counts as "N critical, M high, L medium, ..." omitting zeroes.
 ///
-/// Severities are always printed in high, medium, low order regardless of
-/// HashMap iteration order.
+/// Severities are always printed in critical, high, medium, low, info order
+/// regardless of HashMap iteration order.
+// why: doc was stale since PM-42/PM-8 added "critical"/"info" to the handled
+// severities below without updating this summary.
 fn format_severity_breakdown(by_severity: &std::collections::HashMap<String, usize>) -> String {
     let mut parts = Vec::new();
     // Known severities in descending order (PM-8: includes "info", PM-42: includes "critical")

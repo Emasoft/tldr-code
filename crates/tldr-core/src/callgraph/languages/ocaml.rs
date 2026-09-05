@@ -702,10 +702,15 @@ impl OcamlHandler {
             let calls = if let Some(body_node) = body {
                 self.extract_calls_from_node(&body_node, source, defined_funcs, &module_caller)
             } else {
-                self.extract_calls_from_node(&binding, source, defined_funcs, "<module>")
+                self.extract_calls_from_node(&binding, source, defined_funcs, &module_caller)
             };
 
-            extend_calls_if_any(calls_by_func, "<module>".to_string(), calls);
+            // why: the bucket key must match each CallSite's `caller` field
+            // (both are "MyModule.<module>" for a nested module), otherwise
+            // calls from a nested module's `let () = ...` land under the
+            // wrong caller and a lookup by the qualified caller name misses
+            // them entirely.
+            extend_calls_if_any(calls_by_func, module_caller, calls);
             return;
         }
 
@@ -766,12 +771,21 @@ impl OcamlHandler {
             return;
         }
 
-        let module_calls = if let Some(body_node) = body {
-            self.extract_calls_from_node(&body_node, source, defined_funcs, "<module>")
+        // why: qualify with module_path so a value binding inside a nested
+        // module (e.g. `module Foo = struct let x = compute () end`) is
+        // bucketed as "Foo.<module>", matching the is_unit branch above and
+        // keeping the map key consistent with each CallSite's `caller` field.
+        let module_caller = if module_path.is_empty() {
+            "<module>".to_string()
         } else {
-            self.extract_calls_from_node(&binding, source, defined_funcs, "<module>")
+            format!("{}.<module>", module_path.join("."))
         };
-        extend_calls_if_any(calls_by_func, "<module>".to_string(), module_calls);
+        let module_calls = if let Some(body_node) = body {
+            self.extract_calls_from_node(&body_node, source, defined_funcs, &module_caller)
+        } else {
+            self.extract_calls_from_node(&binding, source, defined_funcs, &module_caller)
+        };
+        extend_calls_if_any(calls_by_func, module_caller, module_calls);
     }
 
     fn process_class_definition_calls(

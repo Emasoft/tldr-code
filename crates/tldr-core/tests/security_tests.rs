@@ -136,11 +136,12 @@ AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 }
 
 #[test]
-#[ignore = "BUG: Private key pattern may not detect all PEM formats"]
+#[ignore = "BUG: .pem is not in scan_secrets' scanned-extension allowlist, so this file is never walked"]
 fn test_secrets_scan_private_key() {
-    // BUG DOCUMENTATION: The private key pattern may not detect all PEM formats
-    // Expected: Should detect "-----BEGIN RSA PRIVATE KEY-----"
-    // Actual: Pattern may not match due to formatting or regex limitations
+    // BUG DOCUMENTATION (verified against secrets.rs): the regex itself matches
+    // "-----BEGIN RSA PRIVATE KEY-----" fine. The real bug is that scan_secrets'
+    // directory walk filters by extension, and "pem" is absent from that
+    // allowlist, so this fixture is skipped before the regex ever runs.
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("private.pem");
 
@@ -172,7 +173,11 @@ MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MQ0sL52/luJ1LhJv
 #[test]
 fn test_secrets_scan_github_token() {
     let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("tokens.txt");
+    // why: ".txt" is not in scan_secrets' scanned-extension allowlist, so a
+    // file with that extension is skipped before the regex ever runs. Use
+    // ".env", which is allowlisted, so the assertion below tests the real
+    // detection path instead of a file that is silently never scanned.
+    let test_file = temp_dir.path().join("tokens.env");
 
     std::fs::write(
         &test_file,
@@ -187,14 +192,13 @@ GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
     assert!(result.is_ok());
     let report = result.unwrap();
 
-    let _token_findings: Vec<_> = report
+    let token_findings: Vec<_> = report
         .findings
         .iter()
         .filter(|f| f.pattern == "GitHub Token")
         .collect();
 
-    // Note: May not detect if pattern doesn't match exactly
-    // This test documents expected behavior
+    assert!(!token_findings.is_empty(), "Should detect GitHub token");
 }
 
 #[test]
@@ -230,11 +234,13 @@ API_KEY = "sk-abcdefghijklmnop"
 }
 
 #[test]
-#[ignore = "BUG: Database URL pattern may not detect all connection strings"]
+#[ignore = "BUG: Rust's Path::extension() returns None for dotfiles like \".env\", so this fixture is never scanned"]
 fn test_secrets_scan_database_url() {
-    // BUG DOCUMENTATION: The database URL pattern may not detect all formats
-    // Expected: Should detect "postgres://user:password@localhost:5432/mydb"
-    // Actual: Pattern may not match due to URL format variations
+    // BUG DOCUMENTATION (verified against secrets.rs): the regex itself matches
+    // "postgres://user:password@" fine. The real bug is that the fixture is
+    // named ".env" and `Path::extension()` returns `None` for a filename that
+    // *begins* with a dot and has no other dot in it, so the extension
+    // allowlist filter drops this file before the regex ever runs.
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join(".env");
 
@@ -774,6 +780,13 @@ fn test_detect_sources_edge_cases() {
 
     // Multiple sources in one statement
     let sources = detect_sources("x = input() + os.environ['KEY']", 1, Language::Python);
-    // Should detect at least one source
-    let _ = sources;
+    // why: a prior edit asserted `!sources.is_empty()` on the theory that
+    // `input()`/`os.environ` are regex source patterns in taint.rs. They are
+    // not: PYTHON_PATTERNS.sources is `vec![]` by design (Wave-2-atomic
+    // regex-removal-v1 M8 — see taint.rs) because Python source detection is
+    // now exclusively AST-based via `detect_sources_ast`, which this
+    // regex-only `detect_sources` entry point never calls. So `detect_sources`
+    // returns empty for every Python statement, always — restoring the HEAD
+    // behavior here.
+    assert!(sources.is_empty());
 }

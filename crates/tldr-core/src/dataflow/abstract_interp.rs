@@ -1866,14 +1866,20 @@ pub fn find_div_zero(
 
                 // Skip if this is // for integer division and we're at first /
                 if op == "/" && code.len() > actual_pos + 1 {
-                    let next_char = code.chars().nth(actual_pos + 1);
-                    if next_char == Some('/') {
+                    // why: actual_pos is a BYTE offset from str::find(), but
+                    // .chars().nth() indexes by CHAR count. On a line with any
+                    // multi-byte UTF-8 content before this position the two
+                    // indices diverge and the wrong byte gets inspected. Index
+                    // the bytes directly so this stays correct regardless of
+                    // what precedes the operator on the line.
+                    let next_byte = code.as_bytes().get(actual_pos + 1).copied();
+                    if next_byte == Some(b'/') {
                         // This is // (floor division in Python or comment)
                         search_start = actual_pos + 2;
                         continue;
                     }
                     // Check if this is part of // that we should handle
-                    if actual_pos > 0 && code.chars().nth(actual_pos - 1) == Some('/') {
+                    if actual_pos > 0 && code.as_bytes().get(actual_pos - 1) == Some(&b'/') {
                         search_start = actual_pos + 1;
                         continue;
                     }

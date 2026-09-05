@@ -287,6 +287,13 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
 
                 let mut names = Vec::new();
                 let mut is_default = false;
+                // why: `namespace_import`'s identifier is the alias for `*`, not a
+                // second name — it must land in `ImportInfo::alias`, matching every
+                // other language handler here (Python, Rust, C#, Elixir, OCaml, ...).
+                // Previously it was pushed onto `names` (leaving `alias: None`), so
+                // `import * as X` reported names=["*", "X"] with no alias, and the
+                // stale comment ("will be set below") never actually set anything.
+                let mut namespace_alias: Option<String> = None;
 
                 // Parse import clause
                 if let Some(clause) = child
@@ -320,8 +327,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                 for ns_child in clause_child.children(&mut ns_cursor) {
                                     if ns_child.kind() == "identifier" {
                                         is_default = false; // mark as namespace, not default
-                                                            // Store alias name temporarily — will be set below
-                                        names.push(get_node_text(&ns_child, source));
+                                        namespace_alias = Some(get_node_text(&ns_child, source));
                                         break;
                                     }
                                 }
@@ -335,7 +341,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                     module,
                     names,
                     is_from: !is_default,
-                    alias: None,
+                    alias: namespace_alias,
                 });
             }
             "export_statement" => {

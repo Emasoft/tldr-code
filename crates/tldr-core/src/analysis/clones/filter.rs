@@ -18,30 +18,25 @@ use super::is_generated_file;
 /// - C#: *Tests.cs
 /// - Directories: tests/, test/, __tests__/, spec/, testing/
 pub fn is_test_file(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
     let file_name = path
         .file_name()
         .map(|f| f.to_string_lossy())
         .unwrap_or_default();
 
-    // Check test directory patterns (with leading slash)
-    if path_str.contains("/tests/")
-        || path_str.contains("/test/")
-        || path_str.contains("/__tests__/")
-        || path_str.contains("/spec/")
-        || path_str.contains("/testing/")
-    {
-        return true;
-    }
-
-    // Also handle paths that START with test directory names
-    // (relative paths without leading slash)
-    if path_str.starts_with("tests/")
-        || path_str.starts_with("test/")
-        || path_str.starts_with("__tests__/")
-        || path_str.starts_with("spec/")
-        || path_str.starts_with("testing/")
-    {
+    // why: matching on `path.to_string_lossy().contains("/tests/")` only
+    // ever finds `/`-separated boundaries, so on Windows (where PathBuf
+    // renders with `\`) no test directory was ever detected and
+    // exclude_tests silently did nothing. Walk `Path::components()`
+    // instead -- it is separator-agnostic and also covers both the
+    // leading-slash and relative-start cases the two string checks used
+    // to handle separately.
+    let in_test_dir = path.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some("tests") | Some("test") | Some("__tests__") | Some("spec") | Some("testing")
+        )
+    });
+    if in_test_dir {
         return true;
     }
 

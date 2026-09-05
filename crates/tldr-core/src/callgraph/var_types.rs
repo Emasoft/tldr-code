@@ -428,17 +428,38 @@ pub(crate) fn extract_python_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                     Some(n) if n.kind() == "identifier" => n,
                     _ => continue,
                 };
-                let right = match node.child_by_field_name("right") {
-                    Some(n) => n,
-                    None => continue,
-                };
-
                 let var_name = get_node_text(&left, source).to_string();
                 if var_name.is_empty() {
                     continue;
                 }
                 let line = node.start_position().row as u32 + 1;
                 let scope = enclosing_function_scope(&node, source);
+
+                // why: tree-sitter-python's `assignment` production covers both
+                // `left = right` and `left: type [= right]` (grammar.js: assignment
+                // rule). A standalone annotation `x: Foo` has a `type` field but no
+                // `right` field. The old code required `right` unconditionally and
+                // `continue`d otherwise, so bare annotations were silently dropped
+                // even though this function's own doc comment promises to capture
+                // them (the dead "type"/"expression_statement" arms below never
+                // handled it either -- they matched node kinds this production
+                // never actually reaches under an `assignment` parent).
+                let right = match node.child_by_field_name("right") {
+                    Some(n) => n,
+                    None => {
+                        if let Some(type_node) = node.child_by_field_name("type") {
+                            if let Some(inner) = type_node.named_child(0) {
+                                if inner.kind() == "identifier" {
+                                    let type_name = get_node_text(&inner, source).to_string();
+                                    var_types.push(VarType::new_with_scope(
+                                        var_name, type_name, "annotation", line, scope,
+                                    ));
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                };
 
                 match right.kind() {
                     "call" => {
@@ -550,48 +571,6 @@ pub(crate) fn extract_python_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                         ));
                     }
                     _ => {}
-                }
-            }
-
-            // Pattern 2: x: Foo or x: Foo = ... -- type annotation
-            "type" => {
-                // A "type" node inside an expression_statement or assignment
-                // represents a type annotation.
-                // For `x: Foo`, tree-sitter produces:
-                //   expression_statement > type > identifier(x) + type(Foo)
-                // For `x: Foo = val`, tree-sitter produces:
-                //   assignment > type > identifier(x) + type(Foo)  [left side]
-                //
-                // We handle this by looking at the parent context.
-                // Actually, tree-sitter Python handles annotations differently.
-                // Let's handle it via the parent node patterns.
-            }
-
-            // Pattern 2 (actual): Annotated assignments and standalone annotations
-            // tree-sitter-python produces different node types:
-            // - `x: int = 5` -> expression_statement containing type annotation
-            // We catch typed_parameter for function params separately below.
-            "expression_statement" => {
-                // Check if this contains a type annotation: `x: Type`
-                // tree-sitter-python emits this as an expression_statement
-                // containing a "type" child with annotation syntax.
-                //
-                // Actually, annotations in tree-sitter-python are handled as:
-                // expression_statement > assignment with type annotation
-                // Let's check the first child.
-                if node.named_child_count() == 1 {
-                    if let Some(child) = node.named_child(0) {
-                        if child.kind() == "type" {
-                            // Standalone annotation: `x: Foo`
-                            // The type node has two children: the name and the type
-                            if let (Some(name_node), Some(type_node)) =
-                                (child.child_by_field_name("type"), child.child(0))
-                            {
-                                // This is tricky - let me handle it more carefully
-                                let _ = (name_node, type_node);
-                            }
-                        }
-                    }
                 }
             }
 

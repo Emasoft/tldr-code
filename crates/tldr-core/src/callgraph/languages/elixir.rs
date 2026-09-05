@@ -437,8 +437,18 @@ impl ElixirHandler {
                     // 2. Default param calls (binary_operator with "\\")
                     for descendant in walk_tree(child) {
                         if descendant.kind() == "binary_operator" {
-                            let text = get_node_text(&descendant, source);
-                            if text.contains("when") {
+                            // why: determine the actual operator token instead of
+                            // substring-matching the whole node text, which
+                            // false-positives when an operand identifier itself
+                            // contains "when" (e.g. `x \\ get_when_ready()` was
+                            // wrongly treated as a guard clause and its call
+                            // silently dropped instead of being extracted as a
+                            // default-param call).
+                            let operator = (0..descendant.child_count())
+                                .filter_map(|k| descendant.child(k))
+                                .find(|c| !c.is_named())
+                                .map(|c| get_node_text(&c, source).trim().to_string());
+                            if operator.as_deref() == Some("when") {
                                 // Guard clause: extract calls from the right side of "when"
                                 // The children are: left_expr, "when" keyword, right_expr
                                 let mut found_when = false;
@@ -463,7 +473,7 @@ impl ElixirHandler {
                                         }
                                     }
                                 }
-                            } else if text.contains("\\\\") {
+                            } else if operator.as_deref() == Some("\\\\") {
                                 // Default param: `x \\ default_val()`
                                 // The right child of \\ is the default value
                                 let mut found_default = false;
@@ -918,6 +928,18 @@ impl ElixirHandler {
         for node in tree.root_node().children(&mut tree.root_node().walk()) {
             if self.is_defmodule_call(&node, source) {
                 continue;
+            }
+            // why: a top-level `def`/`defp` (outside any defmodule, e.g. in a
+            // .exs script) is already walked and attributed to its own
+            // function name by process_function_definition_call. Without this
+            // check its body would be walked again here and every call inside
+            // it double-counted under the synthetic "<module>" caller too.
+            if node.kind() == "call" {
+                if let Some(name) = self.extract_identifier_from_node(&node, source) {
+                    if matches!(name.as_str(), "def" | "defp") {
+                        continue;
+                    }
+                }
             }
             module_calls.extend(self.extract_calls_from_node(
                 &node,

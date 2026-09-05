@@ -742,10 +742,14 @@ fn find_bare_open_call(node: tree_sitter::Node, source: &str) -> Option<usize> {
         if let Some(func) = node.child_by_field_name("function") {
             let text = &source[func.byte_range()];
             if text == "open" {
-                // Check if encoding= keyword is present
+                // Check if encoding= keyword is present.
+                // why: matching the bare substring "encoding" also matched an
+                // unrelated identifier like `my_encoding_var` passed positionally,
+                // which made a real bare `open()` call look already-encoded and
+                // silently skipped the fix. Require the `encoding=` keyword form.
                 if let Some(args) = node.child_by_field_name("arguments") {
                     let args_text = &source[args.byte_range()];
-                    if !args_text.contains("encoding") {
+                    if !args_text.contains("encoding=") {
                         return Some(node.start_position().row + 1);
                     }
                 }
@@ -787,14 +791,21 @@ fn find_write_mode_open_call(node: tree_sitter::Node, source: &str) -> Option<us
                                 let kw_name = &source[name_node.byte_range()];
                                 if kw_name == "mode" {
                                     if let Some(val) = child.child_by_field_name("value") {
-                                        let val_text = &source[val.byte_range()];
-                                        let unquoted =
-                                            val_text.trim_matches('\'').trim_matches('"');
-                                        if unquoted.contains('w')
-                                            || unquoted.contains('a')
-                                            || unquoted.contains('x')
-                                        {
-                                            has_write_mode = true;
+                                        // why: only a string LITERAL can be inspected for
+                                        // 'w'/'a'/'x'; treating any expression (e.g. a
+                                        // variable named `mode_var`) as the mode text made
+                                        // "var" match the letter 'a' and falsely flag a
+                                        // read as a write.
+                                        if val.kind() == "string" {
+                                            let val_text = &source[val.byte_range()];
+                                            let unquoted =
+                                                val_text.trim_matches('\'').trim_matches('"');
+                                            if unquoted.contains('w')
+                                                || unquoted.contains('a')
+                                                || unquoted.contains('x')
+                                            {
+                                                has_write_mode = true;
+                                            }
                                         }
                                     }
                                 }
@@ -802,7 +813,7 @@ fn find_write_mode_open_call(node: tree_sitter::Node, source: &str) -> Option<us
                             continue;
                         }
                         // Second positional arg is the mode
-                        if positional_idx == 1 {
+                        if positional_idx == 1 && child.kind() == "string" {
                             let arg_text = &source[child.byte_range()];
                             let unquoted = arg_text.trim_matches('\'').trim_matches('"');
                             if unquoted.contains('w')
@@ -1161,11 +1172,22 @@ fn analyze_type_error_callable(
         let attr = caps.get(2).unwrap().as_str();
         let full_match = caps.get(0).unwrap().as_str();
 
-        // Find the line in source where this pattern appears
-        let fix_line = source
-            .lines()
-            .enumerate()
-            .find(|(_, line)| line.contains(full_match))
+        // Find the line in source where this pattern appears.
+        // why: search the error's own reported line FIRST -- scanning the whole
+        // file for the first line containing the same `.attr()` text could match
+        // an unrelated call earlier in the file and silently rewrite the wrong
+        // line instead of (or in addition to) the one that actually raised.
+        let fix_line = error
+            .line
+            .and_then(|line_no| line_no.checked_sub(1))
+            .and_then(|idx| source.lines().nth(idx).map(|line| (idx, line)))
+            .filter(|(_, line)| line.contains(full_match))
+            .or_else(|| {
+                source
+                    .lines()
+                    .enumerate()
+                    .find(|(_, line)| line.contains(full_match))
+            })
             .map(|(idx, line)| {
                 let new_line = line.replace(&format!(".{}()", attr), &format!(".{}", attr));
                 TextEdit {
@@ -1443,8 +1465,16 @@ fn analyze_import_error(error: &ParsedError, source: &str, _tree: &Tree) -> Opti
                 .enumerate()
                 .find(|(_, line)| line.contains(&bad_pattern) && line.contains(bad_name))
                 .map(|(idx, line)| {
-                    // If the line imports multiple names, just remove the bad one
-                    let names_part = line.split("import").nth(1).unwrap_or("").trim();
+                    // If the line imports multiple names, just remove the bad one.
+                    // why: splitting on the bare substring "import" broke when the
+                    // module name itself contained "import" (e.g. "myimportlib") --
+                    // `line.split("import")` cut inside the module name too. Slice
+                    // after the exact `bad_pattern` match instead, which we already
+                    // confirmed is present in this line.
+                    let names_part = line
+                        .find(bad_pattern.as_str())
+                        .map(|pos| line[pos + bad_pattern.len()..].trim())
+                        .unwrap_or("");
                     let names: Vec<&str> = names_part.split(',').map(|s| s.trim()).collect();
                     let mut edits = Vec::new();
 
@@ -2144,8 +2174,10 @@ fn analyze_unicode_error(error: &ParsedError, source: &str, tree: &Tree) -> Opti
     if let Some(line) = open_line {
         let source_line = source.lines().nth(line - 1).unwrap_or("");
 
-        // Build fix: add encoding='utf-8' to the open call
-        let fix = if source_line.contains("open(") && !source_line.contains("encoding") {
+        // Build fix: add encoding='utf-8' to the open call.
+        // why: match the same "encoding=" keyword form used in find_bare_open_call
+        // so an unrelated identifier containing "encoding" doesn't suppress the fix.
+        let fix = if source_line.contains("open(") && !source_line.contains("encoding=") {
             // Find the open( call and its matching close paren, then insert
             // encoding='utf-8' before the close paren.
             let new_line = insert_encoding_into_open(source_line);

@@ -382,14 +382,6 @@ fn test_available_python() {
         !avail.avail_in.is_empty() || !avail.avail_out.is_empty() || !avail.all_exprs.is_empty(),
         "Python: available expressions analysis should produce non-empty results"
     );
-    // If the analysis detects the repeated "x + 1", redundant should be non-empty
-    if !avail.all_exprs.is_empty() {
-        // Expression tracking is working
-        assert!(
-            !avail.all_exprs.is_empty(),
-            "Python: should detect at least one expression, got 0"
-        );
-    }
     // Redundant computations check: x + 1 appears on two lines
     if !redundant.is_empty() {
         // Verify the redundant pair references an expression containing operands
@@ -722,8 +714,10 @@ fn test_slice_go() {
 
 #[test]
 fn test_slice_rust() {
-    // In Rust fixture, `y` (the implicit return) is on line 8
-    let slice = run_backward_slice(RUST_SOURCE, "example", 8, Language::Rust, ".rs");
+    // why: RUST_SOURCE's leading blank line shifts the implicit-return `y` to
+    // line 9, not 8 (line 8 is `let _ = (z, unused, query);`) -- fixed.
+    // In Rust fixture, `y` (the implicit return) is on line 9
+    let slice = run_backward_slice(RUST_SOURCE, "example", 9, Language::Rust, ".rs");
     assert!(
         !slice.is_empty(),
         "Rust: backward slice from return expression should be non-empty"
@@ -732,8 +726,10 @@ fn test_slice_rust() {
 
 #[test]
 fn test_slice_java() {
-    // In Java, `return y;` is on line 8 (inside the class)
-    let slice = run_backward_slice(JAVA_SOURCE, "example", 8, Language::Java, ".java");
+    // why: JAVA_SOURCE's leading blank line shifts `return y;` to line 9, not 8
+    // (line 8 is the `query` assignment) -- fixed to target the actual return line.
+    // In Java, `return y;` is on line 9 (inside the class)
+    let slice = run_backward_slice(JAVA_SOURCE, "example", 9, Language::Java, ".java");
     assert!(
         !slice.is_empty(),
         "Java: backward slice from return should be non-empty"
@@ -742,8 +738,10 @@ fn test_slice_java() {
 
 #[test]
 fn test_slice_c() {
-    // In C, `return y;` is on line 6
-    let slice = run_backward_slice(C_SOURCE, "example", 6, Language::C, ".c");
+    // why: C_SOURCE's leading blank line shifts `return y;` to line 7, not 6
+    // (line 6 is `int unused = 42;`) -- fixed to target the actual return line.
+    // In C, `return y;` is on line 7
+    let slice = run_backward_slice(C_SOURCE, "example", 7, Language::C, ".c");
     assert!(
         !slice.is_empty(),
         "C: backward slice from return should be non-empty"
@@ -752,8 +750,10 @@ fn test_slice_c() {
 
 #[test]
 fn test_slice_cpp() {
-    // In C++, `return y;` is on line 9
-    let slice = run_backward_slice(CPP_SOURCE, "example", 9, Language::Cpp, ".cpp");
+    // why: CPP_SOURCE's leading blank line + #include shift `return y;` to line
+    // 10, not 9 (line 9 is the `query` assignment) -- fixed to target the return line.
+    // In C++, `return y;` is on line 10
+    let slice = run_backward_slice(CPP_SOURCE, "example", 10, Language::Cpp, ".cpp");
     assert!(
         !slice.is_empty(),
         "C++: backward slice from return should be non-empty"
@@ -890,8 +890,9 @@ fn test_chop_go() {
 
 #[test]
 fn test_chop_rust() {
-    // In Rust: let x = 10 is line 3, y (return expr) is line 8
-    let chop = run_chop(RUST_SOURCE, "example", 3, 8, Language::Rust, ".rs");
+    // why: y (the implicit return) is on line 9, not 8 -- see test_slice_rust.
+    // In Rust: let x = 10 is line 3, y (return expr) is line 9
+    let chop = run_chop(RUST_SOURCE, "example", 3, 9, Language::Rust, ".rs");
     assert!(
         !chop.is_empty(),
         "Rust: chop from x to return should be non-empty"
@@ -900,7 +901,8 @@ fn test_chop_rust() {
 
 #[test]
 fn test_chop_java() {
-    let chop = run_chop(JAVA_SOURCE, "example", 4, 8, Language::Java, ".java");
+    // why: `return y;` is on line 9, not 8 -- see test_slice_java.
+    let chop = run_chop(JAVA_SOURCE, "example", 4, 9, Language::Java, ".java");
     assert!(
         !chop.is_empty(),
         "Java: chop from x to return should be non-empty"
@@ -909,8 +911,9 @@ fn test_chop_java() {
 
 #[test]
 fn test_chop_c() {
-    // In C: x=10 is line 3, return y is line 6
-    let chop = run_chop(C_SOURCE, "example", 3, 6, Language::C, ".c");
+    // why: `return y;` is on line 7, not 6 -- see test_slice_c.
+    // In C: x=10 is line 3, return y is line 7
+    let chop = run_chop(C_SOURCE, "example", 3, 7, Language::C, ".c");
     assert!(
         !chop.is_empty(),
         "C: chop from x to return should be non-empty"
@@ -919,8 +922,9 @@ fn test_chop_c() {
 
 #[test]
 fn test_chop_cpp() {
-    // In C++: x=10 is line 5, return y is line 9
-    let chop = run_chop(CPP_SOURCE, "example", 5, 9, Language::Cpp, ".cpp");
+    // why: `return y;` is on line 10, not 9 -- see test_slice_cpp.
+    // In C++: x=10 is line 5, return y is line 10
+    let chop = run_chop(CPP_SOURCE, "example", 5, 10, Language::Cpp, ".cpp");
     assert!(
         !chop.is_empty(),
         "C++: chop from x to return should be non-empty"

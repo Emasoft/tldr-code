@@ -583,8 +583,10 @@ fn format_dead_stores_text(report: &DeadStoresReport) -> String {
 
         for store in &report.dead_stores_ssa {
             let phi_marker = if store.is_phi { " [phi]" } else { "" };
+            // why: stray `'` before the newline leaked a literal quote char into every
+            // text-format line (e.g. "Line 5: x (x_1)'"); it was never part of the format.
             output.push_str(&format!(
-                "  Line {}: {} ({}){}'\n",
+                "  Line {}: {} ({}){}\n",
                 store.line, store.variable, store.ssa_name, phi_marker
             ));
         }

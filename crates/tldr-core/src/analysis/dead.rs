@@ -536,7 +536,10 @@ pub fn collect_all_functions(
 
 /// Check if a file path looks like a test file
 fn is_test_file_path(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
+    // why: on Windows `path_str` uses '\' separators, so the "/test/"-style
+    // checks below would silently never match; normalize like the sibling
+    // helper in analysis/references.rs does.
+    let path_str = path.to_string_lossy().replace('\\', "/");
     let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     // Common test file patterns across languages
@@ -815,7 +818,9 @@ fn is_framework_entry_file(path: &Path, language: crate::types::Language) -> boo
     use crate::types::Language;
 
     let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    let path_str = path.to_string_lossy();
+    // why: same Windows-separator issue as `is_test_file_path` — normalize
+    // so the "/pages/"-style directory checks below match on Windows too.
+    let path_str = path.to_string_lossy().replace('\\', "/");
 
     match language {
         Language::TypeScript | Language::JavaScript => {

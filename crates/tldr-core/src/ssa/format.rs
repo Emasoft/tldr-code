@@ -330,6 +330,22 @@ pub fn format_ssa_json_compact(ssa: &SsaFunction) -> Result<String, serde_json::
 pub fn format_ssa_dot_with_def_use(ssa: &SsaFunction) -> String {
     let mut output = String::new();
 
+    // Build name lookup map (SsaNameId -> "variable_version") so labels show
+    // readable names ("x_2") instead of raw ids ("$5") — matching format_ssa_dot.
+    // why: SsaNameId's Display impl only prints "$<id>"; without this map every
+    // phi/instruction name in this DOT variant silently regressed to raw ids.
+    let name_lookup: HashMap<SsaNameId, String> = ssa
+        .ssa_names
+        .iter()
+        .map(|n| (n.id, n.format_name()))
+        .collect();
+    let fmt_name = |id: SsaNameId| -> String {
+        name_lookup
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| format!("${}", id.0))
+    };
+
     output.push_str("digraph SSA {\n");
     output.push_str("    rankdir=TB;\n");
     output.push_str("    node [shape=box, fontname=\"Courier\"];\n\n");
@@ -362,13 +378,20 @@ pub fn format_ssa_dot_with_def_use(ssa: &SsaFunction) -> String {
 
         // Phi functions
         for phi in &block.phi_functions {
-            let sources: Vec<String> = phi.sources.iter().map(|s| s.name.to_string()).collect();
-            node_label.push_str(&format!("\\n{} = phi({})", phi.target, sources.join(", ")));
+            let sources: Vec<String> = phi.sources.iter().map(|s| fmt_name(s.name)).collect();
+            node_label.push_str(&format!(
+                "\\n{} = phi({})",
+                fmt_name(phi.target),
+                sources.join(", ")
+            ));
         }
 
         // Instructions (simplified)
         for inst in &block.instructions {
-            let target = inst.target.map(|t| format!("{} = ", t)).unwrap_or_default();
+            let target = inst
+                .target
+                .map(|t| format!("{} = ", fmt_name(t)))
+                .unwrap_or_default();
             node_label.push_str(&format!("\\n{}{:?}", target, inst.kind));
         }
 

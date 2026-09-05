@@ -75,7 +75,6 @@ fn extract_class_declaration(
 
     let is_interface = is_interface_declaration(node, source);
     let is_abstract = has_modifier(node, source, "abstract");
-    let is_enum = has_modifier(node, source, "enum");
 
     let mut class_node =
         InheritanceNode::new(name, file_path.to_path_buf(), line, Language::Kotlin);
@@ -90,11 +89,6 @@ fn extract_class_declaration(
     // Extract delegation specifiers (base classes/interfaces)
     let bases = extract_delegation_specifiers(node, source);
     class_node.bases = bases;
-
-    // Mark enum classes but still capture their bases
-    if is_enum {
-        // Enum classes can implement interfaces
-    }
 
     Some(class_node)
 }
@@ -149,8 +143,11 @@ fn is_interface_declaration(node: &Node, source: &str) -> bool {
             break;
         }
     }
-    // Also check: if the first non-modifier token is "interface"
-    let _ = source; // already used in loop
+    // why: `source` is unused here (only `child.kind()` is checked, no text
+    // is read) — the prior comment claiming it was "already used in loop"
+    // was false. Kept as an explicit no-op to silence the unused-parameter
+    // warning without changing the function's signature.
+    let _ = source;
     false
 }
 

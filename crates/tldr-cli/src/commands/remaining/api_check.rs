@@ -38,8 +38,12 @@ use crate::output::OutputWriter;
 /// Maximum files to analyze in a directory
 const MAX_DIRECTORY_FILES: u32 = 1000;
 
-/// Maximum file size to analyze (10 MB)
-const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+/// Maximum file size to analyze.
+// why: this duplicated the crate's own oversize policy as a separate
+// hardcoded literal (10 MB), which `analyze_file` already enforces a
+// second time via `tldr_core::fs::oversize::check_size`. Reuse the
+// single source of truth so the two gates cannot silently drift apart.
+const MAX_FILE_SIZE: u64 = tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApiLanguage {
@@ -1331,10 +1335,19 @@ impl ApiCheckArgs {
         // `detect_language` dispatch to only that language.
         let lang_filter: Option<ApiLanguage> = global_lang.and_then(map_language_to_api_language);
 
-        let all_rules_count = all_api_languages()
-            .iter()
-            .map(|language| rules_for_language(*language).len() as u32)
-            .sum();
+        // why: when `--lang` pins a single ApiLanguage, only that
+        // language's rules ever run (see the `lang_filter` gate in the
+        // scan loop below), so the reported "rules applied" count must
+        // reflect that same language, not the sum across all 18
+        // language rule packs (previously always reported the full
+        // cross-language total regardless of the filter).
+        let all_rules_count = match lang_filter {
+            Some(language) => rules_for_language(language).len() as u32,
+            None => all_api_languages()
+                .iter()
+                .map(|language| rules_for_language(*language).len() as u32)
+                .sum(),
+        };
 
         // Collect files to analyze
         let files = collect_files(&self.path)?;

@@ -467,7 +467,12 @@ fn apply_truncation(
         // Also truncate by_file to match
         let mut count = 0;
         let mut new_by_file = std::collections::HashMap::new();
-        for (path, funcs) in report.by_file {
+        // why: `by_file` is a HashMap, so its iteration order is
+        // nondeterministic; sort by path first so which files get
+        // truncated (and their order) is stable across runs.
+        let mut entries: Vec<_> = report.by_file.into_iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, funcs) in entries {
             let remaining = max_items - count;
             if remaining == 0 {
                 break;
@@ -513,7 +518,12 @@ fn format_dead_code_text_truncated(
 
     if !report.by_file.is_empty() {
         output.push_str("Definitely dead:\n");
-        for (file, funcs) in &report.by_file {
+        // why: `by_file` is a HashMap, so iterating it directly makes text
+        // output nondeterministic (files list in a different order each
+        // run), which breaks reproducibility and snapshot testing.
+        let mut files: Vec<_> = report.by_file.iter().collect();
+        files.sort_by(|a, b| a.0.cmp(b.0));
+        for (file, funcs) in files {
             output.push_str(&format!("{}\n", file.display().to_string().green()));
             for func in funcs {
                 output.push_str(&format!("  - {}\n", func.red()));

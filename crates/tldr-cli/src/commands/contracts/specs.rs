@@ -307,31 +307,51 @@ fn extract_from_test_file(path: &Path) -> ContractsResult<FileSpecReport> {
     // Process all test functions
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
-        match child.kind() {
+        // why: tree-sitter-python wraps a decorated def in a
+        // `decorated_definition` node (the `function_definition`/
+        // `class_definition` lives under its `definition` field), so
+        // any pytest test decorated with e.g. `@pytest.mark.parametrize`
+        // or `@pytest.fixture` -- extremely common -- was never matched
+        // by the arms below and silently dropped from the scan.
+        let effective = if child.kind() == "decorated_definition" {
+            child.child_by_field_name("definition").unwrap_or(child)
+        } else {
+            child
+        };
+        match effective.kind() {
             "function_definition" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
+                if let Some(name_node) = effective.child_by_field_name("name") {
                     let name = get_node_text(name_node, source.as_bytes());
                     if name.starts_with("test_") {
                         test_func_count += 1;
-                        process_test_function(child, name, source.as_bytes(), &mut specs, 0)?;
+                        process_test_function(effective, name, source.as_bytes(), &mut specs, 0)?;
                     }
                 }
             }
             "class_definition" => {
                 // Test class: class TestFoo:
-                if let Some(name_node) = child.child_by_field_name("name") {
+                if let Some(name_node) = effective.child_by_field_name("name") {
                     let class_name = get_node_text(name_node, source.as_bytes());
                     if class_name.starts_with("Test") {
-                        if let Some(body) = child.child_by_field_name("body") {
+                        if let Some(body) = effective.child_by_field_name("body") {
                             let mut class_cursor = body.walk();
                             for method in body.children(&mut class_cursor) {
-                                if method.kind() == "function_definition" {
-                                    if let Some(method_name) = method.child_by_field_name("name") {
+                                // why: same decorated-def unwrap for methods
+                                // (e.g. a parametrized test method).
+                                let effective_method = if method.kind() == "decorated_definition" {
+                                    method.child_by_field_name("definition").unwrap_or(method)
+                                } else {
+                                    method
+                                };
+                                if effective_method.kind() == "function_definition" {
+                                    if let Some(method_name) =
+                                        effective_method.child_by_field_name("name")
+                                    {
                                         let mname = get_node_text(method_name, source.as_bytes());
                                         if mname.starts_with("test_") {
                                             test_func_count += 1;
                                             process_test_function(
-                                                method,
+                                                effective_method,
                                                 mname,
                                                 source.as_bytes(),
                                                 &mut specs,
@@ -1164,21 +1184,23 @@ fn try_eval_literal_inner(node: Node, source: &[u8], depth: usize) -> serde_json
 
 /// Strip quotes from a Python string literal.
 fn strip_string_quotes(s: &str) -> String {
-    let s = s.trim();
+    let mut s = s.trim();
 
-    // Handle raw strings (r"..." or r'...')
-    let s = s
-        .strip_prefix('r')
-        .or_else(|| s.strip_prefix('R'))
-        .unwrap_or(s);
-    let s = s
-        .strip_prefix('b')
-        .or_else(|| s.strip_prefix('B'))
-        .unwrap_or(s);
-    let s = s
-        .strip_prefix('f')
-        .or_else(|| s.strip_prefix('F'))
-        .unwrap_or(s);
+    // Handle string prefixes (r/R/b/B/f/F), in ANY order: Python allows
+    // both "rb"/"Rb" and "br"/"fr" spellings. why: the previous code
+    // stripped one 'r' pass, then one 'b' pass, then one 'f' pass -- so
+    // `br"..."`/`fr"..."` (b or f BEFORE r) left a stray leading `r`
+    // that made every quote check below fail, and the raw `r"foo"`
+    // text (prefix + quotes intact) leaked into the extracted literal.
+    // Stripping in a loop is order-independent and self-terminating
+    // (real prefixes are at most 2 chars from this set).
+    while let Some(c) = s.chars().next() {
+        if matches!(c, 'r' | 'R' | 'b' | 'B' | 'f' | 'F') {
+            s = &s[c.len_utf8()..];
+        } else {
+            break;
+        }
+    }
 
     // Handle triple quotes
     if s.starts_with("\"\"\"") && s.ends_with("\"\"\"") && s.len() >= 6 {

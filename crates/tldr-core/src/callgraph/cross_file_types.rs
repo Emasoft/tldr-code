@@ -80,7 +80,9 @@ pub enum CallType {
 /// - `caller` is never empty
 /// - `target` is never empty
 /// - `line` uses 1-indexed lines when present (0 is invalid)
-/// - `receiver` is `Some` if and only if `call_type` is `Method` or `Attr`
+/// - `receiver` is always `Some` when `call_type` is `Method`; for `Attr` it
+///   is `Some` when a simple receiver name could be extracted and `None`
+///   when the receiver expression was too complex (see `is_valid`)
 ///
 /// # Hash/Eq Behavior
 ///
@@ -1310,8 +1312,16 @@ impl CallGraphIR {
     }
 
     /// Adds a file to the call graph.
-    pub fn add_file(&mut self, file_ir: FileIR) {
+    pub fn add_file(&mut self, mut file_ir: FileIR) {
+        // why: callers may build a FileIR via the `FileIR { .. }` struct
+        // literal (e.g. JSON deserialization in serialization.rs) instead
+        // of `FileIR::new`/the builder, which bypasses path normalization.
+        // Previously only the HashMap *key* was normalized here, leaving
+        // `file_ir.path` with raw (possibly backslash) separators on the
+        // stored value - violating the documented "always forward slashes"
+        // invariant and desyncing the value's path from its own map key.
         let path = normalize_path_buf(&file_ir.path);
+        file_ir.path = path.clone();
         self.files.insert(path, file_ir);
     }
 

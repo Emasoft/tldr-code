@@ -91,9 +91,15 @@ impl LuauHandler {
 
         // Fallback: strip quotes manually
         let text = get_node_text(node, source);
-        if (text.starts_with('"') && text.ends_with('"'))
-            || (text.starts_with('\'') && text.ends_with('\''))
+        if text.len() >= 2
+            && ((text.starts_with('"') && text.ends_with('"'))
+                || (text.starts_with('\'') && text.ends_with('\'')))
         {
+            // why: a malformed/unterminated string node (e.g. a bare `"`) has
+            // len() == 1, so it both starts_with and ends_with the same quote
+            // char; slicing [1..len-1] then panics (start > end). Require
+            // len >= 2 so a genuinely empty quoted string ("") still slices
+            // to "" while a single stray quote falls through unchanged.
             Some(text[1..text.len() - 1].to_string())
         } else {
             Some(text.to_string())

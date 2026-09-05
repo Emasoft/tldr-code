@@ -600,8 +600,18 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
             is_async
         }
         Language::Rust => {
-            // Check for async keyword
-            node_text(func_node, source).contains("async")
+            // why: the previous check scanned the *entire* function text
+            // (including the body) for the substring "async", so any sync
+            // function that merely called an async fn, held a variable
+            // named `async_x`, or mentioned "async" in a string/comment
+            // was misreported as async. Only the top-level `function_item`
+            // -> `function_modifiers` -> `async` token (or a bare `async`
+            // keyword child) marks the function itself as async.
+            func_node.children(&mut func_node.walk()).any(|child| {
+                child.kind() == "async"
+                    || (child.kind() == "function_modifiers"
+                        && child.children(&mut child.walk()).any(|m| m.kind() == "async"))
+            })
         }
         _ => false,
     };
@@ -795,41 +805,63 @@ fn analyze_purity_recursive(
             *has_any_calls = true;
             let call_name = extract_call_name(node, source);
             if let Some(name) = &call_name {
+                // why: the previous code `return`ed as soon as a call
+                // matched IO_OPERATIONS/IMPURE_CALLS/COLLECTION_MUTATIONS,
+                // which exited `analyze_purity_recursive` entirely and
+                // skipped the "recurse into children" loop below for that
+                // node — so any nested call inside that call's own
+                // arguments (e.g. `log.info(items.pop())`) was never
+                // visited and its effect (here, `collection_modify`) never
+                // recorded. Use a `matched` flag + `break` instead so the
+                // classification still short-circuits to the first
+                // matching category, but the shared recursion at the
+                // bottom of this function always runs.
+                let mut matched = false;
+
                 // Check for I/O operations
                 for &io_op in IO_OPERATIONS {
                     if name == io_op || name.ends_with(&format!(".{}", io_op)) {
                         if !effects.contains(&"io".to_string()) {
                             effects.push("io".to_string());
                         }
-                        return;
+                        matched = true;
+                        break;
                     }
                 }
 
                 // Check for impure calls
-                for &impure in IMPURE_CALLS {
-                    if name == impure || name.ends_with(impure) {
-                        if !effects.contains(&"io".to_string()) {
-                            effects.push("io".to_string());
+                if !matched {
+                    for &impure in IMPURE_CALLS {
+                        if name == impure || name.ends_with(impure) {
+                            if !effects.contains(&"io".to_string()) {
+                                effects.push("io".to_string());
+                            }
+                            matched = true;
+                            break;
                         }
-                        return;
                     }
                 }
 
                 // Check for collection mutations
-                let method_name = name.split('.').next_back().unwrap_or(name);
-                for &mutation in COLLECTION_MUTATIONS {
-                    if method_name == mutation {
-                        if !effects.contains(&"collection_modify".to_string()) {
-                            effects.push("collection_modify".to_string());
+                if !matched {
+                    let method_name = name.split('.').next_back().unwrap_or(name);
+                    for &mutation in COLLECTION_MUTATIONS {
+                        if method_name == mutation {
+                            if !effects.contains(&"collection_modify".to_string()) {
+                                effects.push("collection_modify".to_string());
+                            }
+                            matched = true;
+                            break;
                         }
-                        return;
                     }
                 }
 
                 // Check if it's a known pure builtin
-                let base = name.split('.').next_back().unwrap_or(name);
-                if !PURE_BUILTINS.contains(&name.as_str()) && !PURE_BUILTINS.contains(&base) {
-                    *has_unknown_calls = true;
+                if !matched {
+                    let base = name.split('.').next_back().unwrap_or(name);
+                    if !PURE_BUILTINS.contains(&name.as_str()) && !PURE_BUILTINS.contains(&base) {
+                        *has_unknown_calls = true;
+                    }
                 }
             }
         }
@@ -1337,7 +1369,15 @@ fn format_explain_text(report: &ExplainReport) -> String {
     }
     if let Some(ref doc) = report.signature.docstring {
         let preview = if doc.len() > 100 {
-            format!("{}...", &doc[..100])
+            // why: `doc` is arbitrary source text and may contain multi-byte
+            // UTF-8 characters; slicing at a raw byte offset of 100 panics
+            // whenever that offset falls inside a multi-byte codepoint.
+            // Walk back to the nearest char boundary first.
+            let mut end = 100;
+            while end > 0 && !doc.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &doc[..end])
         } else {
             doc.clone()
         };

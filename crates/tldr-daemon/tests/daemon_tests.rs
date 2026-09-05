@@ -9,26 +9,32 @@
 
 mod socket_tests {
     use std::path::PathBuf;
+    // why: the previous version of this test re-implemented the MD5 hashing
+    // logic inline instead of calling the daemon's own function, so it could
+    // never catch a regression in `compute_socket_path`/`compute_tcp_port`
+    // itself (a fake/conceptual test — see tldr rule on tests that don't
+    // exercise the code they claim to test).
+    use tldr_daemon::server::{compute_socket_path, compute_tcp_port};
 
     #[test]
     fn daemon_socket_path_uses_hash() {
-        // The socket path should contain a hash of the project path
-        // Format: /tmp/tldr-{hash}-v{version}.sock
-
-        // This is tested in the daemon crate itself
-        // Here we just verify the concept
+        // The socket path should contain an 8-hex-char hash of the project path.
+        // Format: <tmp>/tldr-{hash}-v{version}.sock
         let project_path = PathBuf::from("/tmp/test-project");
 
-        // Compute MD5 hash
-        let digest = md5::compute(project_path.to_string_lossy().as_bytes());
-        let hash = format!("{:x}", digest);
-        let hash_prefix = &hash[..8];
+        let socket_path = compute_socket_path(&project_path, "1.0");
+        let file_name = socket_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("socket path must have a file name");
 
-        // Socket path should include the hash
-        let _expected_suffix = format!("tldr-{}-v1.0.sock", hash_prefix);
-
-        // Just verify our hash computation works
-        assert!(hash_prefix.len() == 8);
+        assert!(
+            file_name.starts_with("tldr-") && file_name.ends_with("-v1.0.sock"),
+            "unexpected socket file name: {}",
+            file_name
+        );
+        let hash_prefix = &file_name["tldr-".len()..file_name.len() - "-v1.0.sock".len()];
+        assert_eq!(hash_prefix.len(), 8);
         assert!(hash_prefix.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
@@ -37,12 +43,7 @@ mod socket_tests {
         // TCP port should be in range [49152, 59152)
         let project_path = PathBuf::from("/tmp/test-project");
 
-        let digest = md5::compute(project_path.to_string_lossy().as_bytes());
-        let hash_bytes: [u8; 16] = digest.into();
-        let hash_u32 =
-            u32::from_le_bytes([hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3]]);
-        let port_offset = (hash_u32 % 10000) as u16;
-        let port = 49152 + port_offset;
+        let port = compute_tcp_port(&project_path);
 
         assert!(port >= 49152);
         assert!(port < 59152);

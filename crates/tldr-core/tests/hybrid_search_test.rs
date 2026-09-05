@@ -1,10 +1,7 @@
 //! Integration tests for enriched search with Hybrid mode (BM25 + Regex fusion).
 //!
-//! These tests define the TARGET API for `SearchMode::Hybrid` support in
-//! enriched search. They are expected to FAIL TO COMPILE initially because
-//! `SearchMode::Hybrid` does not exist yet.
-//!
-//! After implementation, all tests should pass and demonstrate:
+//! `SearchMode::Hybrid` is implemented in `search::enriched`; these tests
+//! lock its behaviour. They demonstrate:
 //! 1. Hybrid returns the intersection of BM25 and Regex results
 //! 2. Scores follow Reciprocal Rank Fusion (RRF) formula
 //! 3. Empty intersection yields empty results
@@ -198,8 +195,6 @@ fn regex_opts(pattern: &str, top_k: usize) -> EnrichedSearchOptions {
 /// All returned results must:
 /// - Contain "pub fn" in their signature (regex side)
 /// - Be relevant to the query "search" (BM25 side, from search-related files)
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_returns_intersection_of_bm25_and_regex() {
     let (_dir, root) = create_test_project();
@@ -254,8 +249,6 @@ fn test_hybrid_returns_intersection_of_bm25_and_regex() {
 /// - Maximum possible score per list = 1/(60+1) = 1/61
 /// - Maximum total RRF score = 2/61 ~ 0.03279
 /// - All scores should be in range (0, 2/61]
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_scores_use_rrf() {
     let (_dir, root) = create_test_project();
@@ -313,8 +306,6 @@ fn test_hybrid_scores_use_rrf() {
 
 /// Hybrid("search", "ZZZZNOTFOUND") should return empty results because
 /// the regex matches nothing, so the intersection is empty.
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_empty_when_no_intersection() {
     let (_dir, root) = create_test_project();
@@ -340,8 +331,6 @@ fn test_hybrid_empty_when_no_intersection() {
 
 /// The hybrid intersection can only shrink compared to pure regex.
 /// Every result name in hybrid must also appear in the pure regex results.
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_vs_pure_regex_subset() {
     let (_dir, root) = create_test_project();
@@ -394,8 +383,6 @@ fn test_hybrid_vs_pure_regex_subset() {
 
 /// The hybrid intersection can only shrink compared to pure BM25.
 /// Every result name in hybrid must also appear in the pure BM25 results.
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_vs_pure_bm25_subset() {
     let (_dir, root) = create_test_project();
@@ -447,8 +434,6 @@ fn test_hybrid_vs_pure_bm25_subset() {
 
 /// The report's search_mode string should be "hybrid(bm25+regex)" to
 /// distinguish it from pure "bm25+structure" or "regex+structure".
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_report_search_mode_field() {
     let (_dir, root) = create_test_project();
@@ -482,8 +467,6 @@ fn test_hybrid_report_search_mode_field() {
 
 /// With top_k=2, at most 2 results should be returned even if the
 /// intersection contains more.
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_respects_top_k() {
     let (_dir, root) = create_test_project();
@@ -509,8 +492,6 @@ fn test_hybrid_respects_top_k() {
 
 /// Hybrid mode should also work through the structure-cache API path.
 /// This ensures the Hybrid arm is handled in all enriched search entry points.
-///
-/// Expected: FAILS TO COMPILE (SearchMode::Hybrid does not exist yet).
 #[test]
 fn test_hybrid_with_structure_cache() {
     let (_dir, root) = create_test_project();

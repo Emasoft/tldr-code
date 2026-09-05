@@ -220,8 +220,23 @@ fn compare_hash_keys(a: &HashKey, b: &HashKey) -> Ordering {
         ) => o1.cmp(o2).then_with(|| compare_hash_keys(op1, op2)),
         (HashKey::Call { unique_id: u1 }, HashKey::Call { unique_id: u2 }) => u1.cmp(u2),
         (HashKey::Unique { id: u1 }, HashKey::Unique { id: u2 }) => u1.cmp(u2),
-        // Fall back to discriminant ordering for different variants
-        _ => discriminant_order(a).cmp(&discriminant_order(b)),
+        // Fall back to discriminant ordering for different variants. When both
+        // sides share a discriminant that has no explicit arm above (BoolOp,
+        // Compare, Attribute, Subscript), discriminant_order alone returns
+        // Equal for any two such keys regardless of content, so
+        // normalize_binop leaves operand order unchanged instead of sorting —
+        // breaking commutativity (`a.x + b.y` vs `b.y + a.x` would hash
+        // differently). Break the tie deterministically via Debug repr.
+        // why: restores BC-GVN-1 commutativity normalization for these variants.
+        _ => {
+            let da = discriminant_order(a);
+            let db = discriminant_order(b);
+            if da != db {
+                da.cmp(&db)
+            } else {
+                format!("{:?}", a).cmp(&format!("{:?}", b))
+            }
+        }
     }
 }
 

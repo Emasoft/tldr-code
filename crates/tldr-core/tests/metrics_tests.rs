@@ -138,8 +138,11 @@ fn test_halstead_info_empty_function() {
 
 #[test]
 fn test_halstead_info_n2_zero_caps_difficulty() {
+    // why: AGG13-9 changed the n2==0 fallback from a 1000.0 sentinel to
+    // n1/2 (see HalsteadInfo::from_counts doc comment) — this test asserted
+    // the old, now-incorrect value and would fail against current behavior.
     let hal = HalsteadInfo::from_counts(10, 0, 50, 100);
-    assert_eq!(hal.difficulty, 1000.0); // Capped at 1000 when n2=0
+    assert_eq!(hal.difficulty, 5.0); // n1/2 = 10/2 when n2=0
 }
 
 #[test]
@@ -705,6 +708,9 @@ def calc(x, y):
 
     assert!(result.is_ok());
     let report = result.unwrap();
+    // why: without this, an empty `report.functions` makes the loop below
+    // vacuously pass without ever checking the invariant it claims to test.
+    assert!(!report.functions.is_empty(), "Should find at least 1 function");
 
     for func in &report.functions {
         assert_eq!(
@@ -734,6 +740,9 @@ def complex_calc(a, b, c):
 
     assert!(result.is_ok());
     let report = result.unwrap();
+    // why: an empty `report.functions` would make the loop below vacuously
+    // pass without ever checking the derived-metric invariants it claims to test.
+    assert!(!report.functions.is_empty(), "Should find at least 1 function");
 
     for func in &report.functions {
         let m = &func.metrics;

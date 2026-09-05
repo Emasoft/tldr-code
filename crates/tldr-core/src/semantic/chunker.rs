@@ -62,8 +62,13 @@ const BINARY_EXTENSIONS: &[&str] = &[
     "ttf", "otf", "woff", "woff2", "eot", // Fonts
 ];
 
-/// Hidden directory/file prefixes to skip
-const HIDDEN_PREFIXES: &[&str] = &[".", "_"];
+/// Hidden file prefixes to skip.
+// why: "_" was previously included, but that silently dropped legitimate
+// source files such as Python's `__init__.py`/`__main__.py` from semantic
+// indexing. Build/cache dirs like `__pycache__` are already excluded by
+// `ProjectWalker`'s `DEFAULT_EXCLUDE_DIRS` (see walker.rs), so the "_"
+// prefix here was redundant for that purpose and only harmed real files.
+const HIDDEN_PREFIXES: &[&str] = &["."];
 
 // =============================================================================
 // Result Types

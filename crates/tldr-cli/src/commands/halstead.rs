@@ -214,8 +214,11 @@ impl HalsteadArgs {
 
         for func in &report.functions {
             let status = format_status(&func.thresholds.volume_status);
-            let name = if func.name.len() > 30 {
-                format!("{}...", &func.name[..27])
+            // why: byte-slicing `func.name[..27]` panics if function names contain
+            // multi-byte UTF-8 (several languages allow unicode identifiers).
+            // Truncate by char count instead so this never hits a non-boundary byte.
+            let name = if func.name.chars().count() > 30 {
+                format!("{}...", func.name.chars().take(27).collect::<String>())
             } else {
                 func.name.clone()
             };

@@ -209,14 +209,17 @@ fn visit_interface_children(node: &Node, source: &str, embeds: &mut Vec<String>)
                         }
                     }
                 }
-                // In tree-sitter-go, interface bodies may have embedded types
-                // that look like method_spec but without parameters
-                "method_spec" => {
-                    // Check if this is actually an embedded type (just a name, no signature)
-                    // In tree-sitter-go, embedded types in interfaces are not method_spec
-                    // They should be type_identifier directly. But let's handle variations.
-                    visit_interface_children(&child, source, embeds);
-                }
+                // A regular interface method (e.g. `Read(p []byte) (n int, err
+                // error)`). tree-sitter-go 0.23's node kind for this is
+                // `method_elem`, not the `method_spec` this branch used to
+                // match; that stale name never matched, so the catch-all arm
+                // below recursed into every method's parameter/result types
+                // and mis-classified their `type_identifier`s (e.g. `int`,
+                // `error`) as embedded interface bases. Embedded interfaces
+                // live in `type_elem` nodes instead, handled by the two arms
+                // above (after the catch-all recurses into `type_elem`), so a
+                // method's signature must not be descended into at all.
+                "method_elem" => {}
                 _ => {
                     // Recurse into other nodes
                     visit_interface_children(&child, source, embeds);

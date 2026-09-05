@@ -102,7 +102,11 @@ impl CsharpHandler {
                         module = Some(get_node_text(&child, source).to_string());
                     }
                     "identifier" => {
-                        // Could be a simple namespace or an alias
+                        // Could be a simple namespace or an alias.
+                        // why: tree-sitter-c-sharp 0.23.1 has no "name_equals"
+                        // node -- the alias identifier is a plain "identifier"
+                        // child directly followed by the "=" token, detected
+                        // via the sibling check below.
                         // Check if next sibling is "=" for alias detection
                         let mut is_alias = false;
                         if i + 1 < node.child_count() {
@@ -116,18 +120,6 @@ impl CsharpHandler {
                             alias = Some(get_node_text(&child, source).to_string());
                         } else if module.is_none() {
                             module = Some(get_node_text(&child, source).to_string());
-                        }
-                    }
-                    "name_equals" => {
-                        // Handle: using Alias = Something
-                        // The alias name is inside the name_equals node
-                        for j in 0..child.child_count() {
-                            if let Some(name_child) = child.child(j) {
-                                if name_child.kind() == "identifier" {
-                                    alias = Some(get_node_text(&name_child, source).to_string());
-                                    break;
-                                }
-                            }
                         }
                     }
                     _ => {}
@@ -273,10 +265,6 @@ impl CsharpHandler {
                             "member_access_expression" => {
                                 // obj.Method() or Class.StaticMethod()
                                 let target = get_node_text(&func_node, source).to_string();
-
-                                // Extract the method name (last part after dot)
-                                let _method_name =
-                                    target.split('.').next_back().unwrap_or(&target).to_string();
 
                                 // Extract receiver (everything before the last dot)
                                 let receiver = if target.contains('.') {
@@ -685,6 +673,14 @@ impl CsharpHandler {
         let prop_name = node
             .child_by_field_name("name")
             .map(|n| get_node_text(&n, source).to_string());
+        // why: a static auto-property initializer runs in the type initializer
+        // (<clinit>), not the instance constructor (<init>) -- mirrors the
+        // is_static handling already done for field_declaration below.
+        let is_static = (0..node.child_count()).any(|i| {
+            node.child(i).is_some_and(|child| {
+                child.kind() == "modifier" && get_node_text(&child, source) == "static"
+            })
+        });
 
         for i in 0..node.child_count() {
             let Some(child) = node.child(i) else {
@@ -718,7 +714,11 @@ impl CsharpHandler {
                     extend_calls_if_any(calls_by_func, caller, calls);
                 }
                 "equals_value_clause" | "invocation_expression" | "object_creation_expression" => {
-                    let caller = format!("{class}.<init>");
+                    let caller = if is_static {
+                        format!("{class}.<clinit>")
+                    } else {
+                        format!("{class}.<init>")
+                    };
                     let calls = self.extract_calls_from_node(
                         &child,
                         source,
@@ -746,8 +746,12 @@ impl CsharpHandler {
                 continue;
             }
 
+            // why: the "name" field (get/set/init/add/remove) is not always
+            // child(0) -- a modifier like `private set` or an attribute list
+            // can precede it, which previously produced callers such as
+            // "Class.private_Value" instead of "Class.set_Value".
             let accessor_type = accessor
-                .child(0)
+                .child_by_field_name("name")
                 .map(|c| get_node_text(&c, context.source).to_string())
                 .unwrap_or_default();
             let caller = if let Some(name) = context.prop_name {

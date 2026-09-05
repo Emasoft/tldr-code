@@ -284,6 +284,10 @@ fn classify_line(line: &str, lang: Language, state: ParseState) -> (LineType, Pa
 fn classify_in_multiline_comment(trimmed: &str, lang: Language) -> (LineType, ParseState) {
     let end_marker = match lang {
         Language::Ruby => "=end",
+        // why: OCaml block comments close with `*)`, not C-style `*/` —
+        // without this arm a multi-line `(* ... *)` comment never closes
+        // and every following line is misclassified as still-commented.
+        Language::Ocaml => "*)",
         _ => "*/",
     };
 
@@ -413,6 +417,8 @@ fn classify_normal_line(trimmed: &str, lang: Language) -> (LineType, ParseState)
     let (start_marker, end_marker) = match lang {
         Language::Ruby => ("=begin", "=end"),
         Language::Python => ("", ""), // Python uses triple quotes, handled above
+        // why: OCaml comments are `(* ... *)`, never C-style `/* */`.
+        Language::Ocaml => ("(*", "*)"),
         _ => ("/*", "*/"),
     };
 
@@ -461,7 +467,12 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         | Language::Php => trimmed.starts_with("//"),
         Language::Lua | Language::Luau => trimmed.starts_with("--"),
         Language::Elixir => trimmed.starts_with('#'),
-        Language::Ocaml => trimmed.starts_with("(*") || trimmed.starts_with('*'),
+        // why: OCaml has no single-line comment syntax — every comment is a
+        // `(* ... *)` block (possibly spanning one line). Treating a line
+        // that merely starts with "(*" as already-closed single-line
+        // comment skipped the multi-line-comment state machine below,
+        // so continuation lines of an unclosed block were miscounted as code.
+        Language::Ocaml => false,
     }
 }
 

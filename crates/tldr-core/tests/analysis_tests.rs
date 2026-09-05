@@ -335,11 +335,16 @@ mod context_tests {
             None,
         );
 
-        // THEN: It should not loop infinitely and complete
-        assert!(
-            result.is_ok() || result.is_err(),
-            "Should complete without hanging"
-        );
+        // THEN: It should not loop infinitely and complete, and still find the entry point
+        // why: `result.is_ok() || result.is_err()` is a tautology true for any Result value —
+        // it asserted nothing. Reaching this line already proves termination; check the
+        // actual outcome (tolerating an Err, as the other tests in this file do) instead.
+        if let Ok(ctx) = result {
+            assert!(
+                ctx.functions.iter().any(|f| f.name == "vulnerable_sql"),
+                "Should include the entry point function even at high depth"
+            );
+        }
     }
 
     #[test]

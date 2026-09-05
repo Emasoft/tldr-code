@@ -147,10 +147,15 @@ pub fn build_import_graph(root: &Path, language: Language) -> TldrResult<ImportG
                 }
             }
             Err(e) => {
-                // Skip files with parse errors (non-fatal)
+                // Skip files with parse errors (non-fatal); propagate anything else
+                // instead of silently dropping it (matches deps.rs's build_dependency_graph,
+                // which `return Err(e)`s for non-recoverable errors).
+                // why: previously fell through with no action for non-recoverable
+                // errors, silently swallowing them and violating fail-fast.
                 if e.is_recoverable() {
                     continue;
                 }
+                return Err(e);
             }
         }
     }

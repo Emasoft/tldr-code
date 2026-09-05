@@ -524,7 +524,8 @@ mod cohesion_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: `cohesion` is fully implemented (crates/tldr-cli/src/commands/patterns/cohesion.rs);
+    // verified against the built binary that this assertion passes. Stale ignore removed.
     fn test_cohesion_help() {
         tldr_assert_cmd()
             .args(["cohesion", "--help"])
@@ -536,7 +537,7 @@ mod cohesion_command {
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_cohesive_class() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "cohesive.py", PYTHON_CLASS_COHESIVE);
@@ -563,7 +564,7 @@ mod cohesion_command {
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_split_candidate() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "split.py", PYTHON_CLASS_SPLIT_CANDIDATE);
@@ -598,7 +599,7 @@ mod cohesion_command {
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_min_methods_filter() {
         let temp = TempDir::new().unwrap();
         let code = r#"
@@ -632,7 +633,7 @@ class TinyClass:
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_include_dunder() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "dunder.py", PYTHON_CLASS_COHESIVE);
@@ -669,7 +670,11 @@ class TinyClass:
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: cohesion IS implemented, but its --format text renderer only prints
+    // per-class detail ("Class:"/"LCOM4:"/"Verdict:") for split candidates, not
+    // cohesive classes (verified against the built binary) — real mismatch, not
+    // a missing command. Kept ignored with the accurate reason.
+    #[ignore = "cohesion --format text omits Class:/LCOM4:/Verdict: for cohesive-only results"]
     fn test_cohesion_text_output() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "cohesive.py", PYTHON_CLASS_COHESIVE);
@@ -688,7 +693,7 @@ class TinyClass:
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_file_not_found() {
         tldr_assert_cmd()
             .args(["cohesion", "/nonexistent/file.py"])
@@ -698,7 +703,7 @@ class TinyClass:
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_directory_mode() {
         let temp = TempDir::new().unwrap();
         create_test_file(&temp, "a.py", PYTHON_CLASS_COHESIVE);
@@ -725,7 +730,7 @@ class TinyClass:
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_empty_class() {
         let temp = TempDir::new().unwrap();
         let code = "class Empty: pass";
@@ -740,7 +745,7 @@ class TinyClass:
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_staticmethods_excluded() {
         let temp = TempDir::new().unwrap();
         let code = r#"
@@ -767,7 +772,7 @@ class WithStatic:
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_nested_classes() {
         let temp = TempDir::new().unwrap();
         let code = r#"
@@ -790,7 +795,7 @@ class Outer:
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_inheritance() {
         let temp = TempDir::new().unwrap();
         let code = r#"
@@ -813,7 +818,7 @@ class Derived(Base):
     }
 
     #[test]
-    #[ignore = "cohesion command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_cohesion_summary_stats() {
         let temp = TempDir::new().unwrap();
         create_test_file(&temp, "a.py", PYTHON_CLASS_COHESIVE);
@@ -844,7 +849,11 @@ mod coupling_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: `coupling` IS implemented, but clap renders `<PATH_A>`/`<PATH_B>`
+    // uppercase in --help, so the lowercase substring checks below never
+    // match (verified against the built binary) — a test-assertion bug, not
+    // a missing command. Kept ignored with the accurate reason.
+    #[ignore = "coupling --help renders PATH_A/PATH_B uppercase; lowercase assertions never match"]
     fn test_coupling_help() {
         tldr_assert_cmd()
             .args(["coupling", "--help"])
@@ -856,7 +865,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_two_modules() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -884,7 +893,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_bidirectional() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -908,7 +917,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_no_coupling() {
         let temp = TempDir::new().unwrap();
         let code_a = "def func_a(): return 1";
@@ -934,7 +943,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_verdict_levels() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -966,7 +975,11 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: `coupling` IS implemented, but its --format text renderer prints
+    // "Coupling Analysis: a <-> b" and "Score: 0.33 (moderate)" — neither the
+    // literal "Coupling:" nor "Verdict:" substring ever appears (verified
+    // against the built binary). Kept ignored with the accurate reason.
+    #[ignore = "coupling --format text prints \"Coupling Analysis:\"/inline verdict, not \"Coupling:\"/\"Verdict:\""]
     fn test_coupling_text_output() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -992,7 +1005,7 @@ mod coupling_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_file_not_found() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "a.py", "def a(): pass");
@@ -1005,7 +1018,14 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: `coupling` IS implemented, but passing the same path twice does
+    // NOT error — it exits 0 and reports coupling_score: 1.0 for a
+    // self-comparison with zero calls (verified against the built binary).
+    // A real product bug (nonsensical score/verdict for a degenerate
+    // self-comparison), but out of scope for this test-file batch — the fix
+    // belongs in commands/patterns/coupling.rs. Kept ignored with the
+    // accurate reason so this doesn't look like a missing feature.
+    #[ignore = "coupling <same> <same> exits 0 with score=1.0 instead of erroring — production bug in coupling.rs, not unimplemented"]
     fn test_coupling_same_file_error() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "a.py", "def a(): pass");
@@ -1026,7 +1046,13 @@ mod coupling_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: `coupling` IS implemented, but a method call whose receiver is a
+    // local variable (e.g. `processor.run(items)`) is recorded with
+    // `line: 0` instead of the real call site (verified against the built
+    // binary: `analyze -> DataProcessor.run (line 0)`). A real production
+    // bug in coupling.rs's call-line tracking, out of scope for this
+    // test-file batch. Kept ignored with the accurate reason.
+    #[ignore = "coupling records line: 0 for some method calls — production bug in coupling.rs, not unimplemented"]
     fn test_coupling_import_tracking() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -1053,7 +1079,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_transitive() {
         // Test that only direct calls are counted, not transitive
         let temp = TempDir::new().unwrap();
@@ -1073,7 +1099,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_score_calculation() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -1097,7 +1123,10 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: same production bug as test_coupling_import_tracking above
+    // (some calls get line: 0) — verified against the built binary. Kept
+    // ignored with the accurate reason.
+    #[ignore = "coupling records line: 0 for some method calls — production bug in coupling.rs, not unimplemented"]
     fn test_coupling_call_lines() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -1122,7 +1151,7 @@ mod coupling_command {
     }
 
     #[test]
-    #[ignore = "coupling command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_coupling_circular() {
         let temp = TempDir::new().unwrap();
         let file_a = create_test_file(&temp, "module_a.py", PYTHON_MODULE_A);
@@ -1160,7 +1189,8 @@ mod interface_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: `interface` is fully implemented (crates/tldr-cli/src/commands/patterns/interface.rs);
+    // verified against the built binary that this assertion passes. Stale ignore removed.
     fn test_interface_help() {
         tldr_assert_cmd()
             .args(["interface", "--help"])
@@ -1172,7 +1202,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_functions() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1199,7 +1229,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_classes() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1226,7 +1256,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_all_exports() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1247,7 +1277,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_private_excluded() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1274,7 +1304,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_directory_mode() {
         let temp = TempDir::new().unwrap();
         create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1297,7 +1327,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_text_output() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1316,7 +1346,7 @@ mod interface_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_file_not_found() {
         tldr_assert_cmd()
             .args(["interface", "/nonexistent/file.py"])
@@ -1330,7 +1360,7 @@ mod interface_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_async_functions() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1350,7 +1380,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_signatures() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1370,7 +1400,7 @@ mod interface_command {
     }
 
     #[test]
-    #[ignore = "interface command not yet implemented"]
+    // why: verified against the built binary — implemented and passes.
     fn test_interface_docstrings() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "api.py", PYTHON_PUBLIC_API);
@@ -1570,7 +1600,9 @@ mod temporal_command {
     }
 
     #[test]
-    #[ignore = "--format text not yet implemented for temporal command"]
+    // why: temporal --format text IS implemented (prints "before -> after",
+    // "support:", "confidence:"); verified against the built binary that
+    // this assertion passes. Stale ignore removed.
     fn test_temporal_text_output() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sequences.py", PYTHON_TEMPORAL_SEQUENCES);
@@ -1919,7 +1951,12 @@ mod resources_command {
     }
 
     #[test]
-    #[ignore = "--format text not yet implemented for resources command"]
+    // why: resources --format text IS implemented and does contain "Resource"
+    // (verified against the built binary), but PYTHON_RESOURCE_LEAK triggers a
+    // detected leak, and resources exits 3 (issues found) rather than 0 — so
+    // `.success()` never matches, independent of the text format. Kept
+    // ignored with the accurate reason.
+    #[ignore = "resources --format text works, but this fixture leaks so the command exits 3, not 0 (.success() never matches)"]
     fn test_resources_text_output() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "leak.py", PYTHON_RESOURCE_LEAK);
@@ -2050,7 +2087,8 @@ mod integration {
     use super::*;
 
     #[test]
-    #[ignore = "integration test - requires all commands implemented"]
+    // why: both `temporal` and `resources` are implemented; verified against
+    // the built binary that this cross-command consistency check passes.
     fn test_temporal_and_resources_consistency() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "test.py", PYTHON_TEMPORAL_SEQUENCES);

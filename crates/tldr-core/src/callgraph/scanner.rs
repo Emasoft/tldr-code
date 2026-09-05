@@ -329,7 +329,9 @@ pub fn scan_project_files(
     for scan_root in scan_roots {
         // Walk the directory tree
         let lang_for_filter = language.to_string();
-        let walker = WalkDir::new(&scan_root)
+        // why: needs `mut` + manual `.next()` loop (not `for entry in walker`) so we can
+        // call `walker.skip_current_dir()` below — see the symlink-cycle comment.
+        let mut walker = WalkDir::new(&scan_root)
             .follow_links(true) // Follow symlinks, but detect cycles
             .into_iter()
             .filter_entry(move |entry| {
@@ -359,7 +361,7 @@ pub fn scan_project_files(
                 true
             });
 
-        for entry_result in walker {
+        while let Some(entry_result) = walker.next() {
             let entry = match entry_result {
                 Ok(e) => e,
                 Err(err) => {
@@ -373,17 +375,30 @@ pub fn scan_project_files(
 
             // Handle symlink cycle detection for directories
             if entry.file_type().is_dir() {
+                // why: every scan root is pre-inserted into `visited_dirs` above, so
+                // the walk's own root entry (depth 0) always fails the "first visit"
+                // insert below. With the old `continue` that was harmless; with
+                // `skip_current_dir()` it skipped the entire tree and no file was
+                // ever found. Only entries BELOW the root can be symlink cycles.
+                if entry.depth() > 0 {
                 if let Ok(canonical) = entry.path().canonicalize() {
                     if !visited_dirs.insert(canonical.clone()) {
-                        // Already visited this directory - symlink cycle detected
+                        // Already visited this directory - symlink cycle detected.
+                        // why: a plain `continue` here only skips *this* loop
+                        // iteration; WalkDir still descends into the directory next,
+                        // so a real symlink cycle recursed forever despite the doc
+                        // comment above claiming cycles were detected and broken.
+                        // `skip_current_dir()` is the only way to stop the descent.
                         if config.verbose {
                             eprintln!(
                                 "Warning: symlink cycle detected at {:?}, skipping",
                                 entry.path()
                             );
                         }
+                        walker.skip_current_dir();
                         continue;
                     }
+                }
                 }
                 continue; // Directories don't get added to files list
             }

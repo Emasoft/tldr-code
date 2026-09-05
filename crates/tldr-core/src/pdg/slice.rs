@@ -181,7 +181,11 @@ pub fn get_slice_rich(
     let visited = compute_slice(&pdg, &start_nodes, direction, variable);
 
     // Read source lines for code content
-    let source_lines = read_source_lines(source_or_path);
+    // why: propagate real IO errors instead of silently treating the path
+    // string itself as source (the old fallback corrupted every node's
+    // `code` field with the literal path on a permission error or a
+    // file deleted/modified between the earlier CFG/DFG read and here).
+    let source_lines = read_source_lines(source_or_path)?;
 
     // Build a map from node_id -> PdgNode for visited nodes
     let visited_nodes: Vec<&crate::types::PdgNode> = pdg
@@ -278,15 +282,16 @@ pub fn get_slice_rich(
 }
 
 /// Read source lines from a path or inline source string
-fn read_source_lines(source_or_path: &str) -> Vec<String> {
+fn read_source_lines(source_or_path: &str) -> TldrResult<Vec<String>> {
     let path = Path::new(source_or_path);
     if path.exists() && path.is_file() {
-        match std::fs::read_to_string(path) {
-            Ok(content) => content.lines().map(|l| l.to_string()).collect(),
-            Err(_) => source_or_path.lines().map(|l| l.to_string()).collect(),
-        }
+        // why: match the crate-wide convention (see cfg::get_cfg_context)
+        // of propagating a real read failure as an error instead of
+        // silently falling back to treating the path string as source.
+        let content = std::fs::read_to_string(path).map_err(crate::TldrError::IoError)?;
+        Ok(content.lines().map(|l| l.to_string()).collect())
     } else {
-        source_or_path.lines().map(|l| l.to_string()).collect()
+        Ok(source_or_path.lines().map(|l| l.to_string()).collect())
     }
 }
 

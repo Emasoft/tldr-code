@@ -2269,13 +2269,16 @@ mod api_check_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report: APICheckReport = serde_json::from_str(&stdout).unwrap();
 
+        // why: MisuseSeverity has exactly 4 variants (Info/Low/Medium/High),
+        // so the previous OR-chain matched every possible value and could
+        // never fail regardless of what --severity actually filtered.
+        // High is the top of the scale, so a "high" filter must return only
+        // High findings.
         for finding in &report.findings {
-            assert!(
-                finding.rule.severity == MisuseSeverity::High
-                    || finding.rule.severity == MisuseSeverity::Medium
-                    || finding.rule.severity == MisuseSeverity::Low
-                    || finding.rule.severity == MisuseSeverity::Info,
-                "Findings should be at or above specified severity"
+            assert_eq!(
+                finding.rule.severity,
+                MisuseSeverity::High,
+                "Findings should be at or above specified severity (high)"
             );
         }
     }

@@ -114,9 +114,10 @@ pub enum GuardCondition {
 
 /// Check whether a string is a valid simple identifier.
 ///
-/// A valid identifier starts with an ASCII letter or underscore, followed by
-/// zero or more ASCII alphanumeric characters or underscores. Does not accept
-/// dotted paths (e.g., `obj.field`).
+/// A valid identifier starts with a Unicode alphabetic character or
+/// underscore, followed by zero or more Unicode alphanumeric characters or
+/// underscores (matches `char::is_alphabetic`/`is_alphanumeric`, not just
+/// ASCII). Does not accept dotted paths (e.g., `obj.field`).
 fn is_identifier(s: &str) -> bool {
     if s.is_empty() {
         return false;

@@ -847,8 +847,12 @@ fn summarize_lcov_files(files: &[FileCoverage]) -> CoverageSummary {
         function_coverage,
         total_lines,
         covered_lines,
+        // why: guard covered_branches on total_branches>0 (matching covered_functions
+        // below), not on covered_branches>0 — otherwise a file with branches tracked
+        // but zero covered (0% branch coverage) silently reports `None` instead of
+        // `Some(0)`, indistinguishable from "branches not tracked at all".
         total_branches: (total_branches > 0).then_some(total_branches),
-        covered_branches: (covered_branches > 0).then_some(covered_branches),
+        covered_branches: (total_branches > 0).then_some(covered_branches),
         total_functions: (total_functions > 0).then_some(total_functions),
         covered_functions: (total_functions > 0).then_some(covered_functions),
         threshold_met: false,

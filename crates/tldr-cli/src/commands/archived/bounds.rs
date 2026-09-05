@@ -20,7 +20,8 @@
 //!
 //! # ELEPHANT Mitigations Addressed
 //!
-//! - **E01**: Wall-clock timeout - timeout_secs parameter with default 60s
+//! - **E01**: Unbounded fixpoint iteration is capped by `max_iter`/`DEFAULT_MAX_ITER`
+//!   (no wall-clock `timeout_secs` parameter exists in this module)
 //! - **E08**: NaN/infinity handling - Proper IEEE 754 checks
 //!
 //! # Example

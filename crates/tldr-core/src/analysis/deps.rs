@@ -1531,6 +1531,13 @@ fn resolve_import(
         Language::Go => resolve_go_import(module, index),
         Language::Rust => resolve_rust_import(module, index),
         Language::Java => resolve_java_import(module, root, current_file, index),
+        // why: index_kotlin_module() (line ~1077) populates the index for Kotlin
+        // files, but resolve_import() had no Kotlin arm and fell through to the
+        // `_ => None` catch-all — every Kotlin `import` was reported as an
+        // unresolved external dependency, so `tldr deps` on any Kotlin project
+        // always showed 0 internal_dependencies despite valid `import` statements
+        // (same class of bug as the Lua fix documented above, BUG-AGG-15).
+        Language::Kotlin => resolve_kotlin_import(module, index),
         Language::C | Language::Cpp => resolve_c_cpp_import(import, root, current_file, index),
         Language::Ruby => resolve_ruby_import(import, root, current_file, index),
         Language::CSharp => resolve_csharp_import(import, root, current_file, index),
@@ -2030,6 +2037,75 @@ fn is_scala_stdlib(module_name: &str) -> bool {
     module_name.starts_with("scala.")
         || module_name.starts_with("java.")
         || module_name.starts_with("javax.")
+}
+
+// =============================================================================
+// Kotlin import resolution
+// =============================================================================
+
+/// Resolve a Kotlin `import` statement to a file path.
+///
+/// Handles:
+/// - `import pkg.Class` -> index lookup by qualified name (built by
+///   [`index_kotlin_module`])
+/// - `import pkg.*` (wildcard, `is_from=true`) -> resolve to any file whose
+///   qualified name is a direct child of the wildcarded package
+/// - Kotlin/Java/Android stdlib imports -> return `None` (external)
+fn resolve_kotlin_import(module: &str, index: &HashMap<String, PathBuf>) -> Option<PathBuf> {
+    if is_kotlin_stdlib(module) {
+        return None;
+    }
+
+    // Wildcard imports: "pkg.sub.*"
+    if let Some(package_prefix) = module.strip_suffix(".*") {
+        for (key, path) in index {
+            if key.starts_with(package_prefix)
+                && key.len() > package_prefix.len()
+                && key.as_bytes()[package_prefix.len()] == b'.'
+            {
+                let remainder = &key[package_prefix.len() + 1..];
+                if !remainder.contains('.') {
+                    return Some(path.clone());
+                }
+            }
+        }
+        return None;
+    }
+
+    // Direct lookup of the full qualified name
+    if let Some(path) = index.get(module) {
+        return Some(path.clone());
+    }
+
+    // Try progressively shorter prefixes (like Java/Scala)
+    let parts: Vec<&str> = module.split('.').collect();
+    if parts.len() > 1 {
+        for i in (1..parts.len()).rev() {
+            let prefix = parts[..i].join(".");
+            if let Some(path) = index.get(&prefix) {
+                return Some(path.clone());
+            }
+        }
+    }
+
+    // Fallback: simple class name (last component)
+    if let Some(last) = parts.last() {
+        if let Some(path) = index.get(*last) {
+            return Some(path.clone());
+        }
+    }
+
+    None
+}
+
+/// Check if a Kotlin import is from the Kotlin/Java/Android standard library.
+fn is_kotlin_stdlib(module_name: &str) -> bool {
+    module_name.starts_with("kotlin.")
+        || module_name.starts_with("kotlinx.")
+        || module_name.starts_with("java.")
+        || module_name.starts_with("javax.")
+        || module_name.starts_with("android.")
+        || module_name.starts_with("androidx.")
 }
 
 // =============================================================================

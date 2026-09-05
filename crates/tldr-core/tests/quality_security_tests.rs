@@ -8,12 +8,11 @@ use tldr_core::security::secrets::{scan_secrets, Severity};
 use tldr_core::security::vuln::{scan_vulnerabilities, VulnType};
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("tests/fixtures")
+    // why: CARGO_MANIFEST_DIR is crates/tldr-core, whose own tests/fixtures/
+    // holds the real fixture tree; the extra .parent().parent() pointed at
+    // the repo root's nonexistent tests/fixtures/, so every test in this
+    // file silently no-op'd via its "fixture not found" early return.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
 // =============================================================================

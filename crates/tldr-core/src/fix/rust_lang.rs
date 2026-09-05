@@ -143,13 +143,6 @@ fn inject_use_statement(source: &str, use_stmt: &str) -> Option<(String, usize)>
     let insert_after_line = last_use_line.unwrap_or(0);
     let line_1indexed = insert_after_line + 1;
 
-    let edit_kind = if last_use_line.is_some() {
-        EditKind::InsertAfter
-    } else {
-        // No existing use statements: insert before line 1 (top of file)
-        EditKind::InsertBefore
-    };
-
     let new_text = if last_use_line.is_some() {
         use_stmt.to_string()
     } else {
@@ -157,24 +150,9 @@ fn inject_use_statement(source: &str, use_stmt: &str) -> Option<(String, usize)>
         format!("{}\n", use_stmt)
     };
 
-    // Compute result text for verification
-    let mut result_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    match edit_kind {
-        EditKind::InsertAfter => {
-            result_lines.insert(insert_after_line + 1, use_stmt.to_string());
-        }
-        EditKind::InsertBefore => {
-            result_lines.insert(0, use_stmt.to_string());
-            result_lines.insert(1, String::new());
-        }
-        _ => {}
-    }
-
-    let mut result = result_lines.join("\n");
-    if source.ends_with('\n') && !result.ends_with('\n') {
-        result.push('\n');
-    }
-
+    // why: this block used to compute a full patched-source preview for
+    // verification but the result was never read (dead computation) --
+    // only (new_text, line_1indexed) is returned to the caller.
     Some((new_text, line_1indexed))
 }
 

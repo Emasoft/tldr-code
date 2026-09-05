@@ -988,10 +988,15 @@ impl<'a> ReExportTracer<'a> {
 
         for line in content.lines() {
             let trimmed = line.trim();
+            // why: "{name} =" also prefix-matches "{name} == ..." (an equality
+            // comparison, not an assignment), which would falsely report the
+            // name as locally defined. Require the char after "=" not be "=".
+            let is_assignment = trimmed.starts_with(&assign_pattern)
+                && !trimmed[assign_pattern.len()..].starts_with('=');
             if trimmed.starts_with(&class_pattern)
                 || trimmed.starts_with(&class_pattern2)
                 || trimmed.starts_with(&def_pattern)
-                || trimmed.starts_with(&assign_pattern)
+                || is_assignment
             {
                 return true;
             }

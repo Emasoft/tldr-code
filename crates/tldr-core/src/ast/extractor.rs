@@ -2640,12 +2640,22 @@ fn title_slug(call: Node, callable: Node, source: &str, calls: &[&str]) -> Optio
     // with a differently-truncated sibling.
     let mut slug = String::new();
     for part in normalized.split('-').filter(|p| !p.is_empty()) {
-        if !slug.is_empty() && slug.len() + 1 + part.len() > 40 {
+        if slug.is_empty() {
+            // why: a single word longer than the 40-char cap (e.g. one long
+            // literal with no spaces) previously bypassed the cap entirely,
+            // since the length check below only runs once `slug` is
+            // non-empty. Truncate it directly so the cap always holds.
+            let take = part.len().min(40);
+            slug.push_str(&part[..take]);
+            if part.len() > 40 {
+                break;
+            }
+            continue;
+        }
+        if slug.len() + 1 + part.len() > 40 {
             break;
         }
-        if !slug.is_empty() {
-            slug.push('-');
-        }
+        slug.push('-');
         slug.push_str(part);
     }
     if slug.is_empty() {
@@ -3157,7 +3167,19 @@ fn is_inside_class(node: &Node) -> bool {
     let mut current = node.parent();
     while let Some(parent) = current {
         match parent.kind() {
-            "class_definition" | "class_declaration" | "class" | "class_body" => return true,
+            // why: Java interfaces, enums and records own their methods exactly
+            // like classes do (Java has no free functions at all). Without these
+            // kinds an interface's abstract method walked past this check and
+            // `extract_functions` reported it as a top-level function.
+            "class_definition"
+            | "class_declaration"
+            | "class"
+            | "class_body"
+            | "interface_declaration"
+            | "interface_body"
+            | "enum_declaration"
+            | "enum_body"
+            | "record_declaration" => return true,
             _ => current = parent.parent(),
         }
     }

@@ -2,6 +2,8 @@
 //!
 //! Supports:
 //! - Python tracebacks (`Traceback (most recent call last):`)
+//! - Rust (`rustc`/`cargo`), TypeScript (`tsc`), Go (`go build`/`go vet`) and
+//!   JavaScript (Node.js) error formats
 //! - Language auto-detection from error format (spec section 9.7)
 //!
 //! The parser extracts the error type, message, file, line, function name,

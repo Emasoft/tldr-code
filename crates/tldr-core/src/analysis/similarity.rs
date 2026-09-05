@@ -515,10 +515,26 @@ fn detect_language_from_path(path: &Path) -> Option<String> {
         .and_then(|ext| match ext {
             "py" => Some("python"),
             "ts" | "tsx" => Some("typescript"),
-            "js" | "jsx" => Some("javascript"),
+            "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
             "go" => Some("go"),
             "rs" => Some("rust"),
             "java" => Some("java"),
+            // why: this match only covered 6 of the 18 languages Language::from_str
+            // (types.rs) actually accepts, so compute_similarity() errored with
+            // "Could not detect language from file extension" for every other
+            // supported language even though normalize_tokens() fully supports it.
+            "c" | "h" => Some("c"),
+            "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" => Some("cpp"),
+            "rb" => Some("ruby"),
+            "kt" | "kts" => Some("kotlin"),
+            "swift" => Some("swift"),
+            "cs" => Some("csharp"),
+            "scala" => Some("scala"),
+            "php" => Some("php"),
+            "lua" => Some("lua"),
+            "luau" => Some("luau"),
+            "ex" | "exs" => Some("elixir"),
+            "ml" | "mli" => Some("ocaml"),
             _ => None,
         })
         .map(String::from)

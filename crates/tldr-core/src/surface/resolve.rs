@@ -300,7 +300,13 @@ pub fn resolve_rust_crate(
     {
         let registry = home.join("registry").join("src");
         if registry.exists() {
-            // Walk registry sources looking for matching crate
+            // Walk registry sources looking for matching crate. Collect every
+            // match first instead of returning on the first hit: read_dir()
+            // order is filesystem-dependent, so when multiple cached versions
+            // of the same crate exist, returning early made the resolved
+            // path non-deterministic across runs/platforms.
+            // why: pick a stable candidate deterministically (see below).
+            let mut matches: Vec<PathBuf> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&registry) {
                 for entry in entries.flatten() {
                     let index_dir = entry.path();
@@ -315,18 +321,25 @@ pub fn resolve_rust_crate(
                                 {
                                     let crate_dir = crate_entry.path();
                                     if crate_dir.join("Cargo.toml").exists() {
-                                        return Ok(ResolvedPackage {
-                                            root_dir: crate_dir,
-                                            package_name: crate_name.to_string(),
-                                            is_pure_source: true,
-                                            public_names: None,
-                                        });
+                                        matches.push(crate_dir);
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+            // ponytail: lexicographic sort is not real semver ordering, good
+            // enough to make the choice reproducible; swap for a semver
+            // comparison if picking the true latest version starts to matter.
+            matches.sort();
+            if let Some(crate_dir) = matches.pop() {
+                return Ok(ResolvedPackage {
+                    root_dir: crate_dir,
+                    package_name: crate_name.to_string(),
+                    is_pure_source: true,
+                    public_names: None,
+                });
             }
         }
     }

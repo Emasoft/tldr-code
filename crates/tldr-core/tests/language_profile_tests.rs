@@ -9,9 +9,8 @@
 //! - Part 4: New Language Coverage Tests (11 new languages)
 //! - Part 5: Custom Extractor Tests (framework-specific detection preservation)
 //!
-//! Tests marked with #[ignore] reference types/functions that do not exist yet.
-//! Tests without #[ignore] use the existing detector API to establish golden
-//! reference values that the refactor MUST preserve.
+//! The LanguageProfile refactor has landed, so all tests below run against
+//! the real API (none carry #[ignore] any more).
 
 use std::path::PathBuf;
 
@@ -38,9 +37,8 @@ fn detect_signals(lang: Language, source: &str) -> PatternSignals {
 // ============================================================================
 // Part 1: LanguageProfile API Tests
 // ============================================================================
-// These tests define the LanguageProfile struct and language_profile() function
-// that will be created during the refactor. They MUST be #[ignore] because the
-// types do not exist yet.
+// These tests exercise the LanguageProfile struct and language_profile()
+// function created by the refactor.
 
 #[test]
 fn test_language_profile_struct_exists() {
@@ -246,10 +244,25 @@ fn test_language_profile_elixir_call_based_dispatch() {
 
 #[test]
 fn test_language_profile_lua_pcall_error_handling() {
+    // Lua/Luau grammars only ever emit "function_call" for call expressions
+    // (never "call"/"call_expression", the node kinds the generic
+    // `call_dispatch` table keys off), so pcall/xpcall detection lives in
+    // LuaSemantics::detect_call_like, driven off the "function_call" dispatch
+    // entry, not the call_dispatch map. Assert the live mechanism instead.
     let profile = language_profile(Language::Lua).expect("Lua profile should exist");
     assert!(!profile.node_map.dispatch.contains_key("try_statement"));
-    assert!(profile.node_map.call_dispatch.contains_key("pcall"));
-    assert!(profile.node_map.call_dispatch.contains_key("xpcall"));
+    assert!(profile.node_map.dispatch.contains_key("function_call"));
+
+    let source = r#"
+local ok, err = pcall(function() end)
+local ok2, err2 = xpcall(function() end, handler)
+"#;
+    let signals = detect_signals(Language::Lua, source);
+    assert_eq!(
+        signals.error_handling.try_catch_blocks.len(),
+        2,
+        "Lua should detect both pcall and xpcall as error handling"
+    );
 }
 
 // ============================================================================
@@ -2260,28 +2273,31 @@ except:
 
 #[test]
 fn test_invariant_snippet_extraction_max_3_lines() {
+    // why: the original test iterated over function_names (which carries
+    // no snippet) with an empty loop body -- it could never fail. Use
+    // try_except_blocks, whose Evidence::snippet is populated by
+    // get_snippet(), to actually exercise the 3-line cap.
     let source = r#"
-def very_long_function():
+try:
     line_one = 1
     line_two = 2
     line_three = 3
     line_four = 4
     line_five = 5
-    return line_one
+except Exception:
+    pass
 "#;
     let signals = detect_signals(Language::Python, source);
 
-    // Check that snippet extraction yields reasonable snippets.
-    //
-    // schema-cleanup-v1 BUG-10: function_names is now
-    // (name, case, file, line) — but it carries no snippet, so we
-    // just consume the iterator to keep the structural invariant
-    // alive on this fixture.
-    for (_, _, _, _) in &signals.naming.function_names {
-        // Evidence with snippets is in other signal vectors.
+    assert!(!signals.error_handling.try_except_blocks.is_empty());
+    for ev in &signals.error_handling.try_except_blocks {
+        assert!(
+            ev.snippet.lines().count() <= 3,
+            "snippet should be capped at 3 lines, got {}: {:?}",
+            ev.snippet.lines().count(),
+            ev.snippet
+        );
     }
-    // This is a structural invariant test -- the refactor must preserve
-    // the 3-line snippet limit in get_snippet()
 }
 
 #[test]

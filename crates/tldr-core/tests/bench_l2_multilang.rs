@@ -1977,11 +1977,15 @@ mod whatbreaks_tests {
         };
         let report = whatbreaks_analysis("helper", dir.path(), &options).unwrap();
 
-        // helper is called by main and orchestrate, so direct_caller_count should be >= 1
-        // (exact count depends on graph resolution success).
-        // Since direct_caller_count is usize, we just verify the summary was populated.
-        let _ = report.summary.direct_caller_count; // usize is always >= 0
-        let _ = report.summary.transitive_caller_count;
+        // why: `helper` is called by both `main` and `orchestrate` in python_project(),
+        // so this must have >= 1 direct caller -- the old `let _ =` asserted nothing
+        // (usize >= 0 is a tautology) and would pass even if the summary was never
+        // populated. Confirmed non-empty via test_impact_python on the same fixture.
+        assert!(
+            report.summary.direct_caller_count >= 1,
+            "helper should have at least one direct caller, got {}",
+            report.summary.direct_caller_count
+        );
     }
 
     #[test]

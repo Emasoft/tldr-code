@@ -309,8 +309,16 @@ impl ModuleIndex {
             // Check for package/module conflict
             // If a package with same name exists, skip the standalone module
             if language == "python" && !module.is_empty() {
-                // For pkg.py when pkg/__init__.py exists, skip pkg.py
-                if index.module_to_file.contains_key(&module) {
+                // For pkg.py when pkg/__init__.py exists, skip pkg.py.
+                // why: module_to_file keys are stored normalized (see index_file
+                // below); checking the raw `module` here missed the conflict on
+                // case-insensitive filesystems (macOS/Windows) whenever the
+                // package directory's name wasn't already all-lowercase, letting
+                // the standalone module silently overwrite the package's entry.
+                if index
+                    .module_to_file
+                    .contains_key(&normalize_module_key(&module))
+                {
                     continue;
                 }
             }
@@ -629,17 +637,23 @@ impl ModuleIndex {
             Err(_) => return String::new(),
         };
 
-        let file_name = relative.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-        // Handle index.ts/index.tsx -> parent directory
-        if file_name == "index.ts" || file_name == "index.tsx" || file_name == "index.js" {
+        // Handle index.ts/tsx/js/jsx/mjs/cjs -> parent directory. why: this must
+        // recognize the same set as `is_ts_index_file()` below, which drives the
+        // `{module}/index` alias in `compute_module_aliases` — the previous
+        // three-extension list left .jsx/.mjs/.cjs index files falling through
+        // to the "regular module" branch, so `module` already ended in
+        // "/index" and the alias became the bogus "./dir/index/index".
+        // Also use `normalize_relative_str` (not `Path::display`) so the
+        // module name uses forward slashes on Windows, matching every other
+        // language's module-name computation in this file.
+        if is_ts_index_file(path) {
             let parent = relative.parent().unwrap_or(Path::new(""));
-            return format!("./{}", parent.display());
+            return format!("./{}", normalize_relative_str(parent));
         }
 
         // Regular module: strip extension
         let stem = relative.with_extension("");
-        format!("./{}", stem.display())
+        format!("./{}", normalize_relative_str(&stem))
     }
 
     /// Compute Rust module name from file path.
@@ -1127,8 +1141,20 @@ fn detect_ts_base_url_multi(root: &Path, _extra_roots: &[PathBuf]) -> Option<Pat
 fn detect_ts_base_url_from_root(root: &Path) -> Option<PathBuf> {
     let configs = load_tsconfig_chain(root.join("tsconfig.json"));
     for config in configs.iter().rev() {
-        let compiler = config.json.get("compilerOptions")?;
-        let base_url = compiler.get("baseUrl")?.as_str()?;
+        // why: `?` here previously returned `None` from the WHOLE function the
+        // moment any config in the extends chain lacked `compilerOptions` (or
+        // lacked `baseUrl`) — a very common shape for a tsconfig.json that only
+        // does `{ "extends": "./tsconfig.base.json" }`. That aborted the search
+        // before ever reaching the base config that actually declares baseUrl.
+        // `continue` instead so the loop keeps walking towards the base config.
+        let compiler = match config.json.get("compilerOptions") {
+            Some(c) => c,
+            None => continue,
+        };
+        let base_url = match compiler.get("baseUrl").and_then(|v| v.as_str()) {
+            Some(b) => b,
+            None => continue,
+        };
         let base_url = base_url.trim();
         if base_url.is_empty() {
             continue;
@@ -1387,14 +1413,31 @@ fn read_json_with_comments(path: PathBuf) -> Option<JsonValue> {
 fn strip_json_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_string = false;
+    // why: a bare `in_string = !in_string` toggle on every `"` mis-parses a
+    // string containing an escaped quote (`"a\"b"`), flipping out of the
+    // string one character early and then treating any following `//`/`/*`
+    // as a real comment instead of JSON content. Track backslash-escaping
+    // while inside a string so an escaped quote doesn't end it.
+    let mut escaped = false;
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
-        if ch == '"' {
+        if in_string {
             out.push(ch);
-            in_string = !in_string;
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
             continue;
         }
-        if !in_string && ch == '/' {
+        if ch == '"' {
+            out.push(ch);
+            in_string = true;
+            continue;
+        }
+        if ch == '/' {
             if let Some('/') = chars.peek().copied() {
                 // line comment
                 chars.next();

@@ -169,16 +169,22 @@ fn find_cpp_qualified_function_definition<'a>(
     qualified_name: &str,
     source: &str,
 ) -> Option<Node<'a>> {
-    // BFS / pre-order traversal so that the FIRST matching definition in
-    // source order is returned (matters when a name has multiple
-    // overloads like `XMLDocument::Parse(xml, nBytes)` followed by
-    // `XMLDocument::Parse()` — bare-name fallback historically returned
-    // the first overload, and we preserve that behavior for callers
-    // whose `Class::method` is not arity-specific).
-    let mut queue: std::collections::VecDeque<Node> =
-        std::collections::VecDeque::new();
-    queue.push_back(root);
-    while let Some(node) = queue.pop_front() {
+    // Pre-order (source-order) traversal so that the FIRST matching
+    // definition in source order is returned (matters when a name has
+    // multiple overloads like `XMLDocument::Parse(xml, nBytes)` followed
+    // by `XMLDocument::Parse()` — bare-name fallback historically
+    // returned the first overload, and we preserve that behavior for
+    // callers whose `Class::method` is not arity-specific).
+    // why: a queue-based BFS visits every shallower node before any
+    // deeper one, which is NOT source order once matches sit at
+    // different depths (e.g. a namespace-nested definition appearing
+    // earlier in the file than a later top-level one would be returned
+    // out of order). A stack-based DFS with children pushed in reverse
+    // (so the leftmost child is popped first) matches the traversal
+    // pattern already used by `find_function_node_in_subtree` and
+    // `find_class_node` in this file and actually preserves source order.
+    let mut stack: Vec<Node> = vec![root];
+    while let Some(node) = stack.pop() {
         if node.kind() == "function_definition" {
             if let Some(declarator) = node.child_by_field_name("declarator") {
                 if let Some(inner) = peel_to_function_declarator(declarator) {
@@ -197,13 +203,9 @@ fn find_cpp_qualified_function_definition<'a>(
             }
         }
         let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                queue.push_back(cursor.node());
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
     None

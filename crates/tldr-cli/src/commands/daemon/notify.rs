@@ -25,7 +25,7 @@ use crate::output::OutputFormat;
 
 use super::error::{DaemonError, DaemonResult};
 use super::ipc::send_command;
-use super::types::{DaemonCommand, DaemonResponse};
+use super::types::{DaemonCommand, DaemonResponse, DEFAULT_REINDEX_THRESHOLD};
 
 // =============================================================================
 // CLI Arguments
@@ -139,7 +139,8 @@ impl DaemonNotifyArgs {
                             let output = DaemonNotifyOutput {
                                 status: "ok".to_string(),
                                 dirty_count: 0,
-                                threshold: 20,
+                                // why: reuse the shared default instead of a duplicated magic number
+                                threshold: DEFAULT_REINDEX_THRESHOLD,
                                 reindex_triggered: false,
                                 message: Some(
                                     "Daemon not running (notification ignored)".to_string(),
@@ -163,7 +164,8 @@ impl DaemonNotifyArgs {
                             let output = DaemonNotifyOutput {
                                 status: "ok".to_string(),
                                 dirty_count: 0,
-                                threshold: 20,
+                                // why: reuse the shared default instead of a duplicated magic number
+                                threshold: DEFAULT_REINDEX_THRESHOLD,
                                 reindex_triggered: false,
                                 message: Some(format!("Notification failed: {} (ignored)", e)),
                             };
@@ -223,7 +225,8 @@ impl DaemonNotifyArgs {
                 let output = DaemonNotifyOutput {
                     status: status.clone(),
                     dirty_count: 0,
-                    threshold: 20,
+                    // why: reuse the shared default instead of a duplicated magic number
+                    threshold: DEFAULT_REINDEX_THRESHOLD,
                     reindex_triggered: false,
                     message,
                 };

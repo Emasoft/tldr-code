@@ -115,7 +115,9 @@ fn format_duration(d: Duration) -> String {
 }
 
 #[test]
-#[ignore]
+// why: manual benchmark over the 8-repo corpus (see module doc); not part
+// of the default `cargo test` run.
+#[ignore = "manual perf benchmark over the 8-repo corpus; run with --ignored --nocapture"]
 fn perf_abstract_interp_corpus() {
     eprintln!("╔════════════════════════════════════════════════╗");
     eprintln!("║  Performance Benchmark: compute_abstract_interp ║");

@@ -614,7 +614,11 @@ fn compute_coverage(
 
     let constrained = constrained_functions.len() as u32;
     let coverage_pct = if total > 0 {
-        (constrained as f64 / total as f64 * 100.0).round() / 1.0 // Round to 1 decimal
+        // why: dividing by 1.0 is a no-op and rounded to the nearest whole
+        // number, contradicting the "round to 1 decimal" comment and the
+        // `{:.1}%` display format used by callers. Multiply/divide by 10.0
+        // to actually keep one decimal place.
+        (constrained as f64 / total as f64 * 100.0 * 10.0).round() / 10.0
     } else {
         0.0
     };

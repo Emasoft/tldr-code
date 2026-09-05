@@ -82,6 +82,16 @@ pub fn signals_to_pattern(
             .take(evidence_limit)
             .cloned(),
     );
+    // why: close_calls drives the "explicit_close" pattern above but was never
+    // added to the evidence list, so that pattern always shipped with zero
+    // supporting evidence even when close() calls were detected.
+    evidence.extend(
+        resource_mgmt
+            .close_calls
+            .iter()
+            .take(evidence_limit)
+            .cloned(),
+    );
     evidence.truncate(evidence_limit);
 
     Some(ResourceManagementPattern {

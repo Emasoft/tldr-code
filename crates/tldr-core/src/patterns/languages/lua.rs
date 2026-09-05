@@ -24,35 +24,12 @@ impl LanguageSemantics for LuaSemantics {
             "function_declaration" | "local_function" => {
                 self.detect_function(node, source, file_path, signals)
             }
-            "function_call" | "call" | "call_expression" => {
-                self.detect_call_like(node, source, file_path, signals)
-            }
-            _ => {}
-        }
-    }
-
-    fn process_call(
-        &self,
-        call_id: &str,
-        node: Node,
-        source: &str,
-        file_path: &Path,
-        signals: &mut PatternSignals,
-    ) {
-        let call_text = node_text(node, source);
-        match call_id {
-            "require" => {
-                if let Some(module) = extract_string_arg(&call_text) {
-                    signals
-                        .import_patterns
-                        .absolute_imports
-                        .push((module, file_path.display().to_string()));
-                }
-            }
-            "pcall" | "xpcall" => {
-                let evidence = create_evidence_from(node, source, file_path);
-                signals.error_handling.try_catch_blocks.push(evidence);
-            }
+            // why: both tree-sitter-lua and tree-sitter-luau only ever emit
+            // "function_call" for call expressions (verified against each
+            // grammar's node-types.json); "call"/"call_expression" never
+            // occur, so the dead `process_call`/call_dispatch path that used
+            // to key off them was removed rather than left unreachable.
+            "function_call" => self.detect_call_like(node, source, file_path, signals),
             _ => {}
         }
     }
@@ -136,17 +113,6 @@ pub fn profile() -> LanguageProfile {
         .insert("local_function", vec![SignalAction::CallSemantics]);
     map.dispatch
         .insert("function_call", vec![SignalAction::CallSemantics]);
-    map.dispatch
-        .insert("call", vec![SignalAction::CallSemantics]);
-    map.dispatch
-        .insert("call_expression", vec![SignalAction::CallSemantics]);
-
-    map.call_dispatch
-        .insert("require", vec![SignalAction::CallSemantics]);
-    map.call_dispatch
-        .insert("pcall", vec![SignalAction::CallSemantics]);
-    map.call_dispatch
-        .insert("xpcall", vec![SignalAction::CallSemantics]);
 
     LanguageProfile {
         node_map: map,

@@ -16,7 +16,7 @@
 //! - **T06**: Union-find with path compression AND union by rank
 //! - **E01**: `--timeout` flag (default 30s)
 //! - **E04**: `MAX_METHODS_PER_CLASS` and `MAX_FIELDS_PER_CLASS` limits
-//! - **E05**: `MAX_ITERATIONS` for union-find operations
+//! - **E05**: `MAX_UNION_FIND_ITERATIONS` for union-find operations
 //!
 //! # Example
 //!
@@ -365,7 +365,10 @@ fn analyze_single_file(path: &Path, args: &CohesionArgs) -> PatternsResult<Cohes
 /// Analyze a single non-Python file using the core library.
 fn analyze_single_file_core(path: &Path, args: &CohesionArgs) -> PatternsResult<CohesionReport> {
     let threshold = 2;
-    let core_report = core_cohesion::analyze_cohesion(path, None, threshold).map_err(|e| {
+    // why: `args.lang` (the documented `--lang`/`-l` filter) was hardcoded to
+    // `None` here, so the flag was silently ignored for every non-Python file
+    // - the core analyzer only applies the override when it is actually passed.
+    let core_report = core_cohesion::analyze_cohesion(path, args.lang, threshold).map_err(|e| {
         PatternsError::ParseError {
             file: path.to_path_buf(),
             message: format!("Core cohesion analysis failed: {}", e),
@@ -997,8 +1000,11 @@ pub fn format_cohesion_text(report: &CohesionReport) -> String {
         let lcom4_str = format_lcom4_colored(class.lcom4);
 
         // Truncate class name to 28 chars
-        let name = if class.class_name.len() > 28 {
-            format!("{}...", &class.class_name[..25])
+        // why: byte-slicing `[..25]` panics if byte 25 falls inside a
+        // multi-byte UTF-8 char (Python identifiers may be non-ASCII);
+        // truncate by char count instead so this can never panic.
+        let name = if class.class_name.chars().count() > 28 {
+            format!("{}...", class.class_name.chars().take(25).collect::<String>())
         } else {
             class.class_name.clone()
         };

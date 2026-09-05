@@ -774,8 +774,16 @@ pub fn compute_betweenness(
 
     // Check if graph is too large
     if n > config.max_nodes {
-        // For very large graphs, return zeros with a warning
-        // In practice, the caller should use sampling
+        // why: the comment above promised "return zeros with a warning" but no
+        // warning was ever emitted, so betweenness silently degrades to all-zero
+        // scores for large call graphs with no signal to the caller/user that the
+        // composite score is missing this measure. Emit the warning the doc claims.
+        eprintln!(
+            "warning: betweenness centrality skipped ({n} nodes exceeds max_nodes={}); \
+             all betweenness scores are 0.0 for this run. Configure a sample_size to \
+             approximate betweenness on large graphs instead.",
+            config.max_nodes
+        );
         return nodes.iter().map(|node| (node.clone(), 0.0)).collect();
     }
 

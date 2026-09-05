@@ -1,7 +1,12 @@
 //! P2: Multi-Language Extension Tests (TDD Red Phase)
 //!
 //! These tests drive the implementation of 5 commands across all 18 languages.
-//! All tests are marked `#[ignore]` and must FAIL when run without the attribute.
+//! This file covers the resources/contracts subset below; none of the tests
+//! here carry `#[ignore]` — they run and assert against the real `tldr` binary.
+// why: the doc claimed every test was `#[ignore]`-gated TDD-red-phase, but no
+// test in this file carries that attribute — the comment was stale relative
+// to the code (contradicted it), which misleads a reader about whether these
+// tests actually run in CI.
 //!
 //! Commands covered:
 //! - gvn: 18 languages (redundant expression detection)

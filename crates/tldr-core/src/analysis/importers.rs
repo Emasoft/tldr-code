@@ -46,10 +46,15 @@ pub fn find_importers(
             Ok(Some(info)) => importers.push(info),
             Ok(None) => {}
             Err(e) => {
+                // why: non-recoverable errors used to fall through with no
+                // action, silently swallowed just like recoverable ones,
+                // violating fail-fast (same bug already fixed in
+                // arch_rules.rs::build_import_graph and extractor.rs).
                 if e.is_recoverable() {
                     // Skip files with parse errors
                     continue;
                 }
+                return Err(e);
             }
         }
     }

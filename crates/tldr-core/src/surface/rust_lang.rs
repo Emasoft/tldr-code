@@ -289,26 +289,40 @@ fn extract_from_rust_file(
 /// - `src/fix/rust_lang.rs` -> `<crate>::fix::rust_lang`
 fn compute_rust_module_path(file_path: &Path, root_dir: &Path, crate_name: &str) -> String {
     let relative = file_path.strip_prefix(root_dir).unwrap_or(file_path);
-    let relative_str = relative.to_string_lossy();
+    // why: walk Path components instead of splitting the string on '/' so this
+    // works on Windows too, where the filesystem yields '\\'-separated paths.
+    let mut parts: Vec<String> = relative
+        .iter()
+        .map(|part| part.to_string_lossy().to_string())
+        .collect();
 
-    // Strip "src/" prefix if present
-    let module_part = relative_str.strip_prefix("src/").unwrap_or(&relative_str);
+    // Strip .rs extension from the file name (last component).
+    if let Some(last) = parts.last_mut() {
+        if let Some(stem) = last.strip_suffix(".rs") {
+            *last = stem.to_string();
+        }
+    }
 
-    // Strip .rs extension
-    let module_part = module_part.strip_suffix(".rs").unwrap_or(module_part);
+    // Strip a leading "src" scaffolding segment.
+    if parts.first().map(String::as_str) == Some("src") {
+        parts.remove(0);
+    }
 
     // Handle special cases
-    if module_part == "lib" || module_part == "main" {
+    if parts.len() == 1 && (parts[0] == "lib" || parts[0] == "main") {
         return crate_name.to_string();
     }
 
     // Handle mod.rs -> parent directory name
-    let module_part = module_part.strip_suffix("/mod").unwrap_or(module_part);
+    if parts.last().map(String::as_str) == Some("mod") {
+        parts.pop();
+    }
 
-    // Convert path separators to ::
-    let module_path = module_part.replace('/', "::");
-
-    format!("{}::{}", crate_name, module_path)
+    if parts.is_empty() {
+        crate_name.to_string()
+    } else {
+        format!("{}::{}", crate_name, parts.join("::"))
+    }
 }
 
 /// Convert raw Rust parameter strings to structured Params.

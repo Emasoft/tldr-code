@@ -244,15 +244,26 @@ impl LuaHandler {
                         if let Some(subchild) = child.child(j) {
                             match subchild.kind() {
                                 "variable_list" => {
-                                    // Get first identifier
+                                    // why: only bind the function to a variable when it is
+                                    // the SOLE target — `local a, b = 1, function() end`
+                                    // previously took "a" (the first identifier) regardless
+                                    // of which slot actually held the function value.
+                                    let mut idents = 0usize;
+                                    let mut first: Option<String> = None;
                                     for k in 0..subchild.child_count() {
                                         if let Some(var) = subchild.child(k) {
                                             if var.kind() == "identifier" {
-                                                var_name =
-                                                    Some(get_node_text(&var, source).to_string());
-                                                break;
+                                                idents += 1;
+                                                if first.is_none() {
+                                                    first = Some(
+                                                        get_node_text(&var, source).to_string(),
+                                                    );
+                                                }
                                             }
                                         }
+                                    }
+                                    if idents == 1 {
+                                        var_name = first;
                                     }
                                 }
                                 "expression_list" => {
@@ -291,7 +302,10 @@ impl LuaHandler {
         caller: &str,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
-        let mut refs = HashSet::new();
+        // why: keyed by name -> the identifier's OWN line, not the
+        // enclosing body's line (see below) — a HashMap lets us dedupe by
+        // name while still keeping a real line number per reference.
+        let mut refs: HashMap<String, u32> = HashMap::new();
 
         for child in walk_tree(*node) {
             match child.kind() {
@@ -310,7 +324,8 @@ impl LuaHandler {
                         // and is NOT the function being called
                         if let Some(parent) = child.parent() {
                             if parent.kind() == "arguments" {
-                                refs.insert(name.to_string());
+                                let ref_line = child.start_position().row as u32 + 1;
+                                refs.entry(name.to_string()).or_insert(ref_line);
                             }
                         }
                     }
@@ -320,13 +335,12 @@ impl LuaHandler {
         }
 
         // Add function references as Ref call sites
-        for ref_name in refs {
-            let line = node.start_position().row as u32 + 1;
+        for (ref_name, ref_line) in refs {
             calls.push(CallSite::new(
                 caller.to_string(),
                 ref_name,
                 CallType::Ref,
-                Some(line),
+                Some(ref_line),
                 None,
                 None,
                 None,
@@ -787,7 +801,10 @@ impl CallGraphLanguageSupport for LuaHandler {
                         }
                     }
 
-                    if has_function {
+                    // why: only attribute the function to a variable when it is the sole
+                    // assignment target — `local a, b = 1, function() end` previously
+                    // registered BOTH "a" and "b" as function definitions.
+                    if has_function && var_names.len() == 1 {
                         for name in var_names {
                             funcs.push(FuncDef::function(name, line, end_line));
                         }
@@ -954,41 +971,61 @@ impl LuaHandler {
                         if let Some(subchild) = child.child(j) {
                             match subchild.kind() {
                                 "variable_list" => {
-                                    for k in 0..subchild.child_count() {
-                                        if let Some(var) = subchild.child(k) {
-                                            match var.kind() {
-                                                "identifier" => {
-                                                    let name =
-                                                        get_node_text(&var, source).to_string();
-                                                    simple_name = Some(name.clone());
-                                                    qualified_name = Some(name);
-                                                    break;
-                                                }
-                                                "dot_index_expression" => {
-                                                    // M.func = function() ... end
-                                                    if let Some(name) =
-                                                        self.extract_last_identifier(&var, source)
-                                                    {
-                                                        simple_name = Some(name);
+                                    // why: only bind the function body to a variable when
+                                    // it is the SOLE assignment target — a multi-variable
+                                    // list (`a, b = 1, function() end`) previously bound
+                                    // to the first target regardless of which slot actually
+                                    // held the function value.
+                                    let candidate_count = (0..subchild.child_count())
+                                        .filter_map(|k| subchild.child(k))
+                                        .filter(|v| {
+                                            matches!(
+                                                v.kind(),
+                                                "identifier"
+                                                    | "dot_index_expression"
+                                                    | "method_index_expression"
+                                            )
+                                        })
+                                        .count();
+                                    if candidate_count == 1 {
+                                        for k in 0..subchild.child_count() {
+                                            if let Some(var) = subchild.child(k) {
+                                                match var.kind() {
+                                                    "identifier" => {
+                                                        let name = get_node_text(&var, source)
+                                                            .to_string();
+                                                        simple_name = Some(name.clone());
+                                                        qualified_name = Some(name);
+                                                        break;
                                                     }
-                                                    qualified_name = Some(
-                                                        get_node_text(&var, source).to_string(),
-                                                    );
-                                                    break;
-                                                }
-                                                "method_index_expression" => {
-                                                    // M:method = function() ... end
-                                                    if let Some(name) =
-                                                        self.extract_last_identifier(&var, source)
-                                                    {
-                                                        simple_name = Some(name);
+                                                    "dot_index_expression" => {
+                                                        // M.func = function() ... end
+                                                        if let Some(name) = self
+                                                            .extract_last_identifier(&var, source)
+                                                        {
+                                                            simple_name = Some(name);
+                                                        }
+                                                        qualified_name = Some(
+                                                            get_node_text(&var, source)
+                                                                .to_string(),
+                                                        );
+                                                        break;
                                                     }
-                                                    qualified_name = Some(
-                                                        get_node_text(&var, source).to_string(),
-                                                    );
-                                                    break;
+                                                    "method_index_expression" => {
+                                                        // M:method = function() ... end
+                                                        if let Some(name) = self
+                                                            .extract_last_identifier(&var, source)
+                                                        {
+                                                            simple_name = Some(name);
+                                                        }
+                                                        qualified_name = Some(
+                                                            get_node_text(&var, source)
+                                                                .to_string(),
+                                                        );
+                                                        break;
+                                                    }
+                                                    _ => {}
                                                 }
-                                                _ => {}
                                             }
                                         }
                                     }
@@ -1052,31 +1089,42 @@ impl LuaHandler {
             if let Some(child) = node.child(i) {
                 match child.kind() {
                     "variable_list" => {
-                        // Try to extract name from first variable
-                        for k in 0..child.child_count() {
-                            if let Some(var) = child.child(k) {
-                                match var.kind() {
-                                    "identifier" => {
-                                        // Simple: handler = function() end
-                                        let name = get_node_text(&var, source).to_string();
-                                        simple_name = Some(name.clone());
-                                        qualified_name = Some(name);
-                                        break;
-                                    }
-                                    "dot_index_expression" => {
-                                        // Dotted: MyModule.func = function() end
-                                        // Use the last identifier as the simple function name
-                                        if let Some(name) =
-                                            self.extract_last_identifier(&var, source)
-                                        {
-                                            simple_name = Some(name);
+                        // why: only bind the function body to a variable when it is the
+                        // SOLE assignment target — a multi-variable list
+                        // (`a, b = 1, function() end`) previously bound to the first
+                        // target regardless of which slot actually held the function.
+                        let candidate_count = (0..child.child_count())
+                            .filter_map(|k| child.child(k))
+                            .filter(|v| {
+                                matches!(v.kind(), "identifier" | "dot_index_expression")
+                            })
+                            .count();
+                        if candidate_count == 1 {
+                            for k in 0..child.child_count() {
+                                if let Some(var) = child.child(k) {
+                                    match var.kind() {
+                                        "identifier" => {
+                                            // Simple: handler = function() end
+                                            let name = get_node_text(&var, source).to_string();
+                                            simple_name = Some(name.clone());
+                                            qualified_name = Some(name);
+                                            break;
                                         }
-                                        // Get full qualified name
-                                        qualified_name =
-                                            Some(get_node_text(&var, source).to_string());
-                                        break;
+                                        "dot_index_expression" => {
+                                            // Dotted: MyModule.func = function() end
+                                            // Use the last identifier as the simple function name
+                                            if let Some(name) =
+                                                self.extract_last_identifier(&var, source)
+                                            {
+                                                simple_name = Some(name);
+                                            }
+                                            // Get full qualified name
+                                            qualified_name =
+                                                Some(get_node_text(&var, source).to_string());
+                                            break;
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
                         }

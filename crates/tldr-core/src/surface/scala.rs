@@ -238,10 +238,26 @@ fn compute_scala_module_path(file_path: &Path, root_dir: &Path, package_name: &s
 }
 
 fn is_scala_hidden_at_line(source: &str, line_number: usize) -> bool {
+    // why: only look at the modifier tokens that precede the declaration
+    // keyword. A plain `.contains("private ")` also matches the substring
+    // inside a string literal or trailing comment on the same line (e.g.
+    // `def foo(msg: String = "keep private "): Unit`), wrongly hiding a
+    // public declaration.
+    const DECL_KEYWORDS: [&str; 6] = ["def", "class", "object", "trait", "val", "var"];
     source
         .lines()
         .nth(line_number.saturating_sub(1))
-        .map(|line| line.contains("private ") || line.contains("protected "))
+        .map(|line| {
+            line.trim_start()
+                .split_whitespace()
+                .take_while(|token| !DECL_KEYWORDS.contains(token))
+                .any(|token| {
+                    token == "private"
+                        || token == "protected"
+                        || token.starts_with("private[")
+                        || token.starts_with("protected[")
+                })
+        })
         .unwrap_or(false)
 }
 

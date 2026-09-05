@@ -857,7 +857,13 @@ fn test_dead_refcount_with_entry_points() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     // unused_func should NOT appear as dead when marked as entry point
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_default();
+    // why: unwrap_or_default() silently turned a parse failure into Value::Null,
+    // under which parsed["dead_functions"] is also Null and the assertion loop
+    // below never runs -- the test would pass even if the command emitted
+    // garbage instead of JSON. expect() fails loudly, matching every other
+    // JSON-parsing assertion in this file.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("dead output should be valid JSON");
     if let Some(dead_fns) = parsed["dead_functions"].as_array() {
         for f in dead_fns {
             let name = f["name"].as_str().unwrap_or("");

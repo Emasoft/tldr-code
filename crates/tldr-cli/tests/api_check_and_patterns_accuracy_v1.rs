@@ -35,6 +35,12 @@ fn tldr_bin() -> PathBuf {
     candidate.pop(); // crates/tldr-cli -> crates
     candidate.pop(); // crates -> repo root
     candidate.push("target/release/tldr");
+    // why: Windows builds "tldr.exe", not "tldr" -- without this the
+    // `bin.exists()` check below always fails on Windows and the whole
+    // suite aborts via assert! before any test body runs.
+    if cfg!(windows) {
+        candidate.set_extension("exe");
+    }
     candidate
 }
 

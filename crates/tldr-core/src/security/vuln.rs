@@ -608,7 +608,6 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
     fn_infos.sort_by(|a, b| a.line_number.cmp(&b.line_number).then(a.name.cmp(&b.name)));
     fn_infos.dedup_by(|a, b| a.name == b.name && a.line_number == b.line_number);
 
-    let path_str = path.to_str().unwrap_or_default();
     let path_buf = path.to_path_buf();
     let source_bytes = content.as_bytes();
     let mut findings: Vec<VulnFinding> = Vec::new();
@@ -912,7 +911,9 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
     }
     findings.extend(best.into_values().map(|(f, _)| f));
 
-    let _ = path_str; // path_str retained for future use; suppress unused warn
+    // why: `path_str` was computed but never consumed by any caller — dead
+    // code masquerading as "retained for future use". Removed rather than
+    // kept alive with a `let _ =` suppression.
     Ok(findings)
 }
 

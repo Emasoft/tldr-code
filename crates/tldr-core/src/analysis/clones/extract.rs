@@ -17,7 +17,11 @@ use super::{
 };
 use crate::ast::parser::parse_file;
 
-use super::tokenize::FileTokens;
+// why: reuse tokenize.rs's node-kind classifiers instead of duplicating
+// them here (the two copies had already drifted into two separate files
+// carrying byte-identical logic — a maintenance hazard, since a future
+// edit to one is easy to forget on the other).
+use super::tokenize::{is_decorator_node, is_import_node, should_capture_as_token, FileTokens};
 
 /// Fragment data extracted from a file.
 #[derive(Debug, Clone)]
@@ -158,7 +162,16 @@ fn collect_function_nodes(
     let kind = node.kind();
 
     let is_function_node = match language {
-        "python" => kind == "function_definition" && depth <= 1,
+        // why: `depth <= 1` used to exclude every class method (the
+        // intervening `block`/`class_definition` hops push methods to
+        // depth 3) and every top-level decorated function (the
+        // `decorated_definition` wrapper pushes it to depth 2). Nested
+        // function definitions are already excluded structurally: once a
+        // `function_definition` matches below, we `return` without
+        // recursing into its body, so an inner `def` is never visited.
+        // The depth check was therefore redundant for its intended
+        // purpose and harmful for methods/decorated functions.
+        "python" => kind == "function_definition",
         "typescript" | "javascript" => {
             matches!(
                 kind,
@@ -414,46 +427,6 @@ fn extract_tokens_in_range_recursive(
                 tokens,
             );
         }
-    }
-}
-
-fn is_import_node(kind: &str, language: &str) -> bool {
-    match language {
-        "python" => matches!(kind, "import_statement" | "import_from_statement"),
-        "typescript" | "javascript" => matches!(kind, "import_statement" | "import_declaration"),
-        "go" => matches!(kind, "import_declaration" | "import_spec"),
-        "rust" => matches!(kind, "use_declaration"),
-        "java" => matches!(kind, "import_declaration"),
-        "c" | "cpp" => kind == "preproc_include",
-        "csharp" => kind == "using_directive",
-        "scala" => kind == "import_declaration",
-        "swift" => kind == "import_declaration",
-        "kotlin" => kind == "import_header",
-        "php" => kind == "namespace_use_declaration",
-        "ocaml" => kind == "open_statement",
-        _ => false,
-    }
-}
-
-fn is_decorator_node(kind: &str, language: &str) -> bool {
-    match language {
-        "python" => kind == "decorator",
-        "typescript" | "javascript" => kind == "decorator",
-        "java" => matches!(kind, "marker_annotation" | "annotation"),
-        "rust" => matches!(kind, "attribute_item" | "inner_attribute_item"),
-        "csharp" => kind == "attribute_list",
-        "kotlin" => kind == "annotation",
-        "php" => kind == "attribute_list",
-        "swift" => kind == "attribute",
-        "elixir" => kind == "unary_operator",
-        _ => false,
-    }
-}
-
-fn should_capture_as_token(kind: &str, language: &str) -> bool {
-    match language {
-        "rust" => kind == "macro_invocation",
-        _ => false,
     }
 }
 

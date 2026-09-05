@@ -390,7 +390,9 @@ fn extract_strings(line: &str) -> Vec<String> {
 
 /// Calculate Shannon entropy of a string
 fn shannon_entropy(s: &str) -> f64 {
-    let len = s.len() as f64;
+    // why: use char count, not byte length, so multi-byte UTF-8 characters
+    // don't skew probabilities (freq is keyed by char, byte len would mismatch).
+    let len = s.chars().count() as f64;
     if len == 0.0 {
         return 0.0;
     }
@@ -416,8 +418,12 @@ fn is_likely_false_positive(s: &str) -> bool {
         Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap(),
         // Hex hashes (SHA, MD5, etc.)
         Regex::new(r"^[0-9a-fA-F]{32,}$").unwrap(),
-        // Base64 encoded common strings
-        Regex::new(r"^[A-Za-z0-9+/]+=*$").unwrap(),
+        // Base64 encoded common strings. Requires an actual base64-specific
+        // character (+, / or = padding) so this doesn't blanket-match any
+        // plain alphanumeric secret (which is the common case for real
+        // tokens/passwords) — the old pattern matched every such string,
+        // silently disabling high-entropy detection entirely.
+        Regex::new(r"^[A-Za-z0-9+/]*[+/=]+[A-Za-z0-9+/=]*$").unwrap(),
     ];
 
     // Check if it matches a known false positive pattern

@@ -502,9 +502,18 @@ fn run_security_analysis(
         // skips the file instead of aborting the scan. No warning is
         // emitted here — the partition pass owns warning emission to
         // avoid duplicate messages across the 6 sub-analyses.
-        let source = match read_to_string_tolerant(file)? {
-            ReadOutcome::Ok(s) => s,
-            ReadOutcome::NonUtf8 { .. } => continue,
+        // why: the doc comment above promises a TOCTOU race (file replaced
+        // or removed between the partition pass and here) is skipped, not
+        // fatal — but `read_to_string_tolerant(file)?` propagated a genuine
+        // I/O error (e.g. file vanished) via `?`, aborting the WHOLE
+        // `secure` scan and losing every finding already accumulated from
+        // prior files/analyses. `partition_utf8_clean` already treats I/O
+        // errors as skip-with-warning; mirror that here (no warning, per
+        // this function's own doc, to avoid duplicate messages).
+        let source = match read_to_string_tolerant(file) {
+            Ok(ReadOutcome::Ok(s)) => s,
+            Ok(ReadOutcome::NonUtf8 { .. }) => continue,
+            Err(_) => continue,
         };
 
         // Get or parse the AST

@@ -412,8 +412,10 @@ fn analyze_ts2339(error: &ParsedError, source: &str) -> Option<Diagnosis> {
             let lines: Vec<&str> = source.lines().collect();
             if line_no > 0 && line_no <= lines.len() {
                 let old_line = lines[line_no - 1];
-                let new_line =
-                    old_line.replace(&format!(".{}", property), &format!(".{}", best_match));
+                // why: a plain `.replace(".name", ...)` also matches inside an
+                // unrelated longer property access like `.nameSpace`, corrupting
+                // it into `.usernameSpace`. Only replace whole-identifier hits.
+                let new_line = replace_property_whole_word(old_line, &property, &best_match);
 
                 if new_line != old_line {
                     return Some(Diagnosis {
@@ -605,6 +607,21 @@ fn analyze_ts7006(error: &ParsedError, source: &str) -> Option<Diagnosis> {
                 if let Some(idx) = new_line.find(pat.as_str()) {
                     let param_start = idx + pat.len() - param_name.len();
                     let param_end = param_start + param_name.len();
+
+                    // why: without this guard, a pattern like "(data" also matches
+                    // the prefix of an unrelated longer identifier such as
+                    // "dataOptions", and the annotation gets spliced into the
+                    // middle of that identifier (e.g. "dataOptions" ->
+                    // "data: unknownOptions"). Require a real word boundary
+                    // right after the matched name.
+                    let next_is_ident_char = new_line[param_end..]
+                        .chars()
+                        .next()
+                        .map(|c| c.is_alphanumeric() || c == '_')
+                        .unwrap_or(false);
+                    if next_is_ident_char {
+                        continue;
+                    }
 
                     // Check the character after the param name -- it should NOT be ':'
                     // (meaning it doesn't already have a type annotation)
@@ -995,6 +1012,34 @@ fn is_primitive_type(t: &str) -> bool {
             | "any"
             | "unknown"
     )
+}
+
+/// Replace `.property` with `.replacement` in `line`, but only where
+/// `property` ends at a real word boundary (not the prefix of a longer
+/// identifier). Prevents `.name` -> `.username` from also mangling an
+/// unrelated `.nameSpace` occurrence into `.usernameSpace`.
+fn replace_property_whole_word(line: &str, property: &str, replacement: &str) -> String {
+    let pat = format!(".{}", property);
+    let mut result = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(idx) = rest.find(pat.as_str()) {
+        let end = idx + pat.len();
+        let is_whole_word = rest[end..]
+            .chars()
+            .next()
+            .map(|c| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(true);
+        result.push_str(&rest[..idx]);
+        if is_whole_word {
+            result.push('.');
+            result.push_str(replacement);
+        } else {
+            result.push_str(&rest[idx..end]);
+        }
+        rest = &rest[end..];
+    }
+    result.push_str(rest);
+    result
 }
 
 /// Find similar property names in a type definition within the source.

@@ -280,8 +280,14 @@ fn extract_from_swift_file(
             is_extension && is_swift_public_at_line(&source, class.line_number as usize);
 
         for method in &class.methods {
+            // why: a member's own explicit access modifier (e.g. `private func`)
+            // overrides the enclosing `public extension` — without this check
+            // a private member of a public extension was wrongly surfaced as
+            // part of the public API.
+            let member_overrides_visibility =
+                is_swift_non_public_modifier_at_line(&source, method.line_number as usize);
             if !include_private
-                && !extension_is_public
+                && !(extension_is_public && !member_overrides_visibility)
                 && !is_swift_public_at_line(&source, method.line_number as usize)
             {
                 continue;
@@ -388,6 +394,14 @@ fn is_swift_public_at_line(source: &str, line_number: usize) -> bool {
         .lines()
         .nth(line_number.saturating_sub(1))
         .map(|line| line.contains("public ") || line.contains("open "))
+        .unwrap_or(false)
+}
+
+fn is_swift_non_public_modifier_at_line(source: &str, line_number: usize) -> bool {
+    source
+        .lines()
+        .nth(line_number.saturating_sub(1))
+        .map(|line| line.contains("private ") || line.contains("fileprivate "))
         .unwrap_or(false)
 }
 

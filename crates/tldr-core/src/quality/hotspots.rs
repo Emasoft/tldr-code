@@ -850,9 +850,14 @@ fn score_hotspots_v2(
     }
 
     hotspots.sort_by(|a, b| {
+        // why: churn_data is a HashMap, so its iteration order (and thus the
+        // pre-sort order of hotspots with tied scores) varies between runs;
+        // break ties on file/function so output is deterministic and testable.
         b.hotspot_score
             .partial_cmp(&a.hotspot_score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.function.cmp(&b.function))
     });
 
     let top_10_percent = (total_files / 10).max(1);

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use tree_sitter::{Parser, Tree};
+use tree_sitter::Tree;
 
 use super::error::{RemainingError, RemainingResult};
 
@@ -99,40 +99,28 @@ impl AstCache {
         Ok(&self.cache.get(path).unwrap().1)
     }
 
-    /// Parse source code using a language selected from file extension.
+    /// Parse source code with the grammar tldr-core selects for the file's
+    /// language.
+    ///
+    /// why: this cache used to carry its own Python and Rust parsers and
+    /// mapped every other extension to the Python grammar, which silently
+    /// produced garbage trees for the `.js`/`.ts` files `secure` feeds it.
+    /// A first fix made unknown extensions a hard error, which turned that
+    /// silent mis-parse into an abort of the whole `secure` run on any JS
+    /// test file. The root cause was the private grammar table: tldr-core
+    /// already resolves the language from the path (dialects included) and
+    /// parses with the right grammar, so delegate to it. Truly unsupported
+    /// extensions still fail fast, with the extension in the message.
     fn parse_source(&self, source: &str, path: &Path) -> RemainingResult<Tree> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or_default();
-        match ext {
-            "rs" => self.parse_rust(source, path),
-            _ => self.parse_python(source, path),
-        }
-    }
-
-    /// Parse Python source code.
-    fn parse_python(&self, source: &str, path: &Path) -> RemainingResult<Tree> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_python::LANGUAGE.into())
-            .map_err(|e| RemainingError::parse_error(path, e.to_string()))?;
-
-        parser
-            .parse(source, None)
-            .ok_or_else(|| RemainingError::parse_error(path, "Failed to parse"))
-    }
-
-    /// Parse Rust source code.
-    fn parse_rust(&self, source: &str, path: &Path) -> RemainingResult<Tree> {
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_rust::LANGUAGE.into())
-            .map_err(|e| RemainingError::parse_error(path, e.to_string()))?;
-
-        parser
-            .parse(source, None)
-            .ok_or_else(|| RemainingError::parse_error(path, "Failed to parse"))
+        let language = tldr_core::types::Language::from_path(path).ok_or_else(|| {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            RemainingError::parse_error(path, format!("unsupported extension for AST cache: {ext}"))
+        })?;
+        tldr_core::ast::parser::parse_with_path(source, language, Some(path))
+            .map_err(|e| RemainingError::parse_error(path, e.to_string()))
     }
 
     /// Update access order for LRU

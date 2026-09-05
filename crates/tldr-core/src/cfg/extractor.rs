@@ -1035,6 +1035,14 @@ impl<'a> CfgBuilder<'a> {
             None,
         );
 
+        // why: a `continue` transfers control back to the loop header, not
+        // to whatever follows in the enclosing block. Without tracking it
+        // here (like `break` does via `loop_exit_blocks`), the fallthrough
+        // guards in process_if_statement/process_for_loop/etc. would treat
+        // `continue_block` as falling through and synthesize a spurious
+        // unconditional edge to the join/exit block, corrupting the CFG.
+        self.loop_exit_blocks.push(continue_block);
+
         self.current_block_id = continue_block;
         Ok(())
     }

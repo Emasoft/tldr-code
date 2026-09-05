@@ -453,24 +453,53 @@ fn is_attribute_access(source: &str) -> bool {
     // - x = obj.field (load)
     // - obj[index] = value (store)
     // - x = obj[index] (load)
-    source.contains('.') || source.contains('[')
+    // why: a bare `source.contains('.')` also matches the decimal point of a
+    // float literal (e.g. "x = 3.14"), which is not a memory access at all
+    // and was being recorded as a bogus load. Only a dot NOT surrounded by
+    // digits on both sides counts as an attribute-access dot.
+    let has_attr_dot = source.char_indices().any(|(i, c)| {
+        if c != '.' {
+            return false;
+        }
+        let before_digit = source[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_digit());
+        let after_digit = source[i + 1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit());
+        !(before_digit && after_digit)
+    });
+    has_attr_dot || source.contains('[')
 }
 
 /// Check if source is an allocation (e.g., `x = ClassName()`)
 fn is_allocation(source: &str) -> bool {
     // Look for constructor-like patterns
-    // Python: ClassName()
+    // Python: x = ClassName()
     // TypeScript/JS: new ClassName()
-    source.contains("new ")
-        || (source.contains('(')
-            && source.contains(')')
-            && !source.starts_with("def ")
-            && !source.starts_with("fn ")
-            && source
-                .chars()
-                .next()
-                .map(|c| c.is_uppercase())
-                .unwrap_or(false))
+    if source.contains("new ") {
+        return true;
+    }
+    // why: the uppercase-first-letter check must look at the callee name
+    // (the part before '(', after any '='), not the first character of the
+    // whole source line — that is the lowercase target variable in the
+    // common `x = ClassName()` shape, so this check always failed before.
+    let Some(paren_pos) = source.find('(') else {
+        return false;
+    };
+    if !source[paren_pos..].contains(')') {
+        return false;
+    }
+    let before_paren = source[..paren_pos].trim();
+    let callee = before_paren
+        .rfind('=')
+        .map(|i| before_paren[i + 1..].trim())
+        .unwrap_or(before_paren);
+    !callee.starts_with("def ")
+        && !callee.starts_with("fn ")
+        && callee.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
 }
 
 /// Parse attribute assignment to determine access and direction

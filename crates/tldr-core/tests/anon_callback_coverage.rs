@@ -75,5 +75,8 @@ fn call_definitions_cover_every_language_that_has_anonymous_callables() {
         }
     }
     println!();
+    // why: each sample writes a probe file under the OS temp dir; without cleanup those files
+    // (and the PID-scoped directory) leak on every run instead of just on a panic.
+    let _ = fs::remove_dir_all(&dir);
     assert!(missing.is_empty(), "languages not covered: {missing:?}");
 }

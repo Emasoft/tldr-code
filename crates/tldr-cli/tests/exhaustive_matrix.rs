@@ -4626,6 +4626,13 @@ fn test_help_only_warm() {
 fn test_help_only_doctor() {
     check_help_only("doctor");
 }
+// why: the module doc (line 26/30-33) claims 10 excluded orchestrator
+// commands including `help`, but no test exercised `tldr help --help` —
+// this closed that doc/coverage gap.
+#[test]
+fn test_help_only_help() {
+    check_help_only("help");
+}
 
 #[test]
 fn test_tree_runs_crash_free() {

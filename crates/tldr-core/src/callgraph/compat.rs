@@ -374,6 +374,9 @@ pub fn build_call_graph(
                 | "csharp"
                 | "kotlin"
                 | "scala"
+                | "swift" // why: scanner::SUPPORTED_LANGUAGES (the source of truth used by
+                // build_project_call_graph_v2) already accepts "swift"; this duplicated
+                // list was stale and rejected it before ever reaching the V2 builder.
                 | "php"
                 | "ruby"
                 | "lua"

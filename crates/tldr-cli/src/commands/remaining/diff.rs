@@ -4003,13 +4003,19 @@ fn classify_by_import_flow(
                 .unwrap_or(false)
         })
         .filter(|e| {
-            // Target module references a different top-level directory
-            let target_first = e
-                .target_module
-                .split('/')
-                .next()
-                .or_else(|| e.target_module.split('.').next())
-                .unwrap_or("");
+            // Target module references a different top-level directory.
+            // why: `str::split(sep).next()` always yields `Some(..)` (the
+            // whole string when `sep` is absent), so the previous
+            // `.or_else(.split('.')..)` fallback could never run -- a
+            // dotted module path like "utils.helper" was never trimmed to
+            // its first component, silently breaking fan-out detection
+            // for Python-style dotted imports. Pick the separator that is
+            // actually present instead of relying on a dead fallback.
+            let target_first = if e.target_module.contains('/') {
+                e.target_module.split('/').next().unwrap_or("")
+            } else {
+                e.target_module.split('.').next().unwrap_or("")
+            };
             all_dirs.contains(target_first) && target_first != dir_name
         })
         .map(|e| e.target_module.clone())
@@ -4024,12 +4030,13 @@ fn classify_by_import_flow(
             source_dir != dir_name
         })
         .filter(|e| {
-            let target_first = e
-                .target_module
-                .split('/')
-                .next()
-                .or_else(|| e.target_module.split('.').next())
-                .unwrap_or("");
+            // why: same dead-fallback issue as the fan-out filter above --
+            // pick '/' or '.' based on which is actually present.
+            let target_first = if e.target_module.contains('/') {
+                e.target_module.split('/').next().unwrap_or("")
+            } else {
+                e.target_module.split('.').next().unwrap_or("")
+            };
             target_first == dir_name
         })
         .count();

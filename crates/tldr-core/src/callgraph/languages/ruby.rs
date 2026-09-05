@@ -272,6 +272,7 @@ impl RubyHandler {
             defined_classes,
             caller,
             None,
+            None,
         )
     }
 
@@ -283,6 +284,13 @@ impl RubyHandler {
     /// dispatch in `extract_calls`) should use this entry point. Module-level
     /// and class-body callers — which have no parameters — go through the
     /// thin wrapper `extract_calls_from_node`.
+    ///
+    /// `extra_bindings` lets a caller seed the local-binding set with names
+    /// already known to be bound outside `node` itself — e.g. module-level
+    /// variables assigned in a sibling top-level statement. Without this,
+    /// each module-level statement is processed independently and a variable
+    /// assigned in one statement is invisible when a later statement reads
+    /// it bare, so the bareword filter would misclassify the read as a call.
     fn extract_calls_from_node_with_params(
         &self,
         node: &Node,
@@ -291,6 +299,7 @@ impl RubyHandler {
         defined_classes: &HashSet<String>,
         caller: &str,
         params_node: Option<Node>,
+        extra_bindings: Option<&HashSet<String>>,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
 
@@ -320,6 +329,12 @@ impl RubyHandler {
             collect_param_bindings(&params, source, &mut bindings);
         }
         collect_body_bindings(node, source, &mut bindings);
+        // why: seed bindings known from outside `node` (e.g. sibling
+        // module-level statements) so a variable assigned elsewhere isn't
+        // misclassified as a bareword method call.
+        if let Some(extra) = extra_bindings {
+            bindings.extend(extra.iter().cloned());
+        }
 
         // -----------------------------------------------------------------
         // Second pass: walk the body, emit one CallSite per `call` node and
@@ -986,6 +1001,7 @@ impl CallGraphLanguageSupport for RubyHandler {
                                 defined_classes,
                                 &full_name,
                                 params,
+                                None,
                             );
                             all_calls.extend(calls);
                         }
@@ -1047,7 +1063,26 @@ impl CallGraphLanguageSupport for RubyHandler {
             self,
         );
 
-        // Extract module-level calls into synthetic <module> function
+        // Extract module-level calls into synthetic <module> function.
+        //
+        // why: each top-level statement is walked separately below (so a
+        // class/module/method definition can be skipped), but a variable
+        // assigned in one top-level statement (`x = 1`) is a valid local
+        // binding for a LATER top-level statement that reads it bare (`x`).
+        // Pre-collecting bindings across every module-level statement first
+        // (and passing them in as `extra_bindings`) avoids misclassifying
+        // such a read as a bareword method call.
+        let mut module_bindings: HashSet<String> = HashSet::new();
+        for node in tree.root_node().children(&mut tree.root_node().walk()) {
+            if matches!(
+                node.kind(),
+                "class" | "module" | "method" | "singleton_method"
+            ) {
+                continue;
+            }
+            collect_body_bindings(&node, source_bytes, &mut module_bindings);
+        }
+
         let mut module_calls = Vec::new();
         for node in tree.root_node().children(&mut tree.root_node().walk()) {
             // Skip class, module, and method definitions
@@ -1058,12 +1093,14 @@ impl CallGraphLanguageSupport for RubyHandler {
                 continue;
             }
 
-            let calls = self.extract_calls_from_node(
+            let calls = self.extract_calls_from_node_with_params(
                 &node,
                 source_bytes,
                 &defined_methods,
                 &defined_classes,
                 "<module>",
+                None,
+                Some(&module_bindings),
             );
             module_calls.extend(calls);
         }

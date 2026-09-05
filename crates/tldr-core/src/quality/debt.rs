@@ -992,7 +992,7 @@ fn extract_function_infos_for_debt(
         Language::TypeScript | Language::JavaScript => {
             extract_ts_functions_for_debt(root, source, &mut functions, None, 0)
         }
-        Language::Go => extract_go_functions_for_debt(root, source, &mut functions),
+        Language::Go => extract_go_functions_for_debt(root, source, &mut functions, 0),
         Language::Rust => extract_rust_functions_for_debt(root, source, &mut functions, None, 0),
         Language::Java => extract_java_functions_for_debt(root, source, &mut functions, None, 0),
         _ => {} // Unsupported language - return empty
@@ -1237,11 +1237,22 @@ fn extract_ts_params_for_debt(node: &Node, source: &str) -> Vec<String> {
 }
 
 /// Extract Go functions for debt analysis
+///
+/// Recursion is bounded by `DEBT_MAX_AST_DEPTH`, matching every other
+/// per-language extractor in this file (Python/TS/Rust/Java). This was
+/// previously unbounded, which is exactly the shape of the
+/// `java-debt-stackoverflow-v1` bug (a wrong-language override or a
+/// pathologically deep AST can recurse past the rayon worker's small
+/// stack). On hit, returns with whatever has been gathered so far.
 fn extract_go_functions_for_debt(
     node: Node,
     source: &str,
     functions: &mut Vec<FunctionInfoForDebt>,
+    depth: usize,
 ) {
+    if depth > DEBT_MAX_AST_DEPTH {
+        return;
+    }
     let mut cursor = node.walk();
 
     for child in node.children(&mut cursor) {
@@ -1252,7 +1263,7 @@ fn extract_go_functions_for_debt(
                 }
             }
             _ => {
-                extract_go_functions_for_debt(child, source, functions);
+                extract_go_functions_for_debt(child, source, functions, depth + 1);
             }
         }
     }
@@ -1758,11 +1769,27 @@ fn get_nesting_node_kinds(language: Language) -> Vec<&'static str> {
 }
 
 /// Find a function node by its start line
+///
+/// Recursion is bounded by `DEBT_MAX_AST_DEPTH` for the same reason as
+/// every other AST walk in this file (see `DEBT_MAX_AST_DEPTH` docs and
+/// `java-debt-stackoverflow-v1`); this walk was previously unbounded.
 fn find_function_node_by_line<'a>(
     node: &Node<'a>,
     target_line: u32,
     language: Language,
 ) -> Option<Node<'a>> {
+    find_function_node_by_line_bounded(node, target_line, language, 0)
+}
+
+fn find_function_node_by_line_bounded<'a>(
+    node: &Node<'a>,
+    target_line: u32,
+    language: Language,
+    depth: usize,
+) -> Option<Node<'a>> {
+    if depth > DEBT_MAX_AST_DEPTH {
+        return None;
+    }
     let func_kinds = get_function_node_kinds(language);
     let node_line = node.start_position().row as u32 + 1;
 
@@ -1773,7 +1800,9 @@ fn find_function_node_by_line<'a>(
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Some(found) = find_function_node_by_line(&child, target_line, language) {
+        if let Some(found) =
+            find_function_node_by_line_bounded(&child, target_line, language, depth + 1)
+        {
             return Some(found);
         }
     }

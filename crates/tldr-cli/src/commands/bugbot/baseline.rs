@@ -47,6 +47,11 @@ pub fn get_baseline_content(project: &Path, file: &Path, base_ref: &str) -> Resu
     let output = Command::new("git")
         .args(["show", &format!("{}:{}", base_ref, relative_str)])
         .current_dir(project)
+        // why: stderr below is pattern-matched in English ("does not exist", ...) to
+        // classify NewFile vs GitShowFailed; without forcing the C locale, a user with
+        // a non-English LANG/LC_ALL gets localized git messages that silently fall
+        // through to GitShowFailed for what is actually just a new file.
+        .env("LC_ALL", "C")
         .output()
         .context("Failed to run git show")?;
 

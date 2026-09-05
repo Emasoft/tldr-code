@@ -504,6 +504,12 @@ fn scan_project_for_function(
     let tree = get_file_tree(project, None, true, Some(&IgnoreSpec::default()))?;
     let files = collect_files(&tree, project);
 
+    // why: `filter` is constant across the whole scan, but the previous
+    // version re-canonicalized it (a filesystem stat) on every iteration
+    // whose cheap suffix check missed — an O(n) syscall repeated for a
+    // value that never changes. Canonicalize it once up front.
+    let canon_filter = file_filter.and_then(|f| f.canonicalize().ok());
+
     for file_path in files {
         // If file_filter is set, skip files that don't match
         if let Some(filter) = file_filter {
@@ -516,8 +522,7 @@ fn scan_project_for_function(
             let suffix_ok = relative.ends_with(filter) || file_path.ends_with(filter);
             let abs_ok = if !suffix_ok {
                 let canon_file = file_path.canonicalize().ok();
-                let canon_filter = filter.canonicalize().ok();
-                matches!((canon_file, canon_filter), (Some(a), Some(b)) if a == b)
+                matches!((canon_file, canon_filter.as_ref()), (Some(a), Some(b)) if &a == b)
             } else {
                 false
             };

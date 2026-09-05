@@ -250,7 +250,14 @@ fn truncate_output(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.trim().to_string()
     } else {
-        format!("{}...", &s[..max_len].trim())
+        // why: command output may contain multi-byte UTF-8 (unicode identifiers,
+        // box-drawing chars, emoji); slicing at a raw byte index can land mid-char
+        // and panic. Walk back to the nearest valid char boundary first.
+        let mut end = max_len;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", s[..end].trim())
     }
 }
 

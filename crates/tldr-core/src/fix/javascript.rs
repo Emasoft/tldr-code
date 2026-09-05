@@ -567,21 +567,39 @@ fn analyze_unexpected_token(error: &ParsedError, source: &str, token: &str) -> O
 ///
 /// This typically means an unclosed bracket, brace, paren, or string literal.
 fn analyze_unexpected_end(error: &ParsedError, source: &str) -> Option<Diagnosis> {
-    // Count unmatched delimiters
+    // Count unmatched delimiters, skipping characters inside string/template
+    // literals -- otherwise a brace/paren/bracket that appears inside a
+    // quoted string (e.g. `"{"`) is miscounted as real code structure,
+    // producing a wrong depth and a bogus suggested fix. Mirrors the
+    // string-skipping logic in `count_delimiters` below.
     let mut brace_depth = 0i32;
     let mut paren_depth = 0i32;
     let mut bracket_depth = 0i32;
+    let mut in_string = false;
+    let mut string_char = '"';
+    let mut prev_char = '\0';
 
     for ch in source.chars() {
-        match ch {
-            '{' => brace_depth += 1,
-            '}' => brace_depth -= 1,
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth -= 1,
-            _ => {}
+        if in_string {
+            if ch == string_char && prev_char != '\\' {
+                in_string = false;
+            }
+        } else {
+            match ch {
+                '"' | '\'' | '`' => {
+                    in_string = true;
+                    string_char = ch;
+                }
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                '(' => paren_depth += 1,
+                ')' => paren_depth -= 1,
+                '[' => bracket_depth += 1,
+                ']' => bracket_depth -= 1,
+                _ => {}
+            }
         }
+        prev_char = ch;
     }
 
     let mut missing = Vec::new();

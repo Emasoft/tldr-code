@@ -56,7 +56,27 @@ lazy_static::lazy_static! {
 
 fn parse_swift_bases(line: &str) -> Vec<String> {
     let mut bases = Vec::new();
-    let colon_pos = match line.find(':') {
+    // why: line.find(':') used to grab the FIRST colon on the line, but a
+    // generic constraint clause like `class Foo<T: Comparable>: Base {`
+    // has its own colon inside the `<...>` before the real base-list
+    // colon. That made bases parse as "Comparable>: Base" instead of
+    // "Base". Track angle-bracket depth so only a colon outside any
+    // generic parameter list is treated as the base-list separator.
+    let mut depth = 0i32;
+    let mut colon_pos = None;
+    for (i, c) in line.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ':' if depth <= 0 => {
+                colon_pos = Some(i);
+                break;
+            }
+            '{' if depth <= 0 => break,
+            _ => {}
+        }
+    }
+    let colon_pos = match colon_pos {
         Some(pos) => pos,
         None => return bases,
     };
@@ -484,22 +504,39 @@ impl SwiftHandler {
                     func_name.clone()
                 };
 
+                let mut all_calls = Vec::new();
+
                 if let Some(body) = node.child_by_field_name("body") {
-                    let calls = self.extract_calls_from_subtree(
+                    let body_calls = self.extract_calls_from_subtree(
                         &body,
                         source,
                         defined_funcs,
                         &qualified_name,
                     );
-                    if !calls.is_empty() {
-                        calls_by_func
-                            .entry(qualified_name.clone())
-                            .or_default()
-                            .extend(calls.iter().cloned());
+                    all_calls.extend(body_calls);
+                }
 
-                        if qualified_name != func_name {
-                            calls_by_func.entry(func_name).or_default().extend(calls);
-                        }
+                // why: init declarations accept default parameter values too
+                // (e.g. `init(x: Int = defaultVal())`), same as
+                // function_declaration below. Without this, calls made inside
+                // an initializer's default parameter values were silently
+                // dropped from the call graph.
+                let default_calls = self.extract_default_param_calls(
+                    node,
+                    source,
+                    defined_funcs,
+                    &qualified_name,
+                );
+                all_calls.extend(default_calls);
+
+                if !all_calls.is_empty() {
+                    calls_by_func
+                        .entry(qualified_name.clone())
+                        .or_default()
+                        .extend(all_calls.iter().cloned());
+
+                    if qualified_name != func_name {
+                        calls_by_func.entry(func_name).or_default().extend(all_calls);
                     }
                 }
             }
@@ -727,11 +764,6 @@ impl CallGraphLanguageSupport for SwiftHandler {
                 "class_declaration" => {
                     let line_number = node.start_position().row as u32 + 1;
                     let end_line = node.end_position().row as u32 + 1;
-
-                    // Determine if this is a class, struct, enum, or extension
-                    let _decl_kind = node
-                        .child_by_field_name("declaration_kind")
-                        .map(|dk| get_node_text(&dk, source_bytes).to_string());
 
                     let type_name = node.child_by_field_name("name").map(|n| {
                         let text = get_node_text(&n, source_bytes);

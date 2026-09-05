@@ -115,19 +115,25 @@ impl RubySemantics {
 }
 
 fn extract_string_arg(call_text: &str) -> Option<String> {
-    if let Some(start) = call_text.find('\'') {
-        let rest = &call_text[start + 1..];
-        if let Some(end) = rest.find('\'') {
-            return Some(rest[..end].to_string());
-        }
-    }
-    if let Some(start) = call_text.find('"') {
-        let rest = &call_text[start + 1..];
-        if let Some(end) = rest.find('"') {
-            return Some(rest[..end].to_string());
-        }
-    }
-    None
+    // why: previously always tried the single-quote branch first, so
+    // `require "it's fine"` (double-quoted arg containing an apostrophe)
+    // matched the stray `'` inside the string, failed to find a second
+    // single quote, and returned None instead of falling back to the
+    // double-quoted argument that was actually there. Pick whichever
+    // quote character opens first.
+    let single = call_text.find('\'');
+    let double = call_text.find('"');
+    let quote = match (single, double) {
+        (Some(s), Some(d)) if s < d => '\'',
+        (Some(_), Some(_)) => '"',
+        (Some(_), None) => '\'',
+        (None, Some(_)) => '"',
+        (None, None) => return None,
+    };
+    let start = call_text.find(quote)?;
+    let rest = &call_text[start + 1..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_string())
 }
 
 /// Build the Ruby language profile.

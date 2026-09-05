@@ -428,16 +428,29 @@ fn extract_observations_recursive(
         return;
     }
 
+    // why: save/restore current_test_function around a function_definition's
+    // own subtree instead of leaving it set for the rest of the walk. Without
+    // this, once ANY test_* function was seen, every later SIBLING def in the
+    // same file (a helper, a fixture, a non-test function) inherited the same
+    // "inside a test" flag, so its asserts/calls were wrongly counted as test
+    // observations.
+    let saved_test_function = if node.kind() == "function_definition" {
+        let saved = current_test_function.clone();
+        let name = node
+            .child_by_field_name("name")
+            .map(|name_node| node_text(name_node, source))
+            .unwrap_or_default();
+        *current_test_function = if name.starts_with("test_") {
+            name
+        } else {
+            String::new()
+        };
+        Some(saved)
+    } else {
+        None
+    };
+
     match node.kind() {
-        "function_definition" => {
-            // Check if this is a test function
-            if let Some(name_node) = node.child_by_field_name("name") {
-                let name = node_text(name_node, source);
-                if name.starts_with("test_") {
-                    *current_test_function = name;
-                }
-            }
-        }
         "assert_statement" => {
             // Extract observations from assert statements
             if !current_test_function.is_empty() {
@@ -468,6 +481,10 @@ fn extract_observations_recursive(
             function_filter,
             depth + 1,
         );
+    }
+
+    if let Some(saved) = saved_test_function {
+        *current_test_function = saved;
     }
 }
 

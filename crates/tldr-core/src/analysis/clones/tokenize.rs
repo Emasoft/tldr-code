@@ -119,7 +119,10 @@ fn extract_tokens_v2(
 }
 
 /// Check if a node kind is an import/use statement
-fn is_import_node(kind: &str, language: &str) -> bool {
+// why: shared with extract.rs (was duplicated verbatim there, risking
+// silent divergence between the two extraction paths) — pub(super) so
+// the sibling `extract` submodule can reuse this single definition.
+pub(super) fn is_import_node(kind: &str, language: &str) -> bool {
     match language {
         "python" => matches!(kind, "import_statement" | "import_from_statement"),
         "typescript" | "javascript" => matches!(kind, "import_statement" | "import_declaration"),
@@ -138,7 +141,8 @@ fn is_import_node(kind: &str, language: &str) -> bool {
 }
 
 /// Check if a node kind is a decorator/annotation
-fn is_decorator_node(kind: &str, language: &str) -> bool {
+// why: shared with extract.rs — see is_import_node above.
+pub(super) fn is_decorator_node(kind: &str, language: &str) -> bool {
     match language {
         "python" => kind == "decorator",
         "typescript" | "javascript" => kind == "decorator",
@@ -154,7 +158,8 @@ fn is_decorator_node(kind: &str, language: &str) -> bool {
 }
 
 /// Check if a node kind should be captured as a single token
-fn should_capture_as_token(kind: &str, language: &str) -> bool {
+// why: shared with extract.rs — see is_import_node above.
+pub(super) fn should_capture_as_token(kind: &str, language: &str) -> bool {
     match language {
         "rust" => kind == "macro_invocation",
         _ => false,
