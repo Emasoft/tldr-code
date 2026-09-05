@@ -3,7 +3,13 @@ target-linux/
 target-linux-compat/
 corpus/
 .claude/
-thoughts/
+# why: thoughts/ is private scratch, EXCEPT the shipped design docs under
+# thoughts/shared/plans/, which CHANGELOG.md links to. A bare `thoughts/` made the one
+# tracked doc a file that git keeps tracking while claiming to ignore it.
+thoughts/*
+!thoughts/shared/
+thoughts/shared/*
+!thoughts/shared/plans/
 tmp/
 dist/
 build/
