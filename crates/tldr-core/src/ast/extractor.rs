@@ -2537,12 +2537,34 @@ fn call_like_kinds(language: Language) -> &'static [&'static str] {
 const MAX_CALL_ANCESTOR_DEPTH: usize = 3;
 
 /// The text naming what is being called: `suiteSetup`, `it`, `http.HandleFunc`.
-fn callee_text<'a>(call: Node<'a>, source: &'a str) -> Option<&'a str> {
-    let callee = call
+fn callee_text<'a>(call: Node<'a>, source: &'a str, language: Language) -> Option<&'a str> {
+    let calls = call_like_kinds(language);
+    let mut callee = call
         .child_by_field_name("function")
         .or_else(|| call.child_by_field_name("name"))
         .or_else(|| call.child(0))?;
-    let text = callee.utf8_text(source.as_bytes()).ok()?;
+    // Kotlin parses a trailing lambda as a call ON a call: `describe("x") { … }` is
+    // `call_expression(call_expression(describe, ("x")), call_suffix(lambda))`, so the callee slot
+    // holds the parenthesised inner call and its text is `describe("x")`. Peel until the slot holds
+    // a name; the discarded argument text is the title's job, not the callee's.
+    while calls.contains(&callee.kind()) {
+        callee = callee
+            .child_by_field_name("function")
+            .or_else(|| callee.child(0))?;
+    }
+    // Ruby has no single callee node: `RSpec.describe` is a `receiver` field and a `method` field
+    // side by side, and `child(0)` is only the receiver — which would name every
+    // `RSpec.describe … do` block `RSpec`. Span from the call start to the end of `method`.
+    // Language-guarded: another grammar growing a `method` field on its call node must not
+    // silently widen every callee to the whole call prefix.
+    let ruby_method = (language == Language::Ruby)
+        .then(|| call.child_by_field_name("method"))
+        .flatten();
+    let (start, end) = match ruby_method {
+        Some(method) => (call.start_byte(), method.end_byte()),
+        None => (callee.start_byte(), callee.end_byte()),
+    };
+    let text = source.get(start..end)?;
     // A multi-line or absurdly long callee is a chained expression, not a name worth showing.
     if text.is_empty() || text.contains('\n') || text.len() > 80 {
         return None;
@@ -2553,20 +2575,31 @@ fn callee_text<'a>(call: Node<'a>, source: &'a str) -> Option<&'a str> {
 /// Turn a call's first string-literal argument into a name-safe slug: `test('a title')` →
 /// `a-title`. This is what makes two `test(…)` blocks in one file distinguishable, and it is
 /// STABLE — unlike an ordinal, it survives inserting a sibling above.
-fn title_slug(call: Node, callable: Node, source: &str) -> Option<String> {
+fn title_slug(call: Node, callable: Node, source: &str, calls: &[&str]) -> Option<String> {
     // Found by POSITION, not by container kind. Every grammar nests the argument differently
     // (`arguments`, `argument_list`, `value_arguments`, `keyword_argument`, `argument`), and
     // Swift's trailing-closure form `describe("a thing") { … }` puts the string in a `call_suffix`
     // that is a SIBLING of the one holding the closure — so any container-matching rule is one
     // grammar away from being wrong. What is true everywhere: the title sits inside the call and
     // BEFORE the callable starts.
+    //
+    // One exclusion: a call nested deeper than a direct child belongs to the CALLEE chain —
+    // `fetch("url").then(r => …)` has the string inside `fetch(…)`, under the member expression —
+    // and would title the `then` region with another call's argument. A direct-child call is
+    // kept because that is where Kotlin puts the arguments of a trailing-lambda call
+    // (`describe("x") { … }` = `call(call(describe, ("x")), lambda)`).
     fn first_string_before<'a>(
         node: Node<'a>,
         limit: tree_sitter::Point,
         source: &'a str,
+        calls: &[&str],
         depth: usize,
     ) -> Option<&'a str> {
         if node.start_position() >= limit || depth > 4 {
+            return None;
+        }
+        // depth 1 IS "direct child of root"; anything call-like deeper is the callee chain.
+        if depth > 1 && calls.contains(&node.kind()) {
             return None;
         }
         if matches!(
@@ -2577,19 +2610,20 @@ fn title_slug(call: Node, callable: Node, source: &str) -> Option<String> {
                 | "raw_string_literal"
                 | "template_string"
                 | "line_string_literal"
+                | "encapsed_string"
         ) {
             return node.utf8_text(source.as_bytes()).ok();
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if let Some(hit) = first_string_before(child, limit, source, depth + 1) {
+            if let Some(hit) = first_string_before(child, limit, source, calls, depth + 1) {
                 return Some(hit);
             }
         }
         None
     }
 
-    let raw = first_string_before(call, callable.start_position(), source, 0)?;
+    let raw = first_string_before(call, callable.start_position(), source, calls, 0)?;
     let normalized: String = raw
         .trim_matches(|c| c == '"' || c == '\'' || c == '`')
         .chars()
@@ -2619,6 +2653,34 @@ fn title_slug(call: Node, callable: Node, source: &str) -> Option<String> {
     } else {
         Some(slug)
     }
+}
+
+/// True when `callable` is the first anonymous callable that belongs to `call` in source order.
+/// Callables under a NESTED call belong to that call and are skipped, so `foo(bar(() => 1), () =>
+/// {…})` still counts the outer arrow as foo's first.
+fn is_first_callable_of(call: Node, callable: Node, calls: &[&str], callables: &[&str]) -> bool {
+    fn walk(node: Node, target: Node, calls: &[&str], callables: &[&str]) -> Option<bool> {
+        if node == target {
+            return Some(true);
+        }
+        if callables.contains(&node.kind()) {
+            return Some(false);
+        }
+        if node.start_position() > target.start_position() {
+            return None;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if calls.contains(&child.kind()) {
+                continue;
+            }
+            if let Some(found) = walk(child, target, calls, callables) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(call, callable, calls, callables).unwrap_or(false)
 }
 
 /// Name an anonymous callable from the call that receives it.
@@ -2680,14 +2742,36 @@ pub(crate) fn try_callback_call_definition(
     }
     let call = call?;
 
-    let callee = callee_text(call, source)?;
+    // One region per call, owned by its FIRST callable. `promise.then(() => ok, () => fail)` and
+    // `run(() => "setup", () => { … })` hand two callables to one call; each would otherwise emit
+    // the same range under a different name (the second even titled by a string inside the
+    // first). The later ones are still inside the region the first maps.
+    if !is_first_callable_of(call, node, calls, callables) {
+        return None;
+    }
+
+    let callee = callee_text(call, source, language)?;
     // Dot-free, per the fastedit resolver contract above. Ruby/Elixir `Mod.fun` and JS
     // `http.HandleFunc` both reduce to their last segment.
     let base = callee.rsplit(['.', ':']).next().unwrap_or(callee).trim();
     if base.is_empty() || !base.chars().next()?.is_alphabetic() {
         return None;
     }
-    let name = match title_slug(call, node, source) {
+    // Elixir's `do … end` is not only for callbacks: `def`, `defmodule`, `if`, `case`, `for` are
+    // all `call` nodes with a `do_block`. The def-family is already emitted by
+    // `try_elixir_call_definition` (a second row named `def` would shadow it), and a control form
+    // is not a callback anyone opens by name. ponytail: prefix match on `def` also catches a user
+    // macro named `default_… do`; list it explicitly if that ever matters.
+    if language == Language::Elixir
+        && (base.starts_with("def")
+            || matches!(
+                base,
+                "if" | "unless" | "case" | "cond" | "for" | "with" | "receive" | "try" | "quote"
+            ))
+    {
+        return None;
+    }
+    let name = match title_slug(call, node, source, calls) {
         Some(slug) => format!("{base}:{slug}"),
         None => base.to_string(),
     };
@@ -4547,5 +4631,64 @@ interface IFace {
         // table edit cannot quietly start inventing entries for it.
         let source = "int main(void) {\n  return 0;\n}\n";
         assert!(call_defs(source, Language::C).is_empty());
+    }
+
+    #[test]
+    fn test_anon_callback_ruby_receiver_call_is_named_from_method() {
+        // `RSpec.describe` is receiver + method fields with no single callee node; child(0) is the
+        // receiver alone, which used to name every top-level RSpec block `RSpec`.
+        let source =
+            "RSpec.describe 'Widget' do\n  it 'works' do\n    expect(1).to eq(1)\n  end\nend\n";
+        let defs = call_defs(source, Language::Ruby);
+        assert_eq!(
+            defs,
+            vec![
+                ("describe:widget".to_string(), 1, 5),
+                ("it:works".to_string(), 2, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_anon_callback_kotlin_trailing_lambda_callee_is_bare_name() {
+        // Kotlin nests the parenthesised call INSIDE the trailing-lambda call, so the callee slot
+        // reads `describe("a thing")` unless peeled. The title still comes from that inner call.
+        let source = "fun main() {\n  describe(\"a thing\") {\n    println(1)\n  }\n}\n";
+        let defs = call_defs(source, Language::Kotlin);
+        assert_eq!(defs, vec![("describe:a-thing".to_string(), 2, 4)]);
+    }
+
+    #[test]
+    fn test_anon_callback_one_region_per_call_with_two_callables() {
+        // Two callables handed to one call: the first owns the region. The second used to emit
+        // the same range again, titled by the string inside the first callable.
+        let source = "run(() => \"inner\", () => {\n  b();\n});\n";
+        let defs = call_defs(source, Language::JavaScript);
+        assert_eq!(defs, vec![("run".to_string(), 1, 3)]);
+    }
+
+    #[test]
+    fn test_anon_callback_title_ignores_the_callee_chain() {
+        // `fetch("url").then(cb)`: the string belongs to `fetch`, not to the `then` region.
+        let source = "fetch(\"url\").then((r) => {\n  a(r);\n});\n";
+        let defs = call_defs(source, Language::TypeScript);
+        assert_eq!(defs, vec![("then".to_string(), 1, 3)]);
+    }
+
+    #[test]
+    fn test_anon_callback_elixir_def_and_control_forms_are_not_callbacks() {
+        // `def`/`defmodule`/`if` are `call` + `do_block` too. The def-family is already a
+        // definition (a `def` row beside `bar` shadows it); `if` is not something anyone opens.
+        let source = "defmodule Foo do\n  def bar(x) do\n    if x do\n      :ok\n    end\n  end\n\n  test \"a title\" do\n    assert 1 == 1\n  end\nend\n";
+        let defs = call_defs(source, Language::Elixir);
+        assert_eq!(defs, vec![("test:a-title".to_string(), 8, 10)]);
+    }
+
+    #[test]
+    fn test_anon_callback_php_double_quoted_title() {
+        // PHP's double-quoted literal is `encapsed_string`, a different kind from `string`.
+        let source = "<?php\ntest(\"double quoted\", function () {\n    return 1;\n});\n";
+        let defs = call_defs(source, Language::Php);
+        assert_eq!(defs, vec![("test:double-quoted".to_string(), 2, 4)]);
     }
 }

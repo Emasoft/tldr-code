@@ -258,8 +258,9 @@ its own:
 | `suiteSetup(async function () { … })` | `suiteSetup` |
 | `test('a title here', async () => { … })` | `test:a-title-here` |
 | `it 'does a thing' do … end` | `it:does-a-thing` |
+| `RSpec.describe "Widget" do … end` | `describe:widget` (the method, not the receiver) |
 | `http.HandleFunc("/x", func(w, r) { … })` | `HandleFunc:x` |
-| two `test(…)` blocks with the same title | `test:same#1`, `test:same#2` |
+| two `test(…)` blocks with the same title | `test:same`, `test:same#2` (first keeps the bare name) |
 
 A first string-literal argument becomes a `:slug` (lowercased, hyphenated, capped at
 40 chars) so sibling blocks are distinguishable — and stable when a sibling is
