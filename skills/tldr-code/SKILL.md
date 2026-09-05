@@ -18,7 +18,8 @@ description: >
 
 # tldr — surgical, token-efficient code analysis
 
-`tldr` (repo: parcadei/tldr-code, Rust, AGPL-3.0) parses code with tree-sitter
+`tldr` (upstream: parcadei/tldr-code; this fork, which the behaviour documented
+here matches: Emasoft/tldr-code; Rust, AGPL-3.0) parses code with tree-sitter
 into a knowledge graph and answers **structural** questions as compact JSON/text.
 It is the single best tool for **exploring a codebase and extracting the exact
 slice of code that matters** — instead of reading entire files into context.
