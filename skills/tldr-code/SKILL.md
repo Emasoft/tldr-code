@@ -233,9 +233,10 @@ Per-command flags & detail: run `tldr <cmd> --help`, or read `references/`.
 - `stats` — tldr usage statistics
 - `embed` `[emb]` * — generate embeddings for code chunks
 
-\* `semantic`, `similar`, `embed` require the `semantic` build feature
-(`cargo install tldr-cli --features semantic`). The first semantic run downloads
-the arctic-embed-m model (~110 MB, cached).
+\* `semantic`, `similar`, `embed` require the `semantic` build feature — from the
+repo root, `cargo install --path crates/tldr-cli --features semantic` (the crates.io
+release may lag this checkout). The first semantic run downloads the arctic-embed-m
+model (~110 MB, cached).
 
 ### Anonymous callbacks
 
@@ -360,8 +361,8 @@ text into the transcript and re-bills the cached prefix.
 
 ## Per-command reference
 
-`references/` holds the verbatim upstream docs — read the one for the category
-you need:
+`references/` holds verbatim copies of this repo's docs (`command-overview.md` is
+`README.md`) — read the one for the category you need:
 
 - `references/command-overview.md` — the full README catalog
 - `references/ast.md`, `callgraph.md`, `dataflow.md`, `metrics.md`,

@@ -13,7 +13,8 @@ LLMs waste context on raw source dumps. tldr extracts the signal: function signa
 ### Standard install (recommended)
 
 ```bash
-cargo install tldr-cli
+cargo install tldr-cli                    # crates.io release
+cargo install --path crates/tldr-cli      # this checkout, from the repo root
 ```
 
 This gives you 60+ analysis commands — everything except natural-language semantic search.
@@ -22,6 +23,7 @@ This gives you 60+ analysis commands — everything except natural-language sema
 
 ```bash
 cargo install tldr-cli --features semantic
+cargo install --path crates/tldr-cli --features semantic   # this checkout
 ```
 
 Adds three commands:
@@ -174,7 +176,7 @@ tldr health src/
 | `definition` | Go-to-definition |
 | `explain` | Comprehensive function analysis |
 
-\* Requires the `semantic` feature: `cargo install tldr-cli --features semantic`
+\* Requires the `semantic` feature: `cargo install tldr-cli --features semantic` (or `--path crates/tldr-cli` from a checkout)
 
 ### Aggregated
 | Command | Description |
