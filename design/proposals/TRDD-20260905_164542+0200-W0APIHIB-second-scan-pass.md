@@ -431,6 +431,6 @@ tagged with its scan theme (`needs_build` / `cross_file` / `other`) and exact li
 - crates/tldr-daemon/src/handlers/callgraph.rs:49 — build_project_call_graph errors are silently swallowed into an empty ProjectCallGraph, then cached forever
 - crates/tldr-daemon/tests/daemon_tests.rs:170-200 — state_tests module contains 3 tests whose bodies are only `let _ = ();` — they assert nothing and can never fail
 - crates/tldr-core/tests/language_parity_test.rs:1876 — test_java_anonymous_class_handling extracts into `_functions` and never asserts on it; the anonymous-class case is not checked at all (found during the landing, missed by the first pass)
-- crates/tldr-cli/src/commands/daemon (stop/shutdown path) — daemons do not unlink their unix socket on stop or kill: 8 stale `tldr-<hash>.sock` files from earlier test runs were found in the temp dir during the landing (found during the landing, missed by the first pass)
+- crates/tldr-cli/src/commands/daemon (stop/shutdown path) — 8 stale `tldr-<hash>.sock` files from earlier test runs were found in the temp dir during the landing; daemons killed by a test harness leave their socket behind, and whether `daemon stop` unlinks it was not checked (found during the landing, missed by the first pass)
 
 ## Approval log
