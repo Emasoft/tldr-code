@@ -3,7 +3,7 @@ trdd-id: PX8JOJY4
 title: Ship a calibrated code-scan workflow skill with tldr-code
 column: todo
 created: 2026-09-05T15:08:16+0200
-updated: 2026-09-05T17:32:00+0200
+updated: 2026-09-05T17:40:00+0200
 current-owner: claude-session-2026-09-05
 task-type: feature
 min-approval-requirement: none
@@ -37,7 +37,7 @@ A skill directory `skills/tldr-scan-workflow/` (name to confirm) containing:
 
 - [ ] Calibration table in the skill, from real runs: tokens per batch (grep-prompt vs tldr-prompt), findings per 100K tokens, FALSE_POSITIVE share, verify REVERT share, compile-break count after the run.
 - [ ] The template runs end-to-end on this repo from a fresh session using only the skill's instructions.
-- [ ] Workers use `tldr` for cross-file navigation (verified by counting `tldr` invocations in worker transcripts, not by the prompt text).
+- [ ] Workers use `tldr` for cross-file navigation: `tldr` invocations ≥ 3× the sum of `grep -r` + `sed -n` calls, counted in worker transcripts. The run-2 template FAILS this bar (191 vs 278); the hook-based allow-list in lesson 3 is what closes it.
 - [ ] fastedit evaluated as the write path for symbol-body replacements; adopted only if it measurably reduces tokens versus Edit on the same batch, with the number recorded.
 - [ ] `make install-skill` installs it alongside `tldr-code` (or the Makefile target is extended), and `tldr doctor` detects it if that check is generalised.
 - [ ] No absolute home paths and no personal names anywhere in the shipped skill, template, or prompts: paths are `~/`-relative or repo-relative, the repo root is an `args` value, and the report dir is derived from it (user directive 2026-09-05).
@@ -65,11 +65,11 @@ report files after a stall; pilot-first; a compile+test gate at the end.
 
 What failed, and the rule the skill adopts:
 
-1. VERIFY HAD THE WRONG EVIDENCE, NOT THE WRONG ATTITUDE. The verifiers did look cross-file
-   (their KEEP lines cite callers and types) and still passed 2 regressions out of 350 hunks,
-   because both bugs lived outside the hunk: the scanner's root pre-seeding 60 lines above it,
-   and `secure.rs`'s admitted extension list in another file. No diff reader can see that; a
-   compiler and a test can. Rule (one mechanism, replaces separate verify/wave/parse rules):
+1. VERIFY HAD THE WRONG EVIDENCE. Only 40 of 353 KEEP lines cite a second file location; the
+   rest judged the hunk in isolation, and even the ones that looked cross-file passed 2
+   regressions out of 350 hunks, because both bugs lived outside the hunk: the scanner's root
+   pre-seeding 60 lines above it, and `secure.rs`'s admitted extension list in another file. A
+   diff reader cannot see that reliably; a compiler and a test can. Rule (one mechanism, replaces separate verify/wave/parse rules):
    WAVES of ~24 batches, each followed by `cargo check -p <crate>` and the targeted tests of the
    files touched, run by the orchestrator; a hunk whose reachability claim carries no pasted
    `tldr references` output is auto-SKIPPED by the verifier. Price: ~9 serialized incremental
@@ -81,7 +81,10 @@ What failed, and the rule the skill adopts:
    Bash tool. Rule: enforcement is the report-evidence gate in rule 1 (a finding without tldr
    evidence is skipped), not the prompt; the prompt still names the exact grammar path
    (`~/.cargo/registry/src/*/tree-sitter-<lang>-*/src/node-types.json`) and keeps every command
-   inside the repo. A Bash-less agent type exposing only Read/Edit and `tldr` is the future form.
+   inside the repo. Future form: a worker whose Bash is allow-listed by a PreToolUse hook to
+   `tldr`, `rustfmt --emit stdout`, `ls`, `wc` (no registered agent type is Bash-less with
+   Edit, and `tldr` is a CLI, so a hook is the only real enforcement).
+   fastedit as the write path: not exercised in runs 1–2 (302 Edit calls, 0 fastedit); no data.
 4. WASTED BATCHES. 67 of 220 batches produced no fix; uncompiled `archived/` code explains
    only 4 of them. Rule: rank batches with `tldr hotspots` (churn × complexity) and scan the
    long tail last or under a budget; exclude uncompiled/cfg-gated modules as a minor extra.
