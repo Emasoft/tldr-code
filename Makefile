@@ -28,8 +28,12 @@ install: build
 # .claude/skills — the one project where nobody needs it. The skill documents a binary that lives
 # on $PATH, so it belongs at user level alongside it. `--all` = every skill, every detected agent,
 # no prompts, which is what makes the target usable from `install-full` and safe to re-run.
+# tldr-scan-workflow rides along on the same target: it is the calibrated full-codebase
+# scan-and-fix pipeline built on this binary, and it is useless without it. Two `skills add`
+# calls rather than one over ./skills, because the CLI takes one skill directory per invocation.
 install-skill:
 	npx --yes skills add -g --all ./skills/tldr-code
+	npx --yes skills add -g --all ./skills/tldr-scan-workflow
 
 # fastedit — the AST-scoped WRITE companion (https://github.com/parcadei/fastedit). tldr READS
 # code; fastedit EDITS it by symbol name, so an agent never repeats old lines to say where an
