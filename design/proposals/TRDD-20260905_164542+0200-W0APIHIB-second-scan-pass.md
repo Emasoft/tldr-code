@@ -1,0 +1,435 @@
+---
+trdd-id: W0APIHIB
+title: Second scan pass needs-build and cross-file fixes
+column: proposal
+created: 2026-09-05T16:45:42+0200
+updated: 2026-09-05T20:46:48+0200
+current-owner: codebase-scan-2026-09-05
+task-type: bugfix
+min-approval-requirement: user
+labels: [scan-2026-09-05, second-pass]
+---
+
+# Second scan pass needs-build and cross-file fixes
+
+## Why
+The first scan pass was static-review only (fail-fast/no-fallback scope, per the scan's own
+rules) and skipped 142 findings that either need a compiled binary / test run to confirm impact
+(`needs_build`, 36), require touching a shared type or multiple call sites (`cross_file`, 31), or
+are same-file logic bugs deferred purely for time/scope reasons (`other`, 75). None of these need
+an owner design decision — they are plain fixes. This TRDD is the work list for a follow-up pass
+run against a compiled build, grouped by file so one pass can fix a whole file at once.
+
+## What
+Work through the files below in any order; each bullet is one file, each sub-bullet one finding
+tagged with its scan theme (`needs_build` / `cross_file` / `other`) and exact line reference.
+
+- `crates/tldr-cli/src/commands/archived/bounds.rs`
+  - [other] crates/tldr-cli/src/commands/archived/bounds.rs:1078 — `eval_range_call` for `range(n)` computes `hi = n - 1` without checking `n <= 0`; `range(0)` or a negative-argument call therefore produces `Interval { lo: 0.0, hi: -1.0 }` (lo > hi) instead of an empty/bottom interval
+- `crates/tldr-cli/src/commands/archived/mutability.rs`
+  - [other] crates/tldr-cli/src/commands/archived/mutability.rs:70 — `include_aliases` (M5 alias propagation) and `constraints` (M8 type constraints, docs lines 12/29-30) are documented CLI flags with zero implementation — no code path reads `args.include_aliases` and `args.constraints` only feeds a hardcoded `constraints_generated: 0`
+- `crates/tldr-cli/src/commands/archived/purity.rs`
+  - [other] crates/tldr-cli/src/commands/archived/purity.rs:1 — Entire file is dead/unreachable code
+- `crates/tldr-cli/src/commands/archived/ssa.rs`
+  - [other] crates/tldr-cli/src/commands/archived/ssa.rs:271 — `filter_ssa_by_variable` recomputes `phi_count`/`ssa_names` after filtering by `--var` but leaves `stats.blocks`/`stats.instructions` as the original unfiltered totals
+- `crates/tldr-cli/src/commands/bugbot/check.rs`
+  - [cross_file] crates/tldr-cli/src/commands/bugbot/check.rs:398 — dedup+truncate runs before composition, can suppress a would-be critical composed finding
+- `crates/tldr-cli/src/commands/bugbot/first_run.rs`
+  - [needs_build] crates/tldr-cli/src/commands/bugbot/first_run.rs:431-466 — collect_source_files_recursive() hand-rolls a directory walk instead of using the crate's shared tldr_core::walker::ProjectWalker
+- `crates/tldr-cli/src/commands/contracts/contracts.rs`
+  - [other] crates/tldr-cli/src/commands/contracts/contracts.rs:880 — `let _ = config.return_kinds;` discards the field instead of using it — `return_kinds` is set for all 18 languages but never read anywhere else in the file
+- `crates/tldr-cli/src/commands/contracts/specs.rs`
+  - [other] crates/tldr-cli/src/commands/contracts/specs.rs:817 — `test_count` field on `FunctionSpecs` is initialized to `0` at every one of its ~13 construction sites in this file and only ever merged as `0 + 0` in `merge_specs`; it is never incremented anywhere, so it is always `0` in output (JSON/summary) regardless of actual test coverage
+- `crates/tldr-cli/src/commands/contracts/verify.rs`
+  - [other] crates/tldr-cli/src/commands/contracts/verify.rs:440 — extract_function_names only recognizes Python `def ` syntax regardless of the `language` parameter
+- `crates/tldr-cli/src/commands/daemon/daemon.rs`
+  - [cross_file] crates/tldr-cli/src/commands/daemon/daemon.rs:378,407,427,555,584,609,642,670,703,736,780,801,839,902,932,965,994,1041 — `serde_json::to_value(&result).unwrap_or_default()` silently turns a serialization failure into a cached/returned `Null` result instead of an `Error` response, in ~17 call sites
+  - [other] crates/tldr-cli/src/commands/daemon/daemon.rs:1140-1144 — `handle_track`'s periodic-flush path sets `flushed: true` in the response without persisting anything
+- `crates/tldr-cli/src/commands/daemon/stats.rs`
+  - [cross_file] crates/tldr-cli/src/commands/daemon/stats.rs:285 — `format_number` in stats.rs duplicates an identical `format_number` in status.rs
+- `crates/tldr-cli/src/commands/dice.rs`
+  - [other] crates/tldr-cli/src/commands/dice.rs:156 — `Target::Function` variant returns the whole file, not the named function's body
+- `crates/tldr-cli/src/commands/fix.rs`
+  - [other] crates/tldr-cli/src/commands/fix.rs:228 — `--api-surface` flag is accepted and prints an advisory note but is never actually used for analysis
+- `crates/tldr-cli/src/commands/patterns/coupling.rs`
+  - [other] crates/tldr-cli/src/commands/patterns/coupling.rs:802 — `extract_rust_imports` parses `use` statements via raw string splitting on `::` and `,`, not the AST
+- `crates/tldr-cli/src/commands/patterns/interface.rs`
+  - [other] crates/tldr-cli/src/commands/patterns/interface.rs:1804 — merge_rust_impl_entries never drops unmatched `impl Trait for ExternalType` blocks despite doc comment claiming it does
+- `crates/tldr-cli/src/commands/patterns/resources.rs`
+  - [other] crates/tldr-cli/src/commands/patterns/resources.rs:2162 — `find_block_with_line` iterates a `HashMap<usize, BasicBlock>` and returns the first block whose `lines` contains the target line, which is non-deterministic when two blocks both happen to record the same line number
+  - [other] crates/tldr-cli/src/commands/patterns/resources.rs:2208 — `LeakDetector::path_has_close` always returns `false`, making leak detection (`--check-leaks`, enabled by default) report every resource not opened via a context manager as a leak, even when it is explicitly `.close()`d on every path
+- `crates/tldr-cli/src/commands/patterns/temporal.rs`
+  - [cross_file] crates/tldr-cli/src/commands/patterns/temporal.rs:509 — Python legacy sequence keys (`func:var`) omit the file path, so identically named functions/variables across different files in a directory scan collide and their call sequences get concatenated in `all_sequences`, producing spurious cross-file bigrams at the concatenation boundary
+  - [other] crates/tldr-cli/src/commands/patterns/temporal.rs:681 — `BigramCounter::add_sequences` (used by `mine_bigrams`, the single-file analysis path) hardcodes `line = 1` for every example instead of tracking real line numbers, unlike the directory path's `aggregate_file_sequences` which resolves accurate lines via `first_line`
+- `crates/tldr-cli/src/commands/remaining/diff.rs`
+  - [cross_file] crates/tldr-cli/src/commands/remaining/diff.rs:1170 — `char_jaccard_similarity` builds bigrams from raw `u8` windows, which can split multi-byte UTF-8 sequences mid-character for non-ASCII source text
+  - [other] crates/tldr-cli/src/commands/remaining/diff.rs:1837 — `zhang_shasha` computes a full tree-distance matrix that is entirely discarded; the returned edit script comes from `derive_edit_ops_dp`, a flat postorder sequence-alignment DP that ignores tree structure
+- `crates/tldr-cli/src/commands/remaining/difftastic/lifetime_proto.rs`
+  - [cross_file] crates/tldr-cli/src/commands/remaining/difftastic/lifetime_proto.rs:1 — leftover prototype module still compiled and exported via mod.rs
+- `crates/tldr-cli/src/commands/remaining/todo.rs`
+  - [cross_file] crates/tldr-cli/src/commands/remaining/todo.rs:302 — AstCache is constructed in todo.rs::run but get_or_parse is never called (parameter named `_cache`)
+- `crates/tldr-cli/tests/api_check_and_patterns_accuracy_v1.rs`
+  - [other] crates/tldr-cli/tests/api_check_and_patterns_accuracy_v1.rs:29 — Doc comment claims "fallback to `cargo run` if the binary isn't present" but the code only `assert!`s the binary exists and panics otherwise — no such fallback exists
+- `crates/tldr-cli/tests/bench_cli_multilang.rs`
+  - [needs_build] crates/tldr-cli/tests/bench_cli_multilang.rs:162 — test_contracts_python_isinstance_check's has_range check uses `constraint.contains("0")`, which is satisfied by unrelated substrings (e.g. "150" in an "age > 150" constraint) as well as by the intended "age >= 0" constraint, so the assertion can pass without the target precondition ever being present
+- `crates/tldr-cli/tests/bugbot_check_test.rs`
+  - [other] crates/tldr-cli/tests/bugbot_check_test.rs:564 — ignored dogfood test hardcodes a developer-machine absolute path
+- `crates/tldr-cli/tests/cli_patterns_contracts_tests.rs`
+  - [needs_build] crates/tldr-cli/tests/cli_patterns_contracts_tests.rs:350 — test_coupling_same_file asserts nothing (`let _ = output.status;`) — cannot fail
+  - [needs_build] crates/tldr-cli/tests/cli_patterns_contracts_tests.rs:788 — test_contracts_nonexistent_function asserts nothing (`let _ = output.status;`) — cannot fail
+  - [needs_build] crates/tldr-cli/tests/cli_patterns_contracts_tests.rs:807 — test_chop_invalid_line_numbers asserts nothing (`let _ = output.status;`) — cannot fail
+- `crates/tldr-cli/tests/cli_remaining_tests.rs`
+  - [cross_file] crates/tldr-cli/tests/cli_remaining_tests.rs:838 — test_change_impact_runner_pytest assertion accepts either success-with-any-stdout or failure-with-empty-stdout, effectively asserting almost nothing
+  - [other] crates/tldr-cli/tests/cli_remaining_tests.rs:2156 — test_invalid_format_option assertion accepts success, "error" in stderr, or empty stderr — very permissive
+- `crates/tldr-cli/tests/contracts_test.rs`
+  - [needs_build] crates/tldr-cli/tests/contracts_test.rs:230-599,943-1249,1522-1810,1824-2158 — `#[ignore = "<cmd> command not yet implemented"]` reasons are stale for contracts/specs/dead-stores/chop
+- `crates/tldr-cli/tests/daemon_test.rs`
+  - [cross_file] crates/tldr-cli/tests/daemon_test.rs:1292 — test_stats_formats_token_savings, test_stats_json_output and test_stats_text_output (all #[ignore]d) read/write the real user home directory `~/.tldr/stats.jsonl`, backing it up and restoring it; run concurrently (default cargo test parallelism) they race on the same file and can corrupt or lose the user's real stats/backup
+  - [cross_file] crates/tldr-cli/tests/daemon_test.rs:57 — unit_types module tests a hand-duplicated inline shim of DaemonCommand/DaemonResponse/DaemonConfig instead of the real tldr_cli::commands::daemon::types (which the file's own language_threading module at line 1840 already imports and uses)
+- `crates/tldr-cli/tests/l2_ir_cost_bench_test.rs`
+  - [needs_build] crates/tldr-cli/tests/l2_ir_cost_bench_test.rs:1003 — l2_ir_cost_bench_11_summary_table has zero assert statements
+  - [other] crates/tldr-cli/tests/l2_ir_cost_bench_test.rs:930 — l2_ir_cost_bench_10_parse_redundancy has zero assert statements
+- `crates/tldr-cli/tests/remaining_test.rs`
+  - [other] crates/tldr-cli/tests/remaining_test.rs:13 — header doc comment lists 9 commands (incl. diff_impact, equivalence) but only 7 command modules exist in this file (todo/explain/secure/definition/diff/api_check/vuln); module numbering jumps 5→7→9
+  - [other] crates/tldr-cli/tests/remaining_test.rs:2358 — test_api_check_exit_code_findings accepts either exit code 0 or 2
+- `crates/tldr-cli/tests/taint_test.rs`
+  - [needs_build] crates/tldr-cli/tests/taint_test.rs:109 — test_taint_function_not_found asserts nothing (`let _ = cmd.assert();`)
+- `crates/tldr-cli/tests/todo_aggregation_tests.rs`
+  - [needs_build] crates/tldr-cli/tests/todo_aggregation_tests.rs:211-213,254-256,287-289,478-480,493-495,571-572,708-709,747-748 — Several `todo` tests assert only `.success()` while their comments claim to verify specific behavior (priority values, category names, item field structure) that is never checked
+- `crates/tldr-core/src/analysis/arch_rules.rs`
+  - [needs_build] crates/tldr-core/src/analysis/arch_rules.rs:686 — get_file_layer's HashMap fallback loop can pick a non-deterministic layer when multiple layer directories are ancestors/prefixes of the same file
+- `crates/tldr-core/src/analysis/change_impact.rs`
+  - [cross_file] crates/tldr-core/src/analysis/change_impact.rs:382 — ChangeImpactMetadata.call_graph_nodes is populated with edge_count, not a real node count
+- `crates/tldr-core/src/analysis/clones/extract.rs`
+  - [cross_file] crates/tldr-core/src/analysis/clones/extract.rs:61 — Each source file is parsed twice (once in tokenize.rs, once again in extract.rs)
+- `crates/tldr-core/src/analysis/deps.rs`
+  - [needs_build] crates/tldr-core/src/analysis/deps.rs:763 — `dfs_find_cycles` is unbounded plain recursion (one stack frame per graph edge on the current DFS path)
+- `crates/tldr-core/src/analysis/dice_tests.rs`
+  - [other] crates/tldr-core/src/analysis/dice_tests.rs:336 — Every test in the file (~60 tests) is permanently `#[ignore = "similarity module not yet implemented"]` even though `crate::analysis::similarity` exists and is used elsewhere in the crate
+- `crates/tldr-core/src/ast/extract.rs`
+  - [needs_build] crates/tldr-core/src/ast/extract.rs:1812 — extract_ts_functions_detailed has the identical nested-class method-leak bug as the Python one, for TS/JS classes
+  - [needs_build] crates/tldr-core/src/ast/extract.rs:347 — extract_python_functions_detailed leaks a nested class's methods into the enclosing class's method list
+- `crates/tldr-core/src/ast/extractor.rs`
+  - [other] crates/tldr-core/src/ast/extractor.rs:795 — out-of-line C++ member function definitions are misclassified as free functions
+- `crates/tldr-core/src/callgraph/builder_v2.rs`
+  - [other] crates/tldr-core/src/callgraph/builder_v2.rs:638 — `build_indices_parallel` return values `_func_index`/`_class_index` are computed in parallel then immediately discarded; step 9 rebuilds equivalent indices from `ir.files` in sorted order for determinism
+  - [other] crates/tldr-core/src/callgraph/builder_v2.rs:979 — deterministic edge sort formats `call_type` with `format!("{:?}", ...)` inside the comparator, allocating a String on every pairwise comparison during sort
+- `crates/tldr-core/src/callgraph/cross_file_types.rs`
+  - [cross_file] crates/tldr-core/src/callgraph/cross_file_types.rs:1109 — FuncIndexProxy::insert is unimplemented!() (panics if called)
+  - [other] crates/tldr-core/src/callgraph/cross_file_types.rs:1116 — FuncIndexProxy::get is unimplemented!() (panics if called)
+  - [other] crates/tldr-core/src/callgraph/cross_file_types.rs:1139 — FuncIndexProxy::iter() silently returns an empty iterator instead of the documented entries
+- `crates/tldr-core/src/callgraph/import_resolver.rs`
+  - [other] crates/tldr-core/src/callgraph/import_resolver.rs:438 — resolve_file_path_import() only strips a leading `./`, leaving `../` segments unnormalized when building filesystem candidates
+  - [other] crates/tldr-core/src/callgraph/import_resolver.rs:882 — parse_init_reexports() cannot parse multi-line `from .x import (...)` re-export statements
+- `crates/tldr-core/src/callgraph/languages/cpp.rs`
+  - [other] crates/tldr-core/src/callgraph/languages/cpp.rs:616 — duplicated HashMap entry/or_default/extend logic instead of common::extend_calls_if_any
+- `crates/tldr-core/src/callgraph/languages/java.rs`
+  - [needs_build] crates/tldr-core/src/callgraph/languages/java.rs:190 — Chained method calls (obj.method1().method2()) lose the receiver on the outer call
+- `crates/tldr-core/src/callgraph/languages/ruby.rs`
+  - [cross_file] crates/tldr-core/src/callgraph/languages/ruby.rs:1012 — simple-name key silently overwritten when two classes share a method name
+- `crates/tldr-core/src/callgraph/languages/scala.rs`
+  - [cross_file] crates/tldr-core/src/callgraph/languages/scala.rs:682 — `calls_by_func.insert(name, calls)` overwrites any prior entry under the same simple (unqualified) method name when two classes/objects define a same-named method, silently losing that other method's call list under the simple-name key
+- `crates/tldr-core/src/callgraph/languages/swift.rs`
+  - [cross_file] crates/tldr-core/src/callgraph/languages/swift.rs:392 — walk_for_calls attributes ALL calls inside a nested/local function's body to the ENCLOSING function, not to the nested function itself, because extract_calls_from_subtree walks the whole body subtree indiscriminately instead of walk_for_calls recursing to give the nested function_declaration its own entry
+- `crates/tldr-core/src/callgraph/module_path.rs`
+  - [cross_file] crates/tldr-core/src/callgraph/module_path.rs:287 — JAVA_PREFIXES/KOTLIN_PREFIXES/SCALA_PREFIXES/CSHARP_PREFIXES/PHP_PREFIXES/RUBY_PREFIXES/LUA_PREFIXES/SWIFT_PREFIXES/OCAML_PREFIXES and their helper functions (strip_known_prefixes, dot_module_from_path, etc.) are byte-for-byte duplicated between module_index.rs and module_path.rs
+- `crates/tldr-core/src/callgraph/resolution.rs`
+  - [other] crates/tldr-core/src/callgraph/resolution.rs:431 — resolve_caller_name uses `<=` for best-span comparison while the sibling helper enclosing_class_for_call (line 213) uses strict `<` for the same "find innermost enclosing function by minimal span" logic
+- `crates/tldr-core/src/callgraph/type_resolver.rs`
+  - [cross_file] crates/tldr-core/src/callgraph/type_resolver.rs:290 — Several `find_*` helpers (find_type_annotation, find_typescript_annotation, find_typescript_constructor, find_go_var_declaration, find_go_struct_literal, find_go_pointer_struct, find_rust_annotation, find_rust_associated_function, find_rust_struct_literal, find_constructor_assignment) use `lines.get(line_num)?` inside a reverse-iterating loop, so if call_line exceeds the actual line count the whole backward search aborts on the very first (invalid) index instead of clamping to the real last line
+- `crates/tldr-core/src/context/builder.rs`
+  - [other] crates/tldr-core/src/context/builder.rs:792 — O(functions × edges) rescan of the whole call graph per function in `build_function_context`
+- `crates/tldr-core/src/contracts/mod.rs`
+  - [other] crates/tldr-core/src/contracts/mod.rs:25 — The entire crates/tldr-core/src/contracts/ module (examples.rs, mod.rs, python.rs, resolve.rs, triggers.rs, types.rs) is dead code
+- `crates/tldr-core/src/contracts/resolve.rs`
+  - [other] crates/tldr-core/src/contracts/resolve.rs:66 — `resolve_python_package`'s `if file_path.ends_with("__init__.py") { ... } else { ... }` branches are byte-identical (both return `file_path.parent()`), despite the else-branch comment claiming "Treat parent as root to include the file"
+- `crates/tldr-core/src/dataflow/abstract_interp.rs`
+  - [other] crates/tldr-core/src/dataflow/abstract_interp.rs:856 — strip_strings pushes raw bytes as chars (`result.push(c as char)`), corrupting multi-byte UTF-8 content outside string literals
+- `crates/tldr-core/src/dataflow/available.rs`
+  - [needs_build] crates/tldr-core/src/dataflow/available.rs:1601 — infer_operator_from_uses always guesses "+" for any 2+ uses with no source lines
+  - [other] crates/tldr-core/src/dataflow/available.rs:573 — redundant_computations() intra-block algorithm treats cross-block "first occurrence" kill checks as "check all lines from 1" (comment: "Conservative: check all lines")
+- `crates/tldr-core/src/dataflow/dataflow_tests.rs`
+  - [needs_build] crates/tldr-core/src/dataflow/dataflow_tests.rs:1098 — test_must_analysis_diamond_single_branch_not_available has a tautological assertion
+  - [needs_build] crates/tldr-core/src/dataflow/dataflow_tests.rs:1154 — test_must_analysis_diamond_both_branches_is_available never checks the merge block
+- `crates/tldr-core/src/dataflow/guard.rs`
+  - [cross_file] crates/tldr-core/src/dataflow/guard.rs:120 — `is_identifier` is duplicated near-verbatim in guard.rs, available.rs, and abstract_interp.rs (tldr references confirms 3 separate private definitions in the same crate)
+- `crates/tldr-core/src/dfg/extractor.rs`
+  - [other] crates/tldr-core/src/dfg/extractor.rs:2403 — build_def_use_chains computes reaching definitions but discards the result; finalize() builds edges with a naive "any def before any use" heuristic instead
+- `crates/tldr-core/src/dfg/gvn/engine.rs`
+  - [other] crates/tldr-core/src/dfg/gvn/engine.rs:466 — hash_subscript only reads the first node bound to the (multi-valued) `subscript` field, so a multi-index subscript like `a[i, j]` is hashed using only `i`, potentially treating `a[i, j]` and `a[i, k]` as equal
+- `crates/tldr-core/src/dfg/reaching.rs`
+  - [other] crates/tldr-core/src/dfg/reaching.rs:1148 — compute_rpo's inner `dfs` is an unbounded recursive function over CFG blocks
+- `crates/tldr-core/src/dfg/reaching_tests.rs`
+  - [other] crates/tldr-core/src/dfg/reaching_tests.rs:605 — test_parameter_initialized asserts nothing (`let _ = uninit;`)
+- `crates/tldr-core/src/diagnostics/parsers/mod.rs`
+  - [cross_file] crates/tldr-core/src/diagnostics/parsers/mod.rs:97 — map_severity() is dead code, never called
+- `crates/tldr-core/src/fix/go.rs`
+  - [other] crates/tldr-core/src/fix/go.rs:775 — analyze_missing_return derives the inserted return statement's indentation from the line immediately before the closing brace; for an empty function body that line is the `func ... {` signature itself (zero indent), so the injected `return` lands unindented
+- `crates/tldr-core/src/fix/python.rs`
+  - [other] crates/tldr-core/src/fix/python.rs:1366 — analyze_name_error's has_import does exact-line string equality against the single-statement import form
+- `crates/tldr-core/src/fix/typescript.rs`
+  - [cross_file] crates/tldr-core/src/fix/typescript.rs:511 — `extract_argument_at_column` column semantics depend on error_parser.rs
+  - [other] crates/tldr-core/src/fix/typescript.rs:1211 — `find_call_site` scans from end of line, can match a trailing comment's parenthesis
+  - [other] crates/tldr-core/src/fix/typescript.rs:864 — TS2554 "too many arguments" case documented but not implemented
+- `crates/tldr-core/src/inheritance/rust.rs`
+  - [other] crates/tldr-core/src/inheritance/rust.rs:37 — impl_map lookup keyed only by name can overwrite a trait's supertrait bases if a struct shares its name
+- `crates/tldr-core/src/limits.rs`
+  - [other] crates/tldr-core/src/limits.rs:365 — with_timeout leaves the worker thread running forever after a timeout
+- `crates/tldr-core/src/patterns/language_profile.rs`
+  - [other] crates/tldr-core/src/patterns/language_profile.rs:239 — get_snippet() re-splits the whole file into a Vec<&str> via source.lines().collect() on every single evidence push, called potentially thousands of times per large file
+- `crates/tldr-core/src/quality/cohesion.rs`
+  - [other] crates/tldr-core/src/quality/cohesion.rs:1945 — `extract_c_field_access` records any `ptr->field` access with no receiver-name check, unlike the Go equivalent which validates the receiver identifier
+- `crates/tldr-core/src/quality/complexity.rs`
+  - [other] crates/tldr-core/src/quality/complexity.rs:183 — doc says parse errors are "skipped (logged)" but analyze_file_complexity failures are dropped with no logging
+  - [other] crates/tldr-core/src/quality/complexity.rs:372 — metrics_map keyed by bare function name causes silent metric collisions across same-named methods in one file
+- `crates/tldr-core/src/quality/health.rs`
+  - [other] crates/tldr-core/src/quality/health.rs:674 — Doc comment overstates call-graph sharing
+- `crates/tldr-core/src/quality/similarity.rs`
+  - [needs_build] crates/tldr-core/src/quality/similarity.rs:449 — LOC estimate is a fake heuristic (`params.len()*2+5`), not real lines of code, feeding the 0.2-weighted LOC-similarity term with fabricated data
+- `crates/tldr-core/src/search/embedding_client.rs`
+  - [other] crates/tldr-core/src/search/embedding_client.rs:177 — search() never performs an HTTP request, always returns empty results
+- `crates/tldr-core/src/search/enriched.rs`
+  - [other] crates/tldr-core/src/search/enriched.rs:1633 — try_enrich_with_callgraph is O(results * edges) per lookup
+- `crates/tldr-core/src/security/ast_utils.rs`
+  - [needs_build] crates/tldr-core/src/security/ast_utils.rs:533 — Ruby instance-variable field-access extraction always returns None despite doc claiming partial coverage
+- `crates/tldr-core/src/security/vuln.rs`
+  - [other] crates/tldr-core/src/security/vuln.rs:461 — per-file I/O errors from `scan_file_vulns` are silently dropped via `.unwrap_or_default()` in the rayon `par_iter` map
+  - [other] crates/tldr-core/src/security/vuln.rs:734 — `scan_file_vulns` rebuilds the `statements: HashMap<u32,String>` by re-scanning `content.lines()` for every function in the file (inside the `fn_infos.par_iter()` closure), making per-file cost O(functions × lines) instead of O(lines)
+- `crates/tldr-core/src/semantic/cache.rs`
+  - [other] crates/tldr-core/src/semantic/cache.rs:361 — `EmbeddingCache::flush()` truncates the shared `cache.json.tmp` path via `File::create()` *before* acquiring the exclusive lock, so two processes flushing concurrently can interleave writes into the same temp file (the second `File::create()` truncates the first writer's in-flight file, and both processes hold their own file description at unrelated offsets)
+- `crates/tldr-core/src/semantic/chunker.rs`
+  - [cross_file] crates/tldr-core/src/semantic/chunker.rs:210 — `chunk_file` reads file content via `std::fs::read_to_string` and then `parse_file(path)` re-reads/re-parses the same file from disk independently, doing the read twice per file
+- `crates/tldr-core/src/ssa/construct.rs`
+  - [needs_build] crates/tldr-core/src/ssa/construct.rs:1420 — Language-specific renaming handlers (process_var_ref_with_context, process_statement_group, and everything they dispatch to: augmented assignment, walrus operator, comprehension scoping, destructuring, multiple assignment/return, Rust shadowing, match bindings, closure/defer capture) are entirely dead code — never called by the real construction path
+- `crates/tldr-core/src/ssa/memory.rs`
+  - [needs_build] crates/tldr-core/src/ssa/memory.rs:604 — rename_memory_versions re-filters the full memory_ops slice at every recursive call (`memory_ops.iter().filter(
+- `crates/tldr-core/src/surface/c_lang.rs`
+  - [other] crates/tldr-core/src/surface/c_lang.rs:66 — find_c_files recurses into subdirectories without symlink-cycle protection
+- `crates/tldr-core/src/surface/javascript.rs`
+  - [needs_build] crates/tldr-core/src/surface/javascript.rs:658 — `parse_js_import_bindings` mishandles a mixed default+named import (`import Default, { Named } from './x'`)
+  - [cross_file] crates/tldr-core/src/surface/javascript.rs:1207 — `is_exported` rescans the whole file with a nested `source.lines()` loop for every function/class/constant checked
+- `crates/tldr-core/src/surface/python.rs`
+  - [cross_file] crates/tldr-core/src/surface/python.rs:1099 — extract_c_extension_apis silently swallows a non-zero exit / unparsable output from the python3 helper into an empty Vec, and ApiSurface.warnings is never populated anywhere in this file even though the struct has a warnings field for exactly this
+- `crates/tldr-core/src/surface/scala.rs`
+  - [other] crates/tldr-core/src/surface/scala.rs:49 — find_scala_files does not filter noise directories (test/, examples/, benches/, doc/) unlike find_rust_files/find_ruby_files which both call is_noise_dir
+- `crates/tldr-core/src/surface/swift.rs`
+  - [other] crates/tldr-core/src/surface/swift.rs:514 — generate_swift_method_example produces a malformed example ("." + method(...)) when effective_swift_class_name returns an empty string
+- `crates/tldr-core/src/surface/typescript.rs`
+  - [needs_build] crates/tldr-core/src/surface/typescript.rs:933 — `extract_exported_const_names` only walks direct children of the tree root, unlike the sibling `walk_for_enums` which recurses into nested nodes
+  - [cross_file] crates/tldr-core/src/surface/typescript.rs:774 — `convert_ts_params` computes `has_question` (optional-parameter flag) but discards it via `let _ = has_question;` because `Param` (surface/types.rs) has no `is_optional` field
+- `crates/tldr-core/src/types.rs`
+  - [other] crates/tldr-core/src/types.rs:1199-1208 — `IgnoreSpec::from_file` and `is_ignored` are TODO stubs (`from_file` always returns default, `is_ignored` always returns `false` regardless of patterns)
+- `crates/tldr-core/tests/analysis_tests.rs`
+  - [cross_file] crates/tldr-core/tests/analysis_tests.rs:52 — Many `context_tests` cases wrap their assertions in `if let Ok(ctx) = result { ... }` (e.g. lines 52, 74, 91, 111, 133, 151, 172, 193, 220, 277, 292, 317, 356) with no `else` branch
+- `crates/tldr-core/tests/bench_patterns_security_multilang.rs`
+  - [needs_build] crates/tldr-core/tests/bench_patterns_security_multilang.rs:1795 — test_vuln_javascript_xss only asserts detection inside `if !report.findings.is_empty()`
+  - [needs_build] crates/tldr-core/tests/bench_patterns_security_multilang.rs:1815 — test_vuln_javascript_command_injection gates its only real assertion behind `if !report.findings.is_empty()`
+  - [needs_build] crates/tldr-core/tests/bench_patterns_security_multilang.rs:1834 — test_vuln_go_sql_injection gates its only real assertion behind `if !report.findings.is_empty()`
+  - [needs_build] crates/tldr-core/tests/bench_patterns_security_multilang.rs:1860 — test_vuln_java_sql_injection gates its only real assertion behind `if !report.findings.is_empty()`
+  - [needs_build] crates/tldr-core/tests/bench_patterns_security_multilang.rs:1885 — test_vuln_all_types_scan only checks `summary.by_type` grouping inside `if !report.findings.is_empty()`
+- `crates/tldr-core/tests/bench_remaining_multilang.rs`
+  - [needs_build] crates/tldr-core/tests/bench_remaining_multilang.rs:1417 — Several CLI-output assertions are gated behind `if let Some(x) = json.get("field")...` with no else, so a JSON schema change that drops the field makes the test vacuously pass
+  - [needs_build] crates/tldr-core/tests/bench_remaining_multilang.rs:780 — test_analyze_hotspots_basic treats an Err result as an accepted outcome (only eprintln, no assert failure)
+  - [cross_file] crates/tldr-core/tests/bench_remaining_multilang.rs:836 — test_analyze_hotspots_options_builder is a conceptual test that asserts nothing
+- `crates/tldr-core/tests/git_tests.rs`
+  - [other] crates/tldr-core/tests/git_tests.rs:759 — test_git_worktree_detection does not test worktrees at all (only inits a repo and checks is_git_repository)
+  - [other] crates/tldr-core/tests/git_tests.rs:779 — test_git_submodule_detection never creates an actual git submodule (no `git submodule add`), just inits two independent repos and checks both are git repos
+- `crates/tldr-core/tests/hotspot_upgrade_tests.rs`
+  - [needs_build] crates/tldr-core/tests/hotspot_upgrade_tests.rs:671 — test_text_format_no_box_drawing/test_text_format_has_table assert against a local stub, not the real formatter
+- `crates/tldr-core/tests/inheritance_tests.rs`
+  - [needs_build] crates/tldr-core/tests/inheritance_tests.rs:1067 — test_full_inheritance_analysis_with_filter binds `_report` and asserts nothing about filter behavior, comment says "Depending on implementation"
+  - [cross_file] crates/tldr-core/tests/inheritance_tests.rs:455 — `let _ = report;` discards the extraction result, test only checks parse doesn't error
+- `crates/tldr-core/tests/patterns_tests.rs`
+  - [cross_file] crates/tldr-core/tests/patterns_tests.rs:534 — #[ignore] test documents that detect_naming_case is not re-exported from patterns/mod.rs even though pub in signals.rs
+- `crates/tldr-core/tests/pdg_tests.rs`
+  - [other] crates/tldr-core/tests/pdg_tests.rs:569 — slice_empty_function has no assertion after `.unwrap()`; the comment says "Result depends on implementation" so the test cannot fail on a behavioural regression beyond an Err/panic
+- `crates/tldr-core/tests/quality_security_tests.rs`
+  - [needs_build] crates/tldr-core/tests/quality_security_tests.rs:26 — quality/security fixture files (quality/god_class.py, quality/long_params.py, quality/grade_a.py, security/aws_key.py, security/private_key.py, security/sql_injection.py, security/command_injection.py) referenced throughout this file do not exist anywhere in the repo, so even after the fixtures_dir() fix every test in the file still silently returns without asserting anything
+- `crates/tldr-core/tests/search_tests.rs`
+  - [other] crates/tldr-core/tests/search_tests.rs:117 — `search_skips_default_directories` asserts only `Ok`, never that a skip dir was actually excluded
+  - [other] crates/tldr-core/tests/search_tests.rs:130 — `search_respects_ignore_spec` asserts only `Ok`, never that the ignore pattern actually excluded matching files
+- `crates/tldr-core/tests/security_tests.rs`
+  - [needs_build] crates/tldr-core/tests/security_tests.rs:547-578 — test_scan_vulnerabilities_sql_injection asserts nothing on the filtered findings
+  - [other] crates/tldr-core/tests/security_tests.rs:581-611 — test_scan_vulnerabilities_command_injection asserts nothing on the filtered findings
+- `crates/tldr-core/tests/ssa_tests.rs`
+  - [needs_build] crates/tldr-core/tests/ssa_tests.rs:564 — ssa_block_has_instructions computes _total_instructions but never asserts anything ("may or may not be present")
+  - [other] crates/tldr-core/tests/ssa_tests.rs:478 — ssa_handles_loops computes _phi_count but never asserts it, despite the comment "Loops typically need phi functions"
+  - [other] crates/tldr-core/tests/ssa_tests.rs:581 — ssa_block_has_successors_predecessors loops over blocks with an empty body and only a comment
+- `crates/tldr-core/tests/types_base_tests.rs`
+  - [other] crates/tldr-core/tests/types_base_tests.rs:1728,1748 — test_language_from_directory_real / test_language_from_directory_skips_hidden use fixed shared temp-dir names under std::env::temp_dir() instead of a unique per-run directory
+  - [other] crates/tldr-core/tests/types_base_tests.rs:281-1766 — Dozens of `test_*_creation` tests are tautological (build a struct literal, then assert the same literal fields back)
+- `crates/tldr-core/tests/validation_base_tests.rs`
+  - [other] crates/tldr-core/tests/validation_base_tests.rs:127 — test_validate_file_path_traversal_in_project_root only comments "should not panic" and never asserts on `_result`
+- `crates/tldr-core/tests/wrappers_tests.rs`
+  - [other] crates/tldr-core/tests/wrappers_tests.rs:685 — test_run_secure_nonexistent_path discards the result with `let _ = result;`, asserting nothing
+- `crates/tldr-daemon/src/handlers/callgraph.rs`
+  - [needs_build] crates/tldr-daemon/src/handlers/callgraph.rs:170 — dead-code universe is built only from call-graph edges, so functions with zero call edges (the archetypal dead code) are never analyzed
+  - [other] crates/tldr-daemon/src/handlers/callgraph.rs:49 — build_project_call_graph errors are silently swallowed into an empty ProjectCallGraph, then cached forever
+- `crates/tldr-daemon/src/lib.rs`
+  - [cross_file] crates/tldr-daemon/src/lib.rs:162 — `--stop` does not stop the daemon process, it only deletes the socket file
+- `crates/tldr-daemon/tests/daemon_tests.rs`
+  - [cross_file] crates/tldr-daemon/tests/daemon_tests.rs:56-162 — message_tests module only asserts that hand-written JSON string literals parse with serde_json; none of it calls any daemon request-parsing/dispatch code
+  - [other] crates/tldr-daemon/tests/daemon_tests.rs:170-200 — state_tests module contains 3 tests whose bodies are only `let _ = ();` — they assert nothing and can never fail
+
+## Acceptance
+- [ ] Every `needs_build` item has been verified against a compiled binary/test run and either
+      fixed or reclassified as a false positive with a one-line reason
+- [ ] Every `cross_file` item's fix has been applied consistently across all its call sites
+- [ ] Every `other` item has been fixed or explicitly deferred with a reason
+- [ ] `cargo build` and `cargo test` pass after all fixes in this pass
+
+## Findings
+
+### needs_build (36)
+
+- crates/tldr-cli/src/commands/bugbot/first_run.rs:431-466 — collect_source_files_recursive() hand-rolls a directory walk instead of using the crate's shared tldr_core::walker::ProjectWalker
+- crates/tldr-cli/tests/bench_cli_multilang.rs:162 — test_contracts_python_isinstance_check's has_range check uses `constraint.contains("0")`, which is satisfied by unrelated substrings (e.g. "150" in an "age > 150" constraint) as well as by the intended "age >= 0" constraint, so the assertion can pass without the target precondition ever being present
+- crates/tldr-cli/tests/cli_patterns_contracts_tests.rs:350 — test_coupling_same_file asserts nothing (`let _ = output.status;`) — cannot fail
+- crates/tldr-cli/tests/cli_patterns_contracts_tests.rs:788 — test_contracts_nonexistent_function asserts nothing (`let _ = output.status;`) — cannot fail
+- crates/tldr-cli/tests/cli_patterns_contracts_tests.rs:807 — test_chop_invalid_line_numbers asserts nothing (`let _ = output.status;`) — cannot fail
+- crates/tldr-cli/tests/contracts_test.rs:230-599,943-1249,1522-1810,1824-2158 — `#[ignore = "<cmd> command not yet implemented"]` reasons are stale for contracts/specs/dead-stores/chop
+- crates/tldr-cli/tests/l2_ir_cost_bench_test.rs:1003 — l2_ir_cost_bench_11_summary_table has zero assert statements
+- crates/tldr-cli/tests/taint_test.rs:109 — test_taint_function_not_found asserts nothing (`let _ = cmd.assert();`)
+- crates/tldr-cli/tests/todo_aggregation_tests.rs:211-213,254-256,287-289,478-480,493-495,571-572,708-709,747-748 — Several `todo` tests assert only `.success()` while their comments claim to verify specific behavior (priority values, category names, item field structure) that is never checked
+- crates/tldr-core/src/analysis/arch_rules.rs:686 — get_file_layer's HashMap fallback loop can pick a non-deterministic layer when multiple layer directories are ancestors/prefixes of the same file
+- crates/tldr-core/src/analysis/deps.rs:763 — `dfs_find_cycles` is unbounded plain recursion (one stack frame per graph edge on the current DFS path)
+- crates/tldr-core/src/ast/extract.rs:1812 — extract_ts_functions_detailed has the identical nested-class method-leak bug as the Python one, for TS/JS classes
+- crates/tldr-core/src/ast/extract.rs:347 — extract_python_functions_detailed leaks a nested class's methods into the enclosing class's method list
+- crates/tldr-core/src/callgraph/languages/java.rs:190 — Chained method calls (obj.method1().method2()) lose the receiver on the outer call
+- crates/tldr-core/src/dataflow/available.rs:1601 — infer_operator_from_uses always guesses "+" for any 2+ uses with no source lines
+- crates/tldr-core/src/dataflow/dataflow_tests.rs:1098 — test_must_analysis_diamond_single_branch_not_available has a tautological assertion
+- crates/tldr-core/src/dataflow/dataflow_tests.rs:1154 — test_must_analysis_diamond_both_branches_is_available never checks the merge block
+- crates/tldr-core/src/quality/similarity.rs:449 — LOC estimate is a fake heuristic (`params.len()*2+5`), not real lines of code, feeding the 0.2-weighted LOC-similarity term with fabricated data
+- crates/tldr-core/src/security/ast_utils.rs:533 — Ruby instance-variable field-access extraction always returns None despite doc claiming partial coverage
+- crates/tldr-core/src/ssa/construct.rs:1420 — Language-specific renaming handlers (process_var_ref_with_context, process_statement_group, and everything they dispatch to: augmented assignment, walrus operator, comprehension scoping, destructuring, multiple assignment/return, Rust shadowing, match bindings, closure/defer capture) are entirely dead code — never called by the real construction path
+- crates/tldr-core/src/ssa/memory.rs:604 — rename_memory_versions re-filters the full memory_ops slice at every recursive call (`memory_ops.iter().filter(
+- crates/tldr-core/src/surface/javascript.rs:658 — `parse_js_import_bindings` mishandles a mixed default+named import (`import Default, { Named } from './x'`)
+- crates/tldr-core/src/surface/typescript.rs:933 — `extract_exported_const_names` only walks direct children of the tree root, unlike the sibling `walk_for_enums` which recurses into nested nodes
+- crates/tldr-core/tests/bench_patterns_security_multilang.rs:1795 — test_vuln_javascript_xss only asserts detection inside `if !report.findings.is_empty()`
+- crates/tldr-core/tests/bench_patterns_security_multilang.rs:1815 — test_vuln_javascript_command_injection gates its only real assertion behind `if !report.findings.is_empty()`
+- crates/tldr-core/tests/bench_patterns_security_multilang.rs:1834 — test_vuln_go_sql_injection gates its only real assertion behind `if !report.findings.is_empty()`
+- crates/tldr-core/tests/bench_patterns_security_multilang.rs:1860 — test_vuln_java_sql_injection gates its only real assertion behind `if !report.findings.is_empty()`
+- crates/tldr-core/tests/bench_patterns_security_multilang.rs:1885 — test_vuln_all_types_scan only checks `summary.by_type` grouping inside `if !report.findings.is_empty()`
+- crates/tldr-core/tests/bench_remaining_multilang.rs:1417 — Several CLI-output assertions are gated behind `if let Some(x) = json.get("field")...` with no else, so a JSON schema change that drops the field makes the test vacuously pass
+- crates/tldr-core/tests/bench_remaining_multilang.rs:780 — test_analyze_hotspots_basic treats an Err result as an accepted outcome (only eprintln, no assert failure)
+- crates/tldr-core/tests/hotspot_upgrade_tests.rs:671 — test_text_format_no_box_drawing/test_text_format_has_table assert against a local stub, not the real formatter
+- crates/tldr-core/tests/inheritance_tests.rs:1067 — test_full_inheritance_analysis_with_filter binds `_report` and asserts nothing about filter behavior, comment says "Depending on implementation"
+- crates/tldr-core/tests/quality_security_tests.rs:26 — quality/security fixture files (quality/god_class.py, quality/long_params.py, quality/grade_a.py, security/aws_key.py, security/private_key.py, security/sql_injection.py, security/command_injection.py) referenced throughout this file do not exist anywhere in the repo, so even after the fixtures_dir() fix every test in the file still silently returns without asserting anything
+- crates/tldr-core/tests/security_tests.rs:547-578 — test_scan_vulnerabilities_sql_injection asserts nothing on the filtered findings
+- crates/tldr-core/tests/ssa_tests.rs:564 — ssa_block_has_instructions computes _total_instructions but never asserts anything ("may or may not be present")
+- crates/tldr-daemon/src/handlers/callgraph.rs:170 — dead-code universe is built only from call-graph edges, so functions with zero call edges (the archetypal dead code) are never analyzed
+
+### cross_file (31)
+
+- crates/tldr-cli/src/commands/bugbot/check.rs:398 — dedup+truncate runs before composition, can suppress a would-be critical composed finding
+- crates/tldr-cli/src/commands/daemon/daemon.rs:378,407,427,555,584,609,642,670,703,736,780,801,839,902,932,965,994,1041 — `serde_json::to_value(&result).unwrap_or_default()` silently turns a serialization failure into a cached/returned `Null` result instead of an `Error` response, in ~17 call sites
+- crates/tldr-cli/src/commands/daemon/stats.rs:285 — `format_number` in stats.rs duplicates an identical `format_number` in status.rs
+- crates/tldr-cli/src/commands/patterns/temporal.rs:509 — Python legacy sequence keys (`func:var`) omit the file path, so identically named functions/variables across different files in a directory scan collide and their call sequences get concatenated in `all_sequences`, producing spurious cross-file bigrams at the concatenation boundary
+- crates/tldr-cli/src/commands/remaining/diff.rs:1170 — `char_jaccard_similarity` builds bigrams from raw `u8` windows, which can split multi-byte UTF-8 sequences mid-character for non-ASCII source text
+- crates/tldr-cli/src/commands/remaining/difftastic/lifetime_proto.rs:1 — leftover prototype module still compiled and exported via mod.rs
+- crates/tldr-cli/src/commands/remaining/todo.rs:302 — AstCache is constructed in todo.rs::run but get_or_parse is never called (parameter named `_cache`)
+- crates/tldr-cli/tests/cli_remaining_tests.rs:838 — test_change_impact_runner_pytest assertion accepts either success-with-any-stdout or failure-with-empty-stdout, effectively asserting almost nothing
+- crates/tldr-cli/tests/daemon_test.rs:1292 — test_stats_formats_token_savings, test_stats_json_output and test_stats_text_output (all #[ignore]d) read/write the real user home directory `~/.tldr/stats.jsonl`, backing it up and restoring it; run concurrently (default cargo test parallelism) they race on the same file and can corrupt or lose the user's real stats/backup
+- crates/tldr-cli/tests/daemon_test.rs:57 — unit_types module tests a hand-duplicated inline shim of DaemonCommand/DaemonResponse/DaemonConfig instead of the real tldr_cli::commands::daemon::types (which the file's own language_threading module at line 1840 already imports and uses)
+- crates/tldr-core/src/analysis/change_impact.rs:382 — ChangeImpactMetadata.call_graph_nodes is populated with edge_count, not a real node count
+- crates/tldr-core/src/analysis/clones/extract.rs:61 — Each source file is parsed twice (once in tokenize.rs, once again in extract.rs)
+- crates/tldr-core/src/callgraph/cross_file_types.rs:1109 — FuncIndexProxy::insert is unimplemented!() (panics if called)
+- crates/tldr-core/src/callgraph/languages/ruby.rs:1012 — simple-name key silently overwritten when two classes share a method name
+- crates/tldr-core/src/callgraph/languages/scala.rs:682 — `calls_by_func.insert(name, calls)` overwrites any prior entry under the same simple (unqualified) method name when two classes/objects define a same-named method, silently losing that other method's call list under the simple-name key
+- crates/tldr-core/src/callgraph/languages/swift.rs:392 — walk_for_calls attributes ALL calls inside a nested/local function's body to the ENCLOSING function, not to the nested function itself, because extract_calls_from_subtree walks the whole body subtree indiscriminately instead of walk_for_calls recursing to give the nested function_declaration its own entry
+- crates/tldr-core/src/callgraph/module_path.rs:287 — JAVA_PREFIXES/KOTLIN_PREFIXES/SCALA_PREFIXES/CSHARP_PREFIXES/PHP_PREFIXES/RUBY_PREFIXES/LUA_PREFIXES/SWIFT_PREFIXES/OCAML_PREFIXES and their helper functions (strip_known_prefixes, dot_module_from_path, etc.) are byte-for-byte duplicated between module_index.rs and module_path.rs
+- crates/tldr-core/src/callgraph/type_resolver.rs:290 — Several `find_*` helpers (find_type_annotation, find_typescript_annotation, find_typescript_constructor, find_go_var_declaration, find_go_struct_literal, find_go_pointer_struct, find_rust_annotation, find_rust_associated_function, find_rust_struct_literal, find_constructor_assignment) use `lines.get(line_num)?` inside a reverse-iterating loop, so if call_line exceeds the actual line count the whole backward search aborts on the very first (invalid) index instead of clamping to the real last line
+- crates/tldr-core/src/dataflow/guard.rs:120 — `is_identifier` is duplicated near-verbatim in guard.rs, available.rs, and abstract_interp.rs (tldr references confirms 3 separate private definitions in the same crate)
+- crates/tldr-core/src/diagnostics/parsers/mod.rs:97 — map_severity() is dead code, never called
+- crates/tldr-core/src/fix/typescript.rs:511 — `extract_argument_at_column` column semantics depend on error_parser.rs
+- crates/tldr-core/src/semantic/chunker.rs:210 — `chunk_file` reads file content via `std::fs::read_to_string` and then `parse_file(path)` re-reads/re-parses the same file from disk independently, doing the read twice per file
+- crates/tldr-core/src/surface/javascript.rs:1207 — `is_exported` rescans the whole file with a nested `source.lines()` loop for every function/class/constant checked
+- crates/tldr-core/src/surface/python.rs:1099 — extract_c_extension_apis silently swallows a non-zero exit / unparsable output from the python3 helper into an empty Vec, and ApiSurface.warnings is never populated anywhere in this file even though the struct has a warnings field for exactly this
+- crates/tldr-core/src/surface/typescript.rs:774 — `convert_ts_params` computes `has_question` (optional-parameter flag) but discards it via `let _ = has_question;` because `Param` (surface/types.rs) has no `is_optional` field
+- crates/tldr-core/tests/analysis_tests.rs:52 — Many `context_tests` cases wrap their assertions in `if let Ok(ctx) = result { ... }` (e.g. lines 52, 74, 91, 111, 133, 151, 172, 193, 220, 277, 292, 317, 356) with no `else` branch
+- crates/tldr-core/tests/bench_remaining_multilang.rs:836 — test_analyze_hotspots_options_builder is a conceptual test that asserts nothing
+- crates/tldr-core/tests/inheritance_tests.rs:455 — `let _ = report;` discards the extraction result, test only checks parse doesn't error
+- crates/tldr-core/tests/patterns_tests.rs:534 — #[ignore] test documents that detect_naming_case is not re-exported from patterns/mod.rs even though pub in signals.rs
+- crates/tldr-daemon/src/lib.rs:162 — `--stop` does not stop the daemon process, it only deletes the socket file
+- crates/tldr-daemon/tests/daemon_tests.rs:56-162 — message_tests module only asserts that hand-written JSON string literals parse with serde_json; none of it calls any daemon request-parsing/dispatch code
+
+### other (75)
+
+- crates/tldr-cli/src/commands/archived/bounds.rs:1078 — `eval_range_call` for `range(n)` computes `hi = n - 1` without checking `n <= 0`; `range(0)` or a negative-argument call therefore produces `Interval { lo: 0.0, hi: -1.0 }` (lo > hi) instead of an empty/bottom interval
+- crates/tldr-cli/src/commands/archived/mutability.rs:70 — `include_aliases` (M5 alias propagation) and `constraints` (M8 type constraints, docs lines 12/29-30) are documented CLI flags with zero implementation — no code path reads `args.include_aliases` and `args.constraints` only feeds a hardcoded `constraints_generated: 0`
+- crates/tldr-cli/src/commands/archived/purity.rs:1 — Entire file is dead/unreachable code
+- crates/tldr-cli/src/commands/archived/ssa.rs:271 — `filter_ssa_by_variable` recomputes `phi_count`/`ssa_names` after filtering by `--var` but leaves `stats.blocks`/`stats.instructions` as the original unfiltered totals
+- crates/tldr-cli/src/commands/contracts/contracts.rs:880 — `let _ = config.return_kinds;` discards the field instead of using it — `return_kinds` is set for all 18 languages but never read anywhere else in the file
+- crates/tldr-cli/src/commands/contracts/specs.rs:817 — `test_count` field on `FunctionSpecs` is initialized to `0` at every one of its ~13 construction sites in this file and only ever merged as `0 + 0` in `merge_specs`; it is never incremented anywhere, so it is always `0` in output (JSON/summary) regardless of actual test coverage
+- crates/tldr-cli/src/commands/contracts/verify.rs:440 — extract_function_names only recognizes Python `def ` syntax regardless of the `language` parameter
+- crates/tldr-cli/src/commands/daemon/daemon.rs:1140-1144 — `handle_track`'s periodic-flush path sets `flushed: true` in the response without persisting anything
+- crates/tldr-cli/src/commands/dice.rs:156 — `Target::Function` variant returns the whole file, not the named function's body
+- crates/tldr-cli/src/commands/fix.rs:228 — `--api-surface` flag is accepted and prints an advisory note but is never actually used for analysis
+- crates/tldr-cli/src/commands/patterns/coupling.rs:802 — `extract_rust_imports` parses `use` statements via raw string splitting on `::` and `,`, not the AST
+- crates/tldr-cli/src/commands/patterns/interface.rs:1804 — merge_rust_impl_entries never drops unmatched `impl Trait for ExternalType` blocks despite doc comment claiming it does
+- crates/tldr-cli/src/commands/patterns/resources.rs:2162 — `find_block_with_line` iterates a `HashMap<usize, BasicBlock>` and returns the first block whose `lines` contains the target line, which is non-deterministic when two blocks both happen to record the same line number
+- crates/tldr-cli/src/commands/patterns/resources.rs:2208 — `LeakDetector::path_has_close` always returns `false`, making leak detection (`--check-leaks`, enabled by default) report every resource not opened via a context manager as a leak, even when it is explicitly `.close()`d on every path
+- crates/tldr-cli/src/commands/patterns/temporal.rs:681 — `BigramCounter::add_sequences` (used by `mine_bigrams`, the single-file analysis path) hardcodes `line = 1` for every example instead of tracking real line numbers, unlike the directory path's `aggregate_file_sequences` which resolves accurate lines via `first_line`
+- crates/tldr-cli/src/commands/remaining/diff.rs:1837 — `zhang_shasha` computes a full tree-distance matrix that is entirely discarded; the returned edit script comes from `derive_edit_ops_dp`, a flat postorder sequence-alignment DP that ignores tree structure
+- crates/tldr-cli/tests/api_check_and_patterns_accuracy_v1.rs:29 — Doc comment claims "fallback to `cargo run` if the binary isn't present" but the code only `assert!`s the binary exists and panics otherwise — no such fallback exists
+- crates/tldr-cli/tests/bugbot_check_test.rs:564 — ignored dogfood test hardcodes a developer-machine absolute path
+- crates/tldr-cli/tests/cli_remaining_tests.rs:2156 — test_invalid_format_option assertion accepts success, "error" in stderr, or empty stderr — very permissive
+- crates/tldr-cli/tests/l2_ir_cost_bench_test.rs:930 — l2_ir_cost_bench_10_parse_redundancy has zero assert statements
+- crates/tldr-cli/tests/remaining_test.rs:13 — header doc comment lists 9 commands (incl. diff_impact, equivalence) but only 7 command modules exist in this file (todo/explain/secure/definition/diff/api_check/vuln); module numbering jumps 5→7→9
+- crates/tldr-cli/tests/remaining_test.rs:2358 — test_api_check_exit_code_findings accepts either exit code 0 or 2
+- crates/tldr-core/src/analysis/dice_tests.rs:336 — Every test in the file (~60 tests) is permanently `#[ignore = "similarity module not yet implemented"]` even though `crate::analysis::similarity` exists and is used elsewhere in the crate
+- crates/tldr-core/src/ast/extractor.rs:795 — out-of-line C++ member function definitions are misclassified as free functions
+- crates/tldr-core/src/callgraph/builder_v2.rs:638 — `build_indices_parallel` return values `_func_index`/`_class_index` are computed in parallel then immediately discarded; step 9 rebuilds equivalent indices from `ir.files` in sorted order for determinism
+- crates/tldr-core/src/callgraph/builder_v2.rs:979 — deterministic edge sort formats `call_type` with `format!("{:?}", ...)` inside the comparator, allocating a String on every pairwise comparison during sort
+- crates/tldr-core/src/callgraph/cross_file_types.rs:1116 — FuncIndexProxy::get is unimplemented!() (panics if called)
+- crates/tldr-core/src/callgraph/cross_file_types.rs:1139 — FuncIndexProxy::iter() silently returns an empty iterator instead of the documented entries
+- crates/tldr-core/src/callgraph/import_resolver.rs:438 — resolve_file_path_import() only strips a leading `./`, leaving `../` segments unnormalized when building filesystem candidates
+- crates/tldr-core/src/callgraph/import_resolver.rs:882 — parse_init_reexports() cannot parse multi-line `from .x import (...)` re-export statements
+- crates/tldr-core/src/callgraph/languages/cpp.rs:616 — duplicated HashMap entry/or_default/extend logic instead of common::extend_calls_if_any
+- crates/tldr-core/src/callgraph/resolution.rs:431 — resolve_caller_name uses `<=` for best-span comparison while the sibling helper enclosing_class_for_call (line 213) uses strict `<` for the same "find innermost enclosing function by minimal span" logic
+- crates/tldr-core/src/context/builder.rs:792 — O(functions × edges) rescan of the whole call graph per function in `build_function_context`
+- crates/tldr-core/src/contracts/mod.rs:25 — The entire crates/tldr-core/src/contracts/ module (examples.rs, mod.rs, python.rs, resolve.rs, triggers.rs, types.rs) is dead code
+- crates/tldr-core/src/contracts/resolve.rs:66 — `resolve_python_package`'s `if file_path.ends_with("__init__.py") { ... } else { ... }` branches are byte-identical (both return `file_path.parent()`), despite the else-branch comment claiming "Treat parent as root to include the file"
+- crates/tldr-core/src/dataflow/abstract_interp.rs:856 — strip_strings pushes raw bytes as chars (`result.push(c as char)`), corrupting multi-byte UTF-8 content outside string literals
+- crates/tldr-core/src/dataflow/available.rs:573 — redundant_computations() intra-block algorithm treats cross-block "first occurrence" kill checks as "check all lines from 1" (comment: "Conservative: check all lines")
+- crates/tldr-core/src/dfg/extractor.rs:2403 — build_def_use_chains computes reaching definitions but discards the result; finalize() builds edges with a naive "any def before any use" heuristic instead
+- crates/tldr-core/src/dfg/gvn/engine.rs:466 — hash_subscript only reads the first node bound to the (multi-valued) `subscript` field, so a multi-index subscript like `a[i, j]` is hashed using only `i`, potentially treating `a[i, j]` and `a[i, k]` as equal
+- crates/tldr-core/src/dfg/reaching.rs:1148 — compute_rpo's inner `dfs` is an unbounded recursive function over CFG blocks
+- crates/tldr-core/src/dfg/reaching_tests.rs:605 — test_parameter_initialized asserts nothing (`let _ = uninit;`)
+- crates/tldr-core/src/fix/go.rs:775 — analyze_missing_return derives the inserted return statement's indentation from the line immediately before the closing brace; for an empty function body that line is the `func ... {` signature itself (zero indent), so the injected `return` lands unindented
+- crates/tldr-core/src/fix/python.rs:1366 — analyze_name_error's has_import does exact-line string equality against the single-statement import form
+- crates/tldr-core/src/fix/typescript.rs:1211 — `find_call_site` scans from end of line, can match a trailing comment's parenthesis
+- crates/tldr-core/src/fix/typescript.rs:864 — TS2554 "too many arguments" case documented but not implemented
+- crates/tldr-core/src/inheritance/rust.rs:37 — impl_map lookup keyed only by name can overwrite a trait's supertrait bases if a struct shares its name
+- crates/tldr-core/src/limits.rs:365 — with_timeout leaves the worker thread running forever after a timeout
+- crates/tldr-core/src/patterns/language_profile.rs:239 — get_snippet() re-splits the whole file into a Vec<&str> via source.lines().collect() on every single evidence push, called potentially thousands of times per large file
+- crates/tldr-core/src/quality/cohesion.rs:1945 — `extract_c_field_access` records any `ptr->field` access with no receiver-name check, unlike the Go equivalent which validates the receiver identifier
+- crates/tldr-core/src/quality/complexity.rs:183 — doc says parse errors are "skipped (logged)" but analyze_file_complexity failures are dropped with no logging
+- crates/tldr-core/src/quality/complexity.rs:372 — metrics_map keyed by bare function name causes silent metric collisions across same-named methods in one file
+- crates/tldr-core/src/quality/health.rs:674 — Doc comment overstates call-graph sharing
+- crates/tldr-core/src/search/embedding_client.rs:177 — search() never performs an HTTP request, always returns empty results
+- crates/tldr-core/src/search/enriched.rs:1633 — try_enrich_with_callgraph is O(results * edges) per lookup
+- crates/tldr-core/src/security/vuln.rs:461 — per-file I/O errors from `scan_file_vulns` are silently dropped via `.unwrap_or_default()` in the rayon `par_iter` map
+- crates/tldr-core/src/security/vuln.rs:734 — `scan_file_vulns` rebuilds the `statements: HashMap<u32,String>` by re-scanning `content.lines()` for every function in the file (inside the `fn_infos.par_iter()` closure), making per-file cost O(functions × lines) instead of O(lines)
+- crates/tldr-core/src/semantic/cache.rs:361 — `EmbeddingCache::flush()` truncates the shared `cache.json.tmp` path via `File::create()` *before* acquiring the exclusive lock, so two processes flushing concurrently can interleave writes into the same temp file (the second `File::create()` truncates the first writer's in-flight file, and both processes hold their own file description at unrelated offsets)
+- crates/tldr-core/src/surface/c_lang.rs:66 — find_c_files recurses into subdirectories without symlink-cycle protection
+- crates/tldr-core/src/surface/scala.rs:49 — find_scala_files does not filter noise directories (test/, examples/, benches/, doc/) unlike find_rust_files/find_ruby_files which both call is_noise_dir
+- crates/tldr-core/src/surface/swift.rs:514 — generate_swift_method_example produces a malformed example ("." + method(...)) when effective_swift_class_name returns an empty string
+- crates/tldr-core/src/types.rs:1199-1208 — `IgnoreSpec::from_file` and `is_ignored` are TODO stubs (`from_file` always returns default, `is_ignored` always returns `false` regardless of patterns)
+- crates/tldr-core/tests/git_tests.rs:759 — test_git_worktree_detection does not test worktrees at all (only inits a repo and checks is_git_repository)
+- crates/tldr-core/tests/git_tests.rs:779 — test_git_submodule_detection never creates an actual git submodule (no `git submodule add`), just inits two independent repos and checks both are git repos
+- crates/tldr-core/tests/pdg_tests.rs:569 — slice_empty_function has no assertion after `.unwrap()`; the comment says "Result depends on implementation" so the test cannot fail on a behavioural regression beyond an Err/panic
+- crates/tldr-core/tests/search_tests.rs:117 — `search_skips_default_directories` asserts only `Ok`, never that a skip dir was actually excluded
+- crates/tldr-core/tests/search_tests.rs:130 — `search_respects_ignore_spec` asserts only `Ok`, never that the ignore pattern actually excluded matching files
+- crates/tldr-core/tests/security_tests.rs:581-611 — test_scan_vulnerabilities_command_injection asserts nothing on the filtered findings
+- crates/tldr-core/tests/ssa_tests.rs:478 — ssa_handles_loops computes _phi_count but never asserts it, despite the comment "Loops typically need phi functions"
+- crates/tldr-core/tests/ssa_tests.rs:581 — ssa_block_has_successors_predecessors loops over blocks with an empty body and only a comment
+- crates/tldr-core/tests/types_base_tests.rs:1728,1748 — test_language_from_directory_real / test_language_from_directory_skips_hidden use fixed shared temp-dir names under std::env::temp_dir() instead of a unique per-run directory
+- crates/tldr-core/tests/types_base_tests.rs:281-1766 — Dozens of `test_*_creation` tests are tautological (build a struct literal, then assert the same literal fields back)
+- crates/tldr-core/tests/validation_base_tests.rs:127 — test_validate_file_path_traversal_in_project_root only comments "should not panic" and never asserts on `_result`
+- crates/tldr-core/tests/wrappers_tests.rs:685 — test_run_secure_nonexistent_path discards the result with `let _ = result;`, asserting nothing
+- crates/tldr-daemon/src/handlers/callgraph.rs:49 — build_project_call_graph errors are silently swallowed into an empty ProjectCallGraph, then cached forever
+- crates/tldr-daemon/tests/daemon_tests.rs:170-200 — state_tests module contains 3 tests whose bodies are only `let _ = ();` — they assert nothing and can never fail
+- crates/tldr-core/tests/language_parity_test.rs:1876 — test_java_anonymous_class_handling extracts into `_functions` and never asserts on it; the anonymous-class case is not checked at all (found during the landing, missed by the first pass)
+
+## Approval log
