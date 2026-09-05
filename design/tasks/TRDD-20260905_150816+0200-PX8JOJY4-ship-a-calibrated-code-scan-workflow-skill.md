@@ -3,7 +3,7 @@ trdd-id: PX8JOJY4
 title: Ship a calibrated code-scan workflow skill with tldr-code
 column: todo
 created: 2026-09-05T15:08:16+0200
-updated: 2026-09-05T15:31:00+0200
+updated: 2026-09-05T17:32:00+0200
 current-owner: claude-session-2026-09-05
 task-type: feature
 min-approval-requirement: none
@@ -41,6 +41,54 @@ A skill directory `skills/tldr-scan-workflow/` (name to confirm) containing:
 - [ ] fastedit evaluated as the write path for symbol-body replacements; adopted only if it measurably reduces tokens versus Edit on the same batch, with the number recorded.
 - [ ] `make install-skill` installs it alongside `tldr-code` (or the Makefile target is extended), and `tldr doctor` detects it if that check is generalised.
 - [ ] No absolute home paths and no personal names anywhere in the shipped skill, template, or prompts: paths are `~/`-relative or repo-relative, the repo root is an `args` value, and the report dir is derived from it (user directive 2026-09-05).
+
+## Lessons from runs 1 and 2 (2026-09-05) — design constraints for the skill
+
+Measured (run 2: 143 scan + 153 verify + 1 consolidation agents, 36.9M tokens, 77 min):
+
+| measure | value |
+|---|---|
+| tokens per landed fix | ~128K (36.9M / 287 fixes) |
+| scan vs verify transcript size | 201 KB vs 61 KB avg; verify ~30% of total cost |
+| verify verdicts | 350 KEEP, 0 REVERT; at least 2 kept hunks broke ~200 tests |
+| tldr navigation calls vs `sed -n` dumps vs `grep -r` | 191 vs 209 vs 69 (bans in prose were ignored) |
+| batches with zero fixes | 46 of 142, many in uncompiled `commands/archived/` |
+| findings the worker itself refuted | 305 of 768 (40%) |
+| pilot (grep prompt) | 158K tokens / 2825 lines, 3 fixes, compiled clean |
+
+What worked: ~3000-line batches, one worker each, read-once-fix-in-place (185 files, zero
+compile errors); greppable report lines + one consolidation agent (768 findings); resume from
+report files after a stall; pilot-first; a compile+test gate at the end.
+
+What failed, and the rule the skill adopts:
+
+1. VERIFY WAS A RUBBER STAMP. Same model, same evidence, judging a sibling: 0 reverts, 2
+   regressions passed (scanner root skipped; AST cache rejected .js). Both were
+   "reachability verified by grep" errors. Rule: the verifier must hold NEW evidence — the
+   orchestrator runs `cargo check -p <crate>` per wave, and a hunk whose reachability claim is
+   not backed by pasted `tldr references` output defaults to REVERT.
+2. NO FEEDBACK UNTIL THE END. All scans queued before any verify (shared FIFO pool), so a
+   systemic regression surfaced after 77 min. Rule: waves of ~24 batches: scan → verify →
+   build + targeted tests → next wave.
+3. PROSE BANS ARE WEAK. Rule: ship a `scan-nav` helper wrapping `tldr` and grade the report's
+   evidence, not the transcript; tell workers the exact grammar path
+   (`~/.cargo/registry/src/*/tree-sitter-<lang>-*/src/node-types.json`); every command stays
+   inside the repo; a command over 30 s is a bug.
+4. WASTED BATCHES. Rule: exclude uncompiled/cfg-gated modules first (module reachable from
+   lib.rs; `tldr dead`), rank the rest with `tldr hotspots`.
+5. POOL FRAGILITY. Run 1 froze at 14:42 (six `find /` timeouts and/or foreground review forks
+   competing for the agent pool; never proven). Rule: no foreground agents during a run;
+   liveness = started−results constant AND no report mtime advance for 10 min ⇒ stop, resume
+   from reports (done-list derived by the orchestrator, script cannot read the FS).
+6. FALSE-POSITIVE TAX (40%). Rule: distil each run's FALSE_POSITIVE lines into a
+   "known-intentional patterns" context fed to the next run — the skill's learning loop.
+7. TEST-FILE CLAIMS. Workers removed 32 `#[ignore]` on the strength of a binary they could
+   not build. Rule: coverage-widening test edits form their own wave gated by the suite.
+8. MACHINE MAPPING. Rule: emit a JSONL twin of every report plus a batch index so failing
+   test → file → batch → fixer dispatch needs no human.
+9. TOOLING PROXIES. `node --check` passed a script the Workflow loader rejected (duplicate
+   `const`); scripts cannot call Date (pass timestamps via args). Rule: the parse check is a
+   one-batch dry run of the Workflow tool itself.
 
 ## Notes and lessons learned
 
