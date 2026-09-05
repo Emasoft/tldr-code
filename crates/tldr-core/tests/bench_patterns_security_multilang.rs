@@ -1103,21 +1103,35 @@ fn test_inheritance_typescript() {
 }
 
 #[test]
-fn test_inheritance_cpp_unsupported() {
-    // C++ is NOT in the inheritance module's supported languages.
-    // It falls through to `_ => Vec::new()` in extract_classes match.
-    // Verify graceful handling -- returns 0 classes without error.
+fn test_inheritance_cpp_supported() {
+    // why: C++ extraction landed in inheritance/cpp.rs (and the
+    // `Language::Cpp => cpp::extract_classes(...)` arm in inheritance/mod.rs)
+    // on 2026-05-06, after this test was written on 2026-04-21 asserting
+    // C++ was unsupported. That assertion is now stale; extraction works.
     let dir = TempDir::new().unwrap();
     create_file(&dir, "widgets.cpp", fixtures::CPP_INHERITANCE_HIERARCHY);
 
     let opts = InheritanceOptions::default();
     let report = extract_inheritance(dir.path(), Some(Language::Cpp), &opts).unwrap();
 
-    // C++ inheritance extraction is not implemented; should return empty gracefully
+    // Base, Widget, Button
     assert_eq!(
-        report.count, 0,
-        "C++ is not supported by inheritance module, should return 0 classes"
+        report.count, 3,
+        "Should find Base, Widget, Button, got {}",
+        report.count
     );
+
+    let widget_extends = report
+        .edges
+        .iter()
+        .any(|e| e.child == "Widget" && e.parent == "Base");
+    assert!(widget_extends, "Widget should extend Base");
+    // Both edges the fixture declares, so the test encodes the fixture, not the extractor.
+    let button_extends = report
+        .edges
+        .iter()
+        .any(|e| e.child == "Button" && e.parent == "Widget");
+    assert!(button_extends, "Button should extend Widget");
 }
 
 #[test]

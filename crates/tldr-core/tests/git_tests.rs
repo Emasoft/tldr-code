@@ -695,8 +695,14 @@ fn test_git_log_with_author_format() {
         .current_dir(&temp_dir)
         .output()
         .unwrap();
+    // why: exported GIT_AUTHOR_*/GIT_COMMITTER_* env vars override repo `git config`,
+    // so the commit must pin identity explicitly or it inherits the machine's identity.
     Command::new("git")
         .args(["commit", "-m", "Test"])
+        .env("GIT_AUTHOR_NAME", "Test User")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Test User")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
         .current_dir(&temp_dir)
         .output()
         .unwrap();

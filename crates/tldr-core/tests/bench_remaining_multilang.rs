@@ -93,6 +93,10 @@ fn git(dir: &Path, args: &[&str]) {
         .current_dir(dir)
         .env("GIT_COMMITTER_NAME", "Test User")
         .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        // why: an exported GIT_AUTHOR_* in the environment overrides repo
+        // config, making author-stats tests depend on the host's shell env.
+        .env("GIT_AUTHOR_NAME", "Test User")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
         .output()
         .unwrap_or_else(|e| panic!("git {} failed to run: {}", args[0], e));
     assert!(

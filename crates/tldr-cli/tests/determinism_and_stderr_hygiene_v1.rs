@@ -205,11 +205,14 @@ fn run_clones_strip_timing(dir: &Path) -> Value {
     // captures CONTENT determinism only — that's what the bug was
     // about. The fix made the `clone_pairs[]` order stable; timing
     // was never claimed to be byte-stable.
-    if let Some(meta) = v.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-        meta.remove("detection_time_ms");
-    }
-    if let Some(stats) = v.get_mut("stats").and_then(|s| s.as_object_mut()) {
-        stats.remove("detection_time_ms");
+    // why: `ClonesReport` serializes the timing under BOTH `stats` and the
+    // schema-consistency `summary` mirror (P17.AGG17-5). Stripping only
+    // `metadata`/`stats` left `summary.detection_time_ms` in the compared
+    // string, so any ms of jitter between runs failed this test.
+    for key in ["metadata", "stats", "summary"] {
+        if let Some(obj) = v.get_mut(key).and_then(|o| o.as_object_mut()) {
+            obj.remove("detection_time_ms");
+        }
     }
     v
 }

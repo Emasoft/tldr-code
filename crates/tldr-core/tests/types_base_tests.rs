@@ -63,7 +63,12 @@ fn test_language_extensions() {
 
     // P2 Languages
     assert_eq!(Language::C.extensions(), &[".c", ".h"]);
-    assert_eq!(Language::Cpp.extensions(), &[".cpp", ".cc", ".cxx", ".hpp"]);
+    // why: the list in `Language::extensions` has carried `.c++`, `.hh`, `.hxx`
+    // and `.h++` since upstream 6c4011a; this assertion was never updated.
+    assert_eq!(
+        Language::Cpp.extensions(),
+        &[".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++"]
+    );
     assert_eq!(Language::Ruby.extensions(), &[".rb"]);
     assert_eq!(Language::Kotlin.extensions(), &[".kt", ".kts"]);
     assert_eq!(Language::Swift.extensions(), &[".swift"]);
