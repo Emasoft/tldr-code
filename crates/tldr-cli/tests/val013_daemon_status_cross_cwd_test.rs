@@ -30,6 +30,12 @@ use std::time::{Duration, Instant};
 /// the test panics.
 struct DaemonStopGuard {
     project: std::path::PathBuf,
+    // why: must match the `TLDR_DAEMON_REGISTRY_DIR` the daemon was
+    // started with, or `daemon stop` looks up the wrong registry file and
+    // leaves the daemon (and its registry entry) running.
+    // Note: with every test in this file (and val003) overriding the dir, the
+    // default `dirs::cache_dir()` registry path is exercised by no test.
+    registry_dir: std::path::PathBuf,
 }
 
 impl Drop for DaemonStopGuard {
@@ -38,18 +44,29 @@ impl Drop for DaemonStopGuard {
         let _ = Command::new(env!("CARGO_BIN_EXE_tldr"))
             .args(["daemon", "stop", "--project"])
             .arg(&self.project)
+            .env("TLDR_DAEMON_REGISTRY_DIR", &self.registry_dir)
             .output();
     }
 }
 
 /// Wait until the daemon answers a `status --project <fixture>` call with
 /// `"status":"running"`. Caps at `timeout` and re-polls every 100 ms.
-fn wait_for_daemon_running(project: &Path, timeout: Duration) -> bool {
+///
+/// `registry_dir` isolates this test's daemon registry (see
+/// `TLDR_DAEMON_REGISTRY_DIR` in `daemon_registry.rs`) from any other
+/// `tldr daemon` process on the machine (a sibling test in this same
+/// binary, or an unrelated `cargo test` run elsewhere) — without it, two
+/// daemons can land in the one real shared registry file at the same
+/// moment and the cross-cwd default-project lookup this test exercises
+/// fails with "multiple daemons running" instead of resolving the one
+/// this test started.
+fn wait_for_daemon_running(project: &Path, timeout: Duration, registry_dir: &Path) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
         let out = Command::new(env!("CARGO_BIN_EXE_tldr"))
             .args(["daemon", "status", "--project"])
             .arg(project)
+            .env("TLDR_DAEMON_REGISTRY_DIR", registry_dir)
             .output();
         if let Ok(out) = out {
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -78,15 +95,22 @@ fn wait_for_daemon_running(project: &Path, timeout: Duration) -> bool {
 /// and reports `"running"` with the fixture project path.
 #[test]
 fn daemon_status_from_other_cwd_reports_running() {
-    // Pre-test cleanup: stop any daemons left over from previous test runs
-    // so the cross-cwd discovery has a single canonical active daemon to
-    // resolve. Without this, leftover daemons yield "multiple daemons
-    // running" and `daemon status` errors to stderr instead of emitting
-    // a JSON envelope.
-    let stop_all = Command::new(env!("CARGO_BIN_EXE_tldr"))
-        .args(["daemon", "stop", "--all"])
-        .output();
-    let _ = stop_all; // best-effort
+    // why: an isolated registry dir (private to this test process) is the
+    // real fix for the flake this test used to paper over with a
+    // best-effort `daemon stop --all`. `--all` only clears daemons that
+    // were already registered *before* this line ran; it does nothing
+    // about a sibling test in this same binary (the default cargo test
+    // harness runs tests in parallel threads) or an unrelated `cargo
+    // test` process elsewhere on the machine registering a daemon in the
+    // one real shared registry file *after* this line ran but before the
+    // no-`--project` status call below. Either lands 2 entries in the
+    // registry and the default-project lookup this test exercises then
+    // fails with "multiple daemons running" instead of resolving.
+    let registry = tempfile::Builder::new()
+        .prefix("val013-registry-")
+        .tempdir()
+        .expect("registry tempdir");
+    let registry_dir = registry.path().to_path_buf();
 
     let fixture = tempfile::Builder::new()
         .prefix("val013-fixture-")
@@ -102,6 +126,7 @@ fn daemon_status_from_other_cwd_reports_running() {
     let start = Command::new(env!("CARGO_BIN_EXE_tldr"))
         .args(["daemon", "start", "--project"])
         .arg(&fixture_path)
+        .env("TLDR_DAEMON_REGISTRY_DIR", &registry_dir)
         .output()
         .expect("daemon start spawn");
     assert!(
@@ -114,12 +139,13 @@ fn daemon_status_from_other_cwd_reports_running() {
     // Ensure cleanup regardless of test outcome.
     let _stop_guard = DaemonStopGuard {
         project: fixture_path.clone(),
+        registry_dir: registry_dir.clone(),
     };
 
     // Wait for the daemon to be ready (probed via the workaround path
     // which uses an explicit --project; this is unaffected by the bug).
     assert!(
-        wait_for_daemon_running(&fixture_path, Duration::from_secs(10)),
+        wait_for_daemon_running(&fixture_path, Duration::from_secs(10), &registry_dir),
         "daemon never became reachable via --project workaround within 10 s"
     );
 
@@ -130,6 +156,7 @@ fn daemon_status_from_other_cwd_reports_running() {
     let status_other_cwd = Command::new(env!("CARGO_BIN_EXE_tldr"))
         .args(["daemon", "status"])
         .current_dir("/tmp")
+        .env("TLDR_DAEMON_REGISTRY_DIR", &registry_dir)
         .output()
         .expect("daemon status spawn (from /tmp)");
 
@@ -180,6 +207,15 @@ fn daemon_status_from_other_cwd_reports_running() {
 /// the active-daemon fallback did not break the explicit-flag path.
 #[test]
 fn daemon_status_with_explicit_project_still_works_from_other_cwd() {
+    // why: same isolation as the sibling test above, so the two never
+    // contend over the one real shared registry file when the harness
+    // runs them concurrently.
+    let registry = tempfile::Builder::new()
+        .prefix("val013-registry-")
+        .tempdir()
+        .expect("registry tempdir");
+    let registry_dir = registry.path().to_path_buf();
+
     let fixture = tempfile::Builder::new()
         .prefix("val013-workaround-")
         .tempdir()
@@ -192,16 +228,18 @@ fn daemon_status_with_explicit_project_still_works_from_other_cwd() {
     let start = Command::new(env!("CARGO_BIN_EXE_tldr"))
         .args(["daemon", "start", "--project"])
         .arg(&fixture_path)
+        .env("TLDR_DAEMON_REGISTRY_DIR", &registry_dir)
         .output()
         .expect("daemon start spawn");
     assert!(start.status.success(), "daemon start failed");
 
     let _stop_guard = DaemonStopGuard {
         project: fixture_path.clone(),
+        registry_dir: registry_dir.clone(),
     };
 
     assert!(
-        wait_for_daemon_running(&fixture_path, Duration::from_secs(10)),
+        wait_for_daemon_running(&fixture_path, Duration::from_secs(10), &registry_dir),
         "daemon never became reachable"
     );
 
@@ -210,6 +248,7 @@ fn daemon_status_with_explicit_project_still_works_from_other_cwd() {
         .args(["daemon", "status", "--project"])
         .arg(&fixture_path)
         .current_dir("/tmp")
+        .env("TLDR_DAEMON_REGISTRY_DIR", &registry_dir)
         .output()
         .expect("daemon status spawn");
 
