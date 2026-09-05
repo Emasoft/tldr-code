@@ -11,3 +11,12 @@ ci = "github"
 installers = []
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+
+# why: release.yml is generated, so pinning it by hand would be undone by the next `dist`
+# regeneration. This table is the durable pin: dist writes these commit SHAs instead of the
+# mutable tags it defaults to (TRDD-2MOHWW53, WFSEC-004). SHAs resolved from the tags below on
+# 2026-09-05; re-resolve when bumping a version.
+[dist.github-action-commits]
+"actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803"          # v6
+"actions/upload-artifact" = "b7c566a772e6b6bfb58ed0dc250532a479d7789f"   # v6
+"actions/download-artifact" = "37930b1c2abaa49bbe596cd826c3c89aef350131" # v7
