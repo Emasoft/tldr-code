@@ -48,11 +48,11 @@ Measured (run 2: 143 scan + 153 verify + 1 consolidation agents, 36.9M tokens, 7
 
 | measure | value |
 |---|---|
-| tokens per landed fix | ~128K (36.9M / 287 fixes) |
-| scan vs verify transcript size | 201 KB vs 61 KB avg; verify ~30% of total cost |
+| tokens per landed fix (run 2 only: 36.85M / 186 fixes in its 142 batches) | ~198K |
+| scan vs verify transcript size (bytes, a proxy for tokens) | 201 KB vs 61 KB avg; verify roughly a quarter to a third of cost |
 | verify verdicts | 350 KEEP, 0 REVERT; at least 2 kept hunks broke ~200 tests |
-| tldr navigation calls vs `sed -n` dumps vs `grep -r` | 191 vs 209 vs 69 (bans in prose were ignored) |
-| batches with zero fixes | 46 of 142, many in uncompiled `commands/archived/` |
+| tldr navigation calls vs `sed -n` dumps vs `grep -r` vs root-walk `find /` | 191 vs 209 vs 69 vs 13 — every prose ban was violated |
+| batches with zero fixes (both runs) | 67 of 220; only 4 entirely in uncompiled `commands/archived/` |
 | findings the worker itself refuted | 305 of 768 (40%) |
 | pilot (grep prompt) | 158K tokens / 2825 lines, 3 fixes, compiled clean |
 
@@ -74,8 +74,9 @@ What failed, and the rule the skill adopts:
    evidence, not the transcript; tell workers the exact grammar path
    (`~/.cargo/registry/src/*/tree-sitter-<lang>-*/src/node-types.json`); every command stays
    inside the repo; a command over 30 s is a bug.
-4. WASTED BATCHES. Rule: exclude uncompiled/cfg-gated modules first (module reachable from
-   lib.rs; `tldr dead`), rank the rest with `tldr hotspots`.
+4. WASTED BATCHES. 67 of 220 batches produced no fix; uncompiled `archived/` code explains
+   only 4 of them. Rule: rank batches with `tldr hotspots` (churn × complexity) and scan the
+   long tail last or under a budget; exclude uncompiled/cfg-gated modules as a minor extra.
 5. POOL FRAGILITY. Run 1 froze at 14:42 (six `find /` timeouts and/or foreground review forks
    competing for the agent pool; never proven). Rule: no foreground agents during a run;
    liveness = started−results constant AND no report mtime advance for 10 min ⇒ stop, resume
