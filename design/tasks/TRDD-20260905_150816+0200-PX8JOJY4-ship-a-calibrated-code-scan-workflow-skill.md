@@ -49,7 +49,9 @@ Measured (run 2: 143 scan + 153 verify + 1 consolidation agents, 36.9M tokens, 7
 | measure | value |
 |---|---|
 | tokens per landed fix (run 2 only: 36.85M / 186 fixes in its 142 batches) | ~198K |
-| scan vs verify transcript size (bytes, a proxy for tokens) | 201 KB vs 61 KB avg; verify roughly a quarter to a third of cost |
+| scan vs verify transcript size (bytes; billing split unmeasured, the tool reports one total) | 201 KB vs 61 KB avg |
+| run 1 (grep prompt, stalled at 14:42) | 78 scans, 101 fixed / 57 skipped / 119 refuted, 0 verifies, tokens unmeasured (journal has no usage) |
+| detection audited | high/critical band sampled and real; the 73 `low | FIXED` cleanups are unaudited and mostly untested |
 | verify verdicts | 350 KEEP, 0 REVERT; at least 2 kept hunks broke ~200 tests |
 | tldr navigation calls vs `sed -n` dumps vs `grep -r` vs root-walk `find /` | 191 vs 209 vs 69 vs 13 — every prose ban was violated |
 | batches with zero fixes (both runs) | 67 of 220; only 4 entirely in uncompiled `commands/archived/` |
@@ -62,18 +64,22 @@ report files after a stall; pilot-first; a compile+test gate at the end.
 
 What failed, and the rule the skill adopts:
 
-1. VERIFY WAS A RUBBER STAMP. Same model, same evidence, judging a sibling: 0 reverts, 2
-   regressions passed (scanner root skipped; AST cache rejected .js). Both were
-   "reachability verified by grep" errors. Rule: the verifier must hold NEW evidence — the
-   orchestrator runs `cargo check -p <crate>` per wave, and a hunk whose reachability claim is
-   not backed by pasted `tldr references` output defaults to REVERT.
-2. NO FEEDBACK UNTIL THE END. All scans queued before any verify (shared FIFO pool), so a
-   systemic regression surfaced after 77 min. Rule: waves of ~24 batches: scan → verify →
-   build + targeted tests → next wave.
-3. PROSE BANS ARE WEAK. Rule: ship a `scan-nav` helper wrapping `tldr` and grade the report's
-   evidence, not the transcript; tell workers the exact grammar path
-   (`~/.cargo/registry/src/*/tree-sitter-<lang>-*/src/node-types.json`); every command stays
-   inside the repo; a command over 30 s is a bug.
+1. VERIFY HAD THE WRONG EVIDENCE, NOT THE WRONG ATTITUDE. The verifiers did look cross-file
+   (their KEEP lines cite callers and types) and still passed 2 regressions out of 350 hunks,
+   because both bugs lived outside the hunk: the scanner's root pre-seeding 60 lines above it,
+   and `secure.rs`'s admitted extension list in another file. No diff reader can see that; a
+   compiler and a test can. Rule (one mechanism, replaces separate verify/wave/parse rules):
+   WAVES of ~24 batches, each followed by `cargo check -p <crate>` and the targeted tests of the
+   files touched, run by the orchestrator; a hunk whose reachability claim carries no pasted
+   `tldr references` output is auto-SKIPPED by the verifier. Price: ~9 serialized checks on a
+   306K-line crate add roughly 30–45 min to a 77-min run; that is the cost of catching a
+   systemic break after one wave instead of after all 220 batches, and it stays.
+2. (merged into 1.)
+3. PROSE BANS ARE WEAK, AND A HELPER CANNOT REFUSE COMMANDS while workers hold an unrestricted
+   Bash tool. Rule: enforcement is the report-evidence gate in rule 1 (a finding without tldr
+   evidence is skipped), not the prompt; the prompt still names the exact grammar path
+   (`~/.cargo/registry/src/*/tree-sitter-<lang>-*/src/node-types.json`) and keeps every command
+   inside the repo. A Bash-less agent type exposing only Read/Edit and `tldr` is the future form.
 4. WASTED BATCHES. 67 of 220 batches produced no fix; uncompiled `archived/` code explains
    only 4 of them. Rule: rank batches with `tldr hotspots` (churn × complexity) and scan the
    long tail last or under a budget; exclude uncompiled/cfg-gated modules as a minor extra.
@@ -89,7 +95,7 @@ What failed, and the rule the skill adopts:
    test → file → batch → fixer dispatch needs no human.
 9. TOOLING PROXIES. `node --check` passed a script the Workflow loader rejected (duplicate
    `const`); scripts cannot call Date (pass timestamps via args). Rule: the parse check is a
-   one-batch dry run of the Workflow tool itself.
+   one-batch dry run of the Workflow tool itself, which doubles as the pilot of rule 1's wave.
 
 ## Notes and lessons learned
 
