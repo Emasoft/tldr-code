@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## v0.4.1-fork.1 — 2026-09-05
+
+Fork release (Emasoft/tldr-code). The `-fork.N` pre-release tag keeps `tldr --version`
+distinguishable from any future upstream 0.4.1 and sorts below it.
+
+### Fixed
+
+- **Anonymous-callback names are the real callee, once per call.** Six naming defects in the
+  `kind: "call"` rows, each reproduced on a probe file before the fix:
+  - Elixir: `def`/`defmodule`/`if`/`case` are call+do_block in the grammar, so every function and
+    control form was re-emitted as a duplicate `call` row (`fastedit --replace def` hit the first
+    function in the file). Denylisted.
+  - Ruby: `RSpec.describe "X" do` was named `RSpec:x`; the callee span now covers the method.
+  - Kotlin: trailing-lambda calls carried the argument list in the name
+    (`describe("a thing"):a-thing`); the callee slot is peeled.
+  - Two callables handed to one call emitted the same region twice; one region per call now.
+  - Chained calls: `fetch("url").then(cb)` was titled `then:url` from the inner call's argument.
+  - PHP: double-quoted literals (`encapsed_string`) were never slugged as titles.
+- **Skill**: the duplicate-title row claimed `test:same#1`; the first keeps its bare name and only
+  later collisions get `#2`, `#3`. A receiver-call row documents the `RSpec.describe` form.
+
 ### Added
 
 - **`structure` now maps anonymous callbacks.** A multi-line anonymous callable passed to a call
