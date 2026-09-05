@@ -3,7 +3,7 @@ trdd-id: PX8JOJY4
 title: Ship a calibrated code-scan workflow skill with tldr-code
 column: todo
 created: 2026-09-05T15:08:16+0200
-updated: 2026-09-05T15:12:00+0200
+updated: 2026-09-05T15:31:00+0200
 current-owner: claude-session-2026-09-05
 task-type: feature
 min-approval-requirement: none
@@ -40,6 +40,7 @@ A skill directory `skills/tldr-scan-workflow/` (name to confirm) containing:
 - [ ] Workers use `tldr` for cross-file navigation (verified by counting `tldr` invocations in worker transcripts, not by the prompt text).
 - [ ] fastedit evaluated as the write path for symbol-body replacements; adopted only if it measurably reduces tokens versus Edit on the same batch, with the number recorded.
 - [ ] `make install-skill` installs it alongside `tldr-code` (or the Makefile target is extended), and `tldr doctor` detects it if that check is generalised.
+- [ ] No absolute home paths and no personal names anywhere in the shipped skill, template, or prompts: paths are `~/`-relative or repo-relative, the repo root is an `args` value, and the report dir is derived from it (user directive 2026-09-05).
 
 ## Notes and lessons learned
 
