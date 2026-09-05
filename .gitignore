@@ -64,3 +64,11 @@ tldr-test/
 # (recurrence broke v0.2.1's first cargo publish — must stay ignored)
 *.class
 META-INF/
+
+# janitor: report dirs carry private data (paths, hostnames, pasted secrets)
+/reports/
+/reports_dev/
+
+# local dev scratch (workflow scripts, batch plans); never part of the distribution
+/scripts_dev/
+/docs_dev/

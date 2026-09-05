@@ -3,7 +3,7 @@ trdd-id: PX8JOJY4
 title: Ship a calibrated code-scan workflow skill with tldr-code
 column: todo
 created: 2026-09-05T15:08:16+0200
-updated: 2026-09-05T15:08:16+0200
+updated: 2026-09-05T15:12:00+0200
 current-owner: claude-session-2026-09-05
 task-type: feature
 min-approval-requirement: none
@@ -16,7 +16,7 @@ labels: [skill, workflow, token-economy]
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-05
 
 - NEXT ACTION: wait for workflow run `wf_b18824d3-a84` (full-codebase scan, 220 batches) to finish; harvest its calibration data (see Acceptance); then build `skills/tldr-scan-workflow/` from the persisted script.
-- Script to start from: the persisted workflow script of that run (session `workflows/scripts/codebase-scan-and-fix-wf_b18824d3-a84.js`), already patched to make `tldr references/impact/definition/structure` the mandatory navigation and to forbid recursive grep and `sed -n` dumps.
+- Script to start from: `scripts_dev/workflows/codebase-scan-and-fix.js` in this checkout (gitignored dev copy of the run's persisted script; `batches-index.json` beside it is the batch plan), already patched to make `tldr references/impact/definition/structure` the mandatory navigation and to forbid recursive grep and `sed -n` dumps. Its canonical home becomes `skills/<skill>/references/workflow.js` once the skill exists. A contributor without that dev copy rebuilds it from the prompts in this card's What section.
 - Measured so far: pilot batch b067 (4 files, 2825 lines, Sonnet lean-worker, medium effort) = 158K tokens, 171 s, 27 tool calls, 3 real fixes, 3 refuted findings, compiled clean. The pilot made ZERO `tldr` calls under the softer "tldr or grep" wording; the wording is the lever because lean-workers have no Skill tool, only Bash.
 - Unmeasured: tokens and finding quality of a batch under the hardened tldr-only prompt; verify-stage revert rate; fastedit as the write path.
 
