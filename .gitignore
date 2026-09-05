@@ -72,3 +72,22 @@ META-INF/
 # local dev scratch (workflow scripts, batch plans); never part of the distribution
 /scripts_dev/
 /docs_dev/
+
+# regenerable runtime state and editor/OS/tool droppings
+# (.git/index.lock cannot be listed here: nothing under .git/ is subject to .gitignore)
+/.janitor/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+*.tmp
+*.bak
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
