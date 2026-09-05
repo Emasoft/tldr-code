@@ -53,8 +53,8 @@ Measured (run 2: 143 scan + 153 verify + 1 consolidation agents, 36.9M tokens, 7
 | run 1 (grep prompt, stalled at 14:42) | 78 scans, 101 fixed / 57 skipped / 119 refuted, 0 verifies, tokens unmeasured (journal has no usage) |
 | detection audited | high/critical band sampled and real; the 73 `low | FIXED` cleanups are unaudited and mostly untested |
 | verify verdicts | 350 KEEP, 0 REVERT; at least 2 kept hunks broke ~200 tests |
-| tldr navigation calls vs `sed -n` dumps vs `grep -r` vs `find /` | 191 vs 209 vs 69 vs 13 — every prose ban was violated. Of the 13, about 5 were bounded (`-maxdepth 0/6`); the unbounded ones hunted grammar files (`grammar.js`, `node-types.json`) despite the hint, so the hint must name both files and say `ls` the glob |
-| run-2 fixed count | 186 from the report files (authoritative); the workers' self-reports in the journal sum to 189 |
+| tldr navigation calls vs `sed -n` dumps vs `grep -r` vs `find /` | 191 vs 209 vs 69 vs 13 — every prose ban was violated. All 13 read: 5 `-maxdepth 0` probes (a worker testing whether `find` is allowed, then walking `~` anyway), 3 `-maxdepth 6` walks, 5 unbounded hunts for `node-types.json`/`grammar.js` despite the hint. The hint must name both files and say `ls` the exact glob |
+| run-2 fixed count | 186 FIXED report lines; 189 by worker self-report; the gap is range-style lines (`:431-466`), unresolved; hunks in `git diff` were not counted |
 | batches with zero fixes (both runs) | 67 of 220; only 4 entirely in uncompiled `commands/archived/` |
 | findings the worker itself refuted | 305 of 768 (40%) |
 | pilot (grep prompt) | 158K tokens / 2825 lines, 3 fixes, compiled clean |
