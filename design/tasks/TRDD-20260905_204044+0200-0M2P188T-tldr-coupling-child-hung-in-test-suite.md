@@ -1,9 +1,9 @@
 ---
 trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
-column: proposal
+column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-05T20:40:44+0200
+updated: 2026-09-05T21:33:13+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -51,3 +51,5 @@ never observed at the parent commit.
 - [ ] the test carries a timeout
 
 ## Approval log
+
+- 2026-09-05T21:33:13+0200 — APPROVED by the session Claude under the user's 2026-09-05 directive to decide from verified facts and implement what is good. Work is authorized; no push.

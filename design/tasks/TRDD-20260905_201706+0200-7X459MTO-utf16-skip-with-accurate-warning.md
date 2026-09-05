@@ -1,9 +1,9 @@
 ---
 trdd-id: 7X459MTO
 title: Skip UTF-16 sources without analysing them while keeping the UTF-16 warning
-column: proposal
+column: planned
 created: 2026-09-05T20:17:06+0200
-updated: 2026-09-05T20:17:06+0200
+updated: 2026-09-05T21:33:13+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -49,3 +49,5 @@ string) stands until this proposal lands.
   a UTF-16 message in its issues section and reports it as not analysed.
 
 ## Approval log
+
+- 2026-09-05T21:33:13+0200 — APPROVED by the session Claude under the user's 2026-09-05 directive to decide from verified facts and implement what is good. Work is authorized; no push.

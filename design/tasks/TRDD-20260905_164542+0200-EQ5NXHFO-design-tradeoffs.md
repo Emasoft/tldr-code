@@ -1,9 +1,9 @@
 ---
 trdd-id: EQ5NXHFO
 title: Resolve intentional-but-undocumented design tradeoffs surfaced by the scan
-column: proposal
+column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-05T16:45:42+0200
+updated: 2026-09-05T21:33:13+0200
 current-owner: codebase-scan-2026-09-05
 task-type: refactor
 min-approval-requirement: user
@@ -68,3 +68,5 @@ Affected crates: `crates/tldr-cli`, `crates/tldr-core`, `crates/tldr-mcp`.
 - crates/tldr-mcp/src/tools/security.rs:167 — handle_secure silently treats a scan Err as 0 issues in the score
 
 ## Approval log
+
+- 2026-09-05T21:33:13+0200 — APPROVED by the session Claude under the user's 2026-09-05 directive to decide from verified facts and implement what is good. Work is authorized; no push.

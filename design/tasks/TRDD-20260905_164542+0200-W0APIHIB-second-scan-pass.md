@@ -1,9 +1,9 @@
 ---
 trdd-id: W0APIHIB
 title: Second scan pass needs-build and cross-file fixes
-column: proposal
+column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-05T20:59:31+0200
+updated: 2026-09-05T21:33:13+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -435,3 +435,5 @@ tagged with its scan theme (`needs_build` / `cross_file` / `other`) and exact li
 - crates/tldr-cli/src/commands/daemon/daemon_registry.rs (CAS_RETRY_ATTEMPTS = 3) — under 3 concurrent `daemon start` calls into one registry, `val003_daemon_registry_test::concurrent_add_entry_is_bounded_cas_safe` saw only 1 of 3 entries 500 ms later although every start exited 0; either the settle window is too short or a retry exhaustion drops an entry with no error reaching the caller. Settle on an idle machine: if it reproduces, registration failure must be surfaced, not swallowed (found during the landing, missed by the first pass)
 
 ## Approval log
+
+- 2026-09-05T21:33:13+0200 — APPROVED by the session Claude under the user's 2026-09-05 directive to decide from verified facts and implement what is good. Work is authorized; no push.

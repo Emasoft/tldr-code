@@ -1,9 +1,9 @@
 ---
 trdd-id: WYRG8HQ2
 title: Consolidate DRY-candidate duplication flagged by the scan
-column: proposal
+column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-05T16:45:42+0200
+updated: 2026-09-05T21:33:13+0200
 current-owner: codebase-scan-2026-09-05
 task-type: refactor
 min-approval-requirement: user
@@ -67,3 +67,5 @@ every duplicate site at it. Affected crates: `crates/tldr-cli`, `crates/tldr-cor
 - - 13:- crates/tldr-core/src/fix/javascript.rs:571-599 | KEEP | New string-skipping state machine in `analyze_unexpected_end` is a byte-for-byte match of the sibling `count_delimiters` helper's escape/quote logic (same file, lines 826-860) — so it inherits that helper's existing (accepted) double-backslash escaping limitation rather than introducing a new defect; correctly stops treating delimiter chars inside `"`/`'`/`` ` `` literals as structural. rustfmt-clean. DRY-CANDIDATE: duplicates `count_delimiters`'s in-string/prev-char state machine verbatim (3rd occurrence in file per the report's own low-severity findings) — a shared `fn skip_strings(source) -> impl Iterator<Item=(char,bool)>` or similar would remove the duplication, but not required for correctness.
 
 ## Approval log
+
+- 2026-09-05T21:33:13+0200 — APPROVED by the session Claude under the user's 2026-09-05 directive to decide from verified facts and implement what is good. Work is authorized; no push.

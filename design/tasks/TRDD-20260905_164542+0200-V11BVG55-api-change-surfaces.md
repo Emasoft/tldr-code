@@ -1,9 +1,9 @@
 ---
 trdd-id: V11BVG55
 title: Retire or fix dead/misleading public API surfaces flagged by the scan
-column: proposal
+column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-05T16:45:42+0200
+updated: 2026-09-05T21:33:13+0200
 current-owner: codebase-scan-2026-09-05
 task-type: refactor
 min-approval-requirement: user
@@ -69,3 +69,5 @@ its exact file:line.
 - crates/tldr-core/tests/ssa_tests.rs:399 — minimal_ssa_has_def_use_chains computes _ssa and asserts nothing ("just verify it exists")
 
 ## Approval log
+
+- 2026-09-05T21:33:13+0200 — APPROVED by the session Claude under the user's 2026-09-05 directive to decide from verified facts and implement what is good. Work is authorized; no push.
