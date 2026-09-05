@@ -3,7 +3,7 @@ trdd-id: PX8JOJY4
 title: Ship a calibrated code-scan workflow skill with tldr-code
 column: todo
 created: 2026-09-05T15:08:16+0200
-updated: 2026-09-05T17:40:00+0200
+updated: 2026-09-05T21:00:22+0200
 current-owner: claude-session-2026-09-05
 task-type: feature
 min-approval-requirement: none
@@ -15,10 +15,10 @@ labels: [skill, workflow, token-economy]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-05
 
-- NEXT ACTION: wait for workflow run `wf_b18824d3-a84` (full-codebase scan, 220 batches) to finish; harvest its calibration data (see Acceptance); then build `skills/tldr-scan-workflow/` from the persisted script.
-- Script to start from: `scripts_dev/workflows/codebase-scan-and-fix.js` in this checkout (gitignored dev copy of the run's persisted script; `batches-index.json` beside it is the batch plan), already patched to make `tldr references/impact/definition/structure` the mandatory navigation and to forbid recursive grep and `sed -n` dumps. Its canonical home becomes `skills/<skill>/references/workflow.js` once the skill exists. Until then this card is actionable only from a checkout that has that dev copy (the prompts live nowhere tracked yet); shipping the skill is what removes that limitation.
+- NEXT ACTION: the landing is COMMITTED, not pushed (2026-09-05 21:00): `62bfe3a` scan, 184 files (three scan-caused root fixes inside: scanner depth-0 cycle guard, AST-cache language dispatch, `is_inside_class` for Java interface/enum/record); `8706dff` 7 proposals, none approved; `24a6bad` the skill under `skills/tldr-scan-workflow/` + Makefile target; `f7444bd` val013 registry isolation; `866c21e` six stale/env-dependent upstream tests. Residual failures: 87 pre-existing at the parent 7f50527 (same name, per-binary count and assertion text or full failure block), 1 unreproducible hang tracked as proposal TRDD-0M2P188T. Open acceptance lines: the end-to-end template run from a fresh session and the fastedit evaluation. The card stays in `todo` until the user rules whether it may move with those two open; nothing else is pending on it.
+- Canonical script: `skills/tldr-scan-workflow/references/workflow.js` (committed in `24a6bad`), with the prompts in `references/prompts.md` and the measured figures in `references/calibration.md`. The gitignored dev copy `scripts_dev/workflows/codebase-scan-and-fix.js` (+ `batches-index.json`) is the run's original and is no longer needed to act on this card.
 - Measured so far: pilot batch b067 (4 files, 2825 lines, Sonnet lean-worker, medium effort) = 158K tokens, 171 s, 27 tool calls, 3 real fixes, 3 refuted findings, compiled clean. The pilot made ZERO `tldr` calls under the softer "tldr or grep" wording; the wording is the lever because lean-workers have no Skill tool, only Bash.
-- Unmeasured: tokens and finding quality of a batch under the hardened tldr-only prompt; verify-stage revert rate; fastedit as the write path.
+- Unmeasured: tokens and finding quality of a batch under the hardened tldr-only prompt; verify-stage revert rate; fastedit as the write path; an end-to-end run of the shipped template itself.
 
 ## Why
 
@@ -37,10 +37,10 @@ A skill directory `skills/tldr-scan-workflow/` (name to confirm) containing:
 
 - [ ] Calibration table in the skill, from real runs: tokens per batch (grep-prompt vs tldr-prompt), findings per 100K tokens, FALSE_POSITIVE share, verify REVERT share, compile-break count after the run.
 - [ ] The template runs end-to-end on this repo from a fresh session using only the skill's instructions.
-- [ ] Workers use `tldr` for cross-file navigation: `tldr` invocations ≥ 3× the sum of `grep -r` + `sed -n` calls, counted in worker transcripts. The run-2 template FAILS this bar (191 vs 278); the hook-based allow-list in lesson 3 is what closes it.
+- [ ] Workers use `tldr` for cross-file navigation, measured by yield, not by call ratio: every FIXED report line carries a pasted `tldr references` or `tldr impact` excerpt for its reachability claim (lines without one are auto-SKIPPED by the verifier, lesson 1), and the regression rate after the per-wave gate is below the run-2 baseline of 2 broken hunks per 287 fixes. (The earlier "tldr calls ≥ 3× grep + sed" bar was dropped: run 2 scored 191 vs 278 and still landed real fixes, so the ratio measures obedience, not value.)
 - [ ] fastedit evaluated as the write path for symbol-body replacements; adopted only if it measurably reduces tokens versus Edit on the same batch, with the number recorded.
 - [ ] `make install-skill` installs it alongside `tldr-code` (or the Makefile target is extended), and `tldr doctor` detects it if that check is generalised.
-- [ ] No absolute home paths and no personal names anywhere in the shipped skill, template, or prompts: paths are `~/`-relative or repo-relative, the repo root is an `args` value, and the report dir is derived from it (user directive 2026-09-05).
+- [x] No absolute home paths and no personal names anywhere in the shipped skill, template, or prompts: paths are `~/`-relative or repo-relative, the repo root is an `args` value, and the report dir is derived from it (user directive 2026-09-05).
 
 ## Lessons from runs 1 and 2 (2026-09-05) — design constraints for the skill
 
@@ -65,7 +65,7 @@ report files after a stall; pilot-first; a compile+test gate at the end.
 
 What failed, and the rule the skill adopts:
 
-1. VERIFY HAD THE WRONG EVIDENCE. Only 40 of 353 KEEP lines cite a second file location; the
+1. VERIFY HAD THE WRONG EVIDENCE. Only 28 of the 76 KEEP verdict lines in the verify reports (`t*.md`) name at least two distinct `.rs` path strings (the earlier hand count of "39 of 353" had no recorded basis and could not be reproduced; this one is re-derived by the command below, run against `reports/workflows/20260905_141407+0200-codebase-scan/`); the
    rest judged the hunk in isolation, and even the ones that looked cross-file passed 2
    regressions out of 350 hunks, because both bugs lived outside the hunk: the scanner's root
    pre-seeding 60 lines above it, and `secure.rs`'s admitted extension list in another file. A
@@ -76,6 +76,17 @@ What failed, and the rule the skill adopts:
    checks on a 306K-line crate; the per-check time was NOT captured this session (measure it
    in the pilot wave and record it here before the skill ships). Whatever it is, it buys
    catching a systemic break after one wave instead of after all 220 batches, and it stays.
+   Counting command for the cross-file figure (prints the number of KEEP verdict lines that
+   name at least two distinct `.rs` files; 28 on the run-2 reports):
+
+```bash count-cross-file-keep
+RP=~/Code/tldr-code/reports/workflows/20260905_141407+0200-codebase-scan
+/usr/bin/grep -h 'KEEP' "$RP"/t*.md | while IFS= read -r l; do
+  n=$(printf '%s\n' "$l" | /usr/bin/grep -oE '[A-Za-z0-9_./-]+\.rs' | sort -u | wc -l | tr -d ' ')
+  [ "$n" -ge 2 ] && echo x
+done | wc -l | tr -d ' '
+```
+
 2. (merged into 1.)
 3. PROSE BANS ARE WEAK, AND A HELPER CANNOT REFUSE COMMANDS while workers hold an unrestricted
    Bash tool. Rule: enforcement is the report-evidence gate in rule 1 (a finding without tldr
@@ -84,7 +95,7 @@ What failed, and the rule the skill adopts:
    inside the repo. Future form: a worker whose Bash is allow-listed by a PreToolUse hook to
    `tldr`, `rustfmt --emit stdout`, `ls`, `wc` (no registered agent type is Bash-less with
    Edit, and `tldr` is a CLI, so a hook is the only real enforcement).
-   fastedit as the write path: not exercised in runs 1–2 (302 Edit calls, 0 fastedit); no data.
+   fastedit as the write path: not exercised (302 Edit calls in run 2, run 1 uncounted, 0 fastedit in either); no data.
 4. WASTED BATCHES. 67 of 220 batches produced no fix; uncompiled `archived/` code explains
    only 4 of them. Rule: rank batches with `tldr hotspots` (churn × complexity) and scan the
    long tail last or under a budget; exclude uncompiled/cfg-gated modules as a minor extra.
