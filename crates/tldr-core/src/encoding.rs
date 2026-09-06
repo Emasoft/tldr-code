@@ -48,6 +48,13 @@ use crate::TldrError;
 
 /// Result of reading a source file with encoding detection.
 #[derive(Debug, Clone)]
+// why non_exhaustive, added together with the `Skipped` variant: this enum is public API
+// (`pub mod encoding`), so adding a variant breaks any downstream exhaustive `match`. That
+// break is already being taken here, which makes this the one moment the guard is free — it
+// costs nothing extra now and makes every FUTURE variant purely additive. Within this crate
+// matches stay exhaustive and the compiler still catches a missed arm; only downstream
+// crates are required to carry a wildcard.
+#[non_exhaustive]
 pub enum FileReadResult {
     /// File was valid UTF-8 (possibly with BOM stripped)
     Ok(String),
@@ -133,7 +140,12 @@ pub struct EncodingIssues {
     /// why this is separate from `binary_files`: that list holds names only, so a UTF-16 file
     /// recorded there loses the "UTF-16 encoded (unsupported)" message AND is mislabelled as
     /// binary. Keeping the reason is the whole point of the skip.
-    #[serde(default)]
+    // why both attributes: `default` keeps DEserialisation of older JSON working (no key
+    // present), and `skip_serializing_if` keeps SErialisation byte-identical to the old output
+    // whenever nothing was skipped — which is the common case. Without the second, every
+    // emitted document would grow a `skipped_files: []` key and a consumer using
+    // `deny_unknown_fields` on its own mirror struct would break on output it never asked for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped_files: Vec<EncodingIssue>,
 }
 
@@ -223,6 +235,8 @@ const UTF16_BE_BOM: &[u8] = &[0xFE, 0xFF];
 /// * `Ok(FileReadResult::Ok(content))` - Valid UTF-8 content
 /// * `Ok(FileReadResult::Lossy { content, warning })` - Lossy decoded content with warning
 /// * `Ok(FileReadResult::Binary)` - File is binary
+/// * `Ok(FileReadResult::Skipped { warning })` - Recognised but not analysed (e.g. UTF-16),
+///   with the reason; no content is returned to the caller
 /// * `Err(TldrError)` - IO error
 pub fn read_source_file(path: &Path) -> Result<FileReadResult, TldrError> {
     let bytes = std::fs::read(path)?;

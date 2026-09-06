@@ -3,7 +3,7 @@ trdd-id: 7X459MTO
 title: Skip UTF-16 sources without analysing them while keeping the UTF-16 warning
 column: planned
 created: 2026-09-05T20:17:06+0200
-updated: 2026-09-06T03:53:20+0200
+updated: 2026-09-06T03:56:52+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -14,6 +14,16 @@ labels: [scan-2026-09-05, encoding]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
 
+- **THIS IS A BREAKING CHANGE to a public API, deliberately taken.** Say so when releasing.
+  Two breaks: adding a variant to `pub enum FileReadResult` breaks any downstream exhaustive
+  `match`, and `content()` now returns `None` where it returned `Some("")` for UTF-16 — the
+  latter IS the fix, and it is invisible to the compiler. Version is `0.4.1-fork.1`, i.e.
+  pre-1.0 and a fork, so semver permits it in a minor bump; there is no evidence of external
+  dependents either way.
+  `#[non_exhaustive]` was added to the enum IN THE SAME CHANGE. That is itself breaking, which
+  is exactly why it belongs here: the break is already being taken, so the guard is free now
+  and makes every future variant purely additive. In-crate matches stay exhaustive and the
+  compiler still catches a missed arm; only downstream crates need a wildcard.
 - IMPLEMENTED via shape 1: `FileReadResult::Skipped { warning }`. `content()` returns `None`
   for it (that is the fix — the old `Lossy { content: "", .. }` handed callers an empty string
   as analysable text), `warning()` and `has_warning()` include it, `is_skipped()` added, and
