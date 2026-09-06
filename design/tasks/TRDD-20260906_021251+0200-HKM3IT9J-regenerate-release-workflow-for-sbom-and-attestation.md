@@ -3,7 +3,7 @@ trdd-id: HKM3IT9J
 title: Regenerate release.yml so the SBOM and attestation config take effect
 column: planned
 created: 2026-09-06T02:12:51+0200
-updated: 2026-09-06T02:24:00+0200
+updated: 2026-09-06T02:31:00+0200
 current-owner: claude-session-2026-09-05
 task-type: security
 min-approval-requirement: none
@@ -20,13 +20,14 @@ labels: [supply-chain, release, cargo-dist]
 - Two things to know before running the regeneration. `github-attestations` is marked
   EXPERIMENTAL upstream, so watch the first release that uses it rather than trusting it
   silently. `cargo-cyclonedx` is documented package-local, and the
-  workspace-level setting still applies here. Traced in v0.31.0's source: this file's flat
-  `[dist]` table is the v0-shaped one (`cargo-dist-version`, `ci`, `installers`, `targets` are
-  v0 key names), so it parses as `config/v0.rs`'s `DistMetadata`, whose package config inherits
-  the workspace value at lines 915-917 when the package sets none; `config/v0_to_v1.rs:95-146`
-  then carries `cargo_cyclonedx` into the v1 cargo build layer, and
-  `config/v1/builds/cargo.rs` applies it. The root `Cargo.toml` has no
-  `[package.metadata.dist]`, so nothing overrides it.
+  workspace-level setting still applies here. Observed in v0.31.0's own loader,
+  `cargo-dist/src/tasks.rs:992-1024`: the config file is read by
+  `config::parse_metadata_table_or_manifest` into the v0 `DistMetadata`, turned into a v1 layer
+  by `to_toml_layer(true)`, and that WORKSPACE layer is passed into every package's
+  `app_config(...)` alongside the package's own layer, which overrides only the keys it sets
+  (`config/v1/builds/cargo.rs` applies `cargo_cyclonedx` through `apply_val`). The root
+  `Cargo.toml` has no `[package.metadata.dist]`, so nothing overrides it here. If the
+  regenerated workflow still lacks an SBOM step, `config/v0_to_v1.rs` is the seam to look at.
 - The workflow half is NOT done: `.github/workflows/release.yml` is generated, and this checkout
   has no `dist` binary, so the SBOM and attestation steps are not in the file yet. Until it is
   regenerated, a release still ships without either.
