@@ -14,26 +14,42 @@ labels: [scan-2026-09-05, api_change]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
 
-- **`tldr-core` IS A PUBLISHED CRATE.** Verified against the crates.io sparse index
-  (`https://index.crates.io/tl/dr/tldr-core`): 13 versions, `0.1.0` through `0.4.0`. Upstream is
-  `parcadei/tldr-code`. THIS FORK is `0.4.1-fork.1`, which is NOT on crates.io — so a change here
-  reaches crates.io consumers only if it is merged upstream.
-- **Consequence, and it invalidates a finding rather than resolving it:** "dead code" on this card
-  was concluded from an in-repo caller search. That heuristic is INVALID for a `pub` item in a
-  published library — the whole point of a `pub` export is callers you cannot grep. Zero in-repo
-  callers is the NORMAL state of a public utility, not evidence it is dead.
+- **`tldr-core` IS A PUBLISHED CRATE — but read the next bullet before using that fact.**
+  Verified against the crates.io sparse index (`https://index.crates.io/tl/dr/tldr-core`):
+  13 versions, `0.1.0` through `0.4.0`, upstream `parcadei/tldr-code`. THIS FORK is
+  `0.4.1-fork.1`, which is NOT in the index.
+- **CORRECTED 2026-09-06 — the first version of this bullet drew the wrong conclusion from that,
+  and the correction is the useful part.** It argued that "dead code" findings are invalid
+  because a published `pub` export has callers you cannot grep. That protects consumers of
+  **crates.io `tldr-core` ≤ 0.4.0**, which is a DIFFERENT ARTIFACT from this tree. Nothing
+  resolves to `0.4.1-fork.1`; reaching this code as a library requires naming the fork
+  explicitly. So I measured it instead of assuming: GitHub code search for
+  `"Emasoft/tldr-code"` in a `Cargo.toml` returns **0**, the fork has **0** forks, and upstream
+  `"parcadei/tldr-code"` returns **5**. This fork has NO library consumers; its consumers run the
+  `tldr` binary, which exercises no public API.
+- **The rationale that actually survives is divergence cost, not compatibility.** Deleting a
+  public item here buys nothing measurable and creates a merge conflict against upstream forever
+  after. This fork's value depends on tracking `parcadei/tldr-code`, so a deletion needs a
+  benefit big enough to pay for that, and "an in-repo grep found no callers" is not one. Note
+  this standard cuts BOTH ways and is recorded so it cannot be applied selectively: it also
+  counts against the breaking change already shipped in TRDD-7X459MTO, which diverges from
+  upstream considerably more than deleting an unused function would.
 - Exactly **2 of the 17** items are affected, and both are fully publicly reachable (verified,
   not inferred — every link in each chain checked):
   - `hubs.rs:311` — `pub fn with_composite` in `pub mod hubs` (analysis/mod.rs:40) in
     `pub mod analysis` (lib.rs:56) ⇒ `tldr_core::analysis::hubs::HubScore::with_composite`.
   - `ast_utils.rs:1138` — `pub fn verify_call_in_statement` in `pub mod ast_utils`
     (security/mod.rs:11) in `pub mod security` (lib.rs:147).
-- **VERDICT for those 2: fix the doc, KEEP the API.** Each finding is really two claims bolted
-  together, one false and one true. "It is dead" is false (above). "Its doc contradicts /
-  overstates its body" is true and is the actual defect — hubs' doc advertises PageRank and
-  betweenness while the body always sets both to `None`. Fixing the doc is non-breaking and
-  removes the real harm; removing the function would be a breaking change to a published API in
-  order to delete code that costs nothing.
+- **VERDICT for those 2: fix the doc, KEEP the API. DONE — commit `ec9416e`.** Each finding
+  bolts two claims together with different truth values and different remedies. "It is dead" is
+  unproven (an in-repo grep cannot settle it) and deleting on that basis costs a merge conflict
+  for no measured gain. "Its doc contradicts / overstates its body" is TRUE, is the part that
+  actively misleads a reader, and is fixable for free.
+  `ast_utils.rs` turned out WORSE than the finding said, verified by reading the body:
+  `verify_call_in_statement` is `statement.contains(call_name)` then `return true`, with
+  `_language` unused. It parses nothing, so it matches inside comments and string literals —
+  precisely what its doc promised it excluded. A function named "verify" that verifies nothing.
+  Both docs now describe actual behaviour; `cargo check -p tldr-core --all-targets` is clean.
 - The **other 15 items are unaffected** by any of this — wrong classification, missing validation,
   hardcoded values, tautological tests, misleading docs are real defects whether or not anything
   external calls them. Publication status is not a defence for them.

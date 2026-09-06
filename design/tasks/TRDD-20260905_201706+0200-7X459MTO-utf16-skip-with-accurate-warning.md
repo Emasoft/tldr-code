@@ -18,8 +18,19 @@ labels: [scan-2026-09-05, encoding]
   Two breaks: adding a variant to `pub enum FileReadResult` breaks any downstream exhaustive
   `match`, and `content()` now returns `None` where it returned `Some("")` for UTF-16 — the
   latter IS the fix, and it is invisible to the compiler. Version is `0.4.1-fork.1`, i.e.
-  pre-1.0 and a fork, so semver permits it in a minor bump; there is no evidence of external
-  dependents either way.
+  pre-1.0 and a fork, so semver permits it in a minor bump.
+  **SUPERSEDES the sentence this replaces ("there is no evidence of external dependents either
+  way"), which was true only about the FORK and is now measured: the fork has 0 library
+  consumers (0 Cargo.toml references, 0 forks), but the ANCESTOR does — crates.io `tldr-core`
+  has 13 published versions and upstream `parcadei/tldr-code` is referenced by 5 repos. So the
+  break is harmless where it currently lives and NOT harmless where it would land.
+  ACTION REQUIRED: this break MUST be called out explicitly in any upstream PR that carries it.
+  Do not let it ride in as an ordinary bugfix.**
+  Consistency note, recorded because it was decided the other way one hour later: TRDD-V11BVG55
+  adopts "do not diverge from upstream without a measured benefit" as the standard for deleting
+  a public item. That standard counts against THIS change too — it diverges more than a deletion
+  would. The fix is still right (the old behaviour handed callers an empty string as analysable
+  text), but it was not weighed against divergence cost at the time, and it should have been.
   `#[non_exhaustive]` was added to the enum IN THE SAME CHANGE. That is itself breaking, which
   is exactly why it belongs here: the break is already being taken, so the guard is free now
   and makes every future variant purely additive. In-crate matches stay exhaustive and the
@@ -65,14 +76,21 @@ labels: [scan-2026-09-05, encoding]
   **CORRECTION 2026-09-06: this does NOT belong on TRDD-V11BVG55, as this bullet previously
   claimed.** That card's 17 items were read in full and none mentions `encoding`; the routing was
   an assumption. This follow-up currently has NO card.
-  Two verified facts now constrain it. (1) `tldr-core` is PUBLISHED on crates.io — 13 versions,
-  latest `0.4.0`, upstream `parcadei/tldr-code`; this fork's `0.4.1-fork.1` is not published. So
-  `pub mod encoding` (lib.rs:45) is published public API and its zero in-repo callers do NOT make
-  it dead — a `pub` export exists for callers you cannot grep. RETIRE is therefore a breaking
-  change to a published surface, not the cheap cleanup it appears to be. (2) The workspace reads
-  files at ~194 `fs::read_to_string` sites instead, so WIRE IN means touching all of them plus
-  every command's output schema. Neither option is small; that is why it needs a card and not a
-  drive-by.
+  Two measured facts now constrain it.
+  (1) RETIRE is not the cheap cleanup it appears to be, though NOT for the reason first written
+  here. The original claim was that `pub mod encoding` is published API with ungreppable callers.
+  That is wrong: those callers belong to crates.io `tldr-core` ≤ `0.4.0`, a different artifact
+  from this tree. Measured instead — GitHub code search for `"Emasoft/tldr-code"` in a
+  `Cargo.toml` returns **0**, the fork has **0** forks, upstream returns **5**. This fork has no
+  library consumers. What survives is divergence cost: deleting a public item here buys nothing
+  measurable and is a merge conflict against upstream forever after.
+  (2) WIRE IN is large but the status quo is worse than assumed. A survey of every non-test
+  `read_to_string` site (176 real, report under `reports/encoding-survey/`) buckets them
+  **75 PROPAGATED · 73 SILENT · 25 PANIC · 3 WARNED**. So a file that is not valid UTF-8 today
+  either aborts the whole command, vanishes from the analysis with no message, or panics — only
+  3 sites tell the user anything. That is the exact defect class this module exists to fix, and
+  it is 176 sites plus every command's output schema to address properly.
+  Neither option is small; that is why it needs a card and not a drive-by.
 
 ## Why
 
