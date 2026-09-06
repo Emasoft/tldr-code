@@ -29,6 +29,20 @@ pub const MAX_PARSE_SIZE: usize = 5 * 1024 * 1024;
 /// generated C tables, protobuf/flatbuffers output, binary-protocol fixtures
 /// written as `.py`/`.js`/`.rs` — carries it far later. Scanning the whole file
 /// would skip those too, trading one silent-loss bug for another.
+///
+/// **1024 is a judgment, not a derived value**, and the two failure directions are
+/// not symmetric:
+/// - TOO LARGE: a real source file with a NUL inside the first KiB is skipped and
+///   the warning miscalls it wide-encoded. A generated C blob table starting near
+///   the top of the file would do it. This is the live risk.
+/// - TOO SMALL: a wide-encoded file whose first N bytes are all non-Latin (a
+///   BOM-less UTF-16 file opening with a CJK docstring, where U+4E2D is `2D 4E`
+///   and carries no NUL) slips through. Detection needs only the first ASCII
+///   character — a space, a newline, `#`, `//` — so a handful of bytes suffices
+///   for anything with ASCII structure near the top, which source code has.
+///
+/// The bound is therefore generous on purpose: it costs nothing against the
+/// second failure and would only need shrinking if the first is ever observed.
 const NUL_SCAN_PREFIX: usize = 1024;
 
 /// TypeScript / JavaScript grammar dialect.

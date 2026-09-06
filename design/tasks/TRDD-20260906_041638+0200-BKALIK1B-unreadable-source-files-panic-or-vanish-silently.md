@@ -50,9 +50,19 @@ labels: [scan-2026-09-05, robustness, encoding]
   | total | **154** | 176 |
 
   62 sites excluded across six reasons — 34 test-only, 15 grep/parse false positives, the rest
-  benches/examples. The **0 PANIC** independently corroborates the hand verification above,
-  reached by a different method (the worker brace-matched and checked parent-module `cfg`
-  attributes; I reconciled 24 sites individually). Two methods, same answer.
+  benches/examples.
+  **CORRECTION — this is a REPLICATION, not a corroboration, and the commit that recorded it
+  claimed otherwise.** I wrote that the two counts "could not inherit each other's mistake". That
+  is backwards: I briefed that worker myself, naming the exact three exclusion criteria and
+  handing it the answer to the hardest case (`clones_integration_tests.rs`, gated at
+  `analysis/mod.rs:119`). A worker following that brief could not have reached a different PANIC
+  count — 0 was the only output the method allowed. It confirms I did not fumble the mechanics;
+  it is NOT evidence the method is right. If the three exclusion rules miss a fourth way to be
+  test-only — `cfg(any(test, feature = "…"))`, a `#[cfg(test)]` on an `impl` rather than a `mod`,
+  a dev-only path dependency — both counts are wrong in the same direction.
+  **The warrant for 0 PANIC is the hand reconciliation of all 24 sites, not the agreement.**
+  Stating it as cross-method agreement was worse than admitting one unverified count, because it
+  discourages the next person from checking.
 - **"176 call sites" was the wrong frame for the parse path.** `parse_file_with_lang` is, in its
   own words, "the single chokepoint every parse-based command goes through (structure, calls,
   smells, dead, secure, …)" — the oversize policy is already enforced there for exactly that

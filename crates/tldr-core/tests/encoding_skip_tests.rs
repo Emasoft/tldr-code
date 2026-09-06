@@ -89,9 +89,16 @@ fn wide_encoded_files_are_skipped_with_a_warning_not_analysed_as_empty() {
         );
     }
 
-    assert_eq!(
-        structure.files_skipped, 2,
-        "expected both wide-encoded fixtures to count as skipped; warnings were {:?}",
+    // Deliberately NOT `assert_eq!(files_skipped, 2)`. That couples this test to the directory's
+    // contents: adding a fifth fixture — a latin-1 file for the still-open identifier-mangling
+    // defect, which this card calls for — would break it, and the failure message would blame
+    // the wide-encoded fixtures while the real cause is an unrelated new file. The per-file
+    // assertions above already cover everything a count would, and they name the file that
+    // actually failed.
+    assert!(
+        structure.files_skipped >= 2,
+        "both wide-encoded fixtures should count as skipped; got {} with warnings {:?}",
+        structure.files_skipped,
         structure.warnings
     );
 
