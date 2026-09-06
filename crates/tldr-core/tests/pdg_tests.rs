@@ -581,12 +581,19 @@ def empty():
         // nonsense line numbers (out of range, or a huge slice for a 3-line
         // body) would never fail this test.
         //
-        // why the bound is `def` + `pass` and not the `pass` line alone: a PDG
-        // carries control edges as well as data edges, and the slicer follows
-        // them unconditionally (`DependenceType::Control => true` in
-        // pdg/slice.rs). So slicing back from `pass` legitimately pulls in the
-        // enclosing `def` line, and asserting "at most the line itself" here
-        // fails against correct behaviour rather than against a regression.
+        // why the bound is `def` + `pass` and not the `pass` line alone: the
+        // slice is computed over PDG nodes, which are CFG basic blocks, and
+        // `nodes_to_lines` (pdg/slice.rs) emits every line in a selected
+        // node's range `lines.0..=lines.1`. `def empty():` and `pass` are one
+        // block, so slicing from either yields both lines. The granularity is
+        // the block, not the statement — so "at most the line itself" asserts
+        // a precision this slicer does not claim.
+        //
+        // NOT the reason, though it looks like one: there is no control edge
+        // here. pdg/extractor.rs emits `DependenceType::Control` only when the
+        // source block is a `Branch` or `LoopHeader`, and a function header is
+        // neither. Reading the slicer's `Control => true` follow-decision alone
+        // suggests otherwise; the edge is never built for this shape.
         assert!(
             slice.contains(&3),
             "the slice must contain the line sliced from: {slice:?}"
