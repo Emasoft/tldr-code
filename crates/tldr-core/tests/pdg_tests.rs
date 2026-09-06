@@ -579,16 +579,23 @@ def empty():
         // why: the old test only unwrapped and left a comment saying the
         // result "depends on implementation" — a regression that returned
         // nonsense line numbers (out of range, or a huge slice for a 3-line
-        // body with no data dependencies) would never fail this test.
+        // body) would never fail this test.
+        //
+        // why the bound is `def` + `pass` and not the `pass` line alone: a PDG
+        // carries control edges as well as data edges, and the slicer follows
+        // them unconditionally (`DependenceType::Control => true` in
+        // pdg/slice.rs). So slicing back from `pass` legitimately pulls in the
+        // enclosing `def` line, and asserting "at most the line itself" here
+        // fails against correct behaviour rather than against a regression.
         assert!(
-            slice.len() <= 1,
-            "a `pass`-only function has no data dependencies, so the slice \
-             should contain at most the line itself: {slice:?}"
+            slice.contains(&3),
+            "the slice must contain the line sliced from: {slice:?}"
         );
         for &l in &slice {
             assert!(
-                (1..=4).contains(&l),
-                "slice line {l} is outside the 4-line source"
+                (2..=3).contains(&l),
+                "slice line {l} is outside the `def`/`pass` body of this \
+                 3-line function: {slice:?}"
             );
         }
     }
