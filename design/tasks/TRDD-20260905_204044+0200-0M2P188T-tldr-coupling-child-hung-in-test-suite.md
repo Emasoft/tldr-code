@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:30:46+0200
+updated: 2026-09-06T03:33:08+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -81,8 +81,54 @@ labels: [scan-2026-09-05, hang]
   So the command DOES walk the filesystem (workspace-marker discovery) and DOES enable type
   resolution. The two `read_file_safe` calls are only the pair-comparison half; the call-graph
   half takes a ROOT.
-- **SETTLED (after flipping twice — read this instead of the commit history).** The hung child
-  had TWO file arguments, so it ran PAIR mode, and pair mode is self-contained:
+- ## ✅ ROOT CAUSE LOCALIZED — this bullet supersedes every earlier account on this card
+  The profile was right from the beginning. My CODE SEARCHES were wrong, for one mundane
+  reason: I grepped `coupling.rs` for `callgraph` and got ZERO hits, then built four
+  conclusions on that zero. The function is `augment_with_project_call_graph` — `call_graph`
+  WITH AN UNDERSCORE. The pattern could not match it.
+
+  The real path, from the sample's own weights (3366 of 3366 samples, main thread):
+
+  ```
+  tldr::main                                          main.rs:460
+   -> tldr::run_command                               main.rs:698
+    -> patterns::coupling::run
+     -> patterns::coupling::run_pair_mode             <- PAIR mode, as established
+      -> patterns::coupling::augment_with_project_call_graph   coupling.rs:1487, CALLED AT 1936
+       -> callgraph::builder::build_project_call_graph
+        -> callgraph::builder_v2::build_project_call_graph_v2        3327
+         -> extract_and_resolve_calls                                3327
+          -> resolve_call_site_for_builder                           3327
+           -> resolve_method_or_attr_call                            3326
+            -> BuilderResolutionContext::resolve                     3326
+             -> resolution::resolve_call_with_receiver          1451 + 1389
+              -> resolution::resolve_global_fuzzy_match         1109  -> Vec::spec_from_iter
+              -> resolution::resolve_local_fuzzy_match          1389  -> Vec::spec_from_iter
+  ```
+
+  Consequences, each replacing an earlier claim on this card:
+  - `build_project_call_graph_v2` IS on the pair-mode path. Retracted, un-retracted, then
+    re-retracted across four commits; the UN-retraction was the correct one.
+  - The read-set is NOT the two files. `augment_with_project_call_graph` builds a project call
+    graph, so the earlier "18 lines is the whole input" argument does not hold. Terminating vs
+    non-terminating remains open on the evidence here.
+  - Time is spent in FUZZY-MATCH RESOLUTION, and its leaves are `Vec::spec_from_iter` — i.e.
+    each resolution attempt COLLECTS INTO A FRESH VEC. That is the allocation site, and it
+    explains the steadily growing RSS directly rather than by inference.
+  - The `find_var_in_line` frames I once called the hot path were 7 and 3 samples out of 3366,
+    under 0.2 % — a negligible branch I mistook for the peak because my symbol grep matched
+    `tldr_core` names and structurally EXCLUDED `tldr_cli`'s own frames, where the real chain
+    starts.
+  - **The timeout gap is now exact:** the last check is line 1912 and the expensive call is
+    line 1936, so `augment_with_project_call_graph` runs entirely unguarded.
+- NEXT ACTION: read `resolve_global_fuzzy_match` and `resolve_local_fuzzy_match` in
+  `core/src/callgraph/resolution.rs`, looking at what they collect per call site and how many
+  times the builder retries them. Two candidate shapes, both fitting the weights above: a
+  per-call-site full-index scan that is quadratic in (call sites x functions), or a retry that
+  never converges. The Vec allocation per attempt is the handle either way.
+- Superseded detail, kept only so the earlier commits are readable — the pair-mode surface
+  below is accurate as far as it goes, but INCOMPLETE: it omits the 1936 call above, which is
+  exactly the omission that produced the wrong conclusions.
 
   ```
   run_pair_mode              coupling.rs:1844-1968
