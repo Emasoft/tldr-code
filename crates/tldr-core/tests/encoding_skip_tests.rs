@@ -148,6 +148,43 @@ fn every_bom_variant_is_skipped_with_its_own_marker() {
     }
 }
 
+/// A NUL PAST `NUL_SCAN_PREFIX` must be ANALYSED, not skipped.
+///
+/// This pins the deliberate bound on the NUL scan, which is otherwise invisible to every other
+/// test here — they all use files whose NUL is at byte 1. The bound exists so a legitimate source
+/// file that embeds a raw NUL far in (generated C tables, protobuf output, binary-protocol
+/// fixtures written as `.py`/`.js`/`.rs`) is not skipped along with the wide-encoded ones, which
+/// would trade one silent-loss bug for another.
+///
+/// Without this test, shrinking the prefix "for speed" or replacing the bounded slice with a
+/// whole-file scan breaks that design decision while every other test still passes.
+#[test]
+fn a_nul_past_the_scan_prefix_is_analysed_not_skipped() {
+    let bytes = std::fs::read(fixtures().join("late_nul.py")).expect("late_nul.py missing");
+    let first_nul = bytes
+        .iter()
+        .position(|b| *b == 0)
+        .expect("late_nul.py has no NUL — the fixture no longer tests the boundary");
+    assert!(
+        first_nul > 1024,
+        "late_nul.py's first NUL is at {first_nul}, inside the scan prefix; the fixture must place \
+         it BEYOND the prefix or it tests nothing"
+    );
+
+    let structure = get_code_structure(&fixtures(), Language::Python, 0, None)
+        .expect("structure extraction over the reproducer directory failed");
+    let analysed: Vec<&str> = structure
+        .files
+        .iter()
+        .map(|f| f.path.to_str().unwrap_or_default())
+        .collect();
+    assert!(
+        analysed.iter().any(|p| p.ends_with("late_nul.py")),
+        "late_nul.py was skipped, but its NUL is past the scan prefix so it must be analysed. \
+         Analysed: {analysed:?}"
+    );
+}
+
 /// `control.py` and `bad.py` hold the same source text and differ only in encoding.
 ///
 /// This is what makes the fixture set an experiment rather than an anecdote: it removes every
