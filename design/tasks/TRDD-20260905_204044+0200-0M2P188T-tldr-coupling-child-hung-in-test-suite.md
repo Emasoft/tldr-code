@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:45:50+0200
+updated: 2026-09-06T03:47:19+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -95,21 +95,27 @@ labels: [scan-2026-09-05, hang]
   The whole histogram reconciles, which is what rules out the exact match being a coincidence
   or the counts being some other unit:
 
-  | quantity | value |
-  |---|---|
-  | `__psynch_cvwait` | 47124 = 14 x 3366, the workers |
-  | every other entry, summed | 3340 |
-  | main thread's own samples | 3366 |
-  | difference | 26, i.e. the entries the histogram collapses below its stated `>= 5` cutoff |
+  **The complement closes it exactly, so this is an identity and not a coincidence:**
 
-  So the units are SAMPLES, and the non-`cvwait` entries account for the main thread's 3366
-  almost exactly — which is what makes the table below a main-thread profile rather than an
-  aggregate. That is now arithmetic, not assumption.
+  ```
+  total samples   = 15 threads x 3366 = 50490
+  minus cvwait                        = 47124
+  remainder                           =  3366   <- exactly the main thread's own count
+  ```
 
-  The 118 % CPU therefore comes from something outside this window. An earlier parallel phase
-  that had ended by minute 13 is the natural reading but is NOT established — `TIME` may also
-  include threads that exited before sampling, and `%CPU` and `TIME` need not cover the same
-  interval. Sample EARLY as well as late on the next occurrence rather than assuming.
+  Nothing is unaccounted for. Every non-`cvwait` sample in that histogram belongs to the main
+  thread, which is what makes the table below a main-thread profile rather than an aggregate.
+  Corroborating from a second instrument: `ps` showed 99.4-100 % — one hot thread — not ~200 %.
+  And the listed `>= 5` entries sum to 3340, leaving 26 in the collapsed sub-5 tail.
+- **SEPARATE FINDING, do not weld it to the one above.** The cvwait identity proves only that
+  the WINDOW was single-threaded; it says nothing about minutes 0-12. What says multi-core
+  activity happened at all is a different calculation: 15 min 42 s of CPU over 13 min 17 s
+  elapsed is 118 %, so more than one core was busy at SOME point. Combining the two: multi-core
+  work occurred, and it was not at minute 13.
+  It is tempting to call that "an earlier parallel phase", and an earlier revision did — but
+  `ps` TIME is cumulative across threads INCLUDING ones that have already exited, and `%CPU` is
+  a short-window average, so the two were never measured over the same interval and no phase
+  structure has been observed. Sample EARLY as well as late next time; do not assume a phase.
   So the open question is not "who else was hot?" but "when did the parallel phase end, and
   what was it doing?" — materially smaller, and answerable on the next occurrence by sampling
   early as well as late.
