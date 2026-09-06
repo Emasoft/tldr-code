@@ -3,7 +3,7 @@ trdd-id: V11BVG55
 title: Retire or fix dead/misleading public API surfaces flagged by the scan
 column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-05T21:33:13+0200
+updated: 2026-09-06T04:12:00+0200
 current-owner: codebase-scan-2026-09-05
 task-type: refactor
 min-approval-requirement: user
@@ -11,6 +11,39 @@ labels: [scan-2026-09-05, api_change]
 ---
 
 # Retire or fix dead/misleading public API surfaces flagged by the scan
+
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+
+- **`tldr-core` IS A PUBLISHED CRATE.** Verified against the crates.io sparse index
+  (`https://index.crates.io/tl/dr/tldr-core`): 13 versions, `0.1.0` through `0.4.0`. Upstream is
+  `parcadei/tldr-code`. THIS FORK is `0.4.1-fork.1`, which is NOT on crates.io — so a change here
+  reaches crates.io consumers only if it is merged upstream.
+- **Consequence, and it invalidates a finding rather than resolving it:** "dead code" on this card
+  was concluded from an in-repo caller search. That heuristic is INVALID for a `pub` item in a
+  published library — the whole point of a `pub` export is callers you cannot grep. Zero in-repo
+  callers is the NORMAL state of a public utility, not evidence it is dead.
+- Exactly **2 of the 17** items are affected, and both are fully publicly reachable (verified,
+  not inferred — every link in each chain checked):
+  - `hubs.rs:311` — `pub fn with_composite` in `pub mod hubs` (analysis/mod.rs:40) in
+    `pub mod analysis` (lib.rs:56) ⇒ `tldr_core::analysis::hubs::HubScore::with_composite`.
+  - `ast_utils.rs:1138` — `pub fn verify_call_in_statement` in `pub mod ast_utils`
+    (security/mod.rs:11) in `pub mod security` (lib.rs:147).
+- **VERDICT for those 2: fix the doc, KEEP the API.** Each finding is really two claims bolted
+  together, one false and one true. "It is dead" is false (above). "Its doc contradicts /
+  overstates its body" is true and is the actual defect — hubs' doc advertises PageRank and
+  betweenness while the body always sets both to `None`. Fixing the doc is non-breaking and
+  removes the real harm; removing the function would be a breaking change to a published API in
+  order to delete code that costs nothing.
+- The **other 15 items are unaffected** by any of this — wrong classification, missing validation,
+  hardcoded values, tautological tests, misleading docs are real defects whether or not anything
+  external calls them. Publication status is not a defence for them.
+- **CORRECTION — the encoding module is NOT on this card.** TRDD-7X459MTO's STATE block routes
+  its "wire in or retire `pub mod encoding`" follow-up here, and the handoff repeated that. Both
+  are wrong: none of the 17 items below mention `encoding`. That decision has NO card. It also
+  inherits the reasoning above — `pub mod encoding` (lib.rs:45) is published public API, so its
+  zero in-repo callers do not make it dead, and RETIRE is not the cheap cleanup it looked like.
+- Housekeeping: `## What` and `## Findings` below carry the SAME 17 lines, duplicated verbatim.
+  Collapse to one list when this card is next worked.
 
 ## Why
 A codebase scan (2026-09-05) found 17 sites where a public flag, exported helper, or public-facing

@@ -58,11 +58,21 @@ labels: [scan-2026-09-05, encoding]
   tldr-core's lib.rs, so external consumers can call it) that no in-repo path currently
   exercises. The bug was real and is fixed; the user-visible symptom the body describes cannot
   occur today because the code is unreached.
-- FOLLOW-UP, belongs on TRDD-V11BVG55 ("Retire or fix dead/misleading public API surfaces
-  flagged by the scan"): decide whether the encoding module should be WIRED IN (commands route
-  file reads through it and emit `EncodingIssues`) or RETIRED. Do not wire it speculatively
-  just to satisfy acceptance line 2 — that is a change across every command's read path and
-  output schema, and it needs its own decision.
+- FOLLOW-UP: decide whether the encoding module should be WIRED IN (commands route file reads
+  through it and emit `EncodingIssues`) or RETIRED. Do not wire it speculatively just to satisfy
+  acceptance line 2 — that is a change across every command's read path and output schema, and it
+  needs its own decision.
+  **CORRECTION 2026-09-06: this does NOT belong on TRDD-V11BVG55, as this bullet previously
+  claimed.** That card's 17 items were read in full and none mentions `encoding`; the routing was
+  an assumption. This follow-up currently has NO card.
+  Two verified facts now constrain it. (1) `tldr-core` is PUBLISHED on crates.io — 13 versions,
+  latest `0.4.0`, upstream `parcadei/tldr-code`; this fork's `0.4.1-fork.1` is not published. So
+  `pub mod encoding` (lib.rs:45) is published public API and its zero in-repo callers do NOT make
+  it dead — a `pub` export exists for callers you cannot grep. RETIRE is therefore a breaking
+  change to a published surface, not the cheap cleanup it appears to be. (2) The workspace reads
+  files at ~194 `fs::read_to_string` sites instead, so WIRE IN means touching all of them plus
+  every command's output schema. Neither option is small; that is why it needs a card and not a
+  drive-by.
 
 ## Why
 
