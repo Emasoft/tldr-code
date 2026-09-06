@@ -1,7 +1,7 @@
 ---
 trdd-id: MWLIUB72
 title: Decide whether the encoding module is wired into the read paths or retired
-column: todo
+column: complete
 created: 2026-09-06T04:14:07+0200
 updated: 2026-09-06T04:24:00+0200
 current-owner: unassigned
@@ -149,3 +149,17 @@ Pick ONE and record the reasoning:
 
 - 2026-09-06T04:14:07+0200 — Filed by the session Claude under the user's 2026-09-05 directive to
   decide from verified facts. Filing only; no option chosen and no code changed.
+- 2026-09-06T04:52:00+0200 — COMPLETED. All four acceptance boxes met: the decision is recorded
+  (LEAVE AS-IS, DOCUMENTED, with both eliminations and their evidence), the doc note is placed in
+  `encoding.rs`'s `//!` block, TRDD-BKALIK1B carries the read-path defect independently, and
+  TRDD-7X459MTO's acceptance line 2 is struck as permanently unsatisfiable.
+  Closed the same session it was finished. It had been left at `column: todo` with every box
+  ticked — a column that asserts "approved, designed, not started" over finished work, which is
+  indistinguishable on the board from an abandoned card.
+  **One conclusion of this card was later falsified and the correction belongs here**, since a
+  terminal card must not leave a wrong premise standing: its "WIRE IN means 176 call sites" was
+  wrong for the parse path. `parse_file_with_lang` is the single chokepoint every parse-based
+  command goes through, so encoding-awareness there is ONE site, and TRDD-BKALIK1B shipped
+  exactly that. The LEAVE-AS-IS verdict still stands — the fix reused the pre-existing
+  `TldrError::EncodingError` rather than the `encoding` module, so the module's fate is unchanged
+  — but a future reader must not inherit the 176 figure as a reason not to try.
