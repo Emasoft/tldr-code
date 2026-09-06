@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:18:06+0200
+updated: 2026-09-06T03:20:52+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -26,8 +26,15 @@ labels: [scan-2026-09-05, hang]
   | CPU usage | 99.4-100 %, sustained |
   | RSS | 528 MB to 576 MB, climbing ~165 KB/s |
 
-  So it SPINS and ALLOCATES. That matches the body's original "over 30 CPU-minutes on one
-  core" in kind, which is what makes this the same phenomenon rather than a slow test.
+  It burns CPU continuously and ALLOCATES continuously. Same phenomenon as the body's original
+  in kind (sustained CPU-minutes, not a slow test).
+- **Thread attribution is UNRESOLVED, and the two numbers above disagree.** 15 min 42 s of CPU
+  in 13 min 17 s elapsed is 118 %, which needs at least two threads burning — yet `ps` reported
+  99-100 % and the 5-second profile showed the rayon workers parked in `registry::main_loop`.
+  Both can be true if the early phase was parallel and it converged to one hot thread before
+  sampling, but that is NOT established. Do NOT repeat the body's "on one core" as if it were
+  measured here. `ps -M <pid>` gives per-thread CPU and settles it in one command; it was not
+  run while the process was alive, which is the main thing to do differently next time.
 - **A 60-second warning is NOT the signature — do not use it as one.** The same run printed
   libtest's 60 s warning for `verify_command::test_verify_default_current_dir`, and that test
   COMPLETED OK on the very next line. Both tests spawn the freshly built CLI, and a fresh
@@ -47,14 +54,28 @@ labels: [scan-2026-09-05, hang]
         -> callgraph::type_resolver::resolve_python_receiver_type
   ```
 
-  Leaf time is dominated by `str::match_indices` / `TwoWaySearcher` inside `find_var_in_line`,
-  reached from fuzzy-match resolution of a Python receiver type. `FuncIndex::find_by_name` and
-  `FuncIndex::iter` appear throughout, so the shape to suspect is a resolution retry that
-  re-scans the index without making progress.
-- NEXT ACTION: read `callgraph::resolution::resolve_local_fuzzy_match` and
-  `resolve_type_aware_fallback` for a loop whose termination depends on resolution succeeding.
-  The growing RSS says something accumulates per iteration, which is a second handle on the
-  same loop.
+  `str::match_indices` / `TwoWaySearcher` inside `find_var_in_line` carries the deep-frame
+  weight, reached from fuzzy-match resolution of a Python receiver type; `FuncIndex::find_by_name`
+  and `::iter` recur throughout. CAVEAT on how that list was produced: the per-symbol counts
+  were occurrences of mangled names in the text dump, counted with `uniq -c`, which tracks call-
+  graph BREADTH, not time. Only the deep-frame excerpt carried real sample weights. Treat the
+  ordering as a lead and re-profile rather than trusting the ranking.
+- **THE INPUT IS 18 LINES**, preserved at `design/reproducers/TRDD-0M2P188T/` — a 10-line class
+  with three methods, and an 8-line caller. This is the fact that rules out the benign reading:
+  fuzzy matching is plausibly O(calls x funcs x line-length), but on four functions and a
+  handful of calls that is microseconds, not 15 CPU-minutes and 576 MB. No terminating
+  super-linear algorithm reaches these numbers on this input.
+- Honest limit on that: the process was KILLED at 13 minutes, and the body's occurrence was
+  killed at 45. Neither was ever observed terminating on its own, so "non-terminating" is
+  inferred from the input-size argument above, not from having waited it out.
+- NEXT ACTION, two hypotheses, not one:
+  1. **Non-terminating loop** — read `resolve_local_fuzzy_match` and `resolve_type_aware_fallback`
+     for a loop whose termination depends on resolution succeeding. The steadily growing RSS is
+     a second handle on it.
+  2. **Unbounded growth on an unresolvable import** — `client.py` opens
+     `from .mod import Service`, a RELATIVE import, while `mod.py` is in a DIFFERENT directory,
+     so it can never resolve. That is a specific candidate trigger fitting the same hot path.
+     Test it by making the import resolvable and re-running. Marked hypothesis, not finding.
 - Killed with `kill 26887` at 03:16:46 to unblock the gate — the same action the body records
   for occurrence 1. The run resumed immediately and the test failed at
   `crates/tldr-cli/tests/path_and_schema_cleanup_v3.rs:60`, matching the body's account.
