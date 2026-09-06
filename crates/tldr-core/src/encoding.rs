@@ -2,6 +2,16 @@
 //!
 //! This module provides robust handling of file encodings during analysis.
 //!
+//! # This is NOT the read path any command uses
+//!
+//! No in-repo command routes its file reads through this module — commands call
+//! [`std::fs::read_to_string`] directly. So the guarantees below describe what this module
+//! does if you call it, NOT what `tldr` does when it analyses a tree: today a non-UTF-8 file
+//! aborts the command, is silently dropped from the analysis, or panics, depending on the call
+//! site (TRDD-BKALIK1B). Whether to wire this module into those paths was decided in
+//! TRDD-MWLIUB72 — left as-is and documented, rather than wired speculatively across 176 call
+//! sites and every command's output schema.
+//!
 //! # Mitigations
 //!
 //! - A34: Silent data corruption on non-UTF8 files

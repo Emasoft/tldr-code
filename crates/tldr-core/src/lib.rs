@@ -42,6 +42,7 @@ pub mod validation;
 pub mod walker;
 
 // Phase 10: Robustness (A32, A33, A34)
+// `encoding` is an available utility, NOT the read path commands use — see its module docs.
 pub mod encoding;
 pub mod limits;
 

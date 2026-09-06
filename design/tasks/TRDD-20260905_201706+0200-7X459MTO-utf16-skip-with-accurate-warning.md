@@ -133,8 +133,13 @@ string) stands until this proposal lands.
 
 - `cargo test -p tldr-core --test encoding_base_tests` passes with the two UTF-16 tests asserting
   "not analysed" and "warning mentions UTF-16" at the same time.
-- A JSON run of `tldr structure` over a directory containing one UTF-16 file lists that file with
-  a UTF-16 message in its issues section and reports it as not analysed.
+- ~~A JSON run of `tldr structure` over a directory containing one UTF-16 file lists that file
+  with a UTF-16 message in its issues section and reports it as not analysed.~~
+  **PERMANENTLY UNSATISFIABLE — closed 2026-09-06 by the TRDD-MWLIUB72 decision.** No command
+  consumes `EncodingIssues`, so there is no issues section for such a run to list the file in,
+  and MWLIUB72 resolved to leave the module unwired rather than build one across 176 call sites.
+  This line is not a debt to pay off; it described an outcome that requires a decision which has
+  now been taken the other way. If MWLIUB72 is ever reopened to WIRE IN, this becomes live again.
 
 ## Approval log
 

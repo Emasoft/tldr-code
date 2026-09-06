@@ -468,6 +468,14 @@ pub fn severity_for_minutes(minutes: u32) -> &'static str {
     }
 }
 
+/// Count lines of code in `source`, skipping blank lines and comment-only lines.
+///
+/// Comment syntax is per-language (see `is_comment_line`). For [`Language::Python`] the counter
+/// also tracks triple-quoted blocks in both `"""` and `'''` styles and skips their contents.
+///
+/// Note that this is line-based, not parsed: a triple-quoted block is assumed to be a docstring,
+/// so a triple-quoted string used as a *value* (`sql = """SELECT ..."""`) is skipped too, and a
+/// `#` inside a Python string literal at the start of a trimmed line reads as a comment.
 pub fn count_loc(source: &str, language: Language) -> usize {
     let mut count = 0;
     let mut in_multiline_string = false;

@@ -123,10 +123,12 @@ Pick ONE and record the reasoning:
 - [x] A separate card exists for the 73 SILENT + 25 PANIC read sites — that defect is real
       whatever happens to this module. — **TRDD-BKALIK1B**, filed unconditionally rather than as
       a checkbox contingent on this card's branch.
-- [ ] `pub mod encoding` carries a doc note stating that no in-repo command routes file reads
-      through it, so a reader does not mistake it for the sanctioned read path. This is the
-      "documented" half of the decision and is the only code change this card still requires.
-- [ ] TRDD-7X459MTO's acceptance line 2 is marked permanently unsatisfiable, citing this
+- [x] `pub mod encoding` carries a doc note stating that no in-repo command routes file reads
+      through it, so a reader does not mistake it for the sanctioned read path. — Placed in
+      `encoding.rs`'s own `//!` block, NOT as a `//` comment beside the `pub mod` line in
+      `lib.rs`: the audience is whoever reads the public API, and a `//` comment never reaches
+      rustdoc. `lib.rs` keeps a one-line pointer so the export list is not silent about it.
+- [x] TRDD-7X459MTO's acceptance line 2 is marked permanently unsatisfiable, citing this
       decision: no command consumes `EncodingIssues`, so there is no issues section for a
       `tldr structure` run to list a UTF-16 file in.
 
