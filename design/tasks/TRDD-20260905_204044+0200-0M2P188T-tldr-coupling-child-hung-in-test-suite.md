@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:41:55+0200
+updated: 2026-09-06T03:44:11+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -82,12 +82,20 @@ labels: [scan-2026-09-05, hang]
   resolution. The two `read_file_safe` calls are only the pair-comparison half; the call-graph
   half takes a ROOT.
 - ## ✅ HOT PATH LOCALIZED (main thread) — this bullet supersedes every earlier account
-  Scope of the claim, stated up front because an earlier heading said "ROOT CAUSE LOCALIZED"
-  and that was too strong on two counts. (a) The 118 % CPU figure means TWO OR MORE threads
-  burned CPU, and only the MAIN thread is accounted for here; the second was never identified
-  and the process is killed, so for this occurrence it never can be. (b) Locating the hot path
-  is not the same as knowing whether the work terminates. What follows is where the main
-  thread's time went, which is solid, and no more than that.
+  Scope, stated up front because an earlier heading said "ROOT CAUSE LOCALIZED" and that was
+  too strong. Locating a hot path is not knowing whether the work terminates, and this is one
+  5-second window at minute 13 of a 13-minute burn.
+- **The "second hot thread" question is ANSWERED for the sample window — there wasn't one.**
+  An earlier revision called this permanently unanswerable. It is not. The histogram's largest
+  entry is `__psynch_cvwait` at 47124, and the sample carries 15 thread headers: 1 main + 14
+  rayon workers, each sampled 3366 times. **14 x 3366 = 47124 exactly**, so every worker was
+  parked in a condvar wait at EVERY sample — zero work across the window. Two things follow:
+  every non-`cvwait` entry in that histogram is main-thread self time (which is what makes the
+  table below a main-thread profile rather than an aggregate), and the 118 % CPU must come from
+  an EARLIER parallel phase that had already ended by minute 13.
+  So the open question is not "who else was hot?" but "when did the parallel phase end, and
+  what was it doing?" — materially smaller, and answerable on the next occurrence by sampling
+  early as well as late.
   The profile was right from the beginning. My CODE SEARCHES were wrong, for one mundane
   reason: I grepped `coupling.rs` for `callgraph` and got ZERO hits, then built four
   conclusions on that zero. The function is `augment_with_project_call_graph` — `call_graph`
@@ -263,16 +271,30 @@ labels: [scan-2026-09-05, hang]
 - Killed with `kill 26887` at 03:16:46 to unblock the gate — the same action the body records
   for occurrence 1. The run resumed immediately and the test failed at
   `crates/tldr-cli/tests/path_and_schema_cleanup_v3.rs:60`, matching the body's account.
-- **THE KILL PERTURBED THE GATE, and not hypothetically.** It freed a core pegged at 100 % and
-  576 MB of RSS mid-suite. The `tldr-daemon` + `tldr-mcp` run was launched AFTER it and so ran
-  wholly in the freed environment, and TWO of the three tests documented in
-  `reports/colony/classified-failures.txt` as load-sensitive wall-clock thresholds passed there:
-  `cache::tests::bench_cache_key_construction ... ok` and
+- **The kill changed the machine mid-gate. What that did to the results is NOT established.**
+  It freed a core pegged at 100 % and 576 MB of RSS. The `tldr-daemon` + `tldr-mcp` run started
+  after it and so ran wholly in the freed environment, and two of the three tests
+  `reports/colony/classified-failures.txt` documents as load-sensitive wall-clock thresholds
+  passed there: `cache::tests::bench_cache_key_construction ... ok` and
   `tools::tests::bench_call_tool_cache_hit_clone_cost ... ok`.
-  Those are exactly the names expected to FAIL under load. Timing verified by file mtimes, not
-  recalled: `gate-core2` finished 03:06 (BEFORE the kill, so the core package is unaffected),
-  `gate-cli` 03:18, and `gate-rest` was launched after cli finished and modified 03:19 — wholly
-  after 03:16:46.
+  **No causal claim is available from that**, and an earlier revision of this bullet made one
+  ("THE KILL PERTURBED THE GATE, and not hypothetically") which its own baseline file refutes:
+  that header records `bench_call_tool_cache_hit_clone_cost` as having PASSED in run 1. These
+  tests vary run to run — that is why they are in the disclaimed ten. One observation of them
+  passing in a run that happened to follow the kill is consistent with the kill mattering AND
+  with ordinary variance, and nothing here distinguishes the two. The counterfactual was never
+  measured either: one core and 576 MB is a marginal change on a 64 GB machine still running a
+  17.5 GB process, eight other sessions, simulators and a VM.
+  Those are exactly the names expected to FAIL under load. Timing verified by file BIRTH times
+  (`/usr/bin/stat -f %SB` — mtime alone could not settle it, since a run starting before the
+  kill and ending after has the same mtime; and note `stat` on PATH may be a non-BSD shim that
+  silently rejects `-f`, so use the absolute path):
+
+  | run | birth | modified | vs kill at 03:16:46 |
+  |---|---|---|---|
+  | `gate-core2` (tldr-core) | 03:01:56 | 03:06:49 | wholly BEFORE — unaffected |
+  | `gate-cli` | 02:53:19 | 03:18:22 | STRADDLES the kill |
+  | `gate-rest` (daemon+mcp) | 03:18:50 | 03:19:06 | wholly AFTER |
   A pass is never a regression, so the gate's zero-regression verdict stands. But do NOT read
   that package's clean result as an independent measurement, and note the sharper risk: these
   two tests are wall-clock THRESHOLDS, so a freed machine is exactly the condition under which
