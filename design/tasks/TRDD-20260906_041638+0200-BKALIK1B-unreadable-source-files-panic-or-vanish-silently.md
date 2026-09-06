@@ -47,9 +47,37 @@ labels: [scan-2026-09-05, robustness, encoding]
   reason. So this defect is one fix for all parse-based commands, not one per call site. This
   also corrects TRDD-MWLIUB72's premise that wiring encoding-awareness in means touching 176
   sites; for parse-based commands it means touching one.
-- NEXT ACTION: fix in flight at the chokepoint — detect a UTF-16 BOM after the read and return a
-  new `TldrError::UnsupportedEncoding`, handled where `FileTooLarge` already is in
-  `get_code_structure` (skip the file, increment `files_skipped`, push a user-visible warning).
+- **FIXED at the chokepoint. Two guards, and the second one is the whole lesson.**
+  `TldrError::EncodingError { path, detail }` ALREADY EXISTED (`error.rs:51`, exit code 7
+  already assigned) — no new variant, **no breaking change**. I had planned to add one and had
+  written a justification for it on this card; the existing variant was found by looking, which
+  is the ladder rung ("already in this codebase? reuse it") I had skipped.
+- **The BOM check alone was NOT enough, and `str::from_utf8` would NOT have fixed it either.**
+  Measured, because both of those look obviously right and both are wrong:
+
+  | encoding | contains NUL | valid UTF-8 |
+  |---|---|---|
+  | BOM-less UTF-16 LE/BE | yes | **YES** |
+  | latin-1 / cp1252 with accents | no | no |
+  | ASCII / UTF-8 | no | yes |
+
+  **A UTF-16 encoding of ASCII text is VALID UTF-8**: every byte is either an ASCII character or
+  NUL, and NUL is a legal 1-byte UTF-8 sequence. So a validity check accepts BOM-less UTF-16
+  outright — it cannot see this bug — while it *would* reject latin-1/cp1252 files that the
+  lossy path handles acceptably today (their structure is ASCII; only accented literals get
+  mangled). It fails in both directions at once.
+- **The NUL byte is the exact discriminator**, not a heuristic: every wide encoding of source
+  code carries one (keywords and punctuation are ASCII, so their high byte is `0x00`), and no
+  byte-oriented text encoding does. Measured over this repo: **0 of 919** source files contain a
+  NUL byte; **1 of 983** files is invalid UTF-8, and it is this card's own fixture. So the guard
+  rejects nothing real, and the deliberate M2 lossy fallback is preserved for the encodings it
+  was written for.
+- Both cases verified against the real binary: BOM'd UTF-16 → skipped, `"UTF-16 LE BOM"`;
+  BOM-less UTF-16 → skipped, `"contains NUL bytes …"`; sibling UTF-8 files still analysed
+  normally. `files_skipped` and `warnings` reach the JSON output.
+- `.gitattributes` marks `design/reproducers/** -text -diff` so a checkout with
+  `core.autocrlf=true` cannot rewrite the fixtures into something a UTF-8 decoder accepts —
+  which would leave the regression test passing for the wrong reason, silently.
 
 ## Why
 
@@ -90,14 +118,19 @@ lands. Sequencing, once it does:
 
 ## Acceptance
 
-- [ ] `tldr structure design/reproducers/TRDD-BKALIK1B` no longer reports `bad.py` as analysed
+- [x] `tldr structure design/reproducers/TRDD-BKALIK1B` no longer reports `bad.py` as analysed
       with zero symbols; it is skipped with a warning naming the file, while `good.py` and
-      `control.py` still report 2 definitions each.
-- [ ] A regression test covers the committed fixture, so the fixture cannot rot into a UTF-8 file
-      and pass for the wrong reason.
+      `control.py` still report 2 definitions each. — verified against the built binary.
+- [x] The BOM-LESS case is caught too (`nobom.py`), since that is the common form and the BOM
+      check alone missed it. — verified: skipped with `"contains NUL bytes …"`.
+- [x] `.gitattributes` prevents the fixtures being normalised into UTF-8 on checkout.
+- [ ] A regression test asserts BOTH the fixture's encoding (first bytes / presence of NUL) AND
+      the skip behaviour. Asserting behaviour alone is not enough: if a fixture ever rots into
+      UTF-8, a behaviour-only test keeps passing while testing nothing.
 - [ ] The corrected production-only survey has landed and the SILENT bucket's real size is
       recorded here.
-- [ ] `cargo test -p tldr-core` shows no regression against the known baseline.
+- [ ] `cargo test -p tldr-core` shows no regression against the known baseline
+      (82 bins / 7214 passed / 1 known failure).
 
 ## Approval log
 

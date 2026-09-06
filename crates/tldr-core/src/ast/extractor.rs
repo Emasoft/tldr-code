@@ -93,6 +93,22 @@ pub fn get_code_structure(
                     warnings,
                 });
             }
+            Err(crate::error::TldrError::EncodingError { path, detail }) => {
+                // utf16-bom-detection: `from_utf8_lossy` never fails on
+                // UTF-16 bytes - it silently yields replacement-character
+                // garbage that parses to zero symbols. Skip with a named
+                // warning instead of reporting a confidently wrong
+                // "zero symbols" result.
+                files_skipped += 1;
+                warnings.push(format!("Skipped {}: {}", path.display(), detail));
+                return Ok(CodeStructure {
+                    root: root.to_path_buf(),
+                    language: Some(language),
+                    files: Vec::new(),
+                    files_skipped,
+                    warnings,
+                });
+            }
             Err(e) => {
                 return Err(e);
             }
@@ -150,6 +166,13 @@ pub fn get_code_structure(
                         "source files"
                     }
                 ));
+            }
+            Err(crate::error::TldrError::EncodingError { path, detail }) => {
+                // utf16-bom-detection: same reasoning as the single-file
+                // arm above - surface a named, structured warning
+                // instead of an eprintln-only notice.
+                files_skipped += 1;
+                warnings.push(format!("Skipped {}: {}", path.display(), detail));
             }
             Err(e) => {
                 // Log error but continue - recoverable errors per spec

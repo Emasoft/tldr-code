@@ -1,0 +1,13 @@
+# Encoding fixtures must survive checkout BYTE-FOR-BYTE.
+#
+# design/reproducers/TRDD-BKALIK1B/ holds deliberately non-UTF-8 Python files
+# (UTF-16 with and without a BOM). Git's text handling would treat them as text
+# and normalise line endings on a checkout with core.autocrlf=true — which
+# rewrites bytes inside what is really wide-encoded content and can turn the
+# fixture into something a UTF-8 decoder accepts.
+#
+# That failure is silent and it is worse than losing the fixture: the regression
+# test would still run and still pass, because the file it now reads is no
+# longer a reproducer. Marking the directory binary disables every content
+# filter, so the bytes that land on disk are the bytes that were committed.
+design/reproducers/** -text -diff

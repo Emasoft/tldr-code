@@ -299,6 +299,10 @@ impl TldrError {
                 // as a hard error because they consult the error
                 // directly, not via `is_recoverable`.
                 | TldrError::UnsupportedLanguage(_)
+                // utf16-bom-detection: a UTF-16 file must be skipped
+                // with a warning, not silently mis-decoded by
+                // `from_utf8_lossy` into a zero-symbol "success".
+                | TldrError::EncodingError { .. }
         )
     }
 
