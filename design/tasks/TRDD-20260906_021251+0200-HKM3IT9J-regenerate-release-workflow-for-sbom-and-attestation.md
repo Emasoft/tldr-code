@@ -28,6 +28,9 @@ labels: [supply-chain, release, cargo-dist]
   (`config/v1/builds/cargo.rs` applies `cargo_cyclonedx` through `apply_val`). The root
   `Cargo.toml` has no `[package.metadata.dist]`, so nothing overrides it here. If the
   regenerated workflow still lacks an SBOM step, `config/v0_to_v1.rs` is the seam to look at.
+  Residual, stated rather than closed: `parse_metadata_table_or_manifest` and `app_config`'s
+  merge body were not read, so the chain is observed at the call site and inferred through those
+  two frames. The acceptance below is what settles it.
 - The workflow half is NOT done: `.github/workflows/release.yml` is generated, and this checkout
   has no `dist` binary, so the SBOM and attestation steps are not in the file yet. Until it is
   regenerated, a release still ships without either.
