@@ -3,7 +3,7 @@ trdd-id: 7X459MTO
 title: Skip UTF-16 sources without analysing them while keeping the UTF-16 warning
 column: planned
 created: 2026-09-05T20:17:06+0200
-updated: 2026-09-06T03:56:52+0200
+updated: 2026-09-06T04:03:30+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -33,6 +33,13 @@ labels: [scan-2026-09-05, encoding]
 - Acceptance line 1 MET: `cargo test -p tldr-core --test encoding_base_tests` => 48 passed,
   0 failed, and both UTF-16 tests now assert BOTH halves — `content()` is `None` AND the
   warning contains "UTF-16". `cargo check -p tldr-core --all-targets` exits 0.
+- WIDER CONFIRMATION (2026-09-06 04:00): the whole package was re-run after the change —
+  `cargo test -p tldr-core --no-fail-fast -j 2 -- --test-threads=2` => 82 binaries,
+  7214 passed, 1 failed. The one failure is `ruby_io_popen_with_user_input_via_compute_taint`,
+  which is in the classified baseline, and the totals are byte-identical to the pre-change gate
+  run. So the breaking change broke nothing IN THIS WORKSPACE. That is a weaker statement than
+  it looks: the break is to a PUBLIC API with zero in-repo callers (next bullet), so an
+  unchanged in-repo suite is exactly what a real downstream break would also produce.
 - **Acceptance line 2 CANNOT BE MET, and the reason is worth more than the line.** It asks for a
   `tldr structure` JSON run to list the file in an issues section. Nothing wires that up:
   `read_source_file`, `read_source_file_or_skip` and `EncodingIssues` have **zero non-test
