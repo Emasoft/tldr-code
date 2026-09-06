@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:37:51+0200
+updated: 2026-09-06T03:40:17+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -130,24 +130,37 @@ labels: [scan-2026-09-05, hang]
     **SELF TIME, read from `sample`'s own "Sort by top of stack" histogram** (line 913 of the
     dump — the section that answers this directly, rather than inferring from the call graph):
 
-    | leaf | samples |
+    | self time | symbol |
     |---|---|
-    | `hashbrown::raw::RawIterRange<(String, ..)>` in `tldr_core::callgraph` | 358, 354, 217, 209 |
-    | `_platform_memmove` | 183 + a long unnamed tail (151, 102, 97, 89, 75, ..) |
-    | `std::collections::hash::map::Iter<String, ..>` in `tldr_core::callgraph` | 41, 39, 36, 30, 26, .. |
-    | hashbrown NEON probe (`read_unaligned` u8x8, `vget_lane_u64`) | 22, 20 |
-    | `TwoWaySearcher::next` | **7** |
+    | 47124 | `__psynch_cvwait` — parked threads, i.e. the idle rayon pool |
+    | **725** | `hashbrown::raw::RawIterRange<(String, ..)>` |
+    | 358 | `hashbrown::map::Iter<(String, ..)>` |
+    | **354** | `core::str PartialEq::eq` **in the `glob` crate** |
+    | 217 | `callgraph::types::FuncIndex::iter` closure |
+    | 209 | `String::as_str` (in `tldr_core`) |
+    | 183 | `_platform_memmove` |
+    | **151** | `callgraph::resolution::resolve_local_fuzzy_match` closure |
+    | 102 / 97 / 44 | `PartialEq` eq/ne **in the `ignore` crate** |
+    | 89 | `ControlFlow` in `callgraph` |
+    | 45 | `FuncIndex::find_by_name` closure |
 
-    So the cost is HASH-INDEX ITERATION plus MEMMOVE. Two things follow. `TwoWaySearcher` at 7
-    samples independently confirms that `find_var_in_line` / `match_indices` — twice named on
-    this card as the hot path — is noise. And `__psynch_cvwait` at 47124 is the parked rayon
-    workers, which confirms by self-time that they were idle at sample time.
-    Shape to look for: each resolution attempt scans the WHOLE function index, roughly
-    O(call-sites x index-size), with the memmove tail consistent with collections being grown
-    and re-copied. An earlier revision named `Vec::spec_from_iter` as "the" leaf and called it
-    measured; it was the deepest frame printed under a truncating `cut`, and the Vec-per-attempt
-    story remains an INFERENCE — `spec_from_iter` on the stack says a Vec is being built, not
-    that one is retained per attempt, and retention is what RSS growth actually requires.
+    Two distinct cost centres, and the second was invisible until this table was built properly:
+    - **Hash-index iteration + resolution** — 725 + 358 + 75 + 42 hash iteration, plus
+      `FuncIndex::iter` 217, `resolve_local_fuzzy_match` 151, `find_by_name` 45,
+      `String::as_str` 209. Consistent with scanning the whole function index per call site.
+    - **PATH MATCHING in `glob` and `ignore`** — 354 + 102 + 97 + 63 + 44 ~= 660 samples of
+      string comparison inside the file-filtering crates. That is the FILE SCAN
+      (`respect_ignore: true`), not call resolution, and it is a comparable share of the
+      identifiable self time. Any fix that only addresses resolution leaves this untouched.
+
+    `TwoWaySearcher::next` at 7 confirms `find_var_in_line` / `match_indices` — twice named on
+    this card as the hot path — is noise.
+
+    **How the previous version of this table was wrong**, since it was published: I rendered it
+    through a `sed` that stripped mangled symbol names, so lines whose symbol was stripped
+    showed as BARE NUMBERS and I attributed them to the symbol above. `RawIterRange` is 725, not
+    358; the 354 belongs to `glob`; and the "`memmove` long tail" never existed. Read this
+    section from the raw dump, not through a filter that can silently drop the label.
   - The `find_var_in_line` frames I once called the hot path were 7 and 3 samples out of 3366,
     under 0.2 % — a negligible branch I mistook for the peak because my symbol grep matched
     `tldr_core` names and structurally EXCLUDED `tldr_cli`'s own frames, where the real chain
@@ -245,6 +258,16 @@ labels: [scan-2026-09-05, hang]
 - Killed with `kill 26887` at 03:16:46 to unblock the gate — the same action the body records
   for occurrence 1. The run resumed immediately and the test failed at
   `crates/tldr-cli/tests/path_and_schema_cleanup_v3.rs:60`, matching the body's account.
+- **THE KILL PERTURBED THE GATE, and not hypothetically.** It freed a core pegged at 100 % and
+  576 MB of RSS mid-suite. The `tldr-daemon` + `tldr-mcp` run was launched AFTER it and so ran
+  wholly in the freed environment, and TWO of the three tests documented in
+  `reports/colony/classified-failures.txt` as load-sensitive wall-clock thresholds passed there:
+  `cache::tests::bench_cache_key_construction ... ok` and
+  `tools::tests::bench_call_tool_cache_hit_clone_cost ... ok`.
+  Those are exactly the names expected to FAIL under load. Their passing is not a regression
+  (a pass never is) and does not change the gate's zero-regression verdict, but that package's
+  clean result is NOT an independent measurement — it was taken on a machine this session had
+  just unloaded. Anyone re-running it for comparison should do so under comparable load.
 - Still NOT established: why it triggers only sometimes. Standalone runs finish in ~1.2 s (see
   the body) and this test passes in other runs. The trigger is unknown; the loop is located.
 
