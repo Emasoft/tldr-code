@@ -3,7 +3,7 @@ trdd-id: MWLIUB72
 title: Decide whether the encoding module is wired into the read paths or retired
 column: todo
 created: 2026-09-06T04:14:07+0200
-updated: 2026-09-06T04:14:07+0200
+updated: 2026-09-06T04:17:30+0200
 current-owner: unassigned
 task-type: refactor
 min-approval-requirement: user
@@ -18,8 +18,36 @@ parent-trdd: 7X459MTO
 - This card exists because the decision had NO card. TRDD-7X459MTO's STATE block routed it to
   TRDD-V11BVG55, and a session handoff repeated that. Both were wrong — V11BVG55's 17 items were
   read in full and none mentions `encoding`. Corrected on both of those cards.
-- NOTHING IS DECIDED YET. This card is the decision, not its outcome. The facts below are
-  measured; the verdict is open.
+- **DECIDED 2026-09-06: LEAVE AS-IS, DOCUMENTED.** The first version of this card listed three
+  options and picked none. That was deferral dressed as progress — the evidence already below it
+  had eliminated two of the three, so the question was settled and the card presented it as open.
+  The eliminations, each on evidence already gathered:
+  - **RETIRE is eliminated.** There are no discoverable public library consumers, so the module
+    costs nothing to keep; and deleting a public item buys nothing measurable while paying
+    divergence cost against upstream forever. A deletion needs a benefit; this one has none.
+  - **WIRE IN is eliminated *as a decision*.** 176 call sites plus every command's output schema
+    is not a decision, it is a programme of work, and it is arguably upstream's architectural
+    call rather than a fork's. It stays available as a future proposal, and TRDD-BKALIK1B may
+    reopen it on evidence.
+  - **LEAVE AS-IS is what remains**, and it is only honest because the read-path defect it would
+    otherwise hide is now filed independently as **TRDD-BKALIK1B** (not as a checkbox here).
+- **The standard used, stated so it can be argued with rather than merely invoked.** "Divergence
+  cost" as first written ("every deletion is a merge conflict forever after") is a veto, not a
+  cost — it opposes all divergence with no threshold and can therefore never lose an argument,
+  which is the signature of a post-hoc rationalisation. The exchange rate: *a change is worth its
+  divergence cost when it fixes a defect that reaches this fork's actual consumers — people
+  running the `tldr` binary — and is not when it only tidies code nothing reaches.*
+  Its falsifier is whether this fork intends to track upstream at all; if it never merges either
+  direction, the cost is zero and the standard evaporates. Measured, not assumed: the `upstream`
+  remote is configured AND fetched (`refs/remotes/upstream/*` present), `HEAD..upstream/main` is
+  **0** (this branch already contains all of upstream/main), and 52 commits sit on top of the
+  fork parent `7f50527`. A fork that did not intend to track upstream would not be level with it.
+- **Applying that rate honestly costs me a claim I made earlier.** Under it, TRDD-7X459MTO's
+  UTF-16 fix does NOT currently pass either — it corrects a real defect in a module no command
+  routes through, so its benefit to binary users today is zero, exactly like the deletion it was
+  contrasted with. The difference is direction, not consumer benefit. It remains justified as
+  fixing a latent defect that becomes live if this module is ever wired in, and that is the
+  honest defence; the earlier framing that it "passes a consumer-benefit test" was wrong.
 
 ## Why
 
@@ -60,7 +88,11 @@ tempting argument — "it is published public API, so it has callers you cannot 
 here. Those callers belong to crates.io `tldr-core` ≤ `0.4.0`, a different artifact. This tree is
 `0.4.1-fork.1` and is not in the index. Measured: GitHub code search for `"Emasoft/tldr-code"` in
 a `Cargo.toml` returns **0**, the fork has **0** forks, upstream `"parcadei/tldr-code"` returns
-**5**. This fork has no library consumers; its consumers run the `tldr` binary.
+**5** (the non-zero control proving the query works). Stated at its true strength: this fork has
+no **discoverable public** library consumers. GitHub code search cannot see private repos,
+unindexed files, path dependencies on a local clone, vendored copies, or `[patch]` entries — so
+"0 results" is not "0 consumers". It is enough to decide this card and it is not a fact to quote
+onward as established. Its consumers, so far as anything can show, run the `tldr` binary.
 What actually argues against deletion is **divergence cost**: this fork's value depends on
 tracking upstream, and every deletion is a merge conflict forever after. That standard is
 recorded on TRDD-V11BVG55 and must be applied consistently, including against changes that have
@@ -86,11 +118,17 @@ Pick ONE and record the reasoning:
 
 ## Acceptance
 
-- [ ] One of the three options is chosen, with the reasoning recorded in this card's STATE block.
-- [ ] If LEAVE AS-IS is chosen, a separate card exists for the 73 SILENT + 25 PANIC read sites —
-      that defect is real whatever happens to this module.
-- [ ] TRDD-7X459MTO's acceptance line 2 is either satisfied or explicitly marked unsatisfiable
-      with this card's decision as the reason.
+- [x] One of the three options is chosen, with the reasoning recorded in this card's STATE block.
+      — LEAVE AS-IS, DOCUMENTED. Two eliminations recorded with their evidence.
+- [x] A separate card exists for the 73 SILENT + 25 PANIC read sites — that defect is real
+      whatever happens to this module. — **TRDD-BKALIK1B**, filed unconditionally rather than as
+      a checkbox contingent on this card's branch.
+- [ ] `pub mod encoding` carries a doc note stating that no in-repo command routes file reads
+      through it, so a reader does not mistake it for the sanctioned read path. This is the
+      "documented" half of the decision and is the only code change this card still requires.
+- [ ] TRDD-7X459MTO's acceptance line 2 is marked permanently unsatisfiable, citing this
+      decision: no command consumes `EncodingIssues`, so there is no issues section for a
+      `tldr structure` run to list a UTF-16 file in.
 
 ## Approval log
 

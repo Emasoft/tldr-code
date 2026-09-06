@@ -3,7 +3,7 @@ trdd-id: V11BVG55
 title: Retire or fix dead/misleading public API surfaces flagged by the scan
 column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-06T04:12:00+0200
+updated: 2026-09-06T04:17:30+0200
 current-owner: codebase-scan-2026-09-05
 task-type: refactor
 min-approval-requirement: user
@@ -25,8 +25,12 @@ labels: [scan-2026-09-05, api_change]
   resolves to `0.4.1-fork.1`; reaching this code as a library requires naming the fork
   explicitly. So I measured it instead of assuming: GitHub code search for
   `"Emasoft/tldr-code"` in a `Cargo.toml` returns **0**, the fork has **0** forks, and upstream
-  `"parcadei/tldr-code"` returns **5**. This fork has NO library consumers; its consumers run the
-  `tldr` binary, which exercises no public API.
+  `"parcadei/tldr-code"` returns **5** — the non-zero control proving the query works. Stated at
+  its true strength: no **discoverable public** library consumers. Code search cannot see private
+  repos, unindexed files, path deps on a local clone, vendored copies, or `[patch]` entries, so
+  "0 results" is not "0 consumers". Enough to decide these items; NOT a fact to quote onward as
+  established — that is exactly how `d71f6f0`'s error propagated. So far as anything can show,
+  this fork's consumers run the `tldr` binary, which exercises no public API.
 - **The rationale that actually survives is divergence cost, not compatibility.** Deleting a
   public item here buys nothing measurable and creates a merge conflict against upstream forever
   after. This fork's value depends on tracking `parcadei/tldr-code`, so a deletion needs a

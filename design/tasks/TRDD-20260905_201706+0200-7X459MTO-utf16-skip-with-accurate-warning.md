@@ -3,7 +3,7 @@ trdd-id: 7X459MTO
 title: Skip UTF-16 sources without analysing them while keeping the UTF-16 warning
 column: planned
 created: 2026-09-05T20:17:06+0200
-updated: 2026-09-06T04:03:30+0200
+updated: 2026-09-06T04:17:30+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -20,17 +20,25 @@ labels: [scan-2026-09-05, encoding]
   latter IS the fix, and it is invisible to the compiler. Version is `0.4.1-fork.1`, i.e.
   pre-1.0 and a fork, so semver permits it in a minor bump.
   **SUPERSEDES the sentence this replaces ("there is no evidence of external dependents either
-  way"), which was true only about the FORK and is now measured: the fork has 0 library
-  consumers (0 Cargo.toml references, 0 forks), but the ANCESTOR does — crates.io `tldr-core`
+  way"), which was true only about the FORK and is now measured: the fork has no DISCOVERABLE
+  PUBLIC library consumers (0 `Cargo.toml` references, 0 forks — code search cannot see private
+  repos, path deps, or vendored copies, so this is not "0 consumers"), but the ANCESTOR
+  demonstrably does — crates.io `tldr-core`
   has 13 published versions and upstream `parcadei/tldr-code` is referenced by 5 repos. So the
   break is harmless where it currently lives and NOT harmless where it would land.
   ACTION REQUIRED: this break MUST be called out explicitly in any upstream PR that carries it.
   Do not let it ride in as an ordinary bugfix.**
-  Consistency note, recorded because it was decided the other way one hour later: TRDD-V11BVG55
-  adopts "do not diverge from upstream without a measured benefit" as the standard for deleting
-  a public item. That standard counts against THIS change too — it diverges more than a deletion
-  would. The fix is still right (the old behaviour handed callers an empty string as analysable
-  text), but it was not weighed against divergence cost at the time, and it should have been.
+  Consistency note, sharpened 2026-09-06 after the standard was given an actual threshold on
+  TRDD-MWLIUB72. The rate is: *a change is worth its divergence cost when it fixes a defect that
+  reaches this fork's actual consumers (binary users), and is not when it only touches code
+  nothing reaches.* **This change does NOT pass that test today**, and saying otherwise was the
+  comfortable answer: no command routes through `pub mod encoding`, so the fix's benefit to a
+  binary user right now is zero — the same objection raised against deleting an unused function,
+  differing only in direction. Its honest defence is narrower: it fixes a LATENT defect that
+  becomes live the moment the module is wired in (TRDD-MWLIUB72), and the old behaviour — handing
+  callers an empty string as analysable text — is a trap for whoever wires it. Reverting would
+  restore that trap, so the fix stays. What consistency requires is not undoing it but flagging
+  it, which the bullet above now does.
   `#[non_exhaustive]` was added to the enum IN THE SAME CHANGE. That is itself breaking, which
   is exactly why it belongs here: the break is already being taken, so the guard is free now
   and makes every future variant purely additive. In-crate matches stay exhaustive and the
