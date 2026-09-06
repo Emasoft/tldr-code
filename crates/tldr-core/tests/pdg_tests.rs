@@ -581,19 +581,31 @@ def empty():
         // nonsense line numbers (out of range, or a huge slice for a 3-line
         // body) would never fail this test.
         //
-        // why the bound is `def` + `pass` and not the `pass` line alone: the
-        // slice is computed over PDG nodes, which are CFG basic blocks, and
-        // `nodes_to_lines` (pdg/slice.rs) emits every line in a selected
-        // node's range `lines.0..=lines.1`. `def empty():` and `pass` are one
-        // block, so slicing from either yields both lines. The granularity is
-        // the block, not the statement — so "at most the line itself" asserts
-        // a precision this slicer does not claim.
+        // why the bound is `def` + `pass` and not the `pass` line alone.
+        // Printed PDG for this exact source (two nodes, zero edges):
+        //     node id=0 lines=(2, 3) type="entry"
+        //     node id=1 lines=(3, 3) type="statement"
+        // `find_nodes_for_line` selects EVERY node whose range contains the
+        // line, so line 3 selects both — the entry node matches because its
+        // range (2,3) spans it. `nodes_to_lines` then emits each selected
+        // node's full range, and the entry node contributes line 2. So the
+        // def line arrives through the entry node's span, not through any
+        // dependency: "at most the line itself" asserts a precision this
+        // slicer does not have.
         //
-        // NOT the reason, though it looks like one: there is no control edge
-        // here. pdg/extractor.rs emits `DependenceType::Control` only when the
-        // source block is a `Branch` or `LoopHeader`, and a function header is
-        // neither. Reading the slicer's `Control => true` follow-decision alone
-        // suggests otherwise; the edge is never built for this shape.
+        // Two things that look like the reason and are not. There is no
+        // control edge: extractor.rs emits `DependenceType::Control` only
+        // from a `Branch` or `LoopHeader` source, and a function header is
+        // neither — this graph has no edges at all. And the two lines are
+        // NOT one block; they are two overlapping nodes, which the printed
+        // ranges above settle.
+        //
+        // The entry node's span is also a real, PRE-EXISTING precision bug,
+        // not just a curiosity: for `def wide(a)` with four straight-line
+        // statements the entry node spans (2,5), so a backward slice from
+        // `return c` returns [2,3,4,5,6] and includes an unrelated `d = 99`.
+        // Tracked in TRDD-3TCJKGWM. This test's (2..=3) is safe regardless,
+        // because at three lines the entry span and the function coincide.
         assert!(
             slice.contains(&3),
             "the slice must contain the line sliced from: {slice:?}"
