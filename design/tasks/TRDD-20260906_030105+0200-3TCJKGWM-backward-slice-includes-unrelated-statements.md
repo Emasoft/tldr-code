@@ -1,9 +1,9 @@
 ---
 trdd-id: 3TCJKGWM
 title: Backward slice includes unrelated statements because the entry node spans the whole straight-line body
-column: backburner
+column: todo
 created: 2026-09-06T03:01:05+0200
-updated: 2026-09-06T03:01:05+0200
+updated: 2026-09-06T03:05:05+0200
 current-owner: claude-session-2026-09-05
 task-type: bugfix
 min-approval-requirement: none
@@ -15,12 +15,21 @@ labels: [pdg, slicing, precision, pre-existing]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
 
-- Found 2026-09-06 while triaging a test failure, NOT by a scanner. Confirmed PRE-EXISTING:
-  the only change to `crates/tldr-core/src/pdg/slice.rs` since the fork parent `7f50527` is
-  `62bfe3a`, which touches `get_slice_rich` and `read_source_lines` only. `get_slice`,
-  `find_nodes_for_line`, `compute_slice` and `nodes_to_lines` are untouched.
+- Found 2026-09-06 while triaging a test failure, NOT by a scanner.
+- PRE-EXISTING, checked in BOTH places that can produce a node span, because node spans are
+  `block.lines` copied from CFG blocks and the CFG builder is not under `src/pdg/`:
+  - `src/pdg/` since the fork parent `7f50527`: only `slice.rs`, in `62bfe3a`, touching
+    `get_slice_rich` and `read_source_lines`. `get_slice`, `find_nodes_for_line`,
+    `compute_slice` and `nodes_to_lines` are untouched.
+  - `src/cfg/` since `7f50527`: only `cfg/extractor.rs`, 8 insertions, confined to `continue`
+    handling (pushing `continue_block` onto `loop_exit_blocks`). The reproducer below has no
+    `continue` and no loop, so that change cannot affect its block boundaries.
 - Not yet fixed. Nothing depends on this card; it is filed so the defect is tracked rather
   than living in a test comment.
+- UNEXPLAINED, and it should be resolved before designing a fix: the dump below shows TWO
+  distinct nodes, id=1 and id=2, both with `lines=(6,6)`. One line yielding two nodes is
+  either duplicate node construction (possibly a second defect) or a modeling detail not yet
+  understood. It does not change this card's symptom, but it is not accounted for.
 
 ## Symptom
 
@@ -37,9 +46,17 @@ def wide(a):        # line 2
 
 `get_slice(source, "wide", 6, Backward, None, Python)` returns `[2, 3, 4, 5, 6]`.
 
-Line 5 (`d = 99`) has no data or control path to `c` and must not appear in a backward slice
-from `return c`. The correct answer is `{2, 3, 4, 6}` at worst, `{3, 4, 6}` if the header is
+Line 5 (`d = 99`) has no data or control path to `c`. Under textbook backward-slicing
+semantics it must not appear in a slice from `return c`, and the answer would be `{2, 3, 4, 6}`
+(`c` ← `b` ← `a`, reaching the parameter on the header line) or `{3, 4, 6}` if the header is
 excluded.
+
+Stated honestly: that is imported semantics, not this project's stated contract. Searched
+`thoughts/` for a slicing or PDG design document and found none — `thoughts/shared/` contains
+only `plans/`. So no project doc says what precision this slicer intends, and coarse
+block-granularity slicing is a defensible choice some tools ship deliberately. What is NOT in
+doubt is that the current output is unusable for the purpose slicing normally serves, and that
+the granularity is undocumented either way. A fix decision should settle the intent first.
 
 ## Cause (observed, not inferred)
 
@@ -54,16 +71,51 @@ edge 0 -> 1 Data c
 edge 0 -> 0 Data a
 ```
 
-Every straight-line statement collapses into ONE `entry` node spanning `(2,5)`. Two mechanisms
-then combine, both in `pdg/slice.rs`:
+Every statement BEFORE the return collapses into ONE `entry` node spanning `(2,5)`; the
+`return c` line is separate (and, unexplained, appears as two nodes). Two mechanisms then
+combine, both in `pdg/slice.rs`:
 
 1. `find_nodes_for_line` selects every node whose range CONTAINS the line, so an entry node
    with a wide span is selected by any line inside it.
 2. `nodes_to_lines` emits every line in a selected node's range `lines.0..=lines.1`.
 
-So as soon as the entry node is reached — here via `edge 0 -> 1` — its whole span is emitted,
-unrelated statements included. Precision is therefore bounded by basic-block size, and for
-branch-free code the whole body is one block.
+The full traversal, matching the observed output exactly: `find_nodes_for_line(6)` selects
+`{1, 2}` (node 0's `(2,5)` does not contain 6); `edge 0 -> 1` is a data edge meaning node 1
+DEPENDS ON node 0, and a backward slice walks dependency edges in reverse, so node 0 is
+reached from node 1; `nodes_to_lines` then expands `(2,5)` to `{2,3,4,5}` and unions `{6}`,
+giving `[2,3,4,5,6]`.
+
+The two `0 -> 0` self-edges corroborate the wide span rather than contradicting it: `a`
+(def line 2, use line 3) and `b` (def line 3, use line 4) are def-use pairs INTERNAL to node
+0's span, so both collapse onto the same node.
+
+Precision is therefore bounded by basic-block size, and for branch-free code the body is one
+block.
+
+## Reproducer
+
+Drop this in `crates/tldr-core/tests/pdg_tests.rs` inside `mod slicing_tests` and run
+`cargo test -p tldr-core --test pdg_tests slicing_tests::probe -- --exact --nocapture`. It is
+kept here rather than committed as an `#[ignore]`d test, because a test that PASSES against
+today's behaviour is not the regression test this card's acceptance asks for.
+
+```rust
+#[test]
+fn probe() {
+    let source = "\ndef wide(a):\n    b = a + 1\n    c = b + 2\n    d = 99\n    return c\n";
+    let pdg = tldr_core::pdg::extractor::get_pdg_context(source, "wide", Language::Python).unwrap();
+    let sl = get_slice(source, "wide", 6, SliceDirection::Backward, None, Language::Python).unwrap();
+    let mut v: Vec<_> = sl.into_iter().collect();
+    v.sort();
+    println!("slice-from-line6 = {v:?}");
+    for n in &pdg.nodes {
+        println!("node id={} lines={:?} type={:?}", n.id, n.lines, n.node_type);
+    }
+    for e in &pdg.edges {
+        println!("edge {} -> {} {:?} {}", e.source_id, e.target_id, e.dep_type, e.label);
+    }
+}
+```
 
 The same mechanism explains the smaller case pinned by `slicing_tests::slice_empty_function`
 in `crates/tldr-core/tests/pdg_tests.rs`: there the entry node is `(2,3)` and overlaps the
