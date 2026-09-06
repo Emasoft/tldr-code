@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:44:11+0200
+updated: 2026-09-06T03:45:50+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -87,12 +87,29 @@ labels: [scan-2026-09-05, hang]
   5-second window at minute 13 of a 13-minute burn.
 - **The "second hot thread" question is ANSWERED for the sample window — there wasn't one.**
   An earlier revision called this permanently unanswerable. It is not. The histogram's largest
-  entry is `__psynch_cvwait` at 47124, and the sample carries 15 thread headers: 1 main + 14
-  rayon workers, each sampled 3366 times. **14 x 3366 = 47124 exactly**, so every worker was
-  parked in a condvar wait at EVERY sample — zero work across the window. Two things follow:
-  every non-`cvwait` entry in that histogram is main-thread self time (which is what makes the
-  table below a main-thread profile rather than an aggregate), and the 118 % CPU must come from
-  an EARLIER parallel phase that had already ended by minute 13.
+  entry is `__psynch_cvwait` at 47124, and the sample carries 15 thread headers — line 24 is
+  `com.apple.main-thread`, lines 539-838 are workers `…468`-`…481`, so 1 main + 14 workers,
+  each sampled 3366 times. **14 x 3366 = 47124 exactly**, so every worker was parked in a
+  condvar wait at EVERY sample — zero work across the window.
+
+  The whole histogram reconciles, which is what rules out the exact match being a coincidence
+  or the counts being some other unit:
+
+  | quantity | value |
+  |---|---|
+  | `__psynch_cvwait` | 47124 = 14 x 3366, the workers |
+  | every other entry, summed | 3340 |
+  | main thread's own samples | 3366 |
+  | difference | 26, i.e. the entries the histogram collapses below its stated `>= 5` cutoff |
+
+  So the units are SAMPLES, and the non-`cvwait` entries account for the main thread's 3366
+  almost exactly — which is what makes the table below a main-thread profile rather than an
+  aggregate. That is now arithmetic, not assumption.
+
+  The 118 % CPU therefore comes from something outside this window. An earlier parallel phase
+  that had ended by minute 13 is the natural reading but is NOT established — `TIME` may also
+  include threads that exited before sampling, and `%CPU` and `TIME` need not cover the same
+  interval. Sample EARLY as well as late on the next occurrence rather than assuming.
   So the open question is not "who else was hot?" but "when did the parallel phase end, and
   what was it doing?" — materially smaller, and answerable on the next occurrence by sampling
   early as well as late.
@@ -282,9 +299,16 @@ labels: [scan-2026-09-05, hang]
   that header records `bench_call_tool_cache_hit_clone_cost` as having PASSED in run 1. These
   tests vary run to run — that is why they are in the disclaimed ten. One observation of them
   passing in a run that happened to follow the kill is consistent with the kill mattering AND
-  with ordinary variance, and nothing here distinguishes the two. The counterfactual was never
-  measured either: one core and 576 MB is a marginal change on a 64 GB machine still running a
-  17.5 GB process, eight other sessions, simulators and a VM.
+  with ordinary variance. The counterfactual was never measured either: one core and 576 MB is
+  a marginal change on a 64 GB machine still running a 17.5 GB process, eight other sessions,
+  simulators and a VM.
+  **One datum does bear on it, and it points AWAY from the kill.** The same baseline header
+  records `bench_call_tool_cache_hit_clone_cost` measured standalone at 21.3 us against a 15 us
+  target — i.e. FAILING by ~40 % with only light load present. Freeing one further core is
+  unlikely to close a gap that survives near-idle conditions, so the post-kill pass is better
+  explained by ordinary run-to-run variance than by the kill. That is a lean, not a
+  demonstration: the passing run printed no timing (a passing test captures stdout), so the
+  post-kill value is unknown and the margin cannot be compared directly.
   Those are exactly the names expected to FAIL under load. Timing verified by file BIRTH times
   (`/usr/bin/stat -f %SB` — mtime alone could not settle it, since a run starting before the
   kill and ending after has the same mtime; and note `stat` on PATH may be a non-BSD shim that
