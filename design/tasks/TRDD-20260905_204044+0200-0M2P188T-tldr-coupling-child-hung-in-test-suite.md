@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:47:19+0200
+updated: 2026-09-06T03:48:21+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -107,6 +107,14 @@ labels: [scan-2026-09-05, hang]
   thread, which is what makes the table below a main-thread profile rather than an aggregate.
   Corroborating from a second instrument: `ps` showed 99.4-100 % — one hot thread — not ~200 %.
   And the listed `>= 5` entries sum to 3340, leaving 26 in the collapsed sub-5 tail.
+
+  **Confirmed by READING the worker subtrees, not only by the sum.** The arithmetic alone could
+  not separate "all 14 parked throughout" from "mostly parked, with ~26 samples of work mixed
+  across threads" — the residual is the same size as that ambiguity. Lines 539-860 settle it:
+  14 worker headers, 14 `cvwait` occurrences, and every frame in those subtrees is
+  `__rust_try` / `Condvar::wait` / `pthread condvar wait` at the FULL 3366 count, with no
+  branching and no other leaf. Each worker sat on one unbranched parking chain for the whole
+  window, so the 26 cannot be worker time.
 - **SEPARATE FINDING, do not weld it to the one above.** The cvwait identity proves only that
   the WINDOW was single-threaded; it says nothing about minutes 0-12. What says multi-core
   activity happened at all is a different calculation: 15 min 42 s of CPU over 13 min 17 s
@@ -308,13 +316,17 @@ labels: [scan-2026-09-05, hang]
   with ordinary variance. The counterfactual was never measured either: one core and 576 MB is
   a marginal change on a 64 GB machine still running a 17.5 GB process, eight other sessions,
   simulators and a VM.
-  **One datum does bear on it, and it points AWAY from the kill.** The same baseline header
-  records `bench_call_tool_cache_hit_clone_cost` measured standalone at 21.3 us against a 15 us
-  target — i.e. FAILING by ~40 % with only light load present. Freeing one further core is
-  unlikely to close a gap that survives near-idle conditions, so the post-kill pass is better
-  explained by ordinary run-to-run variance than by the kill. That is a lean, not a
-  demonstration: the passing run printed no timing (a passing test captures stdout), so the
-  post-kill value is unknown and the margin cannot be compared directly.
+  One datum is often reached for here and it does NOT support what it looks like it supports.
+  The baseline records `bench_call_tool_cache_hit_clone_cost` at 21.3 us against a 15 us target
+  "with only the batch workers running". It is tempting to argue: it fails even under light
+  load, so freeing one core cannot explain a pass. That argument needs the 21.3 us run to have
+  been LIGHTER than the post-kill one, and there is no basis for that — the post-kill machine
+  still carried a 17.5 GB process, eight sessions, simulators and a VM, and may well have been
+  heavier. So the comparison does not run in the direction it first appears to.
+  What remains is the honest position: these tests vary (the same header records this one
+  PASSING in run 1), one observation cannot separate variance from a kill effect, and the
+  passing run printed no timing (a passing test captures stdout) so the post-kill value is
+  unknown. Do not attribute either way without a controlled re-run.
   Those are exactly the names expected to FAIL under load. Timing verified by file BIRTH times
   (`/usr/bin/stat -f %SB` — mtime alone could not settle it, since a run starting before the
   kill and ending after has the same mtime; and note `stat` on PATH may be a non-BSD shim that
