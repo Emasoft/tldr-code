@@ -3,7 +3,7 @@ trdd-id: MWLIUB72
 title: Decide whether the encoding module is wired into the read paths or retired
 column: todo
 created: 2026-09-06T04:14:07+0200
-updated: 2026-09-06T04:17:30+0200
+updated: 2026-09-06T04:24:00+0200
 current-owner: unassigned
 task-type: refactor
 min-approval-requirement: user
@@ -38,10 +38,23 @@ parent-trdd: 7X459MTO
   divergence cost when it fixes a defect that reaches this fork's actual consumers — people
   running the `tldr` binary — and is not when it only tidies code nothing reaches.*
   Its falsifier is whether this fork intends to track upstream at all; if it never merges either
-  direction, the cost is zero and the standard evaporates. Measured, not assumed: the `upstream`
-  remote is configured AND fetched (`refs/remotes/upstream/*` present), `HEAD..upstream/main` is
-  **0** (this branch already contains all of upstream/main), and 52 commits sit on top of the
-  fork parent `7f50527`. A fork that did not intend to track upstream would not be level with it.
+  direction, the cost is zero and the standard evaporates.
+  **What is measured, stated at its true strength:** the `upstream` remote is configured AND
+  fetched (`refs/remotes/upstream/*` present), `HEAD..upstream/main` is **0** (this branch
+  already contains all of upstream/main), and 52 commits sit on the fork parent `7f50527`.
+  That is an ANCESTRY fact and it is **consistent with tracking upstream — it does not establish
+  a policy.** The same facts fit a fork that pulled once at creation and has ignored upstream
+  since; the history sampled shows no merge commit FROM upstream. Evidence that would actually
+  establish intent: an upstream merge in the history, a written rebase policy, or the owner
+  saying so. None exists. Recording the weaker claim deliberately — an earlier version of this
+  bullet asserted intent as measured, which is the same error class as the `d71f6f0` propagation
+  corrected two hours earlier: a plausible inference written down as a fact.
+  **The rate is so far UNFALSIFIED, not validated.** It has ratified every call made under it,
+  and item 3 below shows why that is suspicious rather than reassuring: it condemned the UTF-16
+  fix and was then given an escape clause ("latent defect, goes live if wired") sized exactly to
+  that change. A standard that has never made anyone not do something they wanted to do has not
+  yet constrained anything. It earns its keep the first time it does; if that moment never
+  arrives, it is decoration and should be dropped rather than cited.
 - **Applying that rate honestly costs me a claim I made earlier.** Under it, TRDD-7X459MTO's
   UTF-16 fix does NOT currently pass either — it corrects a real defect in a module no command
   routes through, so its benefit to binary users today is zero, exactly like the deletion it was

@@ -3,7 +3,7 @@ trdd-id: BKALIK1B
 title: A source file that is not valid UTF-8 panics the process or vanishes from the analysis
 column: todo
 created: 2026-09-06T04:16:38+0200
-updated: 2026-09-06T04:16:38+0200
+updated: 2026-09-06T04:24:00+0200
 current-owner: unassigned
 task-type: bugfix
 min-approval-requirement: user
@@ -55,17 +55,33 @@ single-line grep for `.unwrap()`/`.expect(` on a `read_to_string(` line finds 24
 Not a mechanical sweep — the three buckets need different treatment, and 176 sites is too many
 to change blind:
 
-- **PANIC (25)** — highest priority and the smallest set. A malformed input file must never
-  panic the process. Convert to a handled error. Start here.
-- **SILENT (73)** — decide per site whether the correct behaviour is skip-with-a-warning or
-  propagate. Most are inside directory walks, where aborting the whole command over one bad file
-  would be wrong, so skip-with-a-warning is the likely answer; that is what makes this the same
-  problem `EncodingIssues` was designed to solve (see TRDD-MWLIUB72).
+**Severity and sequencing are NOT the same ranking here, and an earlier version of this card
+conflated them** — it called SILENT "the more dangerous" and then told the reader to start with
+PANIC, presenting an effort tie-break as a severity judgment. Stated separately:
+
+**By severity, SILENT (73) is the worst bucket.** It produces a smaller, wrong answer *reported
+as success*. Nothing tells the user their result is incomplete, so it corrupts whatever decision
+the output feeds. PANIC (25) is second: it is loud, reproducible and self-reporting — the user
+sees the crash, knows the run is invalid, and can file it. A crash is a bad outcome; a confidently
+wrong answer is a worse one.
+
+**By sequencing, do PANIC first — on tractability, not severity.** The two buckets need different
+kinds of work:
+
+- **PANIC (25)** — mechanical and self-contained. `.unwrap()`/`.expect(` on a file read becomes a
+  handled error; no design decision, no schema change, no dependency on any other card. It can
+  land immediately and independently.
+- **SILENT (73)** — needs a per-site judgment (skip-with-a-warning vs propagate) and a place to
+  put the warning. Most sit inside directory walks, where aborting the whole command over one bad
+  file would be wrong, so skip-with-a-warning is the likely answer — which is precisely the
+  problem `EncodingIssues` was designed to solve. So this bucket is entangled with TRDD-MWLIUB72:
+  it is currently decided LEAVE-AS-IS, but if that is ever reopened to WIRE IN, most of this work
+  is subsumed and would be done twice.
 - **PROPAGATED (75)** — probably already correct for single-file reads, where failing loudly is
   right. Confirm rather than change.
 
-Sequencing note: if MWLIUB72 decides WIRE IN, the SILENT bucket is largely subsumed by that work
-and should not be fixed twice. The PANIC bucket is independent of MWLIUB72 either way.
+If forced to fix only one bucket, fix SILENT — it is the one that lies. PANIC goes first only
+because it is free to do now and blocks nothing.
 
 ## Acceptance
 
