@@ -63,12 +63,25 @@ labels: [scan-2026-09-05, robustness, encoding]
   **The warrant for 0 PANIC is the hand reconciliation of all 24 sites, not the agreement.**
   Stating it as cross-method agreement was worse than admitting one unverified count, because it
   discourages the next person from checking.
-- **"176 call sites" was the wrong frame for the parse path.** `parse_file_with_lang` is, in its
-  own words, "the single chokepoint every parse-based command goes through (structure, calls,
-  smells, dead, secure, …)" — the oversize policy is already enforced there for exactly that
-  reason. So this defect is one fix for all parse-based commands, not one per call site. This
-  also corrects TRDD-MWLIUB72's premise that wiring encoding-awareness in means touching 176
-  sites; for parse-based commands it means touching one.
+- 🛑 **"THE SINGLE CHOKEPOINT" IS FALSE, AND I TOOK IT FROM A CODE COMMENT.** An earlier version
+  of this bullet said `parse_file_with_lang` is "the single chokepoint every parse-based command
+  goes through (structure, calls, smells, dead, secure, …)", quoted that as established fact, and
+  built the whole "one fix, not 176" reframing on it. **That sentence is a previous author's
+  claim about their own refactor. I verified it for exactly ONE command (`structure`) and
+  generalised to five** — the precise class of evidence this card rejects everywhere else.
+  Measured afterwards against the committed fixtures: **`secure` and `vuln` do NOT route through
+  it.** They use a SECOND read path, `tldr_core::fs::read_to_string_tolerant`
+  (`crates/tldr-core/src/fs/mod.rs:62`), whose check is `String::from_utf8` — so `secure` reports
+  `"Skipped …/bad.py: invalid UTF-8 at byte 0"` (its own message, not the guard's) and
+  `files_skipped: 1`, catching the BOM'd file and **silently mis-analysing `nobom.py`, because
+  BOM-less UTF-16 IS valid UTF-8.** `surface/lua.rs` uses that path too.
+  So the fix landed on one of at least TWO read paths, and the gap it leaves is exactly the case
+  a validity check cannot see — the same weakness demonstrated earlier on this card, already
+  deployed in the tree. Fix for path B in flight: one shared `wide_encoding_marker` helper used
+  by both, so they cannot drift again.
+  What survives of the original point: the parse path IS shared by several commands, so
+  TRDD-MWLIUB72's "WIRE IN = 176 call sites" premise is still wrong. But "one chokepoint" is
+  wrong too — the truth is a small number of read paths, and **the count is not established.**
 - **FIXED at the chokepoint. Two guards, and the second one is the whole lesson.**
   `TldrError::EncodingError { path, detail }` ALREADY EXISTED (`error.rs:51`, exit code 7
   already assigned) — no new variant, **no breaking change**. I had planned to add one and had
@@ -164,13 +177,30 @@ lands. Sequencing, once it does:
 - [x] The BOM-LESS case is caught too (`nobom.py`), since that is the common form and the BOM
       check alone missed it. — verified: skipped with `"contains NUL bytes …"`.
 - [x] `.gitattributes` prevents the fixtures being normalised into UTF-8 on checkout.
-- [ ] A regression test asserts BOTH the fixture's encoding (first bytes / presence of NUL) AND
+- [x] A regression test asserts BOTH the fixture's encoding (first bytes / presence of NUL) AND
       the skip behaviour. Asserting behaviour alone is not enough: if a fixture ever rots into
       UTF-8, a behaviour-only test keeps passing while testing nothing.
-- [ ] The corrected production-only survey has landed and the SILENT bucket's real size is
-      recorded here.
-- [ ] `cargo test -p tldr-core` shows no regression against the known baseline
+      — `crates/tldr-core/tests/encoding_skip_tests.rs`, 4 tests.
+- [x] The corrected production-only survey has landed and the SILENT bucket's real size is
+      recorded here. — 56 SILENT (see the table above).
+- [x] `cargo test -p tldr-core` shows no regression against the known baseline
       (82 bins / 7214 passed / 1 known failure).
+      — **83 bins / 7218 passed / 1 failed**, the failure being the same baseline name
+      `ruby_io_popen_with_user_input_via_compute_taint`. The delta is exactly this card's own
+      additions: +1 binary (`encoding_skip_tests`) and +4 passing tests. `cargo_exit=101` is that
+      single known failure, not a build error — 83 `test result:` lines are present and there are
+      zero `error[E…]` diagnostics.
+
+## What is NOT closed by the above
+
+The card's acceptance is met for the DEMONSTRATED instance. The defect CLASS is not closed, and
+the boxes above must not be read as though it were:
+
+- **56 SILENT production sites remain** outside the parse chokepoint. One site is fixed.
+- **latin-1 / cp1252 identifier mangling is unmeasured and unfixed** (see the STATE block). The
+  title of this card scopes to wide encodings, which hides it.
+
+Both need their own cards before this one is closed.
 
 ## Approval log
 
