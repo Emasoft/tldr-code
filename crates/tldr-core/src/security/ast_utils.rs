@@ -1121,20 +1121,21 @@ fn find_arguments_node<'a>(node: &'a Node, language: Language) -> Option<Node<'a
 // Statement-level Text Matching with AST Verification
 // =============================================================================
 
-/// Check if a statement text contains a call to a specific function name,
-/// verified against the AST to exclude matches in comments and strings.
+/// Check if a statement text contains the given function name as a substring.
 ///
-/// This is the bridge between the existing regex-based approach and full AST.
-/// It takes a line of source code, parses it, and checks if the function name
-/// appears as an actual call (not in a comment or string).
+/// This does NOT parse or verify anything against the AST: it is a plain
+/// `str::contains` fast-path check on the raw text, so it will also match
+/// occurrences inside comments or string literals. Real AST-based filtering
+/// of comments/strings (see [`is_code_node`]) only happens once a full file
+/// tree is available; this function does not have one to work with.
 ///
 /// # Arguments
 /// * `statement` - The source code statement text
 /// * `call_name` - The function name to look for (e.g., "eval", "input")
-/// * `language` - The programming language
+/// * `language` - Unused; kept for API compatibility
 ///
 /// # Returns
-/// `true` if the call appears in actual code (not in a comment or string)
+/// `true` if `call_name` appears anywhere in `statement`'s text
 pub fn verify_call_in_statement(statement: &str, call_name: &str, _language: Language) -> bool {
     // Quick check: if the call name isn't even in the text, skip parsing
     if !statement.contains(call_name) {

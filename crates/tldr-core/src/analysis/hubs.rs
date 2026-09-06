@@ -305,9 +305,10 @@ impl HubScore {
         }
     }
 
-    /// Create HubScore with explicit composite score
+    /// Create HubScore with a precomputed composite score
     ///
-    /// Used when composite is computed with additional measures (PageRank, betweenness)
+    /// The caller supplies `composite_score` directly; `pagerank` and
+    /// `betweenness` are always left as `None` on the returned `HubScore`.
     pub fn with_composite(
         function_ref: FunctionRef,
         in_degree: f64,
