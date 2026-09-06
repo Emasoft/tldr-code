@@ -3,7 +3,7 @@ trdd-id: BKALIK1B
 title: A source file that is not valid UTF-8 panics the process or vanishes from the analysis
 column: todo
 created: 2026-09-06T04:16:38+0200
-updated: 2026-09-06T04:24:00+0200
+updated: 2026-09-06T04:31:00+0200
 current-owner: unassigned
 task-type: bugfix
 min-approval-requirement: user
@@ -13,6 +13,25 @@ labels: [scan-2026-09-05, robustness, encoding]
 # A source file that is not valid UTF-8 panics the process or vanishes from the analysis
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+
+- 🛑 **STOP — THE PANIC BUCKET IS EMPTY IN PRODUCTION. DO NOT "FIX" IT.** The body below says
+  25 panic sites and tells you to start there. Verified first-hand 2026-09-06 before touching
+  any of them: there are **24** `.unwrap()`/`.expect(` sites on a `read_to_string`, and **all 24
+  are test code — 0 production**. Fixing them would have been wrong work on a large scale.
+- **Why the survey was wrong, because the same trap will catch the next measurement.** It
+  excluded paths containing `/tests/` and nothing else. Rust has two other ways to be test-only:
+  an inline `#[cfg(test)] mod tests { … }` block inside a production file (20 of the 24), and a
+  whole file pulled in by a `#[cfg(test)] mod <name>;` declaration in the parent module — that is
+  the last 4, in `analysis/clones_integration_tests.rs`, gated at `analysis/mod.rs:119`. A
+  filename saying "tests" is not what makes code test-only; the `cfg` attribute is, and it can
+  live in a different file from the code it gates.
+- **The SILENT (73) and PROPAGATED (75) counts are therefore UNRELIABLE TOO** — same method, same
+  blind spot, and the SILENT bucket is the one this card exists for. A corrected production-only
+  re-survey is running; its report lands in `reports/encoding-survey/` as `*-CORRECTED-*`. Treat
+  every number in the body below as an upper bound until that lands, and do not plan work off
+  them.
+- The defect this card describes is still real in kind: a non-UTF-8 file dropped silently from an
+  analysis that reports success is a genuine bug. What is not yet established is its SIZE.
 
 - Filed UNCONDITIONALLY and deliberately kept independent of TRDD-MWLIUB72 (the `encoding`
   wire-in-or-retire decision). This defect is real whichever way that card goes — 25 panics and
