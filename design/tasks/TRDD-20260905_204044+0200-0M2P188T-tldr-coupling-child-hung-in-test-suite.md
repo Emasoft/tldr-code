@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:40:17+0200
+updated: 2026-09-06T03:41:55+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -148,10 +148,15 @@ labels: [scan-2026-09-05, hang]
     - **Hash-index iteration + resolution** — 725 + 358 + 75 + 42 hash iteration, plus
       `FuncIndex::iter` 217, `resolve_local_fuzzy_match` 151, `find_by_name` 45,
       `String::as_str` 209. Consistent with scanning the whole function index per call site.
-    - **PATH MATCHING in `glob` and `ignore`** — 354 + 102 + 97 + 63 + 44 ~= 660 samples of
-      string comparison inside the file-filtering crates. That is the FILE SCAN
-      (`respect_ignore: true`), not call resolution, and it is a comparable share of the
-      identifiable self time. Any fix that only addresses resolution leaves this untouched.
+    - **STRING COMPARISON INSIDE THE `glob` AND `ignore` CRATES** — 354 + 102 + 97 + 63 + 44
+      ~= 660 samples, identified by the crate hashes in the mangled symbols (`..4glob`,
+      `..6ignore`), which is VERIFIED. That those calls come from the file walk under
+      `respect_ignore: true` is the obvious reading but is INFERRED — the call path was not
+      traced, and both crates could in principle be reached elsewhere. Either way it is a
+      comparable share of identifiable self time to the resolution work, so a fix aimed only
+      at resolution would leave it untouched.
+      By contrast the two big hashbrown entries ARE callgraph's: both carry the suffix
+      `tldr_core::callgraph::types`, checked, so they are not `ignore`'s internal maps.
 
     `TwoWaySearcher::next` at 7 confirms `find_var_in_line` / `match_indices` — twice named on
     this card as the hot path — is noise.
@@ -264,10 +269,16 @@ labels: [scan-2026-09-05, hang]
   `reports/colony/classified-failures.txt` as load-sensitive wall-clock thresholds passed there:
   `cache::tests::bench_cache_key_construction ... ok` and
   `tools::tests::bench_call_tool_cache_hit_clone_cost ... ok`.
-  Those are exactly the names expected to FAIL under load. Their passing is not a regression
-  (a pass never is) and does not change the gate's zero-regression verdict, but that package's
-  clean result is NOT an independent measurement — it was taken on a machine this session had
-  just unloaded. Anyone re-running it for comparison should do so under comparable load.
+  Those are exactly the names expected to FAIL under load. Timing verified by file mtimes, not
+  recalled: `gate-core2` finished 03:06 (BEFORE the kill, so the core package is unaffected),
+  `gate-cli` 03:18, and `gate-rest` was launched after cli finished and modified 03:19 — wholly
+  after 03:16:46.
+  A pass is never a regression, so the gate's zero-regression verdict stands. But do NOT read
+  that package's clean result as an independent measurement, and note the sharper risk: these
+  two tests are wall-clock THRESHOLDS, so a freed machine is exactly the condition under which
+  a genuine performance regression would slip past them unnoticed. Nothing here suggests one
+  exists; the point is that this run could not have detected one. Re-run under comparable load
+  before treating those two passes as evidence about performance.
 - Still NOT established: why it triggers only sometimes. Standalone runs finish in ~1.2 s (see
   the body) and this test passes in other runs. The trigger is unknown; the loop is located.
 
