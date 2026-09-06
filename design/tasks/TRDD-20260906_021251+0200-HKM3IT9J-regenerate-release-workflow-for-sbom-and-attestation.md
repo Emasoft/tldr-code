@@ -17,6 +17,12 @@ labels: [supply-chain, release, cargo-dist]
 
 - The config half is DONE and pushed: `dist-workspace.toml` now sets `cargo-cyclonedx = true`,
   `github-attestations = true` and `[dist.github-action-commits]` with three SHA pins.
+- Two things to know before running the regeneration. `github-attestations` is marked
+  EXPERIMENTAL upstream, so watch the first release that uses it rather than trusting it
+  silently. `cargo-cyclonedx` is documented package-local, but v0.31.0's
+  `cargo-dist/src/config/v0.rs:915-917` makes a package inherit the workspace value when it sets
+  none, so the workspace-level setting does apply to this single-package workspace (checked in
+  the pinned version's source, not in current docs).
 - The workflow half is NOT done: `.github/workflows/release.yml` is generated, and this checkout
   has no `dist` binary, so the SBOM and attestation steps are not in the file yet. Until it is
   regenerated, a release still ships without either.

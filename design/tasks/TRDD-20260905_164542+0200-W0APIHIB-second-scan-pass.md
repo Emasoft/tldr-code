@@ -3,7 +3,7 @@ trdd-id: W0APIHIB
 title: Second scan pass needs-build and cross-file fixes
 column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-05T21:33:13+0200
+updated: 2026-09-06T02:18:00+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
