@@ -29,10 +29,25 @@ a **silently smaller file set**, and exits 0.
 That is not a lesser bug than a wrong answer — it *is* a wrong answer, in the shape that does the
 most damage. Dead-code detection is whole-program by nature: a function is dead only if *nothing*
 references it. Dropping a file removes its references, so a function referenced **only** from the
-dropped file is now reported as dead. The user gets false positives in the one report whose whole
-purpose is telling them what is safe to **delete**, with no warning and a success exit code.
-`calls` has the same property — a missing file means missing edges, so the call graph is
-confidently incomplete.
+dropped file is now reported as dead.
+
+**MEASURED, not argued** (2026-09-06). Two directories, identical file contents, encoding the only
+variable. `lib.py` defines `used_only_from_utf16()` and `genuinely_dead()`; `caller.py` imports and
+calls the first.
+
+| `caller.py` encoding | `tldr dead` → `possibly_dead` |
+|---|---|
+| UTF-16 (skipped by the guard) | `used_only_from_utf16`, `genuinely_dead` ← **FALSE POSITIVE** |
+| UTF-8 (control) | `caller`, `genuinely_dead` |
+
+With the caller readable, `used_only_from_utf16` correctly drops off the list. With the caller
+skipped, a live function is reported as possibly dead and is **indistinguishable from the
+genuinely dead one** — and `warnings` is `None`, so nothing hints that a file was omitted.
+
+Honest scoping of that result: the name lands in `possibly_dead`, not `dead_functions`, so the
+tool is already hedging. The defect is that the hedge carries no reason, and the user has no way
+to learn that a file was dropped. `calls` has the same property — a missing file means missing
+edges, so the call graph is confidently incomplete.
 
 Verified 2026-09-06 (TRDD-BKALIK1B's probes): `dead`, `calls` and `smells` DO reach the encoding
 guard and correctly exclude an unreadable file — and none of them surfaces a warning naming it.
@@ -57,6 +72,13 @@ Counts to trust, and the ones NOT to: the corrected survey reads **56 SILENT · 
 `.unwrap()`s on a read are test code. An earlier survey said 25 production panics; it classified
 by path alone and counted `#[cfg(test)]` code as production. Do not go fixing those.
 
+**BUT 56 IS NOT THE READ SURFACE — it is the `read_to_string`-shaped part of it.** The survey
+searched for `read_to_string` only. A further **33 non-test read sites use a different primitive
+and were never bucketed**: 30 `File::open` and 2 `.read(&mut …)`. `is_binary_file`
+(`metrics/file_utils.rs:304`) is one of them, and its error handling is `Err(_) => false` — a read
+failure is silently treated as "not binary", which is this card's defect in a helper the survey
+could not see. Bucket those 33 before planning off 56.
+
 ## Acceptance
 
 - [ ] `tldr dead`, `tldr calls` and `tldr smells` over a directory containing an unreadable file
@@ -66,7 +88,15 @@ by path alone and counted `#[cfg(test)]` code as production. Do not go fixing th
       file is absent from the results, which is what the buggy behaviour also produces.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
-- [ ] No command returns a result computed over a reduced file set without saying so.
+- [ ] The 33 `File::open` / `.read(&mut …)` sites the survey never saw are bucketed the same way.
+- [ ] The skip path is centralised, so a NEW command cannot silently drop a file without
+      inheriting the warning.
+      — This replaces an earlier line, "no command returns a result computed over a reduced file
+      set without saying so", which was **unfalsifiable**: it quantified over all commands, all
+      inputs and all future code, so nothing could ever discharge it and it would have been
+      ticked on vibes or never. Same defect as the unfalsifiable standard caught on
+      TRDD-MWLIUB72. Centralisation is the mechanism that actually generalises the guarantee, and
+      it is checkable.
 
 ## Notes
 

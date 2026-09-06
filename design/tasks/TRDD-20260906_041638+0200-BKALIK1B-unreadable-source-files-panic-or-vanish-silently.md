@@ -123,8 +123,11 @@ labels: [scan-2026-09-05, robustness, encoding]
   supplies one: **a NUL at offset 1928** — past the guard's 1024-byte window, inside
   `is_binary_file`'s 8 KB sample. The guard passes it; a binary filter would reject it.
   Result: `dead` finds `late_marker`, `calls` finds it, `smells` reports `files_scanned: 2` — all
-  three ANALYSED it. So `is_binary_file` is not on their paths, and the earlier exclusion of the
-  NUL-at-offset-6 file was the guard after all. The conclusion survived, but only the third probe
+  three ANALYSED it, so the earlier exclusion of the NUL-at-offset-6 file was the guard after all.
+  **Stated at its true strength: no whole-file NUL filter is applied to `.py` files on these
+  commands' default paths.** That is what the observation supports and it is all the conclusion
+  needs. It is not the broader "`is_binary_file` is never on their paths" — that helper checks
+  extension first and only then samples content, and other modes were not exercised. The conclusion survived, but only the third probe
   established it.
   Loose end closed too: the same file with the NUL stripped yields `zzz_marker`, so it parses
   normally and the NUL was the sole cause of exclusion.
