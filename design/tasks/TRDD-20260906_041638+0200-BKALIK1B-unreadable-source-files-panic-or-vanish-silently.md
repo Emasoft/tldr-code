@@ -81,7 +81,26 @@ labels: [scan-2026-09-05, robustness, encoding]
   by both, so they cannot drift again.
   What survives of the original point: the parse path IS shared by several commands, so
   TRDD-MWLIUB72's "WIRE IN = 176 call sites" premise is still wrong. But "one chokepoint" is
-  wrong too — the truth is a small number of read paths, and **the count is not established.**
+  wrong too.
+- **AT LEAST THREE READ PATHS, traced 2026-09-06. Per command, verified — do NOT read "the wide
+  file is absent from the output" as "the guard fired":**
+
+  | command | read path | state |
+  |---|---|---|
+  | `structure` | `parse_file_with_lang` | **FIXED** — skipped, warning names the file |
+  | `secure`, `vuln`, `surface` | `fs::read_to_string_tolerant` (`fs/mod.rs:62`) | **GAP** — its `String::from_utf8` catches BOM'd UTF-16 only; BOM-less is valid UTF-8 and slips through. Fix in flight |
+  | `dead` | **bare `std::fs::read_to_string`**, `dead.rs:267` and `:316`, both `if let Ok(source)` | **UNFIXED, and it IS the SILENT pattern** — the error is swallowed with no warning. Bypasses the guard entirely |
+  | `smells`, `calls` | delegate into `detect_smells_with_walker_opts` / `build_project_call_graph_v2` | **UNKNOWN — not traced to a read primitive.** Do not assume either way |
+
+  **The earlier note that these commands "exclude" the wide files was a placeholder in the shape
+  of a finding.** Absence from the output is consistent with two different worlds — the guard
+  fired and the error was swallowed, or the guard never ran and the file parsed to zero symbols
+  exactly as before. I looked only at absence. Tracing the call paths settled it, and the answer
+  is the worse one: `dead` is a THIRD situation, neither fixed nor warned.
+- **Distinct read PRIMITIVES so far: 3** (`parse_file_with_lang`, `read_to_string_tolerant`, bare
+  `fs::read_to_string`). That is the count the earlier "not established" left open. The 154
+  surveyed sites funnel through these three kinds; the per-command routing above is what
+  actually matters, and two commands remain untraced.
 - **FIXED at the chokepoint. Two guards, and the second one is the whole lesson.**
   `TldrError::EncodingError { path, detail }` ALREADY EXISTED (`error.rs:51`, exit code 7
   already assigned) — no new variant, **no breaking change**. I had planned to add one and had
