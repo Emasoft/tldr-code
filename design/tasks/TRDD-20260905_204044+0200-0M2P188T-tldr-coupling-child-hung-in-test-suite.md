@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:13:22+0200
+updated: 2026-09-06T03:18:06+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -14,21 +14,52 @@ labels: [scan-2026-09-05, hang]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
 
-- **IT RECURRED.** The body below says "Not reproducible standalone" and treats the hang as a
-  one-off. On 2026-09-06 a per-package `cargo test -p tldr-cli --no-fail-fast -j 2 --
-  --test-threads=2` run printed `test coupling_path_preserves_user_supplied has been running
-  for over 60 seconds`, and the run was still sitting on it. So this is a SECOND observation,
-  under different conditions from the first (per-package, 2 test threads, not the full
-  workspace), which removes "it happened once" as a reason to deprioritise it.
-- A second test in the same run also passed 60 s: `verify_command::test_verify_default_current_dir`.
-  Whether that is the same defect, ordinary slowness, or contention from the constrained thread
-  count is NOT established — noted so the next investigator checks rather than assumes.
-- What is now worth doing FIRST, ahead of the body's step 1: the body's reproduction attempts
-  were standalone runs of the binary, which never reproduced it. Both observations instead came
-  from inside a multi-threaded `cargo test`. Reproduce it THERE — the suite context, not the
-  binary in isolation, is the only place it has ever appeared.
-- Nothing about the cause is settled. No scan hunk is implicated (see the body), and this
-  session added no evidence about WHY, only that it happens more than once.
+- **IT RECURRED, and this time it was caught live and profiled.** On 2026-09-06, during
+  `cargo test -p tldr-cli --no-fail-fast -j 2 -- --test-threads=2`.
+- MEASURED on the live child (pid 26887,
+  `tldr coupling <tmp>/mod.py <tmp>/client.py --format json -q`):
+
+  | quantity | value |
+  |---|---|
+  | elapsed | 13 min 17 s, still running when killed |
+  | CPU time | **15 min 42 s** |
+  | CPU usage | 99.4-100 %, sustained |
+  | RSS | 528 MB to 576 MB, climbing ~165 KB/s |
+
+  So it SPINS and ALLOCATES. That matches the body's original "over 30 CPU-minutes on one
+  core" in kind, which is what makes this the same phenomenon rather than a slow test.
+- **A 60-second warning is NOT the signature — do not use it as one.** The same run printed
+  libtest's 60 s warning for `verify_command::test_verify_default_current_dir`, and that test
+  COMPLETED OK on the very next line. Both tests spawn the freshly built CLI, and a fresh
+  binary stalls on first exec on this machine, so a 60 s warning alone is fully explained
+  without any defect. What distinguishes the real thing is CPU TIME ACCUMULATING: a stalled
+  binary burns ~0 % CPU; this one burned 15 CPU-minutes. Check CPU, not the wall clock.
+- **Hot path, from `/usr/bin/sample` on the live process** (note: `sample` on PATH may resolve
+  to an unrelated Python shim — use the absolute path):
+
+  ```
+  callgraph::builder_v2::build_project_call_graph_v2
+    -> callgraph::resolution::resolve_call_with_receiver
+      -> callgraph::resolution::resolve_local_fuzzy_match      (heaviest)
+      -> callgraph::resolution::resolve_type_aware_fallback
+        -> callgraph::type_resolver::find_var_in_line          (str::match_indices)
+        -> callgraph::type_resolver::find_type_annotation
+        -> callgraph::type_resolver::resolve_python_receiver_type
+  ```
+
+  Leaf time is dominated by `str::match_indices` / `TwoWaySearcher` inside `find_var_in_line`,
+  reached from fuzzy-match resolution of a Python receiver type. `FuncIndex::find_by_name` and
+  `FuncIndex::iter` appear throughout, so the shape to suspect is a resolution retry that
+  re-scans the index without making progress.
+- NEXT ACTION: read `callgraph::resolution::resolve_local_fuzzy_match` and
+  `resolve_type_aware_fallback` for a loop whose termination depends on resolution succeeding.
+  The growing RSS says something accumulates per iteration, which is a second handle on the
+  same loop.
+- Killed with `kill 26887` at 03:16:46 to unblock the gate — the same action the body records
+  for occurrence 1. The run resumed immediately and the test failed at
+  `crates/tldr-cli/tests/path_and_schema_cleanup_v3.rs:60`, matching the body's account.
+- Still NOT established: why it triggers only sometimes. Standalone runs finish in ~1.2 s (see
+  the body) and this test passes in other runs. The trigger is unknown; the loop is located.
 
 ## Why
 During the second full `cargo test --workspace` run of the scan landing (2026-09-05, parent

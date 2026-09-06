@@ -189,19 +189,20 @@ must NOT be read as prejudging it — an earlier revision wrote them while the c
       behaviour, or is statement-level precision the goal? The docs state soundness only, so
       this cannot be settled by reading them.
 
-If the decision is that block granularity is intended:
+- [ ] The follow-on work implied by that decision is filed as its own card, and this one closes
 
-- [ ] The precision bound is documented on `get_slice`, so the next reader does not
-      re-discover it as a bug — including the branch-free consequence below
-- [ ] `slicing_tests::slice_empty_function`'s `(2..=3)` bound gets a pointer to that doc
+That is the whole acceptance, deliberately. An earlier revision pre-wrote BOTH futures as two
+branches of checkboxes; whichever way the decision went, the losing branch's boxes could never
+be ticked, so the card became unclosable by construction. One row whose acceptance IS the
+decision is the right shape, and the implementation becomes a derived card once there is a
+decision to implement.
 
-If the decision is that statement-level precision is the goal:
-
-- [ ] A backward slice from `return c` in the snippet above excludes line 5
-- [ ] A regression test pins that exclusion, and fails against today's behaviour
-- [ ] `slicing_tests::slice_empty_function`'s `(2..=3)` bound is revisited, since it currently
-      encodes the coarse-granularity result and would need to tighten if granularity changes
-- [ ] `cargo test -p tldr-core` shows no new failures versus the classified baseline
+For whoever files that derived card, the two shapes are: if block granularity is INTENDED,
+document the precision bound on `get_slice` (including the branch-free consequence above) and
+point `slice_empty_function`'s `(2..=3)` at that doc. If statement-level precision is the GOAL,
+make a backward slice from `return c` exclude line 5, pin it with a regression test that fails
+against today's behaviour, revisit that same `(2..=3)` bound, and check `cargo test -p
+tldr-core` against the classified baseline.
 
 ## Approval log
 
