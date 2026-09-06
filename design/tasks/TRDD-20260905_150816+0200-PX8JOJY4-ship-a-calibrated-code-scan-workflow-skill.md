@@ -3,7 +3,7 @@ trdd-id: PX8JOJY4
 title: Ship a calibrated code-scan workflow skill with tldr-code
 column: human_review
 created: 2026-09-05T15:08:16+0200
-updated: 2026-09-05T21:27:36+0200
+updated: 2026-09-06T04:26:00+0200
 current-owner: claude-session-2026-09-05
 task-type: feature
 min-approval-requirement: none
@@ -14,6 +14,19 @@ labels: [skill, workflow, token-economy]
 # Ship a calibrated code-scan workflow skill with tldr-code
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-05
+
+- **BOOKKEEPING CORRECTED 2026-09-06 — this block's own count was wrong.** It said "Open
+  acceptance lines: the end-to-end template run from a fresh session and the fastedit evaluation"
+  (2), while FIVE boxes were unticked. Checked each against the tree rather than trusting either
+  number: two were already MET and simply never ticked (the calibration table, verified by
+  reading `references/calibration.md`; `make install-skill`, verified at Makefile:34+68), and
+  **three** are genuinely open — not two. The missing third is the tldr-yield line, whose bar is
+  a regression rate below run-2's baseline of 2 broken hunks per 287 fixes; run 2 itself did NOT
+  clear it (calibration.md records "at least 2 kept hunks broke ~200 tests"), so it needs a
+  future run, not a re-reading of this one.
+- **This card is at `human_review` and the remaining three lines need a HUMAN, not another agent
+  pass.** Two require a fresh-session run and a fastedit measurement; the third requires a new
+  scan run to measure against. `human_review → complete` / `→ dev` is a user decision.
 
 - NEXT ACTION: the landing is COMMITTED, not pushed (2026-09-05 21:00): `62bfe3a` scan, 184 files (three scan-caused root fixes inside: scanner depth-0 cycle guard, AST-cache language dispatch, `is_inside_class` for Java interface/enum/record); `8706dff` 7 proposals, none approved; `24a6bad` the skill under `skills/tldr-scan-workflow/` + Makefile target; `f7444bd` val013 registry isolation; `866c21e` six stale/env-dependent upstream tests. Residual failures: 87 pre-existing at the parent 7f50527 (same name, per-binary count and assertion text or full failure block), 1 unreproducible hang tracked as proposal TRDD-0M2P188T. Open acceptance lines: the end-to-end template run from a fresh session and the fastedit evaluation. Moved to `human_review` at 21:27, not left in `todo`: `todo` asserts approved, designed and NOT started, which eight landed commits contradict, and it hides delivered work from the board. `human_review` states what is true — the work is delivered and a human verdict is pending on the two open lines. `testing` and `ai_review` were exercised but never recorded as columns, so the card went `todo` → `human_review` in one edit. `testing`: this card's own acceptance (colony row 10) re-runs green — the five skill files present, `node --check` on `workflow.js`, `make_batches.py --help`, an empty leak grep over the skill and Makefile, the Makefile target. `ai_review`: adversarial reviews read the skill, this card's acceptance tick and its column move, and their findings were acted on. Verdict sought: run the shipped template end to end from a fresh session and evaluate fastedit on one batch, or drop those two lines and close the card. With `min-approval-requirement: none` there is no named reviewer, so only the user moves it out of this column.
 - Canonical script: `skills/tldr-scan-workflow/references/workflow.js` (committed in `24a6bad`), with the prompts in `references/prompts.md` and the measured figures in `references/calibration.md`. The gitignored dev copy `scripts_dev/workflows/codebase-scan-and-fix.js` (+ `batches-index.json`) is the run's original and is no longer needed to act on this card.
@@ -35,11 +48,19 @@ A skill directory `skills/tldr-scan-workflow/` (name to confirm) containing:
 
 ## Acceptance
 
-- [ ] Calibration table in the skill, from real runs: tokens per batch (grep-prompt vs tldr-prompt), findings per 100K tokens, FALSE_POSITIVE share, verify REVERT share, compile-break count after the run.
+- [x] Calibration table in the skill, from real runs: tokens per batch (grep-prompt vs tldr-prompt), findings per 100K tokens, FALSE_POSITIVE share, verify REVERT share, compile-break count after the run.
+      — `skills/tldr-scan-workflow/references/calibration.md`, 49 lines, every row tagged measured vs
+      unmeasured (e.g. ~198K tokens/landed fix from run 2's 36.85M ÷ 186; 350 KEEP / 0 REVERT with
+      at least 2 kept hunks breaking ~200 tests; 191 tldr calls vs 209 `sed -n` vs 69 `grep -r`
+      vs 13 `find /`). Verified 2026-09-06 by reading the file, not by its presence.
 - [ ] The template runs end-to-end on this repo from a fresh session using only the skill's instructions.
 - [ ] Workers use `tldr` for cross-file navigation, measured by yield, not by call ratio: every FIXED report line carries a pasted `tldr references` or `tldr impact` excerpt for its reachability claim (lines without one are auto-SKIPPED by the verifier, lesson 1), and the regression rate after the per-wave gate is below the run-2 baseline of 2 broken hunks per 287 fixes. (The earlier "tldr calls ≥ 3× grep + sed" bar was dropped: run 2 scored 191 vs 278 and still landed real fixes, so the ratio measures obedience, not value.)
 - [ ] fastedit evaluated as the write path for symbol-body replacements; adopted only if it measurably reduces tokens versus Edit on the same batch, with the number recorded.
-- [ ] `make install-skill` installs it alongside `tldr-code` (or the Makefile target is extended), and `tldr doctor` detects it if that check is generalised.
+- [x] `make install-skill` installs it alongside `tldr-code` (or the Makefile target is extended), and `tldr doctor` detects it if that check is generalised.
+      — Makefile:34 `install-skill` installs BOTH `./skills/tldr-code` and
+      `./skills/tldr-scan-workflow`, and `install-full` (line 68) chains it. The `tldr doctor`
+      half was conditional ("if that check is generalised") and was not generalised, so it is
+      not outstanding work.
 - [x] No absolute home paths and no personal names anywhere in the shipped skill, template, or prompts: paths are `~/`-relative or repo-relative, the repo root is an `args` value, and the report dir is derived from it (user directive 2026-09-05).
 
 ## Lessons from runs 1 and 2 (2026-09-05) — design constraints for the skill
