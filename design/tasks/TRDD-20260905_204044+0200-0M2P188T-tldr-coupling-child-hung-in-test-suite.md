@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:33:08+0200
+updated: 2026-09-06T03:35:17+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -121,6 +121,15 @@ labels: [scan-2026-09-05, hang]
     starts.
   - **The timeout gap is now exact:** the last check is line 1912 and the expensive call is
     line 1936, so `augment_with_project_call_graph` runs entirely unguarded.
+    Why this was NOT fixed on the spot, having been called small: there is no knob to set.
+    `BuildConfig` (`core/src/callgraph/types.rs:92-111`) carries `language`,
+    `use_workspace_config`, `workspace_roots`, `use_type_resolution`, `respect_ignore`,
+    `parallelism`, `verbose` — and NO deadline or budget field. Adding a check around line 1936
+    would report lateness after the fact without bounding anything, since the time is spent
+    inside the call. A real bound means threading a deadline through
+    `build_project_call_graph_v2` -> `extract_and_resolve_calls` -> the resolution loop, which
+    changes a signature every callgraph consumer uses. That is a genuine piece of work, not a
+    few lines, and it is the reason this is filed rather than patched.
 - NEXT ACTION: read `resolve_global_fuzzy_match` and `resolve_local_fuzzy_match` in
   `core/src/callgraph/resolution.rs`, looking at what they collect per call site and how many
   times the builder retries them. Two candidate shapes, both fitting the weights above: a
