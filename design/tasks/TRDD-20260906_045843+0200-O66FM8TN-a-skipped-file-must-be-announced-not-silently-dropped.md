@@ -44,9 +44,13 @@ With the caller readable, `used_only_from_utf16` correctly drops off the list. W
 skipped, a live function is reported as possibly dead and is **indistinguishable from the
 genuinely dead one** — and `warnings` is `None`, so nothing hints that a file was omitted.
 
-Honest scoping of that result: the name lands in `possibly_dead`, not `dead_functions`, so the
-tool is already hedging. The defect is that the hedge carries no reason, and the user has no way
-to learn that a file was dropped. `calls` has the same property — a missing file means missing
+Honest scoping, and the semantics were CHECKED rather than assumed — the hedge does not excuse it.
+`types.rs:2454` documents `possibly_dead` as *"Public/exported but uncalled (may be API surface)"*.
+The hedge is about INTENT — a public function may be uncalled on purpose. It is not a hedge about
+whether the tool might have MISSED a call. `used_only_from_utf16` is genuinely called, so listing
+it there is wrong against the field's own documented meaning, not merely unhelpful. It lands in
+the softer of the two tiers (`dead_functions` is the harder claim), and the user still has no way
+to learn a file was dropped. `calls` has the same property — a missing file means missing
 edges, so the call graph is confidently incomplete.
 
 Verified 2026-09-06 (TRDD-BKALIK1B's probes): `dead`, `calls` and `smells` DO reach the encoding
@@ -73,11 +77,26 @@ Counts to trust, and the ones NOT to: the corrected survey reads **56 SILENT · 
 by path alone and counted `#[cfg(test)]` code as production. Do not go fixing those.
 
 **BUT 56 IS NOT THE READ SURFACE — it is the `read_to_string`-shaped part of it.** The survey
-searched for `read_to_string` only. A further **33 non-test read sites use a different primitive
-and were never bucketed**: 30 `File::open` and 2 `.read(&mut …)`. `is_binary_file`
-(`metrics/file_utils.rs:304`) is one of them, and its error handling is `Err(_) => false` — a read
-failure is silently treated as "not binary", which is this card's defect in a helper the survey
-could not see. Bucket those 33 before planning off 56.
+searched for `read_to_string` only, so reads through other primitives were never bucketed at all.
+`File::open` (read-only in Rust; `File::create`/`OpenOptions` are the write paths) plus
+`read_to_end` / `.read(&mut …)` account for the rest.
+
+**Deliberately stated as a SCOPE claim and not a defect count.** Nobody has bucketed those sites
+into silent/warned/propagated, and many will be reading config, caches or reports rather than
+source. Quoting a number here as "N more silent sites" would repeat precisely the error this
+card's parent made three times (25 production panics; 176 call sites; the single chokepoint).
+The order of work is: bucket them, THEN count.
+
+> **Methodology trap, because it corrupted this very figure.** An **unquoted** `--include=*.rs`
+> does NOT filter — the shell eats it, and the grep silently searches every file type. My first
+> count of these sites was 33 and included hits from a `.md` design document; quoted, it is 31.
+> The same unquoted form inflates a `read_to_string` count from 204 to 207. **Always quote
+> `--include='*.rs'`,** and treat any inventory built without it as an upper bound.
+One example of why the bucketing needs judgment rather than a sweep: `is_binary_file`
+(`metrics/file_utils.rs:304`) handles a read failure as `Err(_) => false` — an unreadable file is
+treated as "not binary". That LOOKS like this card's defect, and it may instead be deliberate:
+returning `false` lets the downstream read produce the real, specific error rather than
+mislabelling the file as binary here. **Not established either way; assess in context.**
 
 ## Acceptance
 
@@ -88,7 +107,8 @@ could not see. Bucket those 33 before planning off 56.
       file is absent from the results, which is what the buggy behaviour also produces.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
-- [ ] The 33 `File::open` / `.read(&mut …)` sites the survey never saw are bucketed the same way.
+- [ ] The `File::open` / `read_to_end` / `.read(&mut …)` sites the survey never saw are bucketed
+      the same way — count them AFTER bucketing, not before.
 - [ ] The skip path is centralised, so a NEW command cannot silently drop a file without
       inheriting the warning.
       — This replaces an earlier line, "no command returns a result computed over a reduced file
