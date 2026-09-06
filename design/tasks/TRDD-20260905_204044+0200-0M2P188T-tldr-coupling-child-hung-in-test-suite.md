@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:27:34+0200
+updated: 2026-09-06T03:30:46+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -81,32 +81,57 @@ labels: [scan-2026-09-05, hang]
   So the command DOES walk the filesystem (workspace-marker discovery) and DOES enable type
   resolution. The two `read_file_safe` calls are only the pair-comparison half; the call-graph
   half takes a ROOT.
-- **THE `_v2` RETRACTION WAS ITSELF WRONG — un-retracted.** A previous revision struck
-  `build_project_call_graph_v2` from the hot path as "not on this command's path", on the
-  grounds that `coupling.rs` has no direct call site. Absence of a DIRECT call is not absence
-  of a path, and the transitive one exists. Established end to end:
+- **SETTLED (after flipping twice — read this instead of the commit history).** The hung child
+  had TWO file arguments, so it ran PAIR mode, and pair mode is self-contained:
 
   ```
-  cli/commands/patterns/coupling.rs:1973   core_analyze_coupling(&args.path_a, ..)
-  core/quality/coupling.rs:455             build_project_call_graph(path, lang, None, true)
-  core/callgraph/builder.rs:40             config.use_type_resolution = true
-  core/callgraph/builder.rs:64             build_project_call_graph_v2(root, config)   <-- HERE
-  core/callgraph/scanner.rs:203/289        resolve_scan_roots / scan_project_files
-                                           -> type resolution -> type_resolver::find_var_in_line
+  run_pair_mode              coupling.rs:1844-1968
+    1872-73  read_file_safe(path_a), read_file_safe(path_b)   <- the ONLY file reads
+    1907-08  extract_module_info(..)   local, coupling.rs:359
+    1912     timeout check             <- the LAST one
+    1920-21  find_cross_calls(..)      local, coupling.rs:1409
+    1965     output_pair_report -> return
   ```
 
-  So the ORIGINAL profile-derived path was right, and the "correction" deleted a true frame.
-  The `uniq -c` method used to produce it really was unsound, and it happened to name a symbol
-  that is genuinely on the path — a bad method reaching a correct answer, which is exactly the
-  case where a confident retraction does damage. Trust the chain above, which was read.
-- **DISPROVED hypothesis, recorded so nobody re-runs it:** that discovery ascends from the file
-  into `/tmp`. `WorkspaceConfig::discover` (`core/src/types.rs:1799`) probes for
-  `pnpm-workspace.yaml` / `package.json` / `Cargo.toml` / `go.work` AT the given path only,
-  with no `parent()` walk, and returns `None` when none match. It does not climb.
-- STILL OPEN, and now the highest-value question: `build_project_call_graph_v2` is handed
-  `args.path_a`, which is a FILE (`<tmp>/mod.py`), where the parameter is named `root`. What
-  `resolve_scan_roots` (`callgraph/scanner.rs:203`) does with a file path decides the real
-  read-set and therefore the whole diagnosis. Read that next.
+  `core_analyze_coupling` — the entry that reaches `build_project_call_graph` and thence
+  `build_project_call_graph_v2` — is at line 1973, inside `run_project_mode`, a DIFFERENT
+  function that pair mode never enters. So:
+  - the READ-SET IS the two files, now checked across the whole of `run_pair_mode` rather than
+    its first 40 lines, and `coupling.rs` has no `read_dir` / `WalkDir` / other `File::open`;
+  - `build_project_call_graph_v2` IS NOT on the hung path. The original retraction was right;
+    the un-retraction that followed it was wrong, made by tracing a chain without checking
+    that its first hop executes in this mode.
+- **CONSEQUENCE — a genuine, narrow contradiction. Do not paper over it.**
+  Two things are separately true and they do not fit:
+  1. The weighted frames ARE the main thread's. They were read from the sample's lines 24-538,
+     where line 24 is `Thread_… com.apple.main-thread` and the next thread header is 539. So
+     the main thread really was inside `callgraph::type_resolver::find_var_in_line`.
+  2. Pair mode's traced path cannot reach it. `coupling.rs` has ZERO occurrences of `callgraph`
+     or `type_resolver`; `extract_module_info` (359) and `find_cross_calls` (1409) are both
+     local and their bodies call no `tldr_core` entry point; and pair mode uses none of
+     `core_analyze_coupling` / `compute_martin_metrics_from_deps` / `analyze_dependencies`.
+
+  So the gap is in a helper NOT yet traced, not in the profile. `coupling.rs` does use
+  `tldr_core::quality::coupling` 18 times and `tldr_core::analysis::deps` 8 times somewhere in
+  the file, and `quality/coupling.rs:43` imports `crate::callgraph::build_project_call_graph` —
+  so a reachable route plausibly exists through a helper called below `extract_module_info`.
+  That is the thread to pull, and it is a SMALL search now that pair mode's own two functions
+  are excluded.
+- **STANDING INSTRUCTION for the next occurrence — this one can no longer be answered.**
+  118 % CPU means two or more threads burned CPU; only one (the main thread) was ever
+  accounted for. `ps -M <pid>` would have named the second, and the process is now killed, so
+  for THIS occurrence it is permanently unanswerable. Next time, before anything else:
+  `ps -M <pid>` first, then `/usr/bin/sample`, then read code. Do not write a causal story
+  before the busy thread is named.
+- Because of that, the earlier `build_project_call_graph_v2 -> resolve_* -> find_var_in_line`
+  diagram has been REMOVED rather than annotated. It was produced by an unsound method
+  (`uniq -c` over mangled symbols) and then defended twice; leaving it visible with a caveat
+  invited exactly the re-derivation it caused.
+- **DISPROVED, recorded so nobody re-runs it:** discovery does not ascend into `/tmp`.
+  `WorkspaceConfig::discover` (`core/src/types.rs:1799`) probes workspace markers AT the given
+  path only, with no `parent()` walk, returning `None` when none match. (This mattered only
+  under the project-mode reading, which no longer applies — kept because the walk-up idea is
+  the obvious next guess and it is wrong.)
 - Consequence for the earlier reasoning: "no terminating super-linear algorithm reaches 15
   CPU-minutes on 18 lines" was sound ONLY under the read-set claim that has now been retracted.
   If the real input is `/tmp`, an expensive-but-terminating walk explains everything and there
