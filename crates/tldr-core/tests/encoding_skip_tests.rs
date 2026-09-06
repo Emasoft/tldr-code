@@ -165,10 +165,14 @@ fn a_nul_past_the_scan_prefix_is_analysed_not_skipped() {
         .iter()
         .position(|b| *b == 0)
         .expect("late_nul.py has no NUL — the fixture no longer tests the boundary");
+    // Imported, NOT hardcoded to 1024. If the constant is ever RAISED above this fixture's NUL
+    // offset, the file legitimately becomes skippable — and a hardcoded bound would let this
+    // precondition pass while the behaviour assertion below failed, pointing at the wrong cause.
     assert!(
-        first_nul > 1024,
-        "late_nul.py's first NUL is at {first_nul}, inside the scan prefix; the fixture must place \
-         it BEYOND the prefix or it tests nothing"
+        first_nul > tldr_core::fs::NUL_SCAN_PREFIX,
+        "late_nul.py's first NUL is at {first_nul}, inside the {}-byte scan prefix; the fixture \
+         must place it BEYOND the prefix or it tests nothing",
+        tldr_core::fs::NUL_SCAN_PREFIX
     );
 
     let structure = get_code_structure(&fixtures(), Language::Python, 0, None)
