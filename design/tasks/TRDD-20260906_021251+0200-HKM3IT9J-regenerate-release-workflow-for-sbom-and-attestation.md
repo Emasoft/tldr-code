@@ -3,7 +3,7 @@ trdd-id: HKM3IT9J
 title: Regenerate release.yml so the SBOM and attestation config take effect
 column: planned
 created: 2026-09-06T02:12:51+0200
-updated: 2026-09-06T02:12:51+0200
+updated: 2026-09-06T02:24:00+0200
 current-owner: claude-session-2026-09-05
 task-type: security
 min-approval-requirement: none
@@ -19,10 +19,14 @@ labels: [supply-chain, release, cargo-dist]
   `github-attestations = true` and `[dist.github-action-commits]` with three SHA pins.
 - Two things to know before running the regeneration. `github-attestations` is marked
   EXPERIMENTAL upstream, so watch the first release that uses it rather than trusting it
-  silently. `cargo-cyclonedx` is documented package-local, but v0.31.0's
-  `cargo-dist/src/config/v0.rs:915-917` makes a package inherit the workspace value when it sets
-  none, so the workspace-level setting does apply to this single-package workspace (checked in
-  the pinned version's source, not in current docs).
+  silently. `cargo-cyclonedx` is documented package-local, and the
+  workspace-level setting still applies here. Traced in v0.31.0's source: this file's flat
+  `[dist]` table is the v0-shaped one (`cargo-dist-version`, `ci`, `installers`, `targets` are
+  v0 key names), so it parses as `config/v0.rs`'s `DistMetadata`, whose package config inherits
+  the workspace value at lines 915-917 when the package sets none; `config/v0_to_v1.rs:95-146`
+  then carries `cargo_cyclonedx` into the v1 cargo build layer, and
+  `config/v1/builds/cargo.rs` applies it. The root `Cargo.toml` has no
+  `[package.metadata.dist]`, so nothing overrides it.
 - The workflow half is NOT done: `.github/workflows/release.yml` is generated, and this checkout
   has no `dist` binary, so the SBOM and attestation steps are not in the file yet. Until it is
   regenerated, a release still ships without either.
