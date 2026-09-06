@@ -89,7 +89,16 @@ labels: [scan-2026-09-05, robustness, encoding]
   |---|---|---|
   | `structure` | `parse_file_with_lang` | **FIXED** — skipped, warning names the file |
   | `secure`, `vuln`, `surface` (lua + luau) | `fs::read_to_string_tolerant` | **FIXED** — both now report `files_skipped: 2`, naming `bad.py` (UTF-16 LE BOM) and `nobom.py` (NUL byte). Was a gap: `String::from_utf8` caught the BOM'd file only |
-  | `dead`, `calls`, `smells` | reach the guard on their PRIMARY path | **NOT mis-analysed, but NOT warned** — the file is correctly excluded and the user is never told. A silent omission, milder than a wrong answer and still this card's defect class |
+  | `dead`, `calls`, `smells` | reach the guard on their PRIMARY path (established, see below) | **EXCLUDED BUT NEVER ANNOUNCED — and for `dead` this is the WORST instance in the tool, not the mildest** |
+
+  **Why `dead` is the most consequential row, not a lesser one.** An earlier version of this card
+  called a silent exclusion "milder than a wrong answer". That is wrong for whole-program
+  analyses. Dead-code detection asks whether ANYTHING references a function; dropping a file
+  removes its references, so a function referenced **only** from the skipped file is now reported
+  as dead. The user gets false positives in the one report whose entire purpose is telling them
+  what is safe to DELETE — with exit 0 and no warning. `calls` has the same property: a missing
+  file means missing edges. Silent exclusion here does not soften the wrong answer, it produces
+  a differently-shaped and more dangerous one.
 
   **HOW THAT TABLE WAS SETTLED, because two earlier attempts at it were wrong and the technique
   is the transferable part.** First I ran the commands and saw the wide files absent from the
@@ -106,8 +115,22 @@ labels: [scan-2026-09-05, robustness, encoding]
   Result — `zzz_marker` absent from all three while the control `plain_fn` is found, and
   `smells` reports `files_scanned: 1`: **all three reach the guard.** The UNFIXED row was wrong,
   and the truth is milder: correctly excluded, never announced.
-  Design a probe whose two candidate explanations predict OPPOSITE observations. Absence, and
-  presence-in-source, each predict the same thing under both.
+  **That probe was still not enough, and the third attempt is the one to copy.** It showed only
+  that SOMETHING rejects a NUL-bearing file — and a competing mechanism exists in this tree:
+  `is_binary_file` (`metrics/file_utils.rs:304`) samples the **first 8 KB for NUL bytes**, which
+  predicts the identical observation with the guard never involved.
+  Separating them needs a file the two mechanisms treat differently, and the prefix bound
+  supplies one: **a NUL at offset 1928** — past the guard's 1024-byte window, inside
+  `is_binary_file`'s 8 KB sample. The guard passes it; a binary filter would reject it.
+  Result: `dead` finds `late_marker`, `calls` finds it, `smells` reports `files_scanned: 2` — all
+  three ANALYSED it. So `is_binary_file` is not on their paths, and the earlier exclusion of the
+  NUL-at-offset-6 file was the guard after all. The conclusion survived, but only the third probe
+  established it.
+  Loose end closed too: the same file with the NUL stripped yields `zzz_marker`, so it parses
+  normally and the NUL was the sole cause of exclusion.
+  **The transferable rule: a probe must separate YOUR mechanism from every other mechanism that
+  predicts the same observation — not merely separate "something happened" from "nothing did".**
+  Absence, presence-in-source, and "some rejection occurred" each fail that test in turn.
 - **Distinct read PRIMITIVES so far: 3** (`parse_file_with_lang`, `read_to_string_tolerant`, bare
   `fs::read_to_string`). That is the count the earlier "not established" left open. The 154
   surveyed sites funnel through these three kinds; the per-command routing above is what
