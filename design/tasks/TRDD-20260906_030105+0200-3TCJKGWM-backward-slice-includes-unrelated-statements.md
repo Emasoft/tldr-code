@@ -3,7 +3,7 @@ trdd-id: 3TCJKGWM
 title: Backward slice includes unrelated statements because the entry node spans the whole straight-line body
 column: todo
 created: 2026-09-06T03:01:05+0200
-updated: 2026-09-06T03:05:05+0200
+updated: 2026-09-06T03:06:29+0200
 current-owner: claude-session-2026-09-05
 task-type: bugfix
 min-approval-requirement: none
@@ -51,12 +51,20 @@ semantics it must not appear in a slice from `return c`, and the answer would be
 (`c` ← `b` ← `a`, reaching the parameter on the header line) or `{3, 4, 6}` if the header is
 excluded.
 
-Stated honestly: that is imported semantics, not this project's stated contract. Searched
-`thoughts/` for a slicing or PDG design document and found none — `thoughts/shared/` contains
-only `plans/`. So no project doc says what precision this slicer intends, and coarse
-block-granularity slicing is a defensible choice some tools ship deliberately. What is NOT in
-doubt is that the current output is unusable for the purpose slicing normally serves, and that
-the granularity is undocumented either way. A fix decision should settle the intent first.
+This is NOT imported textbook semantics. The project states the contract itself, in the module
+docs of the same file that implements it, `crates/tldr-core/src/pdg/slice.rs`:
+
+> ## Backward Slice
+> Given a slicing criterion (line, optional variable), find all statements
+> that could affect the computation at that point.
+
+`d = 99` cannot affect `return c`, so emitting line 5 violates that stated contract. The
+rustdoc on `get_slice` points the same way, its example noting the slice "should include line
+1 (x = 1)" — the line the criterion depends on, not every line in the body.
+
+So the intent is documented and the behaviour does not meet it. This is a defect, not an
+undocumented design choice. (An earlier revision of this card claimed no spec existed, on a
+search of `thoughts/` alone; the contract was in the implementation file's own module docs.)
 
 ## Cause (observed, not inferred)
 
