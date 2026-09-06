@@ -202,6 +202,12 @@ impl VulnArgs {
                     files_scanned += 1;
                     continue;
                 }
+                Ok(tldr_core::fs::ReadOutcome::WideEncoded { detail }) => {
+                    files_skipped += 1;
+                    warnings.push(format!("Skipped {}: {}", file_path.display(), detail));
+                    files_scanned += 1;
+                    continue;
+                }
                 _ => {
                     // Either a clean read or an I/O error — defer to the
                     // existing analyze_file path, which already silently

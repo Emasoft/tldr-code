@@ -88,15 +88,26 @@ labels: [scan-2026-09-05, robustness, encoding]
   | command | read path | state |
   |---|---|---|
   | `structure` | `parse_file_with_lang` | **FIXED** — skipped, warning names the file |
-  | `secure`, `vuln`, `surface` | `fs::read_to_string_tolerant` (`fs/mod.rs:62`) | **GAP** — its `String::from_utf8` catches BOM'd UTF-16 only; BOM-less is valid UTF-8 and slips through. Fix in flight |
-  | `dead` | **bare `std::fs::read_to_string`**, `dead.rs:267` and `:316`, both `if let Ok(source)` | **UNFIXED, and it IS the SILENT pattern** — the error is swallowed with no warning. Bypasses the guard entirely |
-  | `smells`, `calls` | delegate into `detect_smells_with_walker_opts` / `build_project_call_graph_v2` | **UNKNOWN — not traced to a read primitive.** Do not assume either way |
+  | `secure`, `vuln`, `surface` (lua + luau) | `fs::read_to_string_tolerant` | **FIXED** — both now report `files_skipped: 2`, naming `bad.py` (UTF-16 LE BOM) and `nobom.py` (NUL byte). Was a gap: `String::from_utf8` caught the BOM'd file only |
+  | `dead`, `calls`, `smells` | reach the guard on their PRIMARY path | **NOT mis-analysed, but NOT warned** — the file is correctly excluded and the user is never told. A silent omission, milder than a wrong answer and still this card's defect class |
 
-  **The earlier note that these commands "exclude" the wide files was a placeholder in the shape
-  of a finding.** Absence from the output is consistent with two different worlds — the guard
-  fired and the error was swallowed, or the guard never ran and the file parsed to zero symbols
-  exactly as before. I looked only at absence. Tracing the call paths settled it, and the answer
-  is the worse one: `dead` is a THIRD situation, neither fixed nor warned.
+  **HOW THAT TABLE WAS SETTLED, because two earlier attempts at it were wrong and the technique
+  is the transferable part.** First I ran the commands and saw the wide files absent from the
+  output — but absence fits two worlds (guard fired and the error was swallowed, or guard never
+  ran and the file parsed to zero symbols), so it settled nothing. Then I grepped `dead.rs`,
+  found bare `std::fs::read_to_string` at `:267`/`:316` under `if let Ok(source)`, and wrote
+  UNFIXED — inferring the EXECUTED path from a call's PRESENCE IN SOURCE, which is the same
+  error one level down. `dead.rs:22` also imports `parse_file`; those bare reads are a SECONDARY
+  pass.
+  What settled it was a probe where the two paths give DIFFERENT answers: a file that is **valid
+  UTF-8 but carries a NUL byte early** (`X = "\0"` plus a real function). The guard rejects it;
+  a plain `read_to_string` accepts it and parses the function normally. So the function's
+  presence in the output IS the discriminator.
+  Result — `zzz_marker` absent from all three while the control `plain_fn` is found, and
+  `smells` reports `files_scanned: 1`: **all three reach the guard.** The UNFIXED row was wrong,
+  and the truth is milder: correctly excluded, never announced.
+  Design a probe whose two candidate explanations predict OPPOSITE observations. Absence, and
+  presence-in-source, each predict the same thing under both.
 - **Distinct read PRIMITIVES so far: 3** (`parse_file_with_lang`, `read_to_string_tolerant`, bare
   `fs::read_to_string`). That is the count the earlier "not established" left open. The 154
   surveyed sites funnel through these three kinds; the per-command routing above is what

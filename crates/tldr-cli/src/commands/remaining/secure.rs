@@ -468,6 +468,10 @@ fn partition_utf8_clean(candidates: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>, u
                     byte_offset
                 ));
             }
+            Ok(ReadOutcome::WideEncoded { detail }) => {
+                skipped += 1;
+                warnings.push(format!("Skipped {}: {}", file.display(), detail));
+            }
             Err(e) => {
                 // Genuine I/O failure (permissions, vanished, etc.).
                 // Drop the file with a warning rather than aborting the
@@ -513,6 +517,7 @@ fn run_security_analysis(
         let source = match read_to_string_tolerant(file) {
             Ok(ReadOutcome::Ok(s)) => s,
             Ok(ReadOutcome::NonUtf8 { .. }) => continue,
+            Ok(ReadOutcome::WideEncoded { .. }) => continue,
             Err(_) => continue,
         };
 

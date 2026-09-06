@@ -21,30 +21,6 @@ use crate::TldrResult;
 /// Maximum file size to parse (5MB) - M6 mitigation
 pub const MAX_PARSE_SIZE: usize = 5 * 1024 * 1024;
 
-/// How far into a file to look for the NUL byte that marks a wide encoding.
-///
-/// Bounded rather than whole-file on purpose. A wide-encoded file (BOM-less
-/// UTF-16, UTF-32) carries a NUL by byte 1, because the high byte of its first
-/// ASCII character is zero. A legitimate source file that embeds a raw NUL —
-/// generated C tables, protobuf/flatbuffers output, binary-protocol fixtures
-/// written as `.py`/`.js`/`.rs` — carries it far later. Scanning the whole file
-/// would skip those too, trading one silent-loss bug for another.
-///
-/// **1024 is a judgment, not a derived value**, and the two failure directions are
-/// not symmetric:
-/// - TOO LARGE: a real source file with a NUL inside the first KiB is skipped and
-///   the warning miscalls it wide-encoded. A generated C blob table starting near
-///   the top of the file would do it. This is the live risk.
-/// - TOO SMALL: a wide-encoded file whose first N bytes are all non-Latin (a
-///   BOM-less UTF-16 file opening with a CJK docstring, where U+4E2D is `2D 4E`
-///   and carries no NUL) slips through. Detection needs only the first ASCII
-///   character — a space, a newline, `#`, `//` — so a handful of bytes suffices
-///   for anything with ASCII structure near the top, which source code has.
-///
-/// The bound is therefore generous on purpose: it costs nothing against the
-/// second failure and would only need shrinking if the first is ever observed.
-const NUL_SCAN_PREFIX: usize = 1024;
-
 /// TypeScript / JavaScript grammar dialect.
 ///
 /// `tree-sitter-typescript` ships two distinct grammars:
@@ -376,52 +352,33 @@ impl ParserPool {
             }
         })?;
 
-        // Reject UTF-16 BOMs before the lossy UTF-8 conversion below.
-        // `from_utf8_lossy` never fails - on UTF-16 bytes it silently
-        // produces replacement-character garbage that parses to zero
-        // symbols, so the file is reported as successfully analysed
-        // with no functions/classes instead of being skipped.
-        if bytes.starts_with(&[0xFF, 0xFE]) {
+        // Reject wide encodings (BOM'd or BOM-less UTF-16/UTF-32) before the
+        // lossy UTF-8 conversion below. `from_utf8_lossy` never fails - on
+        // wide-encoded bytes it silently produces replacement-character
+        // garbage that parses to zero symbols, so the file is reported as
+        // successfully analysed with no functions/classes instead of being
+        // skipped. BOM-less UTF-16 is the COMMON form (a BOM is often absent
+        // on Unix-authored files, and pipes/editors strip it) and is caught
+        // by NEITHER a plain BOM check NOR `str::from_utf8`: a UTF-16
+        // encoding of ASCII text is every ASCII byte interleaved with NUL,
+        // and NUL is a *valid* 1-byte UTF-8 sequence. Measured — validating
+        // UTF-8 ACCEPTS BOM-less UTF-16LE and UTF-16BE outright, while
+        // REJECTING latin-1/cp1252, so it fails in both directions at once.
+        // See `crate::fs::wide_encoding_marker` for the full detection
+        // rationale (shared with `read_to_string_tolerant` so the two file
+        // read paths cannot drift).
+        //
+        // ASSUMPTION, stated because it is not proven: NUL-in-the-first-KiB
+        // of a real source file is rare enough that a WARNED skip beats a
+        // silent mis-parse. Evidence is 0 of 919 files in THIS repo, which
+        // is a homogeneous sample of the tool's own codebase, not of the
+        // arbitrary user code tldr runs on. The failure mode is at least
+        // visible now: the file is named in `warnings`, not dropped in
+        // silence.
+        if let Some(detail) = crate::fs::wide_encoding_marker(&bytes) {
             return Err(TldrError::EncodingError {
                 path: path.to_path_buf(),
-                detail: "UTF-16 LE BOM".to_string(),
-            });
-        } else if bytes.starts_with(&[0xFE, 0xFF]) {
-            return Err(TldrError::EncodingError {
-                path: path.to_path_buf(),
-                detail: "UTF-16 BE BOM".to_string(),
-            });
-        } else if bytes[..NUL_SCAN_PREFIX.min(bytes.len())].contains(&0x00) {
-            // BOM-less UTF-16 is the COMMON form (a BOM is often absent on
-            // Unix-authored files, and pipes/editors strip it). It is caught by
-            // NEITHER the BOM checks above NOR by `str::from_utf8`: a UTF-16
-            // encoding of ASCII text is every ASCII byte interleaved with NUL,
-            // and NUL is a *valid* 1-byte UTF-8 sequence. Measured — validating
-            // UTF-8 ACCEPTS BOM-less UTF-16LE and UTF-16BE outright, while
-            // REJECTING latin-1/cp1252, so it fails in both directions at once.
-            //
-            // A NUL byte in the PREFIX is the discriminator instead, and the
-            // prefix bound is load-bearing rather than an optimisation. A
-            // wide-encoded file has a NUL by byte 1 (the high byte of its first
-            // ASCII character). A legitimate source file that embeds a raw NUL
-            // — generated C tables, protobuf/flatbuffers output, binary-protocol
-            // test fixtures written as .py/.js/.rs — has it thousands of bytes
-            // in. Scanning the whole file would skip those too, which is the
-            // same silent-loss bug pointed the other way.
-            //
-            // ASSUMPTION, stated because it is not proven: NUL-in-the-first-KiB
-            // of a real source file is rare enough that a WARNED skip beats a
-            // silent mis-parse. Evidence is 0 of 919 files in THIS repo, which
-            // is a homogeneous sample of the tool's own codebase, not of the
-            // arbitrary user code tldr runs on. The failure mode is at least
-            // visible now: the file is named in `warnings`, not dropped in
-            // silence.
-            return Err(TldrError::EncodingError {
-                path: path.to_path_buf(),
-                detail: format!(
-                    "NUL byte in the first {NUL_SCAN_PREFIX} bytes \
-                     (binary, or a wide encoding such as BOM-less UTF-16)"
-                ),
+                detail: detail.to_string(),
             });
         }
 

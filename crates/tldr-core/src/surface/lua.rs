@@ -105,6 +105,11 @@ fn extract_from_lua_file(
             ));
             return Ok(None);
         }
+        ReadOutcome::WideEncoded { detail } => {
+            *files_skipped += 1;
+            warnings.push(format!("Skipped {}: {}", file_path.display(), detail));
+            return Ok(None);
+        }
     };
 
     let tree = parse(&source, Language::Lua)?;

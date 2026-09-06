@@ -136,6 +136,11 @@ fn extract_from_luau_file(
             ));
             return Ok(None);
         }
+        ReadOutcome::WideEncoded { detail } => {
+            *files_skipped += 1;
+            warnings.push(format!("Skipped {}: {}", file_path.display(), detail));
+            return Ok(None);
+        }
     };
 
     // Pick the right grammar: .luau files use the Luau grammar; .lua files
