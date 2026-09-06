@@ -38,9 +38,21 @@ labels: [scan-2026-09-05, robustness, encoding]
   defects instead of inventing them. All 24 are now accounted for individually: 18 inside
   brace-matched `cfg(test)` block ranges, 4 externally gated (verified at `mod.rs:119`), 2 in
   `first_run.rs` read directly (asserts + temp dirs, under the `#[cfg(test)]` at line 474).
-- **The SILENT (73) and PROPAGATED (75) counts remain UNRELIABLE** — same method, same blind
-  spot. A corrected production-only re-survey is running; its report lands in
-  `reports/encoding-survey/` as `*-CORRECTED-*`. Do not plan work off the old numbers.
+- **CORRECTED SURVEY LANDED** (`reports/encoding-survey/*-CORRECTED-production-only.md`), and it
+  supersedes every count in the body below:
+
+  | bucket | corrected (production only) | original (wrong) |
+  |---|---|---|
+  | SILENT | **56** | 73 |
+  | PANIC | **0** | 25 |
+  | PROPAGATED | **94** | 75 |
+  | WARNED | **4** | 3 |
+  | total | **154** | 176 |
+
+  62 sites excluded across six reasons — 34 test-only, 15 grep/parse false positives, the rest
+  benches/examples. The **0 PANIC** independently corroborates the hand verification above,
+  reached by a different method (the worker brace-matched and checked parent-module `cfg`
+  attributes; I reconciled 24 sites individually). Two methods, same answer.
 - **"176 call sites" was the wrong frame for the parse path.** `parse_file_with_lang` is, in its
   own words, "the single chokepoint every parse-based command goes through (structure, calls,
   smells, dead, secure, …)" — the oversize policy is already enforced there for exactly that
