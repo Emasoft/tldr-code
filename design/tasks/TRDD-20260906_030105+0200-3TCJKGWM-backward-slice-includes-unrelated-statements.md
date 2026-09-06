@@ -3,7 +3,7 @@ trdd-id: 3TCJKGWM
 title: Backward slice includes unrelated statements because the entry node spans the whole straight-line body
 column: todo
 created: 2026-09-06T03:01:05+0200
-updated: 2026-09-06T03:06:29+0200
+updated: 2026-09-06T03:08:52+0200
 current-owner: claude-session-2026-09-05
 task-type: bugfix
 min-approval-requirement: none
@@ -16,14 +16,15 @@ labels: [pdg, slicing, precision, pre-existing]
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
 
 - Found 2026-09-06 while triaging a test failure, NOT by a scanner.
-- PRE-EXISTING, checked in BOTH places that can produce a node span, because node spans are
-  `block.lines` copied from CFG blocks and the CFG builder is not under `src/pdg/`:
-  - `src/pdg/` since the fork parent `7f50527`: only `slice.rs`, in `62bfe3a`, touching
-    `get_slice_rich` and `read_source_lines`. `get_slice`, `find_nodes_for_line`,
-    `compute_slice` and `nodes_to_lines` are untouched.
-  - `src/cfg/` since `7f50527`: only `cfg/extractor.rs`, 8 insertions, confined to `continue`
-    handling (pushing `continue_block` onto `loop_exit_blocks`). The reproducer below has no
-    `continue` and no loop, so that change cannot affect its block boundaries.
+- PRE-EXISTING — OBSERVED at the fork parent, not argued from diffs. The reproducer below was
+  run in a worktree checked out at `7f50527` and printed byte-identical results: slice
+  `[2,3,4,5,6]`, `node id=0 lines=(2,5) type="entry"`, both `(6,6)` statement nodes, the same
+  three edges. Nothing in the scan pass caused this.
+- Method note, because it cost three rounds: this was first "established" by diffing
+  `src/pdg/`, then re-established by diffing `src/cfg/` when that proved insufficient, and the
+  next directory in line was `src/ast/` (spans ultimately derive from parsed statement
+  ranges). Walking directories terminates only when you happen to guess right and cannot tell
+  you when that is. Running the reproducer at the parent answers it in one step. Prefer that.
 - Not yet fixed. Nothing depends on this card; it is filed so the defect is tracked rather
   than living in a test comment.
 - UNEXPLAINED, and it should be resolved before designing a fix: the dump below shows TWO
@@ -51,20 +52,40 @@ semantics it must not appear in a slice from `return c`, and the answer would be
 (`c` ← `b` ← `a`, reaching the parameter on the header line) or `{3, 4, 6}` if the header is
 excluded.
 
-This is NOT imported textbook semantics. The project states the contract itself, in the module
-docs of the same file that implements it, `crates/tldr-core/src/pdg/slice.rs`:
+What the project documents, in the module docs of `crates/tldr-core/src/pdg/slice.rs`:
 
 > ## Backward Slice
 > Given a slicing criterion (line, optional variable), find all statements
 > that could affect the computation at that point.
+>
+> Algorithm:
+> 1. Start at the criterion node in PDG
+> 2. Follow edges backward (from target to source)
+> 3. Collect all visited nodes
 
-`d = 99` cannot affect `return c`, so emitting line 5 violates that stated contract. The
-rustdoc on `get_slice` points the same way, its example noting the slice "should include line
-1 (x = 1)" — the line the criterion depends on, not every line in the body.
+Read carefully, that documents SOUNDNESS and not PRECISION. "Find all statements that could
+affect" is a lower bound: it forbids MISSING a relevant statement, and says nothing about
+INCLUDING an irrelevant one. `[2,3,4,5,6]` satisfies it — as would returning the whole
+function body, which is trivially sound and useless. Classical slicing is stated as sound AND
+minimal, and minimality is the half that is hard; only the first half is written down here.
+Step 3 points the same way: it collects NODES, and never claims a node is one statement, so
+node-granular collection is what the algorithm as documented describes.
 
-So the intent is documented and the behaviour does not meet it. This is a defect, not an
-undocumented design choice. (An earlier revision of this card claimed no spec existed, on a
-search of `thoughts/` alone; the contract was in the implementation file's own module docs.)
+The `get_slice` rustdoc does not settle it either. Its example says the slice "should include
+line 1 (x = 1)" — `include` is again a lower bound, and in a two-statement function the whole
+body is the answer under either reading, so the example cannot discriminate.
+
+So the accurate position: the observed slice is SOUND but IMPRECISE, precision is bounded by
+basic-block size, and the intended precision is UNDOCUMENTED. Whether that is a defect or an
+accepted limitation is exactly the open question this card exists to settle — it should not be
+prejudged in either direction.
+
+This paragraph has been wrong twice, in opposite directions, and the history is kept because
+the failure mode is instructive. First revision asserted "a real defect" without checking for
+a spec. Second revision said no spec existed, on a search of `thoughts/` that never looked at
+the implementing file. Third revision found the module doc and read its soundness clause as a
+precision guarantee, because it was looking for a contract and took the first text that
+resembled one.
 
 ## Cause (observed, not inferred)
 
@@ -102,10 +123,14 @@ block.
 
 ## Reproducer
 
-Drop this in `crates/tldr-core/tests/pdg_tests.rs` inside `mod slicing_tests` and run
-`cargo test -p tldr-core --test pdg_tests slicing_tests::probe -- --exact --nocapture`. It is
-kept here rather than committed as an `#[ignore]`d test, because a test that PASSES against
-today's behaviour is not the regression test this card's acceptance asks for.
+Drop this in `crates/tldr-core/tests/pdg_tests.rs` inside `mod slicing_tests` (that module has
+`use super::*`, which is what puts `get_slice`, `SliceDirection` and `Language` in scope) and
+run `cargo test -p tldr-core --test pdg_tests slicing_tests::probe -- --exact --nocapture`.
+
+This exact snippet has been compiled and run in that module, both on `main` and in a worktree
+at the parent `7f50527` — it is verified runnable, not merely believed to be. It is kept here
+rather than committed as an `#[ignore]`d test, because a test that PASSES against today's
+behaviour is not the regression test this card's acceptance asks for.
 
 ```rust
 #[test]
