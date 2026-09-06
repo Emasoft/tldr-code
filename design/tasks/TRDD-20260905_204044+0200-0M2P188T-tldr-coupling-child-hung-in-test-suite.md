@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-05T21:33:13+0200
+updated: 2026-09-06T03:13:22+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -11,6 +11,24 @@ labels: [scan-2026-09-05, hang]
 ---
 
 # tldr coupling child hung 30 CPU-minutes once inside the test suite
+
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+
+- **IT RECURRED.** The body below says "Not reproducible standalone" and treats the hang as a
+  one-off. On 2026-09-06 a per-package `cargo test -p tldr-cli --no-fail-fast -j 2 --
+  --test-threads=2` run printed `test coupling_path_preserves_user_supplied has been running
+  for over 60 seconds`, and the run was still sitting on it. So this is a SECOND observation,
+  under different conditions from the first (per-package, 2 test threads, not the full
+  workspace), which removes "it happened once" as a reason to deprioritise it.
+- A second test in the same run also passed 60 s: `verify_command::test_verify_default_current_dir`.
+  Whether that is the same defect, ordinary slowness, or contention from the constrained thread
+  count is NOT established — noted so the next investigator checks rather than assumes.
+- What is now worth doing FIRST, ahead of the body's step 1: the body's reproduction attempts
+  were standalone runs of the binary, which never reproduced it. Both observations instead came
+  from inside a multi-threaded `cargo test`. Reproduce it THERE — the suite context, not the
+  binary in isolation, is the only place it has ever appeared.
+- Nothing about the cause is settled. No scan hunk is implicated (see the body), and this
+  session added no evidence about WHY, only that it happens more than once.
 
 ## Why
 During the second full `cargo test --workspace` run of the scan landing (2026-09-05, parent

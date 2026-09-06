@@ -3,7 +3,7 @@ trdd-id: 3TCJKGWM
 title: Backward slice includes unrelated statements because the entry node spans the whole straight-line body
 column: todo
 created: 2026-09-06T03:01:05+0200
-updated: 2026-09-06T03:08:52+0200
+updated: 2026-09-06T03:13:22+0200
 current-owner: claude-session-2026-09-05
 task-type: bugfix
 min-approval-requirement: none
@@ -17,9 +17,12 @@ labels: [pdg, slicing, precision, pre-existing]
 
 - Found 2026-09-06 while triaging a test failure, NOT by a scanner.
 - PRE-EXISTING — OBSERVED at the fork parent, not argued from diffs. The reproducer below was
-  run in a worktree checked out at `7f50527` and printed byte-identical results: slice
-  `[2,3,4,5,6]`, `node id=0 lines=(2,5) type="entry"`, both `(6,6)` statement nodes, the same
-  three edges. Nothing in the scan pass caused this.
+  run in a worktree checked out at `7f50527`. Identical slice `[2,3,4,5,6]`, identical node set
+  and spans (`id=0 lines=(2,5) type="entry"`, both `(6,6)` statement nodes), identical edge
+  MULTISET. The edge PRINT ORDER differs between the two runs (`0->0 b` and `0->1 c` swap
+  places), which is not load-bearing and is most likely iteration order over a hash container —
+  though that was not verified, so it is stated as an unexplained difference rather than
+  dismissed. Nothing in the scan pass caused this.
 - Method note, because it cost three rounds: this was first "established" by diffing
   `src/pdg/`, then re-established by diffing `src/cfg/` when that proved insufficient, and the
   next directory in line was `src/ast/` (spans ultimately derive from parsed statement
@@ -80,6 +83,14 @@ basic-block size, and the intended precision is UNDOCUMENTED. Whether that is a 
 accepted limitation is exactly the open question this card exists to settle — it should not be
 prejudged in either direction.
 
+What the neutrality must NOT bury, because it is measured rather than normative and it is the
+fact an implementer actually needs: **precision is bounded by basic-block size, and for
+branch-free code the entire function body is one block.** So for any straight-line function,
+a backward slice returns the WHOLE body regardless of the criterion. That is not merely
+"imprecise" — over that whole input class the result carries no information the reader did not
+already have from opening the function. The spec question stays open; this consequence holds
+either way, and it is why the card is `todo` and not closed as working-as-intended.
+
 This paragraph has been wrong twice, in opposite directions, and the history is kept because
 the failure mode is instructive. First revision asserted "a real defect" without checking for
 a spec. Second revision said no spec existed, on a search of `thoughts/` that never looked at
@@ -127,8 +138,11 @@ Drop this in `crates/tldr-core/tests/pdg_tests.rs` inside `mod slicing_tests` (t
 `use super::*`, which is what puts `get_slice`, `SliceDirection` and `Language` in scope) and
 run `cargo test -p tldr-core --test pdg_tests slicing_tests::probe -- --exact --nocapture`.
 
-This exact snippet has been compiled and run in that module, both on `main` and in a worktree
-at the parent `7f50527` — it is verified runnable, not merely believed to be. It is kept here
+A snippet identical to this except for the function name and the println label strings has been
+compiled and run in that module, both on `main` and in a worktree at the parent `7f50527`.
+Every compile-relevant token is the same — the `get_pdg_context` path, `get_slice`,
+`SliceDirection`, `Language`, and the `use super::*` scope that supplies them — so "runnable"
+is verified, though not by compiling this literal text. It is kept here
 rather than committed as an `#[ignore]`d test, because a test that PASSES against today's
 behaviour is not the regression test this card's acceptance asks for.
 
@@ -166,6 +180,22 @@ Recommended order: reproduce with the snippet above, decide block granularity fi
 then touch the slice-side functions.
 
 ## Acceptance
+
+The first line is the decision this card exists to make. The rest are contingent on it, and
+must NOT be read as prejudging it — an earlier revision wrote them while the card still claimed
+"defect", and they would have made the card unclosable if the decision goes the other way.
+
+- [ ] The intended precision is DECIDED and recorded here: is block granularity the intended
+      behaviour, or is statement-level precision the goal? The docs state soundness only, so
+      this cannot be settled by reading them.
+
+If the decision is that block granularity is intended:
+
+- [ ] The precision bound is documented on `get_slice`, so the next reader does not
+      re-discover it as a bug — including the branch-free consequence below
+- [ ] `slicing_tests::slice_empty_function`'s `(2..=3)` bound gets a pointer to that doc
+
+If the decision is that statement-level precision is the goal:
 
 - [ ] A backward slice from `return c` in the snippet above excludes line 5
 - [ ] A regression test pins that exclusion, and fails against today's behaviour
