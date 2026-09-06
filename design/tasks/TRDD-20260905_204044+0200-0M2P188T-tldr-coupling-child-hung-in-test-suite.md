@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:20:52+0200
+updated: 2026-09-06T03:23:58+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -55,19 +55,38 @@ labels: [scan-2026-09-05, hang]
   ```
 
   `str::match_indices` / `TwoWaySearcher` inside `find_var_in_line` carries the deep-frame
-  weight, reached from fuzzy-match resolution of a Python receiver type; `FuncIndex::find_by_name`
-  and `::iter` recur throughout. CAVEAT on how that list was produced: the per-symbol counts
-  were occurrences of mangled names in the text dump, counted with `uniq -c`, which tracks call-
-  graph BREADTH, not time. Only the deep-frame excerpt carried real sample weights. Treat the
-  ordering as a lead and re-profile rather than trusting the ranking.
+  weight, and that part had real sample counts beside it.
+- **CORRECTION — the top frame above is WRONG. `build_project_call_graph_v2` is NOT on this
+  command's path.** It is called from `patterns/temporal.rs` and `commands/calls.rs`;
+  `coupling.rs` uses its own `find_cross_calls` (coupling.rs:1409, invoked at 1920-1921). The
+  bad symbol reached the diagram through a bad method: per-symbol counts taken with `uniq -c`
+  over mangled names in the text dump, which measures call-graph BREADTH and sweeps in other
+  threads' frames, not time. Only the deep-frame excerpt was weighted. Re-profile and read the
+  per-thread breakdown before trusting any ordering here.
+- **THE READ-SET IS VERIFIED TO BE JUST THOSE TWO FILES.** This was checked, because the whole
+  argument below collapses if the command walks a tree: `coupling.rs::run` reads exactly
+  `source_a` and `source_b` through `read_file_safe`, and `project_root` (absent from this
+  argv) is used ONLY to join the two paths, never to enumerate a directory. There is no
+  project scan on this path — which is also why the misattributed `build_project_call_graph_v2`
+  above mattered enough to correct: its name implies a project walk that does not happen here.
 - **THE INPUT IS 18 LINES**, preserved at `design/reproducers/TRDD-0M2P188T/` — a 10-line class
-  with three methods, and an 8-line caller. This is the fact that rules out the benign reading:
+  with an `__init__` and two methods, and an 8-line caller. This is the fact that rules out the
+  benign reading:
   fuzzy matching is plausibly O(calls x funcs x line-length), but on four functions and a
   handful of calls that is microseconds, not 15 CPU-minutes and 576 MB. No terminating
   super-linear algorithm reaches these numbers on this input.
 - Honest limit on that: the process was KILLED at 13 minutes, and the body's occurrence was
   killed at 45. Neither was ever observed terminating on its own, so "non-terminating" is
   inferred from the input-size argument above, not from having waited it out.
+- **SEPARATE DEFECT FOUND WHILE CHECKING THIS — `coupling`'s `--timeout` cannot fire during
+  the analysis.** `coupling.rs` checks `start.elapsed() > timeout` exactly three times, at lines
+  1864, 1876 and 1912 — after path validation, after the file read, and once more — and
+  `find_cross_calls` runs at 1920-1921 with NO further check. Verified by scanning every line
+  after 1912 for another check: there is none. So the timeout bounds only setup, and the phase
+  that actually hangs is unbounded by construction. That is why a child with a timeout argument
+  ran 13 minutes. This is worth fixing REGARDLESS of the hang's root cause, because it is what
+  turns a slow analysis into an unkillable one, and it is a much smaller change than the loop.
+  It deserves its own card when someone picks this up.
 - NEXT ACTION, two hypotheses, not one:
   1. **Non-terminating loop** — read `resolve_local_fuzzy_match` and `resolve_type_aware_fallback`
      for a loop whose termination depends on resolution succeeding. The steadily growing RSS is
